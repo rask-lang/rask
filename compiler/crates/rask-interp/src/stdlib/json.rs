@@ -1005,7 +1005,7 @@ fn json_to_typed(
         "bool" => extract_bool(raw).map_err(|_| type_err(path, "bool", json)),
         "f32" | "f64" => extract_float(raw).map_err(|_| type_err(path, name, json)),
         _ if rask_ast::primitives::is_machine_integer(name) => {
-            let kind = crate::value::IntKind::from_name(name).expect("every machine integer has a kind");
+            let kind = crate::value::IntKind::from_name(name, cx.interp.types.target()).expect("every machine integer has a kind");
             extract_int(raw, kind).map_err(|_| type_err(path, "an integer", json))
         }
         _ => {

@@ -687,14 +687,14 @@ impl TypeChecker {
     }
 
     /// Create a new type checker.
-    pub fn new(resolved: ResolvedProgram) -> Self {
+    pub fn new(resolved: ResolvedProgram, target: rask_ast::Target) -> Self {
         Self {
             resolved,
             conformance_disambiguation: HashMap::new(),
             conformance_interfaces: HashMap::new(),
             declared_methods: HashMap::new(),
             reported_ambiguous_conformances: std::collections::HashSet::new(),
-            types: TypeTable::new(),
+            types: TypeTable::new(target),
             ctx: InferenceContext::new(),
             node_types: HashMap::new(),
             node_origins: HashMap::new(),
@@ -1508,12 +1508,6 @@ impl TypeChecker {
     }
 }
 
-impl Default for TypeChecker {
-    fn default() -> Self {
-        Self::new(ResolvedProgram::default())
-    }
-}
-
 // ============================================================================
 // Public API
 // ============================================================================
@@ -1654,9 +1648,10 @@ pub fn typecheck(
     resolved: ResolvedProgram,
     decls: &mut Vec<Decl>,
     operator_calls: &std::collections::HashSet<NodeId>,
+    target: rask_ast::Target,
 ) -> Result<TypedProgram, Vec<TypeError>> {
     let resolved = drop_module_qualifiers(resolved, decls);
-    let mut checker = TypeChecker::new(resolved);
+    let mut checker = TypeChecker::new(resolved, target);
     checker.operator_calls = operator_calls.clone();
     let mut typed = checker.check(decls)?;
     typed.attach_derived(decls);
@@ -1669,9 +1664,10 @@ pub fn typecheck_with_stdlib(
     decls: &mut Vec<Decl>,
     stdlib_decls: &[Decl],
     operator_calls: &std::collections::HashSet<NodeId>,
+    target: rask_ast::Target,
 ) -> Result<TypedProgram, Vec<TypeError>> {
     let resolved = drop_module_qualifiers(resolved, decls);
-    let mut checker = TypeChecker::new(resolved);
+    let mut checker = TypeChecker::new(resolved, target);
     checker.operator_calls = operator_calls.clone();
     // In stdlib scope: these registrations are what stdlib code means by a
     // name, and they must not be overwritten when the program declares its own.
@@ -1694,9 +1690,10 @@ pub fn typecheck_with_stdlib_lenient(
     decls: &mut Vec<Decl>,
     stdlib_decls: &[Decl],
     operator_calls: &std::collections::HashSet<NodeId>,
+    target: rask_ast::Target,
 ) -> (TypedProgram, Vec<TypeError>) {
     let resolved = drop_module_qualifiers(resolved, decls);
-    let mut checker = TypeChecker::new(resolved);
+    let mut checker = TypeChecker::new(resolved, target);
     checker.operator_calls = operator_calls.clone();
     checker.types.stdlib_mode = true;
     checker.collect_type_declarations(stdlib_decls);

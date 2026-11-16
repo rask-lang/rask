@@ -449,7 +449,7 @@ impl Interpreter {
                 crate::build_context::call_method(state, method, args)
                     .map_err(RuntimeError::Generic)
             }
-            Value::RawPtr(p) => crate::ptr::call_ptr_method(p, method, args),
+            Value::RawPtr(p) => crate::ptr::call_ptr_method(p, method, args, self.types.target()),
             Value::SimdF32x8(data) => match method {
                 "sum" => {
                     let sum: f32 = data.iter().sum();

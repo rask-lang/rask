@@ -65,9 +65,9 @@ pub(crate) fn option_of(inner: MirType) -> MirType {
 ///
 /// `malloc` only promises 16-byte alignment, so an `@align(64)` value goes
 /// through `rask_alloc_aligned`. Both blocks go back through `rask_free`.
-pub(crate) fn alloc_block_for(dst: LocalId, size: u32, ty: &MirType) -> MirStmt {
+pub(crate) fn alloc_block_for(dst: LocalId, size: u32, ty: &MirType, target: rask_ast::Target) -> MirStmt {
     let size = MirOperand::Constant(MirConst::Int(size.max(1) as i64));
-    let (name, args) = match ty.align() {
+    let (name, args) = match rask_layout::align_of(ty, target) {
         a if a > crate::MALLOC_ALIGN => (
             "rask_alloc_aligned",
             vec![size, MirOperand::Constant(MirConst::Int(a as i64))],
@@ -400,6 +400,11 @@ mod empty {
 }
 
 impl<'a> MirContext<'a> {
+    /// The machine being lowered for.
+    pub fn target(&self) -> rask_ast::Target {
+        self.type_defs.target()
+    }
+
     /// A context from the checker's and monomorphizer's output.
     ///
     /// Six call sites used to build this struct field by field — 21 fields each,
@@ -1177,10 +1182,10 @@ impl<'a> MirContext<'a> {
         Some(self.type_to_mir(params.get(param)?))
     }
 
-    /// Size in bytes for a MirType. Now just delegates to `MirType::size()` since
-    /// StructLayoutId/EnumLayoutId carry their real byte sizes.
+    /// Size in bytes for a MirType, from `rask_layout`. A struct or enum carries its
+    /// real byte size in its `StructLayoutId`/`EnumLayoutId`.
     pub fn mir_type_size(&self, ty: &MirType) -> u32 {
-        ty.size()
+        rask_layout::size_of(ty, self.target())
     }
 
     pub fn find_enum(&self, name: &str) -> Option<(u32, &EnumLayout)> {
@@ -1236,13 +1241,13 @@ impl<'a> MirContext<'a> {
             "i32" => MirType::I32,
             "i64" => MirType::I64,
             "i128" => MirType::I128,
-            "isize" => MirType::isize_ty(),
+            "isize" => MirType::isize_ty(self.target()),
             "u8" => MirType::U8,
             "u16" => MirType::U16,
             "u32" => MirType::U32,
             "u64" => MirType::U64,
             "u128" => MirType::U128,
-            "usize" => MirType::usize_ty(),
+            "usize" => MirType::usize_ty(self.target()),
             "f32" => MirType::F32,
             "f64" => MirType::F64,
             "bool" => MirType::Bool,
@@ -1472,7 +1477,7 @@ impl<'a> MirContext<'a> {
     /// and the rack never records it.
     pub(crate) fn struct_carries_links(&self, ty: &MirType) -> bool {
         matches!(ty, MirType::Struct(_) | MirType::Tuple(_) | MirType::Array { .. })
-            && !crate::types::link_slots_by(ty, &|id| self.struct_link_slots(id as usize)).is_empty()
+            && !crate::types::link_slots_by(ty, &|id| self.struct_link_slots(id as usize), self.target()).is_empty()
     }
 
     /// Where struct layout `id` holds edges, offsets from its start
@@ -1525,13 +1530,13 @@ impl<'a> MirContext<'a> {
                 }
             }
             (Type::Tuple(elems), MirType::Tuple(parts)) => {
-                for (elem, at) in elems.iter().zip(crate::tuple_offsets(&parts)) {
+                for (elem, at) in elems.iter().zip(rask_layout::tuple_offsets(&parts, self.target())) {
                     self.type_link_slots(elem, base + at, depth + 1, out);
                 }
             }
             (Type::Array { elem, .. }, MirType::Array { elem: melem, len }) => {
                 for i in 0..len {
-                    self.type_link_slots(elem, base + i * melem.size(), depth + 1, out);
+                    self.type_link_slots(elem, base + i * rask_layout::size_of(&*melem, self.target()), depth + 1, out);
                 }
             }
             _ => {}
@@ -1621,6 +1626,7 @@ impl<'a> MirContext<'a> {
     pub fn field_types(&self) -> crate::FieldTypes {
         let field = |f: &rask_layout::FieldLayout| self.type_to_mir(&f.ty);
         crate::FieldTypes {
+            target: self.target(),
             structs: self
                 .struct_layouts
                 .iter()
@@ -1673,8 +1679,8 @@ impl<'a> MirContext<'a> {
             Type::U64 => MirType::U64,
             Type::U128 => MirType::U128,
             // Where `usize` and `isize` get a width: the target's pointer.
-            Type::Usize => MirType::usize_ty(),
-            Type::Isize => MirType::isize_ty(),
+            Type::Usize => MirType::usize_ty(self.target()),
+            Type::Isize => MirType::isize_ty(self.target()),
             Type::F32 => MirType::F32,
             Type::F64 => MirType::F64,
             Type::Char => MirType::Char,
@@ -2486,7 +2492,7 @@ impl<'a> MirLowerer<'a> {
             // anything reads the slot. Copy it to the heap and share that.
             let size = self.aggregate_size(ty);
             let heap = self.builder.alloc_temp(MirType::Ptr);
-            self.builder.push_stmt(alloc_block_for(heap, size, ty));
+            self.builder.push_stmt(alloc_block_for(heap, size, ty, self.ctx.target()));
             // One store of the whole value. Copied a word at a time through
             // `Field { field_index: 0, byte_offset }`, every word read field 0:
             // codegen picks a struct's field by index and the offset never
@@ -2509,7 +2515,7 @@ impl<'a> MirLowerer<'a> {
             addr,
             offset: 0,
             value: stored,
-            store_size: if aggregate { MirType::Ptr.size() } else { ty.size() },
+            store_size: if aggregate { rask_layout::size_of(&MirType::Ptr, self.ctx.target()) } else { rask_layout::size_of(ty, self.ctx.target()) },
             field: None,
         }));
     }
@@ -2564,13 +2570,13 @@ impl<'a> MirLowerer<'a> {
                 .ctx
                 .struct_layouts
                 .get(*id as usize)
-                .map_or(ty.size(), |l| l.size),
+                .map_or(rask_layout::size_of(ty, self.ctx.target()), |l| l.size),
             MirType::Enum(EnumLayoutId { id, .. }) => self
                 .ctx
                 .enum_layouts
                 .get(*id as usize)
-                .map_or(ty.size(), |l| l.size),
-            other => other.size(),
+                .map_or(rask_layout::size_of(ty, self.ctx.target()), |l| l.size),
+            other => rask_layout::size_of(other, self.ctx.target()),
         }
     }
 
@@ -2858,7 +2864,7 @@ impl<'a> MirLowerer<'a> {
                 // The vector is told what it holds so what it hands out is
                 // retained and released like one.
                 let elem_desc = meta.elem.clone().unwrap_or(MirType::I64);
-                let elem_size = elem_desc.size() as i64;
+                let elem_size = rask_layout::size_of(&elem_desc, self.ctx.target()) as i64;
                 let vec_ty = MirType::Container(crate::types::ContainerKind::Vec);
                 let vec_local = self.builder.alloc_temp(vec_ty.clone());
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
@@ -2949,9 +2955,9 @@ impl<'a> MirLowerer<'a> {
     /// The block is the payload's own size, written and read at that width:
     /// an `f32` written eight bytes wide and read four comes back 0.
     pub(crate) fn box_into_owned(&mut self, val: MirOperand, val_ty: &MirType) -> MirOperand {
-        let width = val_ty.size();
+        let width = rask_layout::size_of(val_ty, self.ctx.target());
         let heap = self.builder.alloc_temp(MirType::Heap(Box::new(val_ty.clone())));
-        self.builder.push_stmt(alloc_block_for(heap, width, val_ty));
+        self.builder.push_stmt(alloc_block_for(heap, width, val_ty, self.ctx.target()));
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
             addr: heap,
             offset: 0,
@@ -3431,9 +3437,9 @@ impl<'a> MirLowerer<'a> {
             Some(have)
                 if !have.passed_by_address()
                     && !slot.passed_by_address()
-                    && have.size() > 0
-                    && slot.size() > 0
-                    && (have.size() != slot.size() || have.is_float() != slot.is_float()) =>
+                    && rask_layout::size_of(&have, self.ctx.target()) > 0
+                    && rask_layout::size_of(slot, self.ctx.target()) > 0
+                    && (rask_layout::size_of(&have, self.ctx.target()) != rask_layout::size_of(slot, self.ctx.target()) || have.is_float() != slot.is_float()) =>
             {
                 let converted = self.builder.alloc_temp(slot.clone());
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
@@ -3452,7 +3458,7 @@ impl<'a> MirLowerer<'a> {
     /// no type of its own until it lands in one. Anything passed by address
     /// already is its storage.
     pub(crate) fn as_slot_value(&mut self, value: MirOperand, slot: &MirType) -> MirOperand {
-        if slot.passed_by_address() || slot.size() == 0 {
+        if slot.passed_by_address() || rask_layout::size_of(slot, self.ctx.target()) == 0 {
             return value;
         }
         match value {
@@ -3476,8 +3482,8 @@ impl<'a> MirLowerer<'a> {
     /// `Map<i32, i32>` read each value four bytes early.
     pub(crate) fn map_entries_args(&self, map: MirOperand, key: &MirType, val: &MirType) -> Vec<MirOperand> {
         let fields = [key.clone(), val.clone()];
-        let value_offset = crate::types::tuple_offsets(&fields)[1];
-        let entry_size = MirType::Tuple(fields.to_vec()).size();
+        let value_offset = rask_layout::tuple_offsets(&fields, self.ctx.target())[1];
+        let entry_size = rask_layout::size_of(&MirType::Tuple(fields.to_vec()), self.ctx.target());
         vec![
             map,
             MirOperand::Constant(MirConst::Int(value_offset as i64)),
@@ -3492,7 +3498,7 @@ impl<'a> MirLowerer<'a> {
         let MirType::Option(inner) = &ty else {
             panic!("fill_present on a {ty:?}, not an option");
         };
-        if ty.wrapper_layout().is_none() {
+        if rask_layout::wrapper_of(&ty, self.ctx.target()).is_none() {
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                 dst: slot,
                 rvalue: MirRValue::Use(value),
@@ -3507,7 +3513,7 @@ impl<'a> MirLowerer<'a> {
     /// Fill `slot`, a local holding a `T?`, with `none`.
     pub(crate) fn fill_absent(&mut self, slot: LocalId) {
         let ty = self.builder.local_type(slot).expect("an option slot has a type");
-        if ty.wrapper_layout().is_some() {
+        if rask_layout::wrapper_of(&ty, self.ctx.target()).is_some() {
             self.store_wrapper_tag(slot, &ty, rask_mono::runtime_abi::RASK_TAG_ABSENT);
             return;
         }
@@ -3565,7 +3571,7 @@ impl<'a> MirLowerer<'a> {
         let value = self.to_slot_width(value, &arm);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
             addr: slot,
-            offset: wrapper_ty.payload_offset(),
+            offset: rask_layout::payload_offset_of(wrapper_ty, self.ctx.target()),
             value,
             store_size: size,
             field: None,
@@ -4262,6 +4268,7 @@ impl<'a> MirLowerer<'a> {
 
         let captures = crate::stmt::lay_out_captures(
             caps.iter().map(|c| (c.outer, c.ty.clone(), c.by_ref, c.copy)),
+            self.ctx.target(),
         );
         let mut thunk_locals: HashMap<String, (LocalId, MirType)> = HashMap::new();
         let mut thunk_res_local: Option<LocalId> = None;
@@ -5655,13 +5662,13 @@ impl<'a> MirLowerer<'a> {
         arm: &MirType,
     ) -> MirRValue {
         let stored = match &base {
-            MirOperand::Local(id) => self.builder.local_type(*id).filter(|t| t.wrapper_layout().is_some()),
+            MirOperand::Local(id) => self.builder.local_type(*id).filter(|t| rask_layout::wrapper_of(t, self.ctx.target()).is_some()),
             _ => None,
         };
         let wrapper = stored.as_ref().unwrap_or(wrapper_ty);
         MirRValue::Field {
-            byte_offset: Some(wrapper.payload_offset()),
-            access: FieldAccess::for_field(arm, arm.size()),
+            byte_offset: Some(rask_layout::payload_offset_of(wrapper, self.ctx.target())),
+            access: FieldAccess::for_field(arm, rask_layout::size_of(arm, self.ctx.target())),
             base,
             field_index: 0,
         }

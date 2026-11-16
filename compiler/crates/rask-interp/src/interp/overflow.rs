@@ -177,11 +177,11 @@ enum IntTarget {
 }
 
 impl IntTarget {
-    fn parse(name: &str) -> Option<IntTarget> {
+    fn parse(name: &str, machine: rask_ast::Target) -> Option<IntTarget> {
         match name {
             "i128" => Some(IntTarget::I128),
             "u128" => Some(IntTarget::U128),
-            _ => IntKind::from_name(name).map(IntTarget::Kind),
+            _ => IntKind::from_name(name, machine).map(IntTarget::Kind),
         }
     }
 
@@ -232,15 +232,15 @@ fn not_int(target: &str) -> RuntimeError {
 }
 
 /// Evaluate an explicit conversion form (CV11–CV16). `Interpreter`-independent.
-pub(crate) fn convert(val: Value, target: &str, kind: ConvertKind) -> Result<Value, RuntimeError> {
+pub(crate) fn convert(val: Value, target: &str, kind: ConvertKind, machine: rask_ast::Target) -> Result<Value, RuntimeError> {
     match kind {
-        ConvertKind::Wrap => truncate_to(val, target),
-        ConvertKind::Clamp => saturate_to(val, target),
-        ConvertKind::CheckedOption => try_convert_to(val, target),
-        ConvertKind::To => convert_exact(val, target),
-        ConvertKind::Round => convert_rounded(val, target, Rounding::Nearest),
-        ConvertKind::Floor => convert_rounded(val, target, Rounding::Down),
-        ConvertKind::Ceil => convert_rounded(val, target, Rounding::Up),
+        ConvertKind::Wrap => truncate_to(val, target, machine),
+        ConvertKind::Clamp => saturate_to(val, target, machine),
+        ConvertKind::CheckedOption => try_convert_to(val, target, machine),
+        ConvertKind::To => convert_exact(val, target, machine),
+        ConvertKind::Round => convert_rounded(val, target, Rounding::Nearest, machine),
+        ConvertKind::Floor => convert_rounded(val, target, Rounding::Down, machine),
+        ConvertKind::Ceil => convert_rounded(val, target, Rounding::Up, machine),
     }
 }
 
@@ -290,7 +290,7 @@ fn source_float(val: &Value) -> Option<f64> {
 /// of at compile time: can this value be represented in the target? A float
 /// with a fraction can't be an integer, a large `i64` can't be an `f32`, and
 /// `NaN` can't be either.
-fn convert_exact(val: Value, target: &str) -> Result<Value, RuntimeError> {
+fn convert_exact(val: Value, target: &str, machine: rask_ast::Target) -> Result<Value, RuntimeError> {
     if let Some(fk) = float_target(target) {
         // → float. An integer source is exact when the round trip survives; a
         // float source is exact when narrowing doesn't lose anything.
@@ -312,7 +312,7 @@ fn convert_exact(val: Value, target: &str) -> Result<Value, RuntimeError> {
         return Ok(Value::ok(Value::Float(narrowed, fk)));
     }
 
-    let t = IntTarget::parse(target).ok_or_else(|| not_convertible(target))?;
+    let t = IntTarget::parse(target, machine).ok_or_else(|| not_convertible(target))?;
     if let Some(f) = source_float(&val) {
         return Ok(float_to_int_checked(f, t, Rounding::Nearest, true));
     }
@@ -321,7 +321,7 @@ fn convert_exact(val: Value, target: &str) -> Result<Value, RuntimeError> {
 }
 
 /// CV14–CV16: `round`, `floor`, `ceil`.
-fn convert_rounded(val: Value, target: &str, mode: Rounding) -> Result<Value, RuntimeError> {
+fn convert_rounded(val: Value, target: &str, mode: Rounding, machine: rask_ast::Target) -> Result<Value, RuntimeError> {
     if let Some(fk) = float_target(target) {
         // Only `round` reaches a float target, and it can't fail there: an
         // out-of-range `f64` → `f32` gives ±infinity, which is IEEE's answer,
@@ -334,7 +334,7 @@ fn convert_rounded(val: Value, target: &str, mode: Rounding) -> Result<Value, Ru
         return Ok(Value::Float(narrow_float(fk, as_f64), fk));
     }
 
-    let t = IntTarget::parse(target).ok_or_else(|| not_convertible(target))?;
+    let t = IntTarget::parse(target, machine).ok_or_else(|| not_convertible(target))?;
     let f = source_float(&val).ok_or_else(|| not_numeric("round", &val))?;
     Ok(float_to_int_checked(f, t, mode, false))
 }
@@ -413,8 +413,8 @@ fn not_convertible(target: &str) -> RuntimeError {
 }
 
 /// CV12: wrapping/bitwise truncation into the target width.
-fn truncate_to(val: Value, target: &str) -> Result<Value, RuntimeError> {
-    let t = IntTarget::parse(target).ok_or_else(|| not_int(target))?;
+fn truncate_to(val: Value, target: &str, machine: rask_ast::Target) -> Result<Value, RuntimeError> {
+    let t = IntTarget::parse(target, machine).ok_or_else(|| not_int(target))?;
     let raw = raw_i64(&val).ok_or_else(|| RuntimeError::TypeError(
         format!("`wrap` needs an integer, found {}", val.type_name())))?;
     Ok(match t {
@@ -428,8 +428,8 @@ fn truncate_to(val: Value, target: &str) -> Result<Value, RuntimeError> {
 }
 
 /// CV13: clamp to the target range.
-fn saturate_to(val: Value, target: &str) -> Result<Value, RuntimeError> {
-    let t = IntTarget::parse(target).ok_or_else(|| not_int(target))?;
+fn saturate_to(val: Value, target: &str, machine: rask_ast::Target) -> Result<Value, RuntimeError> {
+    let t = IntTarget::parse(target, machine).ok_or_else(|| not_int(target))?;
     let src = int_logical(&val).ok_or_else(|| RuntimeError::TypeError(
         format!("`clamp` needs an integer, found {}", val.type_name())))?;
     if let IntTarget::U128 = t {
@@ -440,8 +440,8 @@ fn saturate_to(val: Value, target: &str) -> Result<Value, RuntimeError> {
 }
 
 /// `T?` — `none` if out of range. Compiler-internal (`char.from_u32`).
-fn try_convert_to(val: Value, target: &str) -> Result<Value, RuntimeError> {
-    let t = IntTarget::parse(target).ok_or_else(|| not_int(target))?;
+fn try_convert_to(val: Value, target: &str, machine: rask_ast::Target) -> Result<Value, RuntimeError> {
+    let t = IntTarget::parse(target, machine).ok_or_else(|| not_int(target))?;
     let src = int_logical(&val).ok_or_else(|| RuntimeError::TypeError(
         format!("a checked conversion needs an integer, found {}", val.type_name())))?;
     if let IntTarget::U128 = t {

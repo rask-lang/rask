@@ -22,7 +22,7 @@ use crate::variadic::Wrapper;
 
 /// The constant a call folds to, when every argument is one and C defines
 /// the result.
-fn fold(call: &MacroCall, args: &[MirOperand]) -> Option<MirConst> {
+fn fold(call: &MacroCall, args: &[MirOperand], target: rask_ast::Target) -> Option<MirConst> {
     let mut vals = Vec::with_capacity(args.len());
     for (a, ty) in args.iter().zip(&call.args) {
         vals.push(match a {
@@ -33,7 +33,7 @@ fn fold(call: &MacroCall, args: &[MirOperand]) -> Option<MirConst> {
         });
     }
     Some(match call.compute(&vals)? {
-        CVal::Int(v, ty) if rask_c_parse::cexpr::rask_scalar(&ty) == Some("bool") => MirConst::Bool(v != 0),
+        CVal::Int(v, ty) if rask_c_parse::cexpr::rask_scalar(&ty, target) == Some("bool") => MirConst::Bool(v != 0),
         // A `u64` above `i64::MAX` keeps its bits.
         CVal::Int(v, _) => MirConst::Int(v as i64),
         CVal::Float(f, _) => MirConst::Float(f),
@@ -46,7 +46,7 @@ fn fold(call: &MacroCall, args: &[MirOperand]) -> Option<MirConst> {
 fn sig_type(ty: &rask_c_parse::CType, types: &rask_check::TypeTable) -> Option<rask_types::Type> {
     match cexpr::canonical(ty) {
         rask_c_parse::CType::Pointer(_) => Some(rask_types::Type::RawPtr(Box::new(rask_types::Type::Unit))),
-        other => cexpr::rask_scalar(&other)
+        other => cexpr::rask_scalar(&other, types.target())
             .map(|name| crate::emit::checked_extern_type(&TypeExpr::named(name), types)),
     }
 }
@@ -134,7 +134,7 @@ pub fn route_calls(functions: &mut [MirFunction], types: &rask_check::TypeTable)
                 let MirStmtKind::Call { dst, func, args } = &mut stmt.kind else { continue };
                 let Some(call) = func.c_macro.take() else { continue };
                 if call.header.is_none() {
-                    if let (Some(d), Some(value)) = (*dst, fold(&call, args)) {
+                    if let (Some(d), Some(value)) = (*dst, fold(&call, args, types.target())) {
                         stmt.kind = MirStmtKind::Assign { dst: d, rvalue: MirRValue::Use(MirOperand::Constant(value)) };
                         continue;
                     }
@@ -187,19 +187,19 @@ mod tests {
 
     #[test]
     fn constant_arguments_fold() {
-        let folded = fold(&mask(CType::Int), &[MirOperand::Constant(MirConst::Int(3))]);
+        let folded = fold(&mask(CType::Int), &[MirOperand::Constant(MirConst::Int(3))], rask_ast::Target::LP64);
         assert!(matches!(folded, Some(MirConst::Int(4))), "{folded:?}");
     }
 
     #[test]
     fn what_c_leaves_undefined_doesnt_fold() {
-        let folded = fold(&mask(CType::Int), &[MirOperand::Constant(MirConst::Int(40))]);
+        let folded = fold(&mask(CType::Int), &[MirOperand::Constant(MirConst::Int(40))], rask_ast::Target::LP64);
         assert!(folded.is_none());
     }
 
     #[test]
     fn a_run_time_call_gets_a_function_for_its_types() {
-        let w = wrapper(&mask(CType::UnsignedChar), &rask_check::TypeTable::new()).unwrap();
+        let w = wrapper(&mask(CType::UnsignedChar), &rask_check::TypeTable::new(rask_ast::Target::LP64)).unwrap();
         assert_eq!(w.sig.name, "rask_macro_4MASK__unsigned_char");
         assert_eq!(
             w.source,

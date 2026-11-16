@@ -334,7 +334,7 @@ fn compute_layouts(
     inst: Option<&Instantiations>,
 ) -> (Vec<StructLayout>, Vec<EnumLayout>, LayoutCache) {
     let declared = declared_types(decls, types);
-    let mut layout_cache = LayoutCache::new();
+    let mut layout_cache = LayoutCache::new(types.target());
     // Every type whose size its declaration states (a handle, a runtime
     // scalar), whether or not its declaration is among `decls`: a program
     // holds a `Vec` without the stdlib's declarations being laid out.
@@ -1095,7 +1095,7 @@ mod tests {
             c_macro_calls: std::collections::HashMap::new(),
             c_macro_bodies: std::collections::HashMap::new(),
             resolutions: std::collections::HashMap::new(),
-            types: rask_check::TypeTable::new(),
+            types: rask_check::TypeTable::new(rask_ast::Target::LP64),
             node_types: std::collections::HashMap::new(),
             call_type_args: std::collections::HashMap::new(),
             call_targets: std::collections::HashMap::new(),

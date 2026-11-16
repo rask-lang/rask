@@ -362,9 +362,15 @@ fn concrete<'t>(types: &'t TypeTable, ty: &TypeExpr, method: &str) -> Result<Con
 /// bare name asks this instead of reading the spelling, which says where the
 /// program reached the type from and not which type it is.
 pub fn declared_name(types: &TypeTable, ty: &TypeExpr) -> Option<String> {
+    Some(types.type_name(declared_type(types, ty)?).to_string())
+}
+
+/// The declaration a written type names, by identity. What a backend that lays
+/// the type out asks: the layout is found by this id, never by a name read back
+/// off it.
+pub fn declared_type(types: &TypeTable, ty: &TypeExpr) -> Option<TypeId> {
     let resolved = named(types, resolve_type_expr(ty, types).ok()?);
-    let id = types.conformance_target(&resolved)?;
-    Some(types.type_name(id).to_string())
+    types.conformance_target(&resolved)
 }
 
 fn named(types: &TypeTable, ty: Type) -> Type {
@@ -602,7 +608,7 @@ mod tests {
     }
 
     fn ask(method: &str, ty: TypeExpr) -> ReflectAnswer {
-        answer(method, &ty, &Decls(TypeTable::new()))
+        answer(method, &ty, &Decls(TypeTable::new(rask_ast::Target::LP64)))
     }
 
     #[test]

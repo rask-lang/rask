@@ -119,6 +119,9 @@ pub struct Alias {
 /// Central registry of all types in the program.
 #[derive(Debug, Default, Clone)]
 pub struct TypeTable {
+    /// The machine this compilation is for. Every later stage reads it from
+    /// here: layout's pointer width, the C scalar names, what `usize` holds.
+    target: rask_ast::Target,
     /// Each interface's methods that come with a body (TD2). Desugar copies
     /// those into every conformer, so by the time a type declares the
     /// interface it has them; a type that doesn't declare it never needs them.
@@ -290,8 +293,9 @@ pub struct TypeTable {
 }
 
 impl TypeTable {
-    pub fn new() -> Self {
+    pub fn new(target: rask_ast::Target) -> Self {
         let mut table = Self {
+            target,
             types: Vec::new(),
             type_names: HashMap::new(),
             stdlib_type_names: HashMap::new(),
@@ -359,8 +363,8 @@ impl TypeTable {
         // The C scalar names an `import c` header translates to. Until these
         // were here none of them was a type, so `*i64` passed for a `const int
         // *` and the C side read a 64-bit buffer as 32-bit ints (#947).
-        for name in rask_ast::primitives::C_SCALARS {
-            let spelling = rask_ast::primitives::c_type_spelling(name)
+        for name in rask_ast::target::C_SCALARS {
+            let spelling = self.target.c_type_spelling(name)
                 .expect("C_SCALARS and c_type_spelling must agree");
             let ty = self
                 .builtins
@@ -833,6 +837,11 @@ impl TypeTable {
     }
 
     /// Get a type definition by ID.
+    /// The machine this compilation is for.
+    pub fn target(&self) -> rask_ast::Target {
+        self.target
+    }
+
     pub fn get(&self, id: TypeId) -> Option<&TypeDef> {
         self.types.get(id.0 as usize)
     }

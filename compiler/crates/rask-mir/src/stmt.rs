@@ -378,18 +378,25 @@ pub struct ClosureCapture {
 /// `items` is (local, type, by_ref, copy) per capture.
 pub fn lay_out_captures(
     items: impl IntoIterator<Item = (LocalId, crate::MirType, bool, bool)>,
+    target: rask_ast::Target,
 ) -> Vec<ClosureCapture> {
-    let mut end = 0u32;
+    let items: Vec<_> = items.into_iter().collect();
+    let parts: Vec<(u32, u32)> = items
+        .iter()
+        .map(|(_, ty, by_ref, _)| {
+            if *by_ref {
+                (target.word(), target.word())
+            } else {
+                rask_layout::size_align_of(ty, target)
+            }
+        })
+        .collect();
+    let (offsets, _, _) = rask_layout::tuple_layout(parts.iter().copied());
     items
         .into_iter()
-        .map(|(local_id, ty, by_ref, copy)| {
-            let (size, align) = if by_ref {
-                (crate::MirType::word(), crate::MirType::word())
-            } else {
-                (ty.size(), ty.align().max(1))
-            };
-            let offset = end.next_multiple_of(align);
-            end = offset + size;
+        .zip(parts)
+        .zip(offsets)
+        .map(|(((local_id, _, by_ref, copy), (size, _)), offset)| {
             ClosureCapture { local_id, offset, size, by_ref, copy, lent: false }
         })
         .collect()

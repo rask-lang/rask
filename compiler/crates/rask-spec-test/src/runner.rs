@@ -239,6 +239,7 @@ fn check_front_end(code: &str) -> Result<(), (FailStage, String)> {
             &mut parse_result.decls,
             &stdlib_decls,
             &desugared.operator_calls,
+            rask_compiler::CfgConfig::from_host("debug", vec![]).target(),
         );
     if !type_errors.is_empty() {
         return Err((FailStage::Typecheck, format!("{:?}", type_errors)));

@@ -316,10 +316,9 @@ impl<'a> MirLowerer<'a> {
             many => {
                 let tuple_ty = MirType::Tuple(many.iter().map(|(t, _, _)| t.clone()).collect());
                 let local = self.builder.alloc_local(name.clone(), tuple_ty.clone());
-                let mut tuple_offset = 0u32;
-                for (field_ty, src_offset, size) in many {
-                    let align = field_ty.align().max(1);
-                    tuple_offset = (tuple_offset + align - 1) & !(align - 1);
+                let parts: Vec<MirType> = many.iter().map(|(t, _, _)| t.clone()).collect();
+                let tuple_offsets = rask_layout::tuple_offsets(&parts, self.ctx.target());
+                for ((field_ty, src_offset, size), tuple_offset) in many.iter().zip(tuple_offsets) {
                     let read = self.builder.alloc_temp(field_ty.clone());
                     self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                         dst: read,
@@ -334,10 +333,9 @@ impl<'a> MirLowerer<'a> {
                         addr: local,
                         offset: tuple_offset,
                         value: MirOperand::Local(read),
-                        store_size: field_ty.size(),
+                        store_size: rask_layout::size_of(field_ty, self.ctx.target()),
                         field: None,
                     }));
-                    tuple_offset += field_ty.size();
                 }
                 self.locals.insert(name.clone(), (local, tuple_ty.clone()));
                 if let Some(prefix) = self.mir_type_name(&tuple_ty) {

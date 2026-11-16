@@ -227,19 +227,19 @@ fn is_scalar(func: &MirFunction, id: LocalId) -> bool {
 /// Step 1 used to be the pipeline's first pass, which ran after this. Nothing
 /// else sat between them, so moving it here changes only what step 2 gets to
 /// read.
-pub fn run_all(fns: &mut [MirFunction]) {
+pub fn run_all(fns: &mut [MirFunction], target: rask_ast::Target) {
     crate::optimize_all_closures(fns);
     let by_value = crate::closures::closures_handed_on(fns);
     if !by_value.is_empty() {
-        withdraw_borrows(fns, &by_value);
+        withdraw_borrows(fns, &by_value, target);
     }
     for func in fns.iter_mut() {
-        run(func);
+        run(func, target);
     }
 }
 
 /// Turn the named closures' captures back into copies, on both sides.
-fn withdraw_borrows(fns: &mut [MirFunction], by_value: &HashSet<String>) {
+fn withdraw_borrows(fns: &mut [MirFunction], by_value: &HashSet<String>, target: rask_ast::Target) {
     // The environment layout changes with the flag — a by-ref slot is a word,
     // a by-value one is as wide as the type — so the offsets have to be rebuilt
     // to match on both sides. Rebuilding from the local's own MIR type is what
@@ -261,18 +261,19 @@ fn withdraw_borrows(fns: &mut [MirFunction], by_value: &HashSet<String>) {
                 if !by_value.contains(func_name) {
                     continue;
                 }
-                let mut offset = 0u32;
+                let laid = crate::lay_out_captures(
+                    captures.iter().map(|c| {
+                        let ty = types.iter().find(|(id, _)| *id == c.local_id).map_or(MirType::Ptr, |(_, ty)| ty.clone());
+                        (c.local_id, ty, false, c.copy)
+                    }),
+                    target,
+                );
                 let mut offsets = Vec::with_capacity(captures.len());
-                for c in captures.iter_mut() {
-                    let size = types
-                        .iter()
-                        .find(|(id, _)| *id == c.local_id)
-                        .map_or(8, |(_, ty)| ty.size());
+                for (c, l) in captures.iter_mut().zip(&laid) {
                     c.by_ref = false;
-                    c.size = size;
-                    c.offset = (offset + 7) & !7;
-                    offset = c.offset + size;
-                    offsets.push(c.offset);
+                    c.size = l.size;
+                    c.offset = l.offset;
+                    offsets.push(l.offset);
                 }
                 layouts.push((func_name.clone(), offsets));
             }
@@ -308,7 +309,7 @@ fn withdraw_borrows(fns: &mut [MirFunction], by_value: &HashSet<String>) {
 
 /// Rewrite every read of an address-taken scalar into a load and every write
 /// into a store. Returns the locals that were made memory-resident.
-pub fn run(func: &mut MirFunction) -> AddrTaken {
+pub fn run(func: &mut MirFunction, target: rask_ast::Target) -> AddrTaken {
     let taken = wants_address(func);
     if taken.is_empty() {
         return taken;
@@ -429,7 +430,7 @@ pub fn run(func: &mut MirFunction) -> AddrTaken {
                             // be stored at its own width or the load reads
                             // bytes the store never wrote — an f32 stored as a
                             // promoted f64 reads back as noise.
-                            store_size: ty.size(),
+                            store_size: rask_layout::size_of(&ty, target),
                             field: None,
                         },
                         span,

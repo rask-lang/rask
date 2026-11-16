@@ -2200,7 +2200,7 @@ impl TypeChecker {
                 Type::Bool | Type::Char | Type::I8 | Type::I16 | Type::I32 | Type::I64
                     | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::F32 | Type::F64
                     | Type::RawPtr(_) | Type::Var(_) | Type::Error
-            ) || matches!(&ty, Type::UnresolvedNamed(n) if rask_ast::primitives::c_type_spelling(n).is_some());
+            ) || matches!(&ty, Type::UnresolvedNamed(n) if rask_ast::target::is_c_scalar(n));
             if !ok {
                 self.errors.push(TypeError::VariadicArg { ty, span });
             }

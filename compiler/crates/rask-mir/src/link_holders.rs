@@ -23,13 +23,13 @@ const REGISTER: &str = "rask_link_register_struct";
 const FORGET: &str = "rask_link_forget_struct";
 const GUARDED: &str = "rask_link_guarded";
 
-pub fn forget_local_links(functions: &mut [MirFunction]) {
+pub fn forget_local_links(functions: &mut [MirFunction], target: rask_ast::Target) {
     for func in functions {
-        forget_in(func);
+        forget_in(func, target);
     }
 }
 
-fn forget_in(func: &mut MirFunction) {
+fn forget_in(func: &mut MirFunction, target: rask_ast::Target) {
     // A parameter's storage is the caller's (a `mutate` struct) or lives as
     // long as the caller's copy; the caller forgets its own. An element bound
     // where it sits (`BindPlace`) is the collection's, whose records follow
@@ -80,7 +80,7 @@ fn forget_in(func: &mut MirFunction) {
     // wherever no unwind glue reads the zeroes.
     let sizes: Vec<(LocalId, u32)> = holders
         .iter()
-        .filter_map(|id| func.locals.iter().find(|l| l.id == *id).map(|l| (*id, l.ty.size())))
+        .filter_map(|id| func.locals.iter().find(|l| l.id == *id).map(|l| (*id, rask_layout::size_of(&l.ty, target))))
         .collect();
     let mut zeroes = Vec::new();
     for (local, size) in sizes {

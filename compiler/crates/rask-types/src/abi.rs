@@ -2,7 +2,7 @@
 
 //! The in-memory layout of `T?`, `T or E` and an error union `(A | B)`.
 //!
-//! The only definition. Mono's layouts, `MirType::size`, codegen's slot sizes
+//! The only definition. Mono's layouts, MIR's sizes (`rask_layout::size_of`), codegen's slot sizes
 //! and the C runtime all take theirs from here. Every value sits at its own
 //! size and alignment; nothing is padded out to a word to make it easier to
 //! move.

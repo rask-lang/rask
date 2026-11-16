@@ -31,7 +31,7 @@ const DEFAULT_BRANCH_QUOTA: usize = 1_000;
 /// An interpreter for the program's compile-time code: its functions, the
 /// build configuration, and which expressions the checker typed as enums.
 pub fn interpreter(decls: &[Decl], typed: &TypedProgram, cfg: Option<&CfgConfig>) -> ComptimeInterpreter {
-    let mut interp = ComptimeInterpreter::new();
+    let mut interp = ComptimeInterpreter::new(typed.types.target());
     if let Some(c) = cfg {
         interp.inject_cfg(c);
     }

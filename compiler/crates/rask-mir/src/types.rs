@@ -8,23 +8,6 @@ pub use rask_types::abi::{
     RESULT_ORIGIN_LINE_OFFSET, TAG_BYTES, TAG_OFFSET,
 };
 
-/// Where each field of a tuple sits: in order, each at its own alignment.
-/// The runtime builds tuples too — a map's `(key, value)` entries — and takes
-/// the offsets from here.
-pub fn tuple_offsets(fields: &[MirType]) -> Vec<u32> {
-    let mut offset = 0u32;
-    fields
-        .iter()
-        .map(|f| {
-            let align = f.align().max(1);
-            offset = (offset + align - 1) & !(align - 1);
-            let at = offset;
-            offset += f.size();
-            at
-        })
-        .collect()
-}
-
 /// Which container a handle points at. What frees it is codegen's to name;
 /// this is the vocabulary both ends share.
 ///
@@ -98,7 +81,8 @@ impl ContainerKind {
     }
 }
 
-/// MIR type - all sizes known, no generic type parameters
+/// MIR type - all sizes known, no generic type parameters. Its size is
+/// `rask_layout::size_of`'s to say, through the `Shaped` impl below.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum MirType {
     Void,
@@ -194,16 +178,53 @@ pub enum MirType {
     },
 }
 
+impl rask_layout::Shaped for MirType {
+    fn shape(&self) -> rask_layout::Shape<'_, MirType> {
+        use rask_layout::Shape;
+        use rask_types::Type;
+        match self {
+            MirType::Void => Shape::Void,
+            MirType::Bool => Shape::scalar(Type::Bool),
+            MirType::I8 => Shape::scalar(Type::I8),
+            MirType::I16 => Shape::scalar(Type::I16),
+            MirType::I32 => Shape::scalar(Type::I32),
+            MirType::I64 => Shape::scalar(Type::I64),
+            MirType::I128 => Shape::scalar(Type::I128),
+            MirType::U8 => Shape::scalar(Type::U8),
+            MirType::U16 => Shape::scalar(Type::U16),
+            MirType::U32 => Shape::scalar(Type::U32),
+            MirType::U64 => Shape::scalar(Type::U64),
+            MirType::U128 => Shape::scalar(Type::U128),
+            MirType::F32 => Shape::scalar(Type::F32),
+            MirType::F64 => Shape::scalar(Type::F64),
+            MirType::Char => Shape::scalar(Type::Char),
+            MirType::Ptr | MirType::RawPtr | MirType::FuncPtr(_) | MirType::Link(_) | MirType::Container(_)
+            | MirType::Heap(_) => Shape::Word,
+            MirType::Buffer => Shape::Buffer,
+            MirType::Struct(sid) => Shape::Fixed { size: sid.byte_size, align: sid.align },
+            MirType::Enum(eid) => Shape::Fixed { size: eid.byte_size, align: eid.align },
+            MirType::Array { elem, len } => Shape::Array(elem, *len),
+            MirType::Tuple(fields) => Shape::Tuple(fields),
+            // A niche option is its payload's word, with no tag.
+            MirType::Option(inner) if inner.is_niche_payload() => Shape::Word,
+            MirType::Option(inner) => Shape::Option(inner),
+            MirType::Result { ok, err } => Shape::Result(ok, err),
+            MirType::Union(members) => Shape::Union(members),
+            MirType::SimdVector { elem, lanes } => Shape::Simd(elem, *lanes),
+            MirType::InterfaceObject { .. } => Shape::FatPointer,
+        }
+    }
+}
+
 impl MirType {
-    /// P2: what `usize` is on this target — pointer-sized. The width comes
-    /// from `rask_ast::primitives::pointer_bits`, the one place that decides it.
-    pub fn usize_ty() -> MirType {
-        if rask_ast::primitives::pointer_bits() == 32 { MirType::U32 } else { MirType::U64 }
+    /// P2: what `usize` is on this target — pointer-sized.
+    pub fn usize_ty(target: rask_ast::Target) -> MirType {
+        if target.pointer_bits() == 32 { MirType::U32 } else { MirType::U64 }
     }
 
     /// P2: what `isize` is on this target.
-    pub fn isize_ty() -> MirType {
-        if rask_ast::primitives::pointer_bits() == 32 { MirType::I32 } else { MirType::I64 }
+    pub fn isize_ty(target: rask_ast::Target) -> MirType {
+        if target.pointer_bits() == 32 { MirType::I32 } else { MirType::I64 }
     }
 
     /// Does a value of this type live in its own storage, so it's handed around
@@ -246,11 +267,12 @@ impl MirType {
         )
     }
 
-    /// The size of the stack slot a value of this type lives in, or `None`
-    /// for a value that travels in a register. A SIMD vector is addressed
-    /// too, but its buffer lives elsewhere and its local is the pointer.
-    pub fn slot_size(&self) -> Option<u32> {
-        (self.passed_by_address() && !matches!(self, MirType::SimdVector { .. })).then(|| self.size())
+    /// Does a value of this type live in a stack slot of its own, with its
+    /// local holding the slot's address? The slot is `size_of` bytes. A SIMD
+    /// vector is addressed too, but its buffer lives elsewhere and its local is
+    /// the pointer.
+    pub fn needs_slot(&self) -> bool {
+        self.passed_by_address() && !matches!(self, MirType::SimdVector { .. })
     }
 
     /// True for the one-word niche payloads: a link and a raw pointer.
@@ -304,93 +326,9 @@ impl MirType {
         }
     }
 
-    /// Bytes in a pointer on the target, which is also its alignment.
-    pub fn word() -> u32 {
-        rask_ast::primitives::pointer_bits() / 8
-    }
-
-    /// Byte size of this type, as it sits in memory.
-    pub fn size(&self) -> u32 {
-        match self {
-            MirType::Void => 0,
-            MirType::Bool | MirType::I8 | MirType::U8 => 1,
-            MirType::I16 | MirType::U16 => 2,
-            MirType::I32 | MirType::U32 | MirType::F32 | MirType::Char => 4,
-            MirType::I64 | MirType::U64 | MirType::F64 => 8,
-            MirType::Ptr | MirType::RawPtr | MirType::FuncPtr(_) | MirType::Link(_) | MirType::Container(_)
-            | MirType::Heap(_) => Self::word(),
-            MirType::I128 | MirType::U128 => 16,
-            MirType::Buffer => 16, // the runtime's RaskStr, 16 bytes on every target
-            MirType::Struct(sid) => sid.byte_size,
-            MirType::Enum(eid) => eid.byte_size,
-            MirType::Array { elem, len } => elem.size() * len,
-            MirType::Tuple(fields) => {
-                let end = match (tuple_offsets(fields).last(), fields.last()) {
-                    (Some(off), Some(f)) => off + f.size(),
-                    _ => 0,
-                };
-                // Round up to max alignment
-                let max_align = fields.iter().map(|f| f.align()).max().unwrap_or(1);
-                (end + max_align - 1) & !(max_align - 1)
-            }
-            MirType::InterfaceObject { .. } => 2 * Self::word(), // data_ptr + vtable_ptr
-            MirType::Option(_) | MirType::Result { .. } | MirType::Union(_) => {
-                self.wrapper_layout().map_or(Self::word(), |l| l.size)
-            }
-            MirType::SimdVector { elem, lanes } => elem.size() * lanes,
-        }
-    }
-
-    /// Alignment of this type in bytes.
-    pub fn align(&self) -> u32 {
-        match self {
-            MirType::Bool | MirType::I8 | MirType::U8 | MirType::Void => 1,
-            MirType::I16 | MirType::U16 => 2,
-            MirType::I32 | MirType::U32 | MirType::F32 | MirType::Char => 4,
-            MirType::I128 | MirType::U128 => 16,
-            MirType::Tuple(fields) => fields.iter().map(|f| f.align()).max().unwrap_or(1),
-            MirType::Struct(sid) => sid.align,
-            MirType::Enum(eid) => eid.align,
-            MirType::Option(_) | MirType::Result { .. } | MirType::Union(_) => {
-                self.wrapper_layout().map_or(Self::word(), |l| l.align)
-            }
-            MirType::Array { elem, .. } => elem.align(),
-            MirType::SimdVector { .. } => self.size().min(32),
-            MirType::I64 | MirType::U64 | MirType::F64 | MirType::Buffer => 8,
-            _ => Self::word(),
-        }
-    }
-
-    /// Where a `T?`, `T or E` or error union keeps its payload, and its size.
-    /// `rask_types::abi` is the one definition; `None` for anything else, and
-    /// for a niche option, which is its payload.
-    pub fn wrapper_layout(&self) -> Option<rask_types::abi::WrapperLayout> {
-        match self {
-            MirType::Option(inner) if inner.is_niche_payload() => None,
-            MirType::Option(inner) => {
-                Some(rask_types::abi::option_layout(inner.size(), inner.align()))
-            }
-            MirType::Result { ok, err } => Some(rask_types::abi::result_layout(
-                ok.size().max(err.size()),
-                ok.align().max(err.align()),
-            )),
-            MirType::Union(members) => Some(rask_types::abi::union_layout(
-                members.iter().map(|m| m.size()).max().unwrap_or(0),
-                members.iter().map(|m| m.align()).max().unwrap_or(1),
-            )),
-            _ => None,
-        }
-    }
-
-    /// The byte offset of a wrapper's payload. A niche option is its payload,
-    /// at offset 0.
-    pub fn payload_offset(&self) -> u32 {
-        self.wrapper_layout().map_or(0, |l| l.payload_offset)
-    }
-
     /// Does an array element of this type live *in* its slot?
     ///
-    /// The slots of `[T; N]` are `i * T::size()` apart, so a value that occupies
+    /// The slots of `[T; N]` are `i * size_of(T)` apart, so a value that occupies
     /// its slot is copied in whole and read back by address. One store rule and
     /// one read rule, both from here, because they only work as a pair: a store
     /// that writes a word where the reader expects a value in place hands back the
@@ -513,11 +451,11 @@ pub struct SignatureId(pub u32);
 /// Both sides ask this: MIR lowering when it decides to put a boxing thunk in
 /// front of the closure, and codegen when the join decides whether to copy
 /// through an address. One definition, so they can't drift apart.
-pub fn spawn_payload_is_boxed(ty: &MirType) -> bool {
+pub fn spawn_payload_is_boxed(ty: &MirType, target: rask_ast::Target) -> bool {
     match ty {
         MirType::Void => false,
         MirType::F32 | MirType::F64 => true,
-        other => other.size() > 8 || other.wrapper_layout().is_some(),
+        other => rask_layout::size_of(other, target) > 8 || rask_layout::wrapper_of(other, target).is_some(),
     }
 }
 
@@ -533,6 +471,8 @@ pub fn spawn_payload_is_boxed(ty: &MirType) -> bool {
 /// other MIR type comes from.
 #[derive(Debug, Clone, Default)]
 pub struct FieldTypes {
+    /// The machine these layouts are for: what a pointer-sized field measures.
+    pub target: rask_ast::Target,
     pub structs: Vec<Vec<MirType>>,
     pub variants: Vec<Vec<Vec<MirType>>>,
     /// Where each struct layout carries edges: `RASK_RACK_FIELD_*` kind and byte
@@ -584,13 +524,14 @@ pub fn rack_holding_structs(fields: &FieldTypes) -> std::collections::HashSet<u3
 /// into a keeper from a value moved into one.
 #[derive(Debug, Clone, Default)]
 pub struct CopyLayouts {
+    target: rask_ast::Target,
     pub structs: std::collections::HashSet<u32>,
     pub enums: std::collections::HashSet<u32>,
 }
 
 impl CopyLayouts {
     pub fn from_fields(fields: &FieldTypes) -> CopyLayouts {
-        let mut copy = CopyLayouts::default();
+        let mut copy = CopyLayouts { target: fields.target, ..CopyLayouts::default() };
         loop {
             let before = copy.structs.len() + copy.enums.len();
             for (id, tys) in fields.structs.iter().enumerate() {
@@ -613,7 +554,7 @@ impl CopyLayouts {
 
     /// Is a value of `ty` Copy?
     pub fn is_copy(&self, ty: &MirType) -> bool {
-        if ty.size() > 16 {
+        if rask_layout::size_of(ty, self.target) > 16 {
             return false;
         }
         match ty {
@@ -642,14 +583,18 @@ impl CopyLayouts {
 /// whether its slots hold links at all, and the descriptor has no way to say
 /// so.
 pub fn link_slots(ty: &MirType, fields: &FieldTypes) -> Vec<LinkSlot> {
-    link_slots_by(ty, &|id| fields.struct_links(id).to_vec())
+    link_slots_by(ty, &|id| fields.struct_links(id).to_vec(), fields.target)
 }
 
 /// `link_slots`, with each struct layout's own slots coming from `struct_links`
 /// — for lowering, which builds the table these are read from.
-pub fn link_slots_by(ty: &MirType, struct_links: &dyn Fn(u32) -> Vec<LinkSlot>) -> Vec<LinkSlot> {
+pub fn link_slots_by(
+    ty: &MirType,
+    struct_links: &dyn Fn(u32) -> Vec<LinkSlot>,
+    target: rask_ast::Target,
+) -> Vec<LinkSlot> {
     let mut out = Vec::new();
-    collect_link_slots(ty, 0, struct_links, &mut out);
+    collect_link_slots(ty, 0, struct_links, target, &mut out);
     out
 }
 
@@ -657,6 +602,7 @@ fn collect_link_slots(
     ty: &MirType,
     base: u32,
     struct_links: &dyn Fn(u32) -> Vec<LinkSlot>,
+    target: rask_ast::Target,
     out: &mut Vec<LinkSlot>,
 ) {
     match ty {
@@ -665,19 +611,19 @@ fn collect_link_slots(
             offset: base,
         }),
         MirType::Option(inner) if inner.is_niche_payload() => {
-            collect_link_slots(inner, base, struct_links, out)
+            collect_link_slots(inner, base, struct_links, target, out)
         }
         MirType::Struct(id) => out.extend(
             struct_links(id.id).into_iter().map(|s| LinkSlot { kind: s.kind, offset: base + s.offset }),
         ),
         MirType::Tuple(parts) => {
-            for (part, at) in parts.iter().zip(tuple_offsets(parts)) {
-                collect_link_slots(part, base + at, struct_links, out);
+            for (part, at) in parts.iter().zip(rask_layout::tuple_offsets(parts, target)) {
+                collect_link_slots(part, base + at, struct_links, target, out);
             }
         }
         MirType::Array { elem, len } => {
             for i in 0..*len {
-                collect_link_slots(elem, base + i * elem.size(), struct_links, out);
+                collect_link_slots(elem, base + i * rask_layout::size_of(elem.as_ref(), target), struct_links, target, out);
             }
         }
         _ => {}
@@ -703,5 +649,72 @@ impl FieldTypes {
             .get(id as usize)
             .and_then(|v| v.get(variant))
             .map_or(&[], Vec::as_slice)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rask_layout::{align_of, payload_offset_of, size_of, tuple_offsets};
+
+    fn arm() -> rask_ast::Target {
+        rask_ast::Target::for_arch("arm")
+    }
+
+    /// A pointer-sized MIR type is the target's word, and so is everything
+    /// built from one: a tuple's offsets and a `T?`'s payload move with it.
+    #[test]
+    fn sizes_follow_the_target_word() {
+        let x86 = rask_ast::Target::LP64;
+        assert_eq!((size_of(&MirType::Ptr, x86), size_of(&MirType::Ptr, arm())), (8, 4));
+        let parts = [MirType::U8, MirType::Ptr, MirType::U8];
+        assert_eq!(tuple_offsets(&parts, x86), vec![0, 8, 16]);
+        assert_eq!(tuple_offsets(&parts, arm()), vec![0, 4, 8]);
+        let tuple = MirType::Tuple(parts.to_vec());
+        assert_eq!((size_of(&tuple, x86), size_of(&tuple, arm())), (24, 12));
+        let opt = MirType::Option(Box::new(MirType::Ptr));
+        assert_eq!((size_of(&opt, x86), payload_offset_of(&opt, x86)), (16, 8));
+        assert_eq!((size_of(&opt, arm()), payload_offset_of(&opt, arm())), (8, 4));
+        assert_eq!((align_of(&MirType::InterfaceObject { interface_name: "I".into() }, arm())), 4);
+    }
+
+    /// A `T?` over a 16-byte, 16-aligned payload is 32 bytes. MIR used to say
+    /// 24 and monomorphization 32.
+    #[test]
+    fn a_wide_option_is_the_same_size_everywhere() {
+        let x86 = rask_ast::Target::LP64;
+        assert_eq!(size_of(&MirType::Option(Box::new(MirType::I128)), x86), 32);
+    }
+
+    /// A niche option is its payload's word, with no tag.
+    #[test]
+    fn a_niche_option_is_one_word() {
+        let opt = MirType::Option(Box::new(MirType::RawPtr));
+        assert_eq!(size_of(&opt, arm()), 4);
+        assert_eq!(payload_offset_of(&opt, arm()), 0);
+    }
+
+    /// A closure environment lays each capture out at its own alignment, a
+    /// by-reference one as the target's word.
+    #[test]
+    fn captures_follow_the_target_word() {
+        use crate::LocalId;
+        let items = || {
+            vec![
+                (LocalId(0), MirType::U8, false, true),
+                (LocalId(1), MirType::I64, true, false),
+                (LocalId(2), MirType::I32, false, true),
+            ]
+        };
+        let offsets = |t| crate::lay_out_captures(items(), t).iter().map(|c| c.offset).collect::<Vec<_>>();
+        assert_eq!(offsets(rask_ast::Target::LP64), vec![0, 8, 16]);
+        assert_eq!(offsets(arm()), vec![0, 4, 8]);
+    }
+
+    /// `usize` and `isize` are the target's pointer width.
+    #[test]
+    fn usize_is_pointer_sized() {
+        assert_eq!(MirType::usize_ty(arm()), MirType::U32);
+        assert_eq!(MirType::isize_ty(rask_ast::Target::LP64), MirType::I64);
     }
 }

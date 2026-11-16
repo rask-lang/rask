@@ -35,7 +35,7 @@ pub(crate) fn encode(
     ctx: &MirContext,
     mono: &MonoProgram,
 ) -> Result<SerializedConst, NoBytes> {
-    let mut out = Writer { ctx, mono, bytes: vec![0; ty.size() as usize], relocs: Vec::new() };
+    let mut out = Writer { ctx, mono, bytes: vec![0; rask_layout::size_of(ty, ctx.target()) as usize], relocs: Vec::new() };
     out.write(val, ty, 0)?;
     Ok(SerializedConst { bytes: out.bytes, string_relocs: out.relocs })
 }
@@ -48,7 +48,7 @@ pub(crate) fn encode_list(
     ctx: &MirContext,
     mono: &MonoProgram,
 ) -> Result<SerializedConst, NoBytes> {
-    let stride = elem.size() as usize;
+    let stride = rask_layout::size_of(elem, ctx.target()) as usize;
     let mut out = Writer { ctx, mono, bytes: vec![0; stride * items.len()], relocs: Vec::new() };
     for (i, item) in items.iter().enumerate() {
         out.write(item, elem, i * stride)?;
@@ -65,8 +65,8 @@ pub(crate) fn encode_map(
     mono: &MonoProgram,
 ) -> Result<SerializedConst, NoBytes> {
     let parts = [key.clone(), val.clone()];
-    let val_at = rask_mir::tuple_offsets(&parts)[1] as usize;
-    let stride = MirType::Tuple(parts.to_vec()).size() as usize;
+    let val_at = rask_layout::tuple_offsets(&parts, ctx.target())[1] as usize;
+    let stride = rask_layout::size_of(&MirType::Tuple(parts.to_vec()), ctx.target()) as usize;
     let mut out = Writer { ctx, mono, bytes: vec![0; stride * entries.len()], relocs: Vec::new() };
     for (i, (k, v)) in entries.iter().enumerate() {
         out.write(k, key, i * stride)?;
@@ -190,7 +190,7 @@ impl Writer<'_, '_> {
                 if matches!(**inner, MirType::Link(_)) {
                     return Err(gap("a link"));
                 }
-                let payload_at = at + ty.payload_offset() as usize;
+                let payload_at = at + rask_layout::payload_offset_of(ty, self.ctx.target()) as usize;
                 match v {
                     ComptimeValue::Enum { name, variant, data } if name == "Option" => match (variant.as_str(), data) {
                         ("None", _) => self.put_tag(at, RASK_TAG_ABSENT),
@@ -208,7 +208,7 @@ impl Writer<'_, '_> {
                 }
             }
             MirType::Result { ok, err } => {
-                let payload_at = at + ty.payload_offset() as usize;
+                let payload_at = at + rask_layout::payload_offset_of(ty, self.ctx.target()) as usize;
                 let (failed, payload) = match v {
                     ComptimeValue::Enum { name, variant, data: Some(d) } if name == "Result" => {
                         (variant == "Err", d.as_ref())
@@ -227,7 +227,7 @@ impl Writer<'_, '_> {
                 if items.len() != parts.len() {
                     return Err(gap("a tuple of the wrong length"));
                 }
-                for ((item, part), offset) in items.iter().zip(parts).zip(rask_mir::tuple_offsets(parts)) {
+                for ((item, part), offset) in items.iter().zip(parts).zip(rask_layout::tuple_offsets(parts, self.ctx.target())) {
                     self.write(item, part, at + offset as usize)?;
                 }
             }
@@ -239,7 +239,7 @@ impl Writer<'_, '_> {
                     return Err(gap(format!("{} elements where the array holds {len}", items.len())));
                 }
                 for (i, item) in items.iter().enumerate() {
-                    self.write(item, elem, at + i * elem.size() as usize)?;
+                    self.write(item, elem, at + i * rask_layout::size_of(elem.as_ref(), self.ctx.target()) as usize)?;
                 }
             }
             MirType::InterfaceObject { .. } => return Err(gap("an `any` value, which points at a box")),

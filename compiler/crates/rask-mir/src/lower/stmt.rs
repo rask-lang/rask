@@ -134,7 +134,7 @@ impl<'a> MirLowerer<'a> {
                     // the same way, and `n.field = v` is one store rather than a
                     // write into a copy.
                     MirType::Link(ref sid) => Some((id, 0, ty.clone(), sid.byte_size)),
-                    MirType::Struct(_) | MirType::Tuple(_) => Some((id, 0, ty.clone(), ty.size())),
+                    MirType::Struct(_) | MirType::Tuple(_) => Some((id, 0, ty.clone(), rask_layout::size_of(&ty, self.ctx.target()))),
                     _ => None,
                 }
             }
@@ -412,7 +412,7 @@ impl<'a> MirLowerer<'a> {
             let ty = self.ctx.type_to_mir(&fl.ty);
             return Some((fl.offset, ty, fl.size));
         }
-        if let Some((_, ety, Some(off), Some(fsize))) = Self::resolve_tuple_field(oty, field) {
+        if let Some((_, ety, Some(off), Some(fsize))) = Self::resolve_tuple_field(oty, field, self.ctx.target()) {
             return Some((off, ety, fsize));
         }
         None
@@ -536,7 +536,7 @@ impl<'a> MirLowerer<'a> {
         }
         use rask_mono::runtime_abi::{RASK_RACK_FIELD_LINK, RASK_RACK_FIELD_MAP, RASK_RACK_FIELD_VEC};
         let ctx = self.ctx;
-        let slots = crate::types::link_slots_by(ty, &|id| ctx.struct_link_slots(id as usize));
+        let slots = crate::types::link_slots_by(ty, &|id| ctx.struct_link_slots(id as usize), ctx.target());
         for slot in slots {
             let incoming = self.emit_word_at(value.clone(), MirOperand::Constant(MirConst::Int(slot.offset as i64)));
             let at = self.emit_offset_plus(&offset, slot.offset);
@@ -875,7 +875,7 @@ impl<'a> MirLowerer<'a> {
                     && self.through_pointer(target)
                 {
                     let (addr, ty) = self.pointer_place_address(target)?;
-                    self.emit_pointer_check(&addr, true, ty.size() as i64);
+                    self.emit_pointer_check(&addr, true, rask_layout::size_of(&ty, self.ctx.target()) as i64);
                     let addr = match addr {
                         MirOperand::Local(id) => id,
                         other => {
@@ -891,7 +891,7 @@ impl<'a> MirLowerer<'a> {
                         addr,
                         offset: 0,
                         value: val_op,
-                        store_size: ty.size(),
+                        store_size: rask_layout::size_of(&ty, self.ctx.target()),
                         field: None,
                     }));
                     return Ok(());
@@ -949,8 +949,8 @@ impl<'a> MirLowerer<'a> {
                             || in_place;
                         if store_through_ptr {
                             let store_size = match &scalar_mutate {
-                                Some(sty) => sty.size(),
-                                None => dst_ty.size(),
+                                Some(sty) => rask_layout::size_of(sty, self.ctx.target()),
+                                None => rask_layout::size_of(&dst_ty, self.ctx.target()),
                             };
                             let _ = val_ty;
                             // What the caller's slot is about to lose. Same
@@ -1108,7 +1108,7 @@ impl<'a> MirLowerer<'a> {
                                     addr: local_id,
                                     offset: 0,
                                     value: val_op,
-                                    store_size: dst_ty.size(),
+                                    store_size: rask_layout::size_of(&dst_ty, self.ctx.target()),
                                     field: None,
                                 }));
                             } else {
@@ -1298,7 +1298,7 @@ impl<'a> MirLowerer<'a> {
                                         rvalue: MirRValue::BinaryOp {
                                             op: crate::operand::BinOp::Mul,
                                             left: idx_op.clone(),
-                                            right: MirOperand::Constant(MirConst::Int(elem.size() as i64)),
+                                            right: MirOperand::Constant(MirConst::Int(rask_layout::size_of(elem.as_ref(), self.ctx.target()) as i64)),
                                         },
                                     }));
                                     let elem_at = if at == 0 {
@@ -1341,7 +1341,7 @@ impl<'a> MirLowerer<'a> {
                                         rvalue: MirRValue::BinaryOp {
                                             op: crate::operand::BinOp::Mul,
                                             left: idx_op.clone(),
-                                            right: MirOperand::Constant(MirConst::Int(elem_ty.size() as i64)),
+                                            right: MirOperand::Constant(MirConst::Int(rask_layout::size_of(&elem_ty, self.ctx.target()) as i64)),
                                         },
                                     }));
                                     let at = self.builder.alloc_temp(MirType::Ptr);
@@ -1362,7 +1362,7 @@ impl<'a> MirLowerer<'a> {
                                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::ArrayStore {
                                     base: base_id,
                                     index: idx_op,
-                                    elem_size: elem.size(),
+                                    elem_size: rask_layout::size_of(elem.as_ref(), self.ctx.target()),
                                     value: val_op,
                                 }));
                             }
@@ -1433,7 +1433,7 @@ impl<'a> MirLowerer<'a> {
                             .or_else(|| place_ty.clone())
                             .unwrap_or_else(|| val_ty.clone());
                         let val_op = self.as_slot_value(val_op, &pointee);
-                        let store_size = pointee.size();
+                        let store_size = rask_layout::size_of(&pointee, self.ctx.target());
                         if matches!(self.ctx.lookup_raw_type(operand.id).as_deref(), Some(rask_types::Type::RawPtr(_))) {
                             self.emit_pointer_check(&MirOperand::Local(addr_local), true, store_size as i64);
                         }
@@ -2124,7 +2124,7 @@ impl<'a> MirLowerer<'a> {
                 addr: cell,
                 offset: 0,
                 value: init_op,
-                store_size: var_ty.size(),
+                store_size: rask_layout::size_of(&var_ty, self.ctx.target()),
                 field: None,
             }));
             return Ok(());
@@ -2158,7 +2158,7 @@ impl<'a> MirLowerer<'a> {
                 addr: local_id,
                 offset: 0,
                 value: init_op.clone(),
-                store_size: var_ty.size(),
+                store_size: rask_layout::size_of(&var_ty, self.ctx.target()),
                 field: None,
             }));
         } else {
@@ -2972,7 +2972,7 @@ impl<'a> MirLowerer<'a> {
 
         let is_array = matches!(&iter_ty, MirType::Array { .. });
         let (array_len, array_elem_size) = match &iter_ty {
-            MirType::Array { elem, len } => (Some(*len), Some(elem.size())),
+            MirType::Array { elem, len } => (Some(*len), Some(rask_layout::size_of(elem.as_ref(), self.ctx.target()))),
             _ => (None, None),
         };
 
