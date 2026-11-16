@@ -1610,12 +1610,12 @@ impl TypeChecker {
                         return Ok(true);
                     }
                     let is_err_branch = match &resolved_err {
-                        Type::Union(variants) => variants.iter().any(|v| v == &resolved_ret),
+                        Type::Union(variants) => self.error_member_for(variants, &resolved_ret, span),
                         // ER32: `any Interface` error — concrete types implementing the interface go to err
                         Type::InterfaceObject { interface_name, decl } => {
                             crate::interfaces::implements_interface_object(&self.types, &resolved_ret, interface_name, *decl)
                         }
-                        other => other == &resolved_ret,
+                        other => self.error_member_for(std::slice::from_ref(other), &resolved_ret, span),
                     };
                     // ER32 again, from the other side: deciding the branch is
                     // only half of it. The value is a concrete error and the
@@ -2055,6 +2055,36 @@ impl TypeChecker {
                 if resolved1.iter().all(|t| resolved2.contains(t)) {
                     return Ok(false);
                 }
+                // A union is a set. Members the two share are settled; what is
+                // left of each side pairs up by shape, so a member still open
+                // at an argument (`GrowError<_>`, or a bare `T` the callee has
+                // not been instantiated at yet) meets the one member it can be,
+                // wherever the two spellings happen to list it. Zipping them in
+                // written order paired `Mm` with `Aa` (#1853).
+                let rest1: Vec<&Type> = resolved1.iter().filter(|t| !resolved2.contains(t)).collect();
+                let rest2: Vec<&Type> = resolved2.iter().filter(|t| !resolved1.contains(t)).collect();
+                if rest1.len() == rest2.len() {
+                    let mut taken = vec![false; rest2.len()];
+                    let mut pairs: Vec<(Type, Type)> = Vec::new();
+                    for a in &rest1 {
+                        let fits: Vec<usize> = (0..rest2.len())
+                            .filter(|&i| !taken[i] && self.fits_with_holes(a, rest2[i]))
+                            .collect();
+                        if let [only] = fits.as_slice() {
+                            taken[*only] = true;
+                            pairs.push(((*a).clone(), rest2[*only].clone()));
+                        }
+                    }
+                    if pairs.len() == rest1.len() {
+                        let mut progress = false;
+                        for (a, b) in &pairs {
+                            if self.unify(a, b, span)? {
+                                progress = true;
+                            }
+                        }
+                        return Ok(progress);
+                    }
+                }
                 if types1.len() != types2.len() {
                     return Err(TypeError::Mismatch {
                         expected: t1,
@@ -2476,6 +2506,62 @@ impl TypeChecker {
         Err(TypeError::NarrowingNeedsPolicy { from: source, to: target, span })
     }
 
+    /// Is `value` one of the error types in `members`?
+    ///
+    /// A generic error whose argument isn't known yet (`GrowError.Closed` is
+    /// `GrowError<_>` until the slot says which) is the member that has its
+    /// head, when exactly one does: it can't be the success side, and the
+    /// unify that follows settles the argument. Deciding on exact equality
+    /// alone sent it to the success side, and the author was told to change a
+    /// `GrowError` into a `string` (#1853).
+    fn error_member_for(&mut self, members: &[Type], value: &Type, span: Span) -> bool {
+        if members.iter().any(|m| m == value) {
+            return true;
+        }
+        let open: Vec<&Type> = members.iter().filter(|m| self.fits_with_holes(m, value)).collect();
+        let [only] = open.as_slice() else { return false };
+        let only = (*only).clone();
+        self.unify(&only, value, span).is_ok()
+    }
+
+    /// A declared generic's name and arguments, by id or by the name it
+    /// hasn't been settled from.
+    fn generic_head_args<'a>(&self, t: &'a Type) -> Option<(String, &'a [rask_types::GenericArg])> {
+        match t {
+            Type::Generic { base, args } => Some((self.types.type_name(*base), args.as_slice())),
+            Type::UnresolvedGeneric { name, args } => Some((name.clone(), args.as_slice())),
+            _ => None,
+        }
+    }
+
+    /// Could `value` be `member` once the type variables in either are
+    /// settled? Variables match anything; everything else matches by shape.
+    fn fits_with_holes(&self, member: &Type, value: &Type) -> bool {
+        let (member, value) = (self.ctx.apply(member), self.ctx.apply(value));
+        let args_fit = |a: &[rask_types::GenericArg], b: &[rask_types::GenericArg]| {
+            a.len() == b.len()
+                && a.iter().zip(b).all(|(x, y)| match (x, y) {
+                    (rask_types::GenericArg::Type(x), rask_types::GenericArg::Type(y)) => {
+                        self.fits_with_holes(x, y)
+                    }
+                    (x, y) => x == y,
+                })
+        };
+        if let (Some((h1, a1)), Some((h2, a2))) = (self.generic_head_args(&member), self.generic_head_args(&value)) {
+            return h1 == h2 && args_fit(a1, a2);
+        }
+        match (&member, &value) {
+            (Type::Var(_), _) | (_, Type::Var(_)) => true,
+            (Type::Tuple(x), Type::Tuple(y)) => {
+                x.len() == y.len() && x.iter().zip(y).all(|(x, y)| self.fits_with_holes(x, y))
+            }
+            (Type::Array { elem: x, len: l1 }, Type::Array { elem: y, len: l2 }) => {
+                l1 == l2 && self.fits_with_holes(x, y)
+            }
+            _ => member == value,
+        }
+    }
+
     /// The first error type `from` can hold that `to` can't, when both are
     /// settled nominal errors or unions of them. `None` when every member fits,
     /// and when either side is still open, absent (`T?`) or an interface —
@@ -2492,7 +2578,9 @@ impl TypeChecker {
                 .then_some(list)
         };
         let (from, to) = (members(from)?, members(to)?);
-        from.into_iter().find(|m| !to.contains(m))
+        // A member still open at an argument (`GrowError<_>`) is the one in
+        // `to` it can become; the unify after this settles which.
+        from.into_iter().find(|m| !to.iter().any(|t| self.fits_with_holes(t, m)))
     }
 
     /// The narrowest and widest an integer type is on any target, and its

@@ -2738,10 +2738,11 @@ impl<'a> MirLowerer<'a> {
     /// element, and nothing needs putting back: the binding owns nothing, so
     /// leaving the body by any route, a panic included, leaves the collection
     /// whole.
-    pub(crate) fn bind_element_in_place(&mut self, local: LocalId, collection: MirOperand, at: MirOperand, map: bool) {
+    pub(crate) fn bind_element_in_place(&mut self, local: LocalId, collection: MirOperand, at: MirOperand, map: bool) -> LocalId {
         let slot = self.emit_element_slot(collection, at, map);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::BindPlace { dst: local, addr: slot }));
         self.addressed_locals.insert(local);
+        slot
     }
 
     /// Hand an `Ordering` back as its tag when the function is declared to
@@ -5109,8 +5110,11 @@ impl<'a> MirLowerer<'a> {
                         _ => MirType::I64,
                     }
                 };
+                // `const F: f64 = 7` is the float 7.0: a float constant, not
+                // an integer one that float arithmetic then reads.
                 let konst = match ty {
                     MirType::I128 | MirType::U128 => MirConst::Int128(*val),
+                    MirType::F32 | MirType::F64 => MirConst::Float(*val as f64),
                     _ => MirConst::Int(*val as i64),
                 };
                 Some((MirOperand::Constant(konst), ty))

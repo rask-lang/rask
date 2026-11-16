@@ -1,0 +1,32 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A module const declared as a float and written with an integer literal is a
+// float (#1894), the way `let x: f64 = 7` is.
+//
+// Native built an integer constant of the declared float type and the first
+// float operation on it hit a Cranelift verifier panic; the interpreter bound
+// the plain integer, so `F / 2` truncated to 3.
+
+const F: f64 = 7
+const G: f32 = 3
+const H: f64 = 2.5
+const N: i64 = 7
+
+test "an integer literal for an f64 const is that float" {
+    assert F / 2 == 3.5
+    assert F / 2 > 3
+    let g = F / 2 > 3
+    assert g
+}
+
+test "an f32 const" {
+    assert G / 2 == 1.5
+}
+
+test "the const prints as a float operand" {
+    assert "{F / 2}" == "3.5"
+}
+
+test "an integer const is still an integer" {
+    assert N / 2 == 3
+    assert H * 2 == 5.0
+}

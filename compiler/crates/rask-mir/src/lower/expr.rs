@@ -9,10 +9,20 @@ use super::{
     LoweringError, MirLowerer, TypedOperand,
 };
 use crate::{
-    operand::MirConst, types::{EnumLayoutId, StructLayoutId}, FunctionRef, MirOperand, MirRValue, MirStmt, MirStmtKind, MirTerminator,
+    operand::MirConst, LocalId, types::{EnumLayoutId, StructLayoutId}, FunctionRef, MirOperand, MirRValue, MirStmt, MirStmtKind, MirTerminator,
     MirTerminatorKind, MirType,
 };
+use rask_ast::expr::WITH_ALIAS_PANIC;
 use rask_ast::ty::TypeExpr;
+
+/// An element a `with` binding was bound to: where it was looked up and the
+/// slot the lookup found.
+struct PlacedElement {
+    collection: MirOperand,
+    at: MirOperand,
+    map: bool,
+    slot: LocalId,
+}
 use rask_types::Type;
 use rask_ast::{
     expr::{BinOp, CallArg, ConvertKind, Expr, ExprKind, FieldInit, Pattern, PatternKind, UnaryOp, WithBinding},
@@ -2101,11 +2111,28 @@ impl<'a> MirLowerer<'a> {
             Ok((MirOperand::Local(result_local), payload_ty))
         }
 
+    /// The length of `[x; count]` when `count` is known at compile time: a
+    /// literal, or a module const that folds to an integer (`[0; N]`). A local
+    /// of the same name as the const is not the const.
+    fn constant_array_length(&self, count: &Expr) -> Option<u32> {
+        match &count.kind {
+            ExprKind::Int(n, _) => Some(*n as u32),
+            ExprKind::Ident(name) => {
+                let (own, fact) = self.const_facts.get(name)?;
+                let still_the_const = self.locals.get(name).is_none_or(|(l, _)| own.contains(l));
+                match fact {
+                    rask_ast::comptime_if::Fact::Int(n, _) if still_the_const => u32::try_from(*n).ok(),
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
+
     fn lower_array_repeat(&mut self, value: &Expr, count: &Expr) -> Result<TypedOperand, LoweringError> {
             // Constant count → expand to a fixed-size array (same as literal)
-            if let ExprKind::Int(n, _) = &count.kind {
+            if let Some(len) = self.constant_array_length(count) {
                 let (val, elem_ty) = self.lower_expr(value)?;
-                let len = *n as u32;
                 let elem_size = elem_ty.size();
                 let array_ty = MirType::Array { elem: Box::new(elem_ty), len };
                 let result_local = self.builder.alloc_temp(array_ty.clone());
@@ -4705,6 +4732,7 @@ impl<'a> MirLowerer<'a> {
             // Default: simple alias binding (Vec/Map element, ...)
             // A `with v[i]` / `with m[k]` binding names the element where it
             // sits, so a write through it is a write to the element.
+            let mut placed: Vec<PlacedElement> = Vec::new();
             for binding in bindings {
                 // Reached through a field (`self.items[0]`) just as much as by
                 // bare name.
@@ -4730,7 +4758,8 @@ impl<'a> MirLowerer<'a> {
                     Some((collection, at, map, elem_ty)) => {
                         let local = self.builder.alloc_local(binding.name.clone(), elem_ty.clone());
                         self.locals.insert(binding.name.clone(), (local, elem_ty));
-                        self.bind_element_in_place(local, collection, at, map);
+                        let slot = self.bind_element_in_place(local, collection.clone(), at.clone(), map);
+                        placed.push(PlacedElement { collection, at, map, slot });
                     }
                     None => {
                         let (val, val_ty) = self.lower_expr(&binding.source)?;
@@ -4743,8 +4772,67 @@ impl<'a> MirLowerer<'a> {
                     }
                 }
             }
+            self.emit_with_alias_check(&placed);
             self.lower_block(body)
         }
+
+    /// Two bindings of one `with` that name the same element would be two
+    /// writable names for one slot, so the block panics before the body runs
+    /// (`with v[i] as a, v[j] as b` when `i == j`).
+    ///
+    /// A Vec element is the same slot when the vector and the index are the
+    /// same, which is also right for elements that take no space. A Map value
+    /// has no index to compare, and its key type decides what equal means, so
+    /// the slots the lookups returned are compared instead.
+    fn emit_with_alias_check(&mut self, placed: &[PlacedElement]) {
+        for (j, later) in placed.iter().enumerate() {
+            for earlier in &placed[..j] {
+                if earlier.map != later.map {
+                    continue;
+                }
+                let same = if later.map {
+                    self.emit_eq(MirOperand::Local(earlier.slot), MirOperand::Local(later.slot))
+                } else {
+                    let same_vec = self.emit_eq(earlier.collection.clone(), later.collection.clone());
+                    let same_at = self.emit_eq(earlier.at.clone(), later.at.clone());
+                    let both = self.builder.alloc_temp(MirType::Bool);
+                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                        dst: both,
+                        rvalue: MirRValue::BinaryOp {
+                            op: crate::operand::BinOp::And,
+                            left: MirOperand::Local(same_vec),
+                            right: MirOperand::Local(same_at),
+                        },
+                    }));
+                    both
+                };
+                let alias_block = self.builder.create_block();
+                let ok_block = self.builder.create_block();
+                self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
+                    cond: MirOperand::Local(same),
+                    then_block: alias_block,
+                    else_block: ok_block,
+                }));
+                self.builder.switch_to_block(alias_block);
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                    dst: None,
+                    func: FunctionRef::internal("panic".to_string()),
+                    args: vec![MirOperand::Constant(MirConst::String(WITH_ALIAS_PANIC.to_string()))],
+                }));
+                self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Unreachable));
+                self.builder.switch_to_block(ok_block);
+            }
+        }
+    }
+
+    fn emit_eq(&mut self, left: MirOperand, right: MirOperand) -> LocalId {
+        let dst = self.builder.alloc_temp(MirType::Bool);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst,
+            rvalue: MirRValue::BinaryOp { op: crate::operand::BinOp::Eq, left, right },
+        }));
+        dst
+    }
 
     fn lower_assert(&mut self, condition: &Expr, message: Option<&Expr>) -> Result<TypedOperand, LoweringError> {
             // Detect comparison patterns for smart failure messages.

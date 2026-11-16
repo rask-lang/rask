@@ -1,0 +1,28 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// `[x; N]` with a module const for the length (#1945).
+//
+// A literal count expanded to a fixed array, and anything else was lowered as
+// a call to `array_repeat`, which the runtime doesn't have: native stopped at
+// "Function not found: array_repeat" while the interpreter built the array.
+
+const N = 4
+const TWICE = N * 2
+const SIZE: usize = 3
+
+test "a const length builds that many elements" {
+    let arr = [0; N]
+    assert arr.len() == 4
+    assert arr[3] == 0
+}
+
+test "the length can be a const built from another" {
+    let arr = [7; TWICE]
+    assert arr.len() == 8
+    assert arr[7] == 7
+}
+
+test "a typed const length, and the array takes the slot's type" {
+    let arr: [i64; SIZE] = [1; SIZE]
+    assert arr.len() == 3
+    assert arr[0] + arr[1] + arr[2] == 3
+}

@@ -362,6 +362,10 @@ impl CatchClause {
     }
 }
 
+/// What a `with` panics with when two of its bindings name the same element
+/// (`with v[i] as a, v[j] as b` with `i == j`). Both backends use it.
+pub const WITH_ALIAS_PANIC: &str = "with...as: duplicate key in same collection (aliasing)";
+
 /// A `with...as` binding: source expression and binding name.
 /// Bindings are mutable — `with` exists for multi-statement mutation; reads
 /// use inline access, `.read()` locks, or frozen pools. The checker rejects

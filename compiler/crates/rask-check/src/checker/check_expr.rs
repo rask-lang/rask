@@ -2653,9 +2653,14 @@ impl TypeChecker {
                 if let Err(e) = self.unify(&Type::Usize, &count_ty, count.span) {
                     self.errors.push(e);
                 }
-                // Extract literal size when available, otherwise use 0 as placeholder
+                // A literal, or a module const naming one (`[0; N]`); anything
+                // else keeps the 0 placeholder. A local of the same name is
+                // not the const.
                 let len = match &count.kind {
                     ExprKind::Int(n, _) => *n as usize,
+                    ExprKind::Ident(name) if self.lookup_local(name).is_none() => {
+                        self.types.const_length(name).unwrap_or(0)
+                    }
                     _ => 0,
                 };
                 Type::Array {

@@ -3040,11 +3040,9 @@ impl Interpreter {
                         WithSource::Index { collection: c1, key: k1 },
                         WithSource::Index { collection: c2, key: k2 },
                     ) = (&infos[i].source, &infos[j].source) {
-                        if Self::value_eq(c1, c2) && Self::value_eq(k1, k2) {
+                        if Self::same_collection(c1, c2) && Self::value_eq(k1, k2) {
                             return Err(RuntimeDiagnostic::new(
-                                RuntimeError::Panic(
-                                    "with...as: duplicate key in same collection (aliasing)".to_string(),
-                                ),
+                                RuntimeError::Panic(rask_ast::expr::WITH_ALIAS_PANIC.to_string()),
                                 expr.span,
                             ));
                         }
