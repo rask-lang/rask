@@ -12,7 +12,7 @@ Rask's design is guided by clear principles and measured against specific metric
 6. **Resource Types** - I/O handles must be consumed
 7. **Compiler Knowledge is Visible** - IDE shows inferred information
 
-Full details: [CORE_DESIGN.md](https://github.com/rask-lang/rask/blob/main/CORE_DESIGN.md)
+Full details: [CORE_DESIGN.md](https://github.com/rask-lang/rask/blob/main/specs/CORE_DESIGN.md)
 
 ## Validation
 
@@ -58,7 +58,7 @@ Every design has tradeoffs. Rask makes these intentional choices:
 - **No storable references** - Simpler mental model, requires restructuring some patterns
 - **Explicit costs** - Better than hidden complexity
 
-See [CORE_DESIGN.md § Tradeoffs](https://github.com/rask-lang/rask/blob/main/CORE_DESIGN.md#design-tradeoffs) for full discussion.
+See [CORE_DESIGN.md § Tradeoffs](https://github.com/rask-lang/rask/blob/main/specs/CORE_DESIGN.md#design-tradeoffs) for full discussion.
 
 ## Contributing to Design
 

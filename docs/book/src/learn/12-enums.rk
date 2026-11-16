@@ -2,9 +2,8 @@
 //
 // 12. Enums and match
 //
-// An enum is a type whose value is one choice from a fixed list, like the
-// options in a drop-down menu. A direction is North, East, South or West and
-// nothing else.
+// An enum is a type whose value is one choice from a fixed list. A direction
+// is North, East, South or West and nothing else.
 //
 // You could use a string for that, "north", but then "nrth" is a direction
 // too, and nothing tells you which strings are allowed. With an enum the list

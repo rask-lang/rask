@@ -12,6 +12,7 @@
 //
 //     x ?? 0              the number, or 0 when there's none
 //     if x? as n { }      run the block only when there's a number, as `n`
+//     x is none           true when there's no number
 //
 // A function returning `i32?` returns a plain number or `none`.
 

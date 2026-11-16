@@ -1,84 +1,29 @@
 # Rask Compiler
 
-14 crates. Runs interpreted. No native codegen yet.
-
-## Pipeline
+The `rask` command: compiler, interpreter, test runner, formatter, linter and
+language server, in one binary.
 
 ```
-.rk → Lexer → Parser → Desugar → Resolver → Type Checker → Comptime → Ownership → Interpreter
+.rk → Lexer → Parser → Desugar → Resolve → TypeCheck → Comptime → Ownership → MIR → Codegen / Interp
 ```
+
+Native code goes through Cranelift and is linked with the system C compiler
+against the runtime in `runtime/`. The interpreter (`--interp`) runs the
+checked program directly and is the reference when the two disagree.
 
 ## Build
 
 ```bash
-cargo build --release
+cargo build --release -p rask-cli
 ```
 
-## Usage
+The binary is `target/release/rask`. It carries the C runtime sources and the
+standard library inside it, so the file works on its own anywhere.
 
-```bash
-# Run a program
-rask run examples/hello_world.rk
+## Read on
 
-# Run tests in a file
-rask test examples/test_example.rk
-
-# Filter tests by name
-rask test examples/test_example.rk -f "add"
-
-# Run benchmarks
-rask benchmark examples/test_example.rk
-
-# Type check without running
-rask typecheck examples/hello_world.rk
-
-# Evaluate comptime blocks
-rask comptime examples/17_comptime.rk
-
-# Format source files
-rask fmt examples/hello_world.rk
-
-# Explain an error code
-rask explain E0308
-
-# Dump tokens or AST (debugging)
-rask lex examples/hello_world.rk
-rask parse examples/hello_world.rk
-
-# JSON diagnostic output
-rask run examples/hello_world.rk --json
-```
-
-## Crates
-
-**Frontend:**
-- `rask-lexer` - Tokenization
-- `rask-parser` - AST construction
-- `rask-ast` - Shared AST types
-
-**Analysis:**
-- `rask-resolve` - Symbol resolution
-- `rask-desugar` - Sugar expansion
-- `rask-types` - The type data: `Type`, `TypeDef`, what the checker produces
-- `rask-check` - Type checking and inference
-- `rask-ownership` - Borrow checking (planned)
-- `rask-comptime` - Compile-time execution
-
-**Backend:**
-- `rask-interp` - Tree-walking interpreter
-- `rask-stdlib` - Runtime for Vec/Map/String/etc
-
-**Tools:**
-- `rask-cli` - Main binary
-- `rask-lsp` - IDE language server
-- `rask-diagnostics` - Error formatting
-- `rask-spec-test` - Test harness
-- `rask-fmt` - Code formatter
-
-## What Works
-
-Interpreter runs grep, game loop, text editor, HTTP server. Core language features: ownership, generics, interfaces, channels, linear resources, concurrency.
-
-## What Doesn't
-
-No native codegen (100-1000x slower). Limited LSP. No package manager. Minimal stdlib.
+- [COMPILER.md](COMPILER.md): a walk through the code, assuming no compiler
+  background.
+- [CLAUDE.md](CLAUDE.md): which crate and file to open for a given task.
+- [../CONTRIBUTING.md](../CONTRIBUTING.md): tests, gates, and sending a change.
+- `rask help` lists the commands.

@@ -2,7 +2,8 @@
 //
 // 5. if and else
 //
-// The condition needs no parentheses, and the braces are always there.
+// The condition needs no parentheses. The block after it always has braces,
+// even when it's one line.
 
 func abs(n: i32) -> i32 {
     if n < 0 {
@@ -12,7 +13,7 @@ func abs(n: i32) -> i32 {
 }
 
 // `if` also gives a value. When each side is a single expression, write it
-// after a colon:
+// after a colon instead of a block:
 //
 //     let kind = if n % 2 == 0: "even" else: "odd"
 //

@@ -9,8 +9,9 @@ them in if you want them, and nothing changes if you don't.
   of three edits later. This repo runs the same script on itself, next to `rask lint`.
 - `install-rask.sh` puts `rask` on PATH at session start. You need it for cloud
   sessions, which is where a session started from the mobile app runs: the
-  container starts without rask, so it downloads the latest Linux release once.
-  On a machine that already has rask it does nothing.
+  container starts without rask, so it runs the installer from
+  `rask-lang.dev/install.sh` once. On a machine that already has rask it does
+  nothing.
 
 ## Setup
 
@@ -66,7 +67,7 @@ Set `RASK=/path/to/rask` to use a compiler that isn't on PATH.
 ## Notes
 
 - Needs `jq`, which Claude Code's cloud containers have.
-- `install-rask.sh` tracks the latest release. To pin one, change
-  `releases/latest/download/` to `releases/download/v0.6.0/`.
+- `install-rask.sh` tracks the latest release. To pin one, set
+  `RASK_VERSION=0.6.0` in the hook's command.
 - `tests/agent_hook_gate.sh` runs the check hook against the real compiler in
   CI, so a change to `rask check --json` that breaks it fails the build.
