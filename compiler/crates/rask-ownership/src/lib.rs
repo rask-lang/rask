@@ -2739,6 +2739,11 @@ impl<'a> OwnershipChecker<'a> {
                 self.record_field_view(name, init);
                 if let Some(t) = self.node_ty(&init.id).cloned() {
                     self.record_link_provenance(name, &t, init);
+                }
+                // What the name holds is its declared type, not the initializer's:
+                // `let so: string? = mk()` binds a `string?` (24 bytes, moves) to
+                // a call that returns a `string` (Copy).
+                if let Some(t) = self.node_ty(&stmt.id).or_else(|| self.node_ty(&init.id)).cloned() {
                     self.binding_types.insert(name.clone(), t);
                 }
                 // SL1: the name takes over the limit of any closure `init` holds.
@@ -2818,8 +2823,12 @@ impl<'a> OwnershipChecker<'a> {
                 self.binding_decl_blocks.insert(name.clone(), self.current_block);
                 self.record_lent_binding(name, init);
                 self.record_field_view(name, init);
+                // What the name holds is its declared type, not the initializer's
+                // (see the `mut` arm).
+                if let Some(bound) = self.node_ty(&stmt.id).or_else(|| self.node_ty(&init.id)).cloned() {
+                    self.binding_types.insert(name.clone(), bound);
+                }
                 if let Some(t) = self.node_ty(&init.id).cloned() {
-                    self.binding_types.insert(name.clone(), t.clone());
                     self.record_link_provenance(name, &t, init);
                     // SL1: Only a projection (field/index) borrow creates a borrow view.
                     // Whole-variable moves create owned bindings; closures can capture freely.
