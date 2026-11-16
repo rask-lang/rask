@@ -1603,12 +1603,12 @@ impl TypeChecker {
                         return Ok(true);
                     }
                     let is_err_branch = match &resolved_err {
-                        Type::Union(variants) => variants.iter().any(|v| v == &resolved_ret),
+                        Type::Union(variants) => variants.iter().any(|v| self.same_up_to_open_literals(v, &resolved_ret)),
                         // ER32: `any Interface` error — concrete types implementing the interface go to err
                         Type::InterfaceObject { interface_name, decl } => {
                             crate::interfaces::implements_interface_object(&self.types, &resolved_ret, interface_name, *decl)
                         }
-                        other => other == &resolved_ret,
+                        other => self.same_up_to_open_literals(other, &resolved_ret),
                     };
                     // ER32 again, from the other side: deciding the branch is
                     // only half of it. The value is a concrete error and the
@@ -1678,6 +1678,54 @@ impl TypeChecker {
             }
         } else {
             self.unify(&expected, &ret_ty, span)
+        }
+    }
+
+    /// Whether two types are the same type once a literal still open inside
+    /// one (`2.25`'s variable in `E<{float}>`) is allowed to become whatever
+    /// the other side has there, and so is an argument nothing has fixed.
+    /// `E.Full(2.25)` against an error side of
+    /// `E<f64>` is the error, though `E<{float}>` is not yet `E<f64>`; deciding
+    /// by plain equality sent it to the success side.
+    fn same_up_to_open_literals(&self, a: &Type, b: &Type) -> bool {
+        use super::inference::LiteralKind;
+        let (a, b) = (self.ctx.apply(a), self.ctx.apply(b));
+        let literal_fits = |id: &rask_types::TypeVarId, other: &Type| match self.ctx.literal_vars.get(id) {
+            Some(LiteralKind::Float) => matches!(other, Type::F32 | Type::F64),
+            Some(LiteralKind::Integer) => matches!(
+                other,
+                Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128 | Type::Isize
+                    | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128 | Type::Usize
+            ),
+            // An argument nothing has said yet (`Refusal.Other` is a
+            // `Refusal<_>`) is whatever the other side has there.
+            None => true,
+        };
+        let args_match = |x: &[GenericArg], y: &[GenericArg]| {
+            x.len() == y.len()
+                && x.iter().zip(y).all(|pair| match pair {
+                    (GenericArg::Type(p), GenericArg::Type(q)) => self.same_up_to_open_literals(p, q),
+                    (p, q) => p == q,
+                })
+        };
+        match (&a, &b) {
+            (Type::Var(x), Type::Var(y)) if x == y => true,
+            (Type::Var(id), other) | (other, Type::Var(id)) => literal_fits(id, other),
+            (Type::Generic { base: p, args: x }, Type::Generic { base: q, args: y }) => p == q && args_match(x, y),
+            (
+                Type::UnresolvedGeneric { name: p, args: x },
+                Type::UnresolvedGeneric { name: q, args: y },
+            ) => p == q && args_match(x, y),
+            (Type::Tuple(x), Type::Tuple(y)) => {
+                x.len() == y.len() && x.iter().zip(y).all(|(p, q)| self.same_up_to_open_literals(p, q))
+            }
+            (Type::Array { elem: p, len: m }, Type::Array { elem: q, len: n }) => {
+                m == n && self.same_up_to_open_literals(p, q)
+            }
+            (Type::Result { ok: p, err: pe }, Type::Result { ok: q, err: qe }) => {
+                self.same_up_to_open_literals(p, q) && self.same_up_to_open_literals(pe, qe)
+            }
+            _ => a == b,
         }
     }
 
