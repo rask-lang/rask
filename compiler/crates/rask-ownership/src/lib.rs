@@ -2402,6 +2402,38 @@ impl<'a> OwnershipChecker<'a> {
         hit
     }
 
+    /// A branch that ends in a whole variable hands it over, wherever the
+    /// `if` or `match` goes: `let r = if c { fresh } else { Vec.new() }` moves
+    /// `fresh` into `r` just as `let r = fresh` does, and only on the path
+    /// that took that branch. Only the branch itself is asked, so the state
+    /// forks `check_expr` makes for the arms see the move, and a later use is
+    /// a use of a maybe-moved value. Nested `if`s, `match`es and blocks are
+    /// asked where they are.
+    fn move_branch_value(&mut self, branch: &Expr) {
+        let mut tail = branch;
+        loop {
+            match &tail.kind {
+                ExprKind::Block(stmts) => match stmts.last() {
+                    Some(Stmt { kind: StmtKind::Expr(e), .. }) => tail = e,
+                    _ => return,
+                },
+                ExprKind::Ident(_) => break,
+                _ => return,
+            }
+        }
+        // A part of a value on loan, a loop's element and a borrowed
+        // parameter aren't owned here, so there is nothing for the branch to
+        // move out of the name.
+        let ExprKind::Ident(name) = &tail.kind else { return };
+        if self.parts.contains_key(name)
+            || self.borrowed_params.contains_key(name)
+            || self.borrowed_loop_items.contains_key(name)
+        {
+            return;
+        }
+        self.handle_assignment(tail, tail.span, false);
+    }
+
     /// The values `expr` hands over: itself, or what each branch of an `if`
     /// or `match` and a block's tail produces. With `through_parts`, also the
     /// parts of a tuple, array, struct or variant built right here, which go
@@ -4317,6 +4349,7 @@ impl<'a> OwnershipChecker<'a> {
                 let present_resource = self.optional_payload_resource(cond);
                 let pre_branch = self.bindings.clone();
                 self.check_expr(then_branch);
+                self.move_branch_value(then_branch);
                 self.parts = saved_parts;
                 if let Some(ref binding) = present_resource {
                     self.check_present_binding_consumed(binding, then_branch.span);
@@ -4326,6 +4359,7 @@ impl<'a> OwnershipChecker<'a> {
                     let after_then = self.bindings.clone();
                     self.bindings = pre_branch;
                     self.check_expr(else_branch);
+                    self.move_branch_value(else_branch);
                     let else_terminal = Self::is_terminal_expr(else_branch);
                     if then_terminal && !else_terminal {
                         // then returns — only else state survives
@@ -4376,6 +4410,7 @@ impl<'a> OwnershipChecker<'a> {
                     .cloned()
                     .collect();
                 self.check_expr(then_branch);
+                self.move_branch_value(then_branch);
                 self.parts = saved_parts;
                 for binding in &pattern_bound {
                     self.check_present_binding_consumed(binding, then_branch.span);
@@ -4385,6 +4420,7 @@ impl<'a> OwnershipChecker<'a> {
                     let after_then = self.bindings.clone();
                     self.bindings = pre_branch;
                     self.check_expr(else_branch);
+                    self.move_branch_value(else_branch);
                     let else_terminal = Self::is_terminal_expr(else_branch);
                     if then_terminal && !else_terminal {
                         // then returns — only else state survives
@@ -4461,6 +4497,7 @@ impl<'a> OwnershipChecker<'a> {
                         self.check_expr(guard);
                     }
                     self.check_expr(&arm.body);
+                    self.move_branch_value(&arm.body);
                     let terminal = Self::is_terminal_expr(&arm.body);
                     self.close_arm_resources(&before_arm, terminal, arm.body.span);
                     if terminal {
