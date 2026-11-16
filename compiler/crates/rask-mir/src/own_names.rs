@@ -23,9 +23,9 @@ pub fn keeps_argument(call: &FunctionRef, index: usize, own: &HashSet<String>) -
     !own.contains(&call.name) && call.gives(index)
 }
 
-/// Report every call in the program that reads as an operation on a stdlib
-/// type and states no shape: lowering made up a spelling and didn't say what
-/// it does. Once per name per process.
+/// Report every call lowering made up without saying what it does: no shape,
+/// not a function in this program, not a runtime, extern or macro call. Once
+/// per name per process.
 ///
 /// `tests/spellings_gate.sh` sweeps the corpus for these, so a new spelling
 /// nobody stated is a red gate rather than a silent leak or double free. It is
@@ -41,15 +41,11 @@ pub fn report_unshaped_calls(fns: &[crate::MirFunction], own: &HashSet<String>) 
         }
         let head = fref.name.rsplit("::").next().unwrap_or(&fref.name);
         let base = head.split('$').next().unwrap_or(head);
-        if !rask_stdlib::mir_metadata::is_method_symbol(base) {
-            continue;
-        }
         let mut seen = SEEN.lock().unwrap();
         if seen.get_or_insert_with(HashSet::new).insert(base.to_string()) {
             eprintln!(
                 "[unshaped-call] {base}: lowering emitted this call without saying what it does \
-                 with its arguments and result, so the ownership passes treat it as reading \
-                 everything and keeping nothing. State its shape where it is emitted \
+                 with its arguments and result, so the ownership passes have to guess. State its shape where it is emitted \
                  (`FunctionRef::borrowing`, `releasing`, `reading`, `like`)."
             );
         }

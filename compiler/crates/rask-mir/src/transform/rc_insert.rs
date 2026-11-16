@@ -2929,7 +2929,7 @@ mod tests {
                         }),
                         MirStmt::dummy(MirStmtKind::Call {
                             dst: None,
-                            func: FunctionRef::internal("panic_forced_error".into()),
+                            func: FunctionRef::reading("panic_forced_error"),
                             args: vec![MirOperand::Local(local(1))],
                         }),
                     ],

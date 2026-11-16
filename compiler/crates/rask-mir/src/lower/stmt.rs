@@ -1637,7 +1637,7 @@ impl<'a> MirLowerer<'a> {
                     let consumed = self.builder.alloc_temp(MirType::I64);
                     self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                         dst: Some(consumed),
-                        func: crate::FunctionRef::internal(crate::RESOURCE_IS_CONSUMED.to_string()),
+                        func: crate::FunctionRef::reading(crate::RESOURCE_IS_CONSUMED),
                         args: vec![MirOperand::Local(resource_id)],
                     }));
                     let body_block = self.builder.create_block();
@@ -2688,7 +2688,7 @@ impl<'a> MirLowerer<'a> {
                 let extract_fn = if i == 0 { "channel_tx" } else { "channel_rx" };
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                     dst: Some(local_id),
-                    func: FunctionRef::internal(extract_fn.to_string()),
+                    func: FunctionRef::reading(extract_fn),
                     args: vec![init_op.clone()],
                 }));
             } else if let (true, Some(&offset), Some(base)) =

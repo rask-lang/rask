@@ -654,7 +654,7 @@ impl<'a> MirLowerer<'a> {
         self.builder.switch_to_block(poll_block);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(epoch),
-            func: FunctionRef::internal("rask_select_epoch".to_string()),
+            func: FunctionRef::reading("rask_select_epoch"),
             args: vec![],
         }));
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
@@ -684,7 +684,7 @@ impl<'a> MirLowerer<'a> {
             let start = self.builder.alloc_temp(MirType::I64);
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: Some(start),
-                func: FunctionRef::internal("rask_select_rotate".to_string()),
+                func: FunctionRef::reading("rask_select_rotate"),
                 args: vec![MirOperand::Constant(MirConst::Int(probes.len() as i64))],
             }));
             let cases = (0..probes.len()).map(|i| (i as u64, probe_blocks[i])).collect();
@@ -707,7 +707,7 @@ impl<'a> MirLowerer<'a> {
                     let status = self.builder.alloc_temp(MirType::I64);
                     self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                         dst: Some(status),
-                        func: FunctionRef::internal("rask_channel_try_recv_into".to_string()),
+                        func: FunctionRef::reading("rask_channel_try_recv_into"),
                         args: vec![rx.clone(), MirOperand::Local(addr)],
                     }));
                     (status, *match probe { Probe::Recv { arm, .. } => arm, _ => unreachable!() })
@@ -721,7 +721,7 @@ impl<'a> MirLowerer<'a> {
                     let status = self.builder.alloc_temp(MirType::I64);
                     self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                         dst: Some(status),
-                        func: FunctionRef::internal("rask_channel_try_send_ptr".to_string()),
+                        func: FunctionRef::reading("rask_channel_try_send_ptr"),
                         args: vec![tx.clone(), MirOperand::Local(addr)],
                     }));
                     (status, *arm)
@@ -827,7 +827,7 @@ impl<'a> MirLowerer<'a> {
             let cancelled = self.builder.alloc_temp(MirType::I64);
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: Some(cancelled),
-                func: FunctionRef::internal("rask_select_wait".to_string()),
+                func: FunctionRef::reading("rask_select_wait"),
                 args: vec![MirOperand::Local(epoch)],
             }));
             let cancelled_block = self.builder.create_block();

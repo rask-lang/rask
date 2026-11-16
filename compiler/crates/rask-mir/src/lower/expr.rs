@@ -795,7 +795,7 @@ impl<'a> MirLowerer<'a> {
 
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: None,
-            func: FunctionRef::internal("panic_forced_error".to_string()),
+            func: FunctionRef::reading("panic_forced_error"),
             args: vec![MirOperand::Local(text)],
         }));
         Ok(true)
@@ -2124,7 +2124,7 @@ impl<'a> MirLowerer<'a> {
                 // type whose `message()` has no body to instantiate.
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                     dst: None,
-                    func: FunctionRef::internal("panic_unwrap".to_string()),
+                    func: FunctionRef::reading("panic_unwrap"),
                     args: vec![MirOperand::Constant(crate::operand::MirConst::Int(
                         self.forced_operand_was_result(inner) as i64,
                     ))],
@@ -2784,7 +2784,7 @@ impl<'a> MirLowerer<'a> {
                 let result_local = self.builder.alloc_temp(MirType::I64);
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                     dst: Some(result_local),
-                    func: FunctionRef::internal("rask_test_skip".to_string()),
+                    func: FunctionRef::reading("rask_test_skip"),
                     args: vec![msg_op],
                 }));
                 self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Unreachable));
@@ -2798,7 +2798,7 @@ impl<'a> MirLowerer<'a> {
                 let result_local = self.builder.alloc_temp(MirType::I64);
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                     dst: Some(result_local),
-                    func: FunctionRef::internal("rask_test_expect_fail".to_string()),
+                    func: FunctionRef::reading("rask_test_expect_fail"),
                     args: vec![],
                 }));
                 return Ok((MirOperand::Constant(MirConst::Int(0)), MirType::Void));
@@ -3178,7 +3178,7 @@ impl<'a> MirLowerer<'a> {
                 let dst = self.builder.alloc_temp(MirType::I64);
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                     dst: Some(dst),
-                    func: FunctionRef::internal(extract.to_string()),
+                    func: FunctionRef::reading(extract),
                     args: vec![obj_op],
                 }));
                 return Ok((MirOperand::Local(dst), MirType::I64));
@@ -4833,7 +4833,7 @@ impl<'a> MirLowerer<'a> {
                 };
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                     dst: None,
-                    func: FunctionRef::internal(init_fn.to_string()),
+                    func: FunctionRef::reading(init_fn),
                     args: vec![worker_count],
                 }));
 
@@ -4855,7 +4855,7 @@ impl<'a> MirLowerer<'a> {
                 self.builder.switch_to_block(cleanup_block);
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                     dst: None,
-                    func: FunctionRef::internal(shutdown_fn.to_string()),
+                    func: FunctionRef::reading(shutdown_fn),
                     args: vec![],
                 }));
                 self.builder
@@ -4872,7 +4872,7 @@ impl<'a> MirLowerer<'a> {
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::EnsurePop));
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                     dst: None,
-                    func: FunctionRef::internal(shutdown_fn.to_string()),
+                    func: FunctionRef::reading(shutdown_fn),
                     args: vec![],
                 }));
                 result
@@ -5094,7 +5094,7 @@ impl<'a> MirLowerer<'a> {
                 }
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                     dst: None,
-                    func: FunctionRef::internal("assert_fail".to_string()),
+                    func: FunctionRef::reading("assert_fail"),
                     args,
                 }));
                 self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Unreachable));
@@ -5184,7 +5184,7 @@ impl<'a> MirLowerer<'a> {
             }
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: None,
-                func: FunctionRef::internal("check_fail".to_string()),
+                func: FunctionRef::reading("check_fail"),
                 args,
             }));
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
@@ -8048,7 +8048,7 @@ impl<'a> MirLowerer<'a> {
         }
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: None,
-            func: FunctionRef::internal("ptr_check".to_string()),
+            func: FunctionRef::reading("ptr_check"),
             args,
         }));
     }
@@ -8228,7 +8228,7 @@ impl<'a> MirLowerer<'a> {
                 let result_local = self.builder.alloc_temp(ret_ty.clone());
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                     dst: Some(result_local),
-                    func: if matches!(entry.map(|e| e.sig), Some(rask_stdlib::PtrSig::Write)) { FunctionRef::internal(func_name) } else { FunctionRef::reading(func_name) },
+                    func: if matches!(entry.map(|e| e.sig), Some(rask_stdlib::PtrSig::Write)) { FunctionRef::keeping(func_name, &[1]) } else { FunctionRef::reading(func_name) },
                     args: all_args,
                 }));
                 if ret_ty == MirType::RawPtr {
@@ -8532,7 +8532,7 @@ impl<'a> MirLowerer<'a> {
         let out = self.builder.alloc_temp(MirType::U64);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(out),
-            func: FunctionRef::internal("int_hash".to_string()),
+            func: FunctionRef::reading("int_hash"),
             args: vec![lo, hi, MirOperand::Constant(MirConst::Int(width))],
         }));
         Some((MirOperand::Local(out), MirType::U64))

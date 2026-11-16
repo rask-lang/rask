@@ -10,9 +10,11 @@
 # emits the call: `FunctionRef::like`, `borrowing`, `releasing`, `reading`.
 # A stdlib method's is read from its declaration in stdlib/*.rk.
 #
-# A call to something in a stdlib family that states nothing is treated as
-# reading everything and keeping nothing. This gate is what stops it staying
-# that way: every reported name has to be given a shape where it is emitted.
+# A call lowering emits without a shape gets guessed at, and the passes don't
+# guess alike: string_rc_insert assumes it keeps every argument, container_drop
+# that it keeps none. `json_decode_zero(dst, n)` writes into `dst`; guessed as
+# keeping it, `dst`'s not-yet-written contents were retained and valgrind
+# caught the read. Every reported name gets a shape where it is emitted.
 #
 # Why a gate and not a unit test: the set of names isn't statically
 # enumerable. Lowering builds most of them from the receiver's type at the call
@@ -63,13 +65,12 @@ names="$(cat "$WORK"/*.found 2>/dev/null |
 
 echo "──────────────────────────────────────────────────"
 if [ -z "$names" ]; then
-  echo "unshaped-call gate: every call in a stdlib family says what it does"
+  echo "unshaped-call gate: every call lowering emits says what it does"
   exit 0
 fi
 
 echo "These calls reach MIR without saying what they do with their arguments and"
-echo "result, so the ownership passes treat them as reading everything and keeping"
-echo "nothing:"
+echo "result, so the ownership passes have to guess, and they guess differently:"
 echo
 echo "$names" | sed 's/^/  /'
 echo

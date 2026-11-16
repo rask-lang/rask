@@ -77,7 +77,7 @@ pub(crate) fn alloc_block_for(dst: LocalId, size: u32, ty: &MirType, target: ras
     };
     MirStmt::dummy(MirStmtKind::Call {
         dst: Some(dst),
-        func: FunctionRef::internal(name.to_string()),
+        func: FunctionRef::reading(name),
         args,
     })
 }
@@ -4385,7 +4385,7 @@ impl<'a> MirLowerer<'a> {
             let consumed = thunk_builder.alloc_temp(MirType::I64);
             thunk_builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: Some(consumed),
-                func: crate::FunctionRef::internal(crate::RESOURCE_IS_CONSUMED.to_string()),
+                func: crate::FunctionRef::reading(crate::RESOURCE_IS_CONSUMED),
                 args: vec![MirOperand::Local(res_local)],
             }));
             let body_block = thunk_builder.create_block();
