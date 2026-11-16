@@ -98,3 +98,44 @@ test "an integer value, and the error test form" {
     assert seen_error
     assert total == 7
 }
+
+// `else as e` binds what the test ruled out: the join's result without the leaf
+// named. Testing the value leaves `Bad or JoinError`, testing the error leaves
+// `f64 or JoinError`. Native bound the wrong side of the nested result.
+test "else as e after testing the task's value" {
+    mut lines: Vec<string> = Vec.new()
+    using Multitasking {
+        for word in ["bad", "ok"] {
+            let r = spawn { return try parse(word) }.join()
+            if r is f64 as v {
+                lines.push("value {v}")
+            } else as e {
+                match e {
+                    Bad as b => lines.push("error {b.why}"),
+                    JoinError as _ => lines.push("joined badly"),
+                }
+            }
+        }
+    }
+    assert lines[0] == "error bad input bad"
+    assert lines[1] == "value 1.5"
+}
+
+test "else as e after testing the task's error" {
+    mut lines: Vec<string> = Vec.new()
+    using Multitasking {
+        for word in ["bad", "ok"] {
+            let r = spawn { return try parse(word) }.join()
+            if r is Bad as b {
+                lines.push("error {b.why}")
+            } else as e {
+                match e {
+                    f64 as v => lines.push("value {v}"),
+                    JoinError as _ => lines.push("joined badly"),
+                }
+            }
+        }
+    }
+    assert lines[0] == "error bad input bad"
+    assert lines[1] == "value 1.5"
+}

@@ -4046,6 +4046,9 @@ impl<'a> MirLowerer<'a> {
                 // The test may be bare, `is MyErr` with no `as` (#1516).
                 let err_side = match &pattern.kind {
                     rask_ast::expr::PatternKind::TypePat { .. } | rask_ast::expr::PatternKind::Ident(_) => {
+            if let Some(inner_path) = &path.inner {
+                return self.nested_rest_after_leaf(val, ok, err, inner_path);
+            }
                         match super::match_lower::pattern_name(pattern) {
                             Some(name) => self.pattern_is_err_side(pattern, &name, val_ty)?,
                             None => false,
@@ -4154,6 +4157,65 @@ impl<'a> MirLowerer<'a> {
             _ => MirType::Union(rest.iter().map(|(_, m)| m.clone()).collect()),
         };
         let rest_ty = MirType::Result { ok: Box::new(ok_ty.clone()), err: Box::new(rest_err.clone()) };
+    /// What is left of `(A or B) or E` once `A` (or `B`) is ruled out: the
+    /// other leaf of the inner result and `E`, as one `B or E` (or `A or E`).
+    /// The error stays the error, with its origin; when the success side's
+    /// inner result held the leaf that is left, that becomes the payload.
+    ///
+    /// Only a plain side of the inner result: a union member or a variant of
+    /// it leaves a result that is still nested, which has no checker type to
+    /// build it as yet.
+    fn nested_rest_after_leaf(
+        &mut self,
+        val: &MirOperand,
+        inner_ty: &MirType,
+        err_ty: &MirType,
+        tested: &super::result_path::ResultPath,
+    ) -> Result<(MirOperand, MirType), LoweringError> {
+        let MirType::Result { ok: inner_ok, err: inner_err } = inner_ty else {
+            unreachable!("an inner path is only made for a success side that is a result")
+        };
+        if tested.member.is_some() || tested.variant.is_some() || tested.inner.is_some() {
+            return Err(LoweringError::InvalidConstruct(
+                "`else as` after a test that names a union member or a variant inside a \
+                 join's own `T or E` isn't lowered natively yet"
+                    .to_string(),
+            ));
+        }
+        // The leaf that is left: testing the inner success side leaves the
+        // inner error, and the other way round.
+        let left_ty = if tested.err { (**inner_ok).clone() } else { (**inner_err).clone() };
+        let outer_ty = MirType::Result { ok: Box::new(inner_ty.clone()), err: Box::new(err_ty.clone()) };
+        let rest_ty = MirType::Result { ok: Box::new(left_ty.clone()), err: Box::new(err_ty.clone()) };
+        let dst = self.builder.alloc_temp(rest_ty.clone());
+        let (err_blk, ok_blk, done_blk) = self.branch_on_err_tag(val);
+
+        self.builder.switch_to_block(err_blk);
+        let e = self.emit_option_payload(val.clone(), err_ty.clone(), false);
+        let failed = self.rewrap_err(val, MirOperand::Local(e), err_ty, &rest_ty);
+        self.assign_and_goto(dst, failed, done_blk);
+
+        // The inner result sits inline in the payload slot, so it is read by
+        // address, and its payload is the one leaf the test left.
+        self.builder.switch_to_block(ok_blk);
+        let inner = self.builder.alloc_temp(inner_ty.clone());
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: inner,
+            rvalue: self.payload_field(val.clone(), &outer_ty, inner_ty),
+        }));
+        let left = self.emit_option_payload(MirOperand::Local(inner), left_ty.clone(), false);
+        let succeeded = self.coerce_into_wrapper(
+            rask_ast::coercion::CoercionSite::AnnotatedBinding,
+            MirOperand::Local(left),
+            &left_ty,
+            &rest_ty,
+        );
+        self.assign_and_goto(dst, succeeded, done_blk);
+
+        self.builder.switch_to_block(done_blk);
+        Ok((MirOperand::Local(dst), rest_ty))
+    }
+
         let dst = self.builder.alloc_temp(rest_ty.clone());
         let (err_blk, ok_blk, done_blk) = self.branch_on_err_tag(val);
 
