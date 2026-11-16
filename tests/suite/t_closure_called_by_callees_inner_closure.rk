@@ -32,7 +32,8 @@ test "a write through a closure called by the callee's inner closure" {
 test "the inner closure called twice" {
     mut n = 0
     let tick = || { n += 1 }
-    twice(tick)
+    let w = || { tick() }
+    twice(w)
     assert n == 2
 }
 
