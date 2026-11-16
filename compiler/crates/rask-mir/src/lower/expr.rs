@@ -4192,9 +4192,11 @@ impl<'a> MirLowerer<'a> {
     /// The error stays the error, with its origin; when the success side's
     /// inner result held the leaf that is left, that becomes the payload.
     ///
-    /// Only a plain side of the inner result: a union member or a variant of
-    /// it leaves a result that is still nested, which has no checker type to
-    /// build it as yet.
+    /// A member of the inner result's error union leaves the inner result over
+    /// the members that are left, still inside the join's: `(T or (A | B)) or
+    /// J` less `A` is `(T or B) or J`, the type the checker gives it
+    /// (`without_leaf`). A variant can't be tested this way (`else as` needs a
+    /// leaf of the type to take out), so none arrives here.
     fn nested_rest_after_leaf(
         &mut self,
         val: &MirOperand,
@@ -4205,16 +4207,27 @@ impl<'a> MirLowerer<'a> {
         let MirType::Result { ok: inner_ok, err: inner_err } = inner_ty else {
             unreachable!("an inner path is only made for a success side that is a result")
         };
-        if tested.member.is_some() || tested.variant.is_some() || tested.inner.is_some() {
+        if tested.variant.is_some() || tested.inner.is_some() {
             return Err(LoweringError::InvalidConstruct(
-                "`else as` after a test that names a union member or a variant inside a \
-                 join's own `T or E` isn't lowered natively yet"
+                "`else as` after a test that names a variant inside a join's own `T or E`: \
+                 the checker only binds the rest after a leaf type"
                     .to_string(),
             ));
         }
-        // The leaf that is left: testing the inner success side leaves the
-        // inner error, and the other way round.
-        let left_ty = if tested.err { (**inner_ok).clone() } else { (**inner_err).clone() };
+        // What is left of the inner result. A member of its error union
+        // leaves a result over the other members; a plain side leaves the
+        // other side.
+        let member = tested.member.as_ref().map(|(i, _)| *i);
+        let left_ty = match member {
+            Some(_) => MirType::Result {
+                ok: inner_ok.clone(),
+                err: Box::new(Self::union_without_member(inner_err, member.unwrap())),
+            },
+            // Testing the inner success side leaves the inner error, and the
+            // other way round.
+            None if tested.err => (**inner_ok).clone(),
+            None => (**inner_err).clone(),
+        };
         let outer_ty = MirType::Result { ok: Box::new(inner_ty.clone()), err: Box::new(err_ty.clone()) };
         let rest_ty = MirType::Result { ok: Box::new(left_ty.clone()), err: Box::new(err_ty.clone()) };
         let dst = self.builder.alloc_temp(rest_ty.clone());
@@ -4233,10 +4246,13 @@ impl<'a> MirLowerer<'a> {
             dst: inner,
             rvalue: self.payload_field(val.clone(), &outer_ty, inner_ty),
         }));
-        let left = self.emit_option_payload(MirOperand::Local(inner), left_ty.clone(), false);
+        let left = match member {
+            Some(i) => self.union_rest_after_member(&MirOperand::Local(inner), inner_ok, inner_err, i).0,
+            None => MirOperand::Local(self.emit_option_payload(MirOperand::Local(inner), left_ty.clone(), false)),
+        };
         let succeeded = self.coerce_into_wrapper(
             rask_ast::coercion::CoercionSite::AnnotatedBinding,
-            MirOperand::Local(left),
+            left,
             &left_ty,
             &rest_ty,
         );
@@ -4244,6 +4260,18 @@ impl<'a> MirLowerer<'a> {
 
         self.builder.switch_to_block(done_blk);
         Ok((MirOperand::Local(dst), rest_ty))
+    }
+
+    /// The union of the members left once member `tested` is out, or the one
+    /// member standing alone.
+    fn union_without_member(union_ty: &MirType, tested: usize) -> MirType {
+        let MirType::Union(members) = union_ty else { unreachable!("a union member path is only made for a union") };
+        let rest: Vec<MirType> =
+            members.iter().enumerate().filter(|(i, _)| *i != tested).map(|(_, m)| m.clone()).collect();
+        match &rest[..] {
+            [only] => only.clone(),
+            _ => MirType::Union(rest),
+        }
     }
 
     /// `T or B` out of a `T or (A | B)` that isn't an `A`: the success side as
@@ -4259,10 +4287,7 @@ impl<'a> MirLowerer<'a> {
         let MirType::Union(members) = union_ty else { unreachable!("a union member path is only made for a union") };
         let rest: Vec<(usize, MirType)> =
             members.iter().cloned().enumerate().filter(|(i, _)| *i != tested).collect();
-        let rest_err = match &rest[..] {
-            [(_, only)] => only.clone(),
-            _ => MirType::Union(rest.iter().map(|(_, m)| m.clone()).collect()),
-        };
+        let rest_err = Self::union_without_member(union_ty, tested);
         let rest_ty = MirType::Result { ok: Box::new(ok_ty.clone()), err: Box::new(rest_err.clone()) };
         let dst = self.builder.alloc_temp(rest_ty.clone());
         let (err_blk, ok_blk, done_blk) = self.branch_on_err_tag(val);

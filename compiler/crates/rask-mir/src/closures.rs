@@ -924,6 +924,7 @@ fn closure_facts(
     let tracked: std::collections::BTreeSet<LocalId> = aliases.map.keys().copied().collect();
     let is = |l: &LocalId| tracked.contains(l);
     let mut facts = crate::analysis::ownership::Facts {
+        moved_parts: Default::default(),
         names: tracked.clone(),
         events: Vec::new(),
         terminator_events: Vec::new(),
