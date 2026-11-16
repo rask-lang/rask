@@ -1,0 +1,47 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A pattern on a generic struct, alone and inside a variant.
+//
+// The checker constrained the scrutinee to the bare struct name and gave the
+// fields their declared `T`, so `Pair(first: "a", second)` against a
+// `Pair<string>` failed with "expected `Pair<string>`, found `Pair`" and the
+// shorthand `Pair(first, second)` bound `T`s.
+
+struct Pair<T> { first: T, second: T }
+
+enum Boxed { Pairs(Pair<string>), Nums(Pair<i64>), Empty }
+
+func boxed(b: Boxed) -> string {
+    return match b {
+        Boxed.Pairs(Pair(first: "a", second)) => "a then {second}",
+        Boxed.Pairs(Pair(first: f, second: s)) => "{f}/{s}",
+        Boxed.Nums(Pair(first: 0, second)) => "zero then {second}",
+        Boxed.Nums(Pair(first: f, second: s)) => "{f + s}",
+        Boxed.Empty => "empty",
+    }
+}
+
+func plain(p: Pair<i64>) -> i64 {
+    return match p {
+        Pair(first: 0, second) => second,
+        Pair(first, second) => first * second,
+    }
+}
+
+func words(p: Pair<string>) -> string {
+    let Pair(first, second) = p
+    return "{second} {first}"
+}
+
+test "a generic struct inside a variant" {
+    assert boxed(Boxed.Pairs(Pair(first: "a", second: "b"))) == "a then b"
+    assert boxed(Boxed.Pairs(Pair(first: "c", second: "d"))) == "c/d"
+    assert boxed(Boxed.Nums(Pair(first: 0, second: 5))) == "zero then 5"
+    assert boxed(Boxed.Nums(Pair(first: 2, second: 5))) == "7"
+    assert boxed(Boxed.Empty) == "empty"
+}
+
+test "a generic struct matched directly" {
+    assert plain(Pair(first: 0, second: 9)) == 9
+    assert plain(Pair(first: 3, second: 4)) == 12
+    assert words(Pair(first: "x", second: "y")) == "y x"
+}
