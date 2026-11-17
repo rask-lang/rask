@@ -987,6 +987,14 @@ pub(crate) fn settle_loop_item_modes(fns: &mut [MirFunction]) {
                     Some(b) => b.iter().filter_map(|n| index.get(n).copied()).collect(),
                     None => reach.may_hold(&f.name, *closure).into_iter().filter_map(|n| index.get(n).copied()).collect(),
                 };
+                // Only a call every target of which is a loop body. A closure
+                // taken out of a vector may reach every one-argument closure in
+                // the program; reading that as a yield made the `for` bodies in
+                // it take their items, and then the call itself looked like it
+                // kept its argument, so `h(v)` left `v` to nobody.
+                if bodies.is_empty() || !bodies.iter().all(|i| fns[*i].item_mode_from_body) {
+                    continue;
+                }
                 let item_takers = |i: &usize| fns[*i].param_modes.get(1) == Some(&ParamMode::Take) || keeps.contains(i);
                 if !bodies.iter().any(item_takers) {
                     continue;
