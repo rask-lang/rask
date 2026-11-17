@@ -6756,19 +6756,31 @@ impl<'a> MirLowerer<'a> {
 
     /// The edge-registration call a container mutator needs, if its value is a
     /// link. `None` for everything else, which is almost every call.
+    ///
+    /// The value is the argument the declaration types as what the container
+    /// stores: `T` of `Vec<T>`, `V` of `Map<K, V>`. A name list kept here
+    /// instead had `Vec_insert_at`, a name nothing lowers to, so
+    /// `v.insert(0, link)` never registered and a delete left the dead link in
+    /// the vector.
     pub(super) fn container_edge_call(
         &self,
         name: &str,
         args: &[MirOperand],
     ) -> Option<(&'static str, Vec<MirOperand>)> {
-        let (value_index, func) = match name {
-            "Vec_push" => (1, "rask_link_register_element"),
-            "Vec_replace" | "Vec_insert_at" => (2, "rask_link_register_element"),
-            "Map_insert" => (2, "rask_link_register_entry"),
+        let container = args.first()?;
+        let MirOperand::Local(container_id) = container else { return None };
+        let func = match self.builder.local_type(*container_id)? {
+            MirType::Container(crate::types::ContainerKind::Vec) => "rask_link_register_element",
+            MirType::Container(crate::types::ContainerKind::Map) => "rask_link_register_entry",
             _ => return None,
         };
-        let value = args.get(value_index)?;
-        let container = args.first()?;
+        let declared = rask_stdlib::mir_metadata::lookup(name)?;
+        if !declared.takes_self {
+            return None;
+        }
+        let stored = declared.extended_type_params.checked_sub(1)?;
+        let (param_index, _) = declared.slot_params().find(|&(_, t)| t == stored)?;
+        let value = args.get(param_index + 1)?;
         let is_link = match value {
             MirOperand::Local(id) => {
                 matches!(self.builder.local_type(*id), Some(MirType::Link(_)))
