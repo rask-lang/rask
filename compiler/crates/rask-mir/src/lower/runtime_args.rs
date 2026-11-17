@@ -14,21 +14,6 @@ use crate::{operand::MirConst, MirOperand, MirType};
 use rask_ast::NodeId;
 use rask_stdlib::{RuntimeArg, TypeFact};
 
-/// One of the extended type's parameters at a call: `i64` for the `T` of
-/// `Vec<i64>.new()`.
-pub(super) struct TypeArgAt {
-    pub mir: MirType,
-    /// The checker's type, when the call is one the program wrote. A call
-    /// lowering builds itself (`collect`'s `Vec.new`) has only the MIR type.
-    pub checked: Option<rask_types::Type>,
-}
-
-impl TypeArgAt {
-    pub(super) fn mir(mir: MirType) -> Self {
-        TypeArgAt { mir, checked: None }
-    }
-}
-
 /// What `runtime_call_args` built.
 pub(super) struct RuntimeCall {
     pub args: Vec<MirOperand>,
@@ -50,7 +35,7 @@ impl MirLowerer<'_> {
         &self,
         call: NodeId,
         meta: &rask_stdlib::mir_metadata::StdlibMethodMeta,
-    ) -> Vec<Option<TypeArgAt>> {
+    ) -> Vec<Option<MirType>> {
         use rask_types::{GenericArg, Type};
         let n = meta.extended_type_params;
         let mut bound: Vec<Option<Type>> = vec![None; n];
@@ -83,7 +68,7 @@ impl MirLowerer<'_> {
         bound
             .into_iter()
             .map(|t| match t {
-                Some(t) if !matches!(t, Type::Var(_)) => Some(TypeArgAt { mir: self.ctx.type_to_mir(&t), checked: Some(t) }),
+                Some(t) if !matches!(t, Type::Var(_)) => Some(self.ctx.type_to_mir(&t)),
                 _ => None,
             })
             .collect()
@@ -98,7 +83,7 @@ impl MirLowerer<'_> {
         decl: &[RuntimeArg],
         receiver: Option<MirOperand>,
         mut written: Vec<Option<(MirOperand, MirType)>>,
-        tparams: &[Option<TypeArgAt>],
+        tparams: &[Option<MirType>],
         call: Option<NodeId>,
     ) -> Result<RuntimeCall, LoweringError> {
         let mut args: Vec<MirOperand> = receiver.into_iter().collect();
@@ -110,7 +95,7 @@ impl MirLowerer<'_> {
                     let (op, src_ty) = written.get_mut(index).and_then(Option::take).ok_or_else(|| {
                         LoweringError::InvalidConstruct(format!("stdlib call: no argument {index}"))
                     })?;
-                    let slot = holds.and_then(|p| tparams.get(p)).and_then(Option::as_ref).map(|t| t.mir.clone());
+                    let slot = holds.and_then(|p| tparams.get(p)).and_then(Option::as_ref).cloned();
                     let op = match slot {
                         Some(slot) => {
                             let op = self.coerce_into_wrapper(
@@ -136,20 +121,12 @@ impl MirLowerer<'_> {
                     })?;
                     let int = |n: i64| MirOperand::Constant(MirConst::Int(n));
                     match fact {
-                        TypeFact::Size => args.push(int(rask_layout::size_of(&at.mir, target) as i64)),
-                        TypeFact::Align => args.push(int(rask_layout::align_of(&at.mir, target) as i64)),
-                        TypeFact::Desc => args.push(crate::elem_strs::elem(at.mir.clone())),
-                        TypeFact::AtomicKind => args.push(int(Self::atomic_kind(&at.mir))),
-                        TypeFact::BoxKind => {
-                            let is_box = at
-                                .checked
-                                .as_ref()
-                                .and_then(|t| self.head_name(t))
-                                .is_some_and(|h| h == "Shared");
-                            args.push(int(crate::elem_strs::box_payload_kind_of(&at.mir, is_box)));
-                        }
+                        TypeFact::Size => args.push(int(rask_layout::size_of(at, target) as i64)),
+                        TypeFact::Align => args.push(int(rask_layout::align_of(at, target) as i64)),
+                        TypeFact::Desc => args.push(crate::elem_strs::elem(at.clone())),
+                        TypeFact::AtomicKind => args.push(int(Self::atomic_kind(at))),
                         TypeFact::HashEq => {
-                            let mir = at.mir.clone();
+                            let mir = at.clone();
                             if let Some((hash, eq)) = call.and_then(|c| self.map_key_fn_addrs(c, &mir)) {
                                 args.push(hash);
                                 args.push(eq);
@@ -178,10 +155,10 @@ impl MirLowerer<'_> {
             .ok_or_else(|| {
                 LoweringError::InvalidConstruct(format!("`{name}` declares no `@runtime_args`"))
             })?;
-        let tparams: Vec<Option<TypeArgAt>> =
-            tparams.iter().map(|t| Some(TypeArgAt::mir(t.clone()))).collect();
+        let tparams: Vec<Option<MirType>> =
+            tparams.iter().cloned().map(Some).collect();
         let built = self.runtime_call_args(&decl, None, Vec::new(), &tparams, call)?;
-        let key = tparams.first().and_then(Option::as_ref).map(|t| &t.mir);
+        let key = tparams.first().and_then(Option::as_ref);
         Ok((crate::elem_strs::map_ctor_ref(ctor_callee(name, built.keyed, key)), built.args))
     }
 }

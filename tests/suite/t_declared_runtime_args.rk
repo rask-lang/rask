@@ -12,6 +12,11 @@
 // parameter is declared `T`; while that went by the constructor's name, a
 // version of this change that dropped the name stored `Shared<i64?>.new(5)`
 // as a bare 5 and read back `0`.
+//
+// A box frees what its payload owns with the same element description a
+// `Vec` of that type carries. It used to take a one-number kind (vector, map,
+// closure, handle) worked out from the payload's type, which had no answer for
+// an optional vector or a struct holding a string, so those leaked.
 
 import sync.Shared
 import sync.Atomic
@@ -29,6 +34,20 @@ extend Cell2 {
     func eq(self, other: Cell2) -> bool {
         return self.row == other.row
     }
+}
+
+struct Tagged {
+    label: string
+    weight: i64
+}
+
+const TABLE: Map<Cell2, i64> = comptime cells()
+
+comptime func cells() -> Map<Cell2, i64> {
+    mut m = Map<Cell2, i64>.new()
+    m.insert(Cell2(row: 1, col: 1), 10)
+    m.insert(Cell2(row: 2, col: 2), 20)
+    return m
 }
 
 struct Person {
@@ -78,4 +97,35 @@ test "zip and to_vec describe the pairs they build" {
     assert pairs[1].0 == "beta-long-string-b"
     let m: Map<string, i64> = names.zip(nums).to_map()
     assert (m.get("alpha-long-string-a") ?? 0) == 1
+}
+
+test "a box frees what an optional payload owns" {
+    let v = Vec.from([1, 2, 3])
+    let a = Shared<Vec<i64>?>.new(v)
+    assert (a.get() ?? Vec.new()).len() == 3
+    let inner = Shared.new(6)
+    let b = Shared<Shared<i64>?>.mutex(inner)
+    mut seen = 0
+    if b.get()? as box {
+        seen = box.get()
+    }
+    assert seen == 6
+    let m: Map<string, i64> = Map.new()
+    let c = Shared<Map<string, i64>?>.local(m)
+    mut len = 9
+    if c.get()? as held {
+        len = held.len()
+    }
+    assert len == 0
+}
+
+test "a box frees the strings inside a struct payload" {
+    let t = Shared.new(Tagged(label: "a-label-long-enough-to-allocate".to_uppercase(), weight: 2))
+    assert t.get().weight == 2
+    assert t.get().label.len() == 31
+}
+
+test "a comptime map keeps its key's own hash and eq" {
+    assert TABLE.len() == 2
+    assert (TABLE.get(Cell2(row: 1, col: 5)) ?? -1) == 10
 }

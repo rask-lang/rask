@@ -1422,6 +1422,12 @@ impl<'a> Monomorphizer<'a> {
             self.note_json_decode(expr.id);
             self.note_claim_input(expr.id);
         }
+        // A map the fold computed is built where it's used: the name of a
+        // `const` or a `comptime` block. Its key's `hash`/`eq` are found the
+        // same way as for a call.
+        if matches!(expr.kind, ExprKind::Ident(_) | ExprKind::Comptime { .. }) {
+            self.note_map_key_fns(expr.id);
+        }
 
         match &expr.kind {
             ExprKind::Call { func, args } => {

@@ -1341,8 +1341,7 @@ impl<'a> MirLowerer<'a> {
         // With the checker's key and value types the constructor goes out
         // complete, a key's own `hash`/`eq` included: their addresses are
         // computed here, ahead of the call. Without them it waits for the
-        // adapters to settle what the loop produces, and such a key has no
-        // `hash`/`eq` on record.
+        // adapters to settle what the loop produces.
         let map_new_pos = self.builder.next_stmt_pos();
         let (ctor, args) = match (&key, &value) {
             (Some(k), Some(v)) => self.internal_ctor("Map_new", &[k.clone(), v.clone()], Some(call))?,
@@ -1375,6 +1374,15 @@ impl<'a> MirLowerer<'a> {
         let key_slot = key.unwrap_or_else(|| key_ty.clone());
         let val_slot = value.unwrap_or_else(|| val_ty.clone());
         if deferred {
+            // A key with its own `hash`/`eq` has them on record only when the
+            // checker typed this call, and then the constructor went out
+            // complete above. Built here without them, such a map would bucket
+            // by the key's bytes.
+            if self.ctx.map_key_fns.get(&call).is_some() {
+                return Err(LoweringError::InvalidConstruct(format!(
+                    "to_map at {call:?}: the key has its own hash/eq but the map's types weren't known up front"
+                )));
+            }
             let (ctor, args) = self.internal_ctor("Map_new", &[key_slot.clone(), val_slot.clone()], None)?;
             self.builder.set_call(map_new_pos.0, map_new_pos.1, "Map_new", &ctor.name, args);
         }

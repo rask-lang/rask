@@ -803,7 +803,7 @@ pub(crate) fn internal_entries() -> Vec<StdlibEntry> {
         // ── Concurrency: Shared<T> ──────────────────────────────────
         StdlibEntry {
             mir_name: "Shared_new", c_name: "rask_shared_new_ptr",
-            params: &[types::I64, types::I64, types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
+            params: &[types::I64, types::I64, types::I64, types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
             arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::None,
         },
         // Cell — the internal spelling of `Shared<T, Local>`, the strategy that
@@ -812,7 +812,7 @@ pub(crate) fn internal_entries() -> Vec<StdlibEntry> {
         // hands back the slot address for codegen to load or copy from.
         StdlibEntry {
             mir_name: "Cell_new", c_name: "rask_cell_new",
-            params: &[types::I64, types::I64, types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
+            params: &[types::I64, types::I64, types::I64, types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
             arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::None,
         },
         StdlibEntry {
@@ -919,7 +919,7 @@ pub(crate) fn internal_entries() -> Vec<StdlibEntry> {
         // ── Concurrency: Mutex<T> ──────────────────────────────────
         StdlibEntry {
             mir_name: "Mutex_new", c_name: "rask_mutex_new_ptr",
-            params: &[types::I64, types::I64, types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
+            params: &[types::I64, types::I64, types::I64, types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
             arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::None,
         },
         StdlibEntry {

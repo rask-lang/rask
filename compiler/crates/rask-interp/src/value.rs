@@ -617,6 +617,25 @@ impl TypeConstructorKind {
             _ => return None,
         })
     }
+
+    /// The type's name as the stdlib declares it: `Vec` for `Vec.new`.
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::Vec => "Vec",
+            Self::Map => "Map",
+            Self::String => "string",
+            Self::Char => "char",
+            Self::Rack => "Rack",
+            Self::Cell => "Cell",
+            Self::Channel => "Channel",
+            Self::Shared => "Shared",
+            Self::Mutex => "Mutex",
+            Self::Atomic => "Atomic",
+            Self::Ordering => "Ordering",
+            Self::F32 => "f32",
+            Self::F64 => "f64",
+        }
+    }
 }
 
 impl Value {

@@ -647,9 +647,6 @@ pub enum TypeFact {
     Desc,
     /// `atomic_kind(T)`: how an atomic cell does arithmetic on its payload.
     AtomicKind,
-    /// `box_kind(T)`: which container, if any, a `Shared` box's payload is,
-    /// so the last reference frees it.
-    BoxKind,
     /// `hash_eq(K)`: the addresses of a key's own `hash` and `eq`, or nothing
     /// when the key has none.
     HashEq,
@@ -694,7 +691,6 @@ impl RuntimeArg {
                             "align" => TypeFact::Align,
                             "desc" => TypeFact::Desc,
                             "atomic_kind" => TypeFact::AtomicKind,
-                            "box_kind" => TypeFact::BoxKind,
                             "hash_eq" => TypeFact::HashEq,
                             other => bad(format!("`{other}` is not a type fact")),
                         },

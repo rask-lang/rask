@@ -72,21 +72,6 @@
 // it freezes into `bytes` without moving.
 #define RASK_STRING_HEADER_SIZE 16
 
-// What a box's payload is, so the box's last release can give it back.
-#define RASK_BOX_PAYLOAD_NONE 0
-#define RASK_BOX_PAYLOAD_VEC 1
-#define RASK_BOX_PAYLOAD_MAP 2
-
-// A closure block (#1253).
-#define RASK_BOX_PAYLOAD_CLOSURE 3
-
-// Another box: freed through its own header (#1302).
-#define RASK_BOX_PAYLOAD_BOX 4
-
-// A handle that frees itself: the kind is this plus the handle's index
-// in `RASK_HANDLE_RELEASES`.
-#define RASK_BOX_PAYLOAD_HANDLE_BASE 16
-
 // An owned-entry word: the byte offset in the low 28 bits, the kind in
 // the top 4.
 #define RASK_OWNED_KIND_SHIFT 28
@@ -219,7 +204,7 @@
 #define RASK_CHAN_CANCELLED (-4)
 
 // Every stdlib handle's declared release, in index order: what a
-// `RASK_OWNED_HANDLE` entry or a handle box payload calls.
+// `RASK_OWNED_HANDLE` entry calls.
 #define RASK_HANDLE_RELEASES(X) \
     X(rask_atomic_free) \
     X(rask_cell_free) \

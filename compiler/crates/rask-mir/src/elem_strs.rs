@@ -19,56 +19,13 @@
 //! tuple fit nowhere in that, so `Vec<(string, i64)>` described its elements
 //! as owning nothing and every string in it leaked (#1395).
 
-use rask_mono::runtime_abi;
-use crate::{ContainerKind, MirConst, MirOperand, MirType};
+use crate::{MirConst, MirOperand, MirType};
 
 /// The constructor argument describing elements of type `ty`. Pass the type
 /// with its containers named (`payload_to_mir`), or a `Vec<Vec<i64>>` frees
 /// none of its inner vectors.
 pub fn elem(ty: MirType) -> MirOperand {
     MirOperand::Constant(MirConst::Elem(ty))
-}
-
-/// What a box holds, as the number the runtime stores on it.
-///
-/// A box owns its payload: `Shared.mutex(Map.new())` moves the map in, and the
-/// map's free has to happen when the box's last reference goes — which only
-/// the runtime knows, because only it counts them. So the kind travels to the
-/// constructor and lives on the box, the same way a container's element
-/// descriptor does. Without it `Shared<Map<string, i64>, Mutex>` freed the
-/// mutex and left the map and its tables behind.
-///
-/// An arena is not a box's payload, and a string is refcounted and released
-/// by whoever put it in.
-///
-/// The `RASK_BOX_PAYLOAD_*` kinds in `rask_mono::runtime_abi`, which the
-/// runtime reads from the generated rask_abi.h.
-pub const BOX_PAYLOAD_NONE: i64 = runtime_abi::RASK_BOX_PAYLOAD_NONE;
-pub const BOX_PAYLOAD_VEC: i64 = runtime_abi::RASK_BOX_PAYLOAD_VEC;
-pub const BOX_PAYLOAD_MAP: i64 = runtime_abi::RASK_BOX_PAYLOAD_MAP;
-/// A closure block. Same reason as the two byte stores: the box holds the
-/// address and the frame that built the closure gave it away, so the block
-/// comes back when the box's last reference does (#1253).
-pub const BOX_PAYLOAD_CLOSURE: i64 = runtime_abi::RASK_BOX_PAYLOAD_CLOSURE;
-/// Another box. Its strategy isn't this box's to know: every box starts with
-/// its own release, and the runtime calls that (#1302).
-pub const BOX_PAYLOAD_BOX: i64 = runtime_abi::RASK_BOX_PAYLOAD_BOX;
-
-/// The payload kind for a payload's MIR type, and whether it is itself a box.
-///
-/// The MIR type says how the payload is released: a closure block, a container,
-/// or a handle with a declared release (#1887). A box is a `Ptr` like any other
-/// unowned pointer, so that one fact comes from the checker.
-pub fn box_payload_kind_of(mir: &MirType, is_box: bool) -> i64 {
-    match mir {
-        MirType::FuncPtr(_) => BOX_PAYLOAD_CLOSURE,
-        MirType::Container(ContainerKind::Vec) => BOX_PAYLOAD_VEC,
-        MirType::Container(ContainerKind::Map) => BOX_PAYLOAD_MAP,
-        MirType::Container(ContainerKind::Handle(release)) => runtime_abi::handle_release_index(release)
-            .map_or(BOX_PAYLOAD_NONE, |i| runtime_abi::RASK_BOX_PAYLOAD_HANDLE_BASE + i),
-        _ if is_box => BOX_PAYLOAD_BOX,
-        _ => BOX_PAYLOAD_NONE,
-    }
 }
 
 /// Which `Map` constructor a key type wants.

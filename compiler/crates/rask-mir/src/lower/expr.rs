@@ -1513,7 +1513,7 @@ impl<'a> MirLowerer<'a> {
         // A `comptime` block or a call to a `comptime func`: the fold already
         // computed it, and the value is all that's left of it.
         if let Some(folded) = self.ctx.folded.nodes.get(&expr.id).cloned() {
-            return self.load_folded(&folded);
+            return self.load_folded(&folded, expr.id);
         }
         // Which expression form we're walking, for the type-coverage report.
         // A `node_types` miss records this, so `RASK_TRACE_TYPE_COVERAGE=1`
@@ -2379,7 +2379,7 @@ impl<'a> MirLowerer<'a> {
                 .cloned()
             {
                 // A module const the fold computed.
-                self.load_folded(&folded)
+                self.load_folded(&folded, expr.id)
             } else if let Some(fnval) = self.ctx.function_value(expr.id).and_then(|copy| {
                 let modes = self.param_modes_of(expr);
                 self.lower_fn_as_value(&copy, modes)
@@ -5976,7 +5976,7 @@ impl<'a> MirLowerer<'a> {
                             let mut key_ty: Option<MirType> = None;
                             if let Some((meta, decl)) = declared {
                                 let tparams = self.decl_type_args(expr.id, meta);
-                                key_ty = tparams.first().and_then(Option::as_ref).map(|t| t.mir.clone());
+                                key_ty = tparams.first().and_then(Option::as_ref).cloned();
                                 let written = arg_operands.into_iter().zip(arg_tys.iter().cloned()).map(Some).collect();
                                 let built = self.runtime_call_args(decl, None, written, &tparams, Some(expr.id))?;
                                 arg_operands = built.args;
@@ -9704,6 +9704,7 @@ impl<'a> MirLowerer<'a> {
         entries: usize,
         key_ty: MirType,
         val_ty: MirType,
+        at: rask_ast::NodeId,
     ) -> Result<TypedOperand, LoweringError> {
         let pair_ty = MirType::Tuple(vec![key_ty.clone(), val_ty.clone()]);
         let val_offset = rask_layout::tuple_offsets(&[key_ty.clone(), val_ty.clone()], self.ctx.target())[1];
@@ -9726,7 +9727,7 @@ impl<'a> MirLowerer<'a> {
 
         let map_ty = MirType::Container(crate::types::ContainerKind::Map);
         let map = self.builder.alloc_temp(map_ty.clone());
-        let (ctor, args) = self.internal_ctor("Map_new", &[key_ty.clone(), val_ty.clone()], None)?;
+        let (ctor, args) = self.internal_ctor("Map_new", &[key_ty.clone(), val_ty.clone()], Some(at))?;
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(map),
             func: ctor,

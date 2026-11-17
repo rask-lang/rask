@@ -2931,7 +2931,14 @@ impl<'a> MirLowerer<'a> {
     ///   owns.
     /// - Anything else is its bytes: a scalar is loaded, an aggregate copied
     ///   out, so changing the copy leaves the constant alone.
-    pub(crate) fn load_folded(&mut self, folded: &FoldedNode) -> Result<(MirOperand, MirType), LoweringError> {
+    ///
+    /// `at` is the expression being lowered, where a map's key `hash`/`eq`
+    /// are recorded.
+    pub(crate) fn load_folded(
+        &mut self,
+        folded: &FoldedNode,
+        at: NodeId,
+    ) -> Result<(MirOperand, MirType), LoweringError> {
         let Some(meta) = self.ctx.folded.data.get(&folded.symbol) else {
             return Err(LoweringError::InvalidConstruct(format!(
                 "folded value `{}` has no data", folded.symbol
@@ -2978,7 +2985,7 @@ impl<'a> MirLowerer<'a> {
                 // types off, and holds nothing that could tell the
                 // difference, so any pair will do for one.
                 let (k, v) = meta.map_types.clone().unwrap_or((MirType::I64, MirType::I64));
-                self.build_comptime_map(data, meta.elem_count, k, v)
+                self.build_comptime_map(data, meta.elem_count, k, v, at)
             }
             FoldedForm::Value | FoldedForm::Text => {
                 let value = self.builder.alloc_temp(folded.ty.clone());
