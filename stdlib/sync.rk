@@ -32,17 +32,20 @@ extend Shared<T, S> {
     /// Many tasks, concurrent reads. The default — what you write unless you
     /// have a reason not to.
     @builtin
+    @runtime_args(value, size(T), box_kind(T), align(T))
     public func new(take value: T) -> Shared<T, Readers> {}
 
     /// Many tasks, one at a time — reader or writer. Cheaper than `Readers`
     /// when writes dominate, since there is no reader count to keep.
     @builtin
+    @runtime_args(value, size(T), box_kind(T), align(T))
     public func mutex(take value: T) -> Shared<T, Mutex> {}
 
     /// No lock at all. One task, several accessors — what `Cell` used to be.
     /// Sending one is a compile error (SH7), which is what makes it safe to
     /// reach for.
     @builtin
+    @runtime_args(value, size(T), box_kind(T), align(T))
     public func local(take value: T) -> Shared<T, Local> {}
 
     // `read`, `write` and `staged` have no function to call: the compiler
@@ -159,11 +162,13 @@ public struct Atomic<T> { }
 extend Atomic<T> {
     /// An atomic holding `value`.
     @builtin
+    @runtime_args(value, size(T), atomic_kind(T))
     public func new(value: T) -> Atomic<T> {}
 
     /// An atomic holding the payload's zero: 0, `false`, a null pointer. A
     /// struct payload has no compiler-known default; use `new`.
     @builtin
+    @runtime_args(size(T), atomic_kind(T))
     public func default() -> Atomic<T> {}
 
     /// Read the value.

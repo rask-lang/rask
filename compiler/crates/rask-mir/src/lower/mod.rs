@@ -11,6 +11,7 @@ mod iterators;
 mod json_decode;
 mod match_lower;
 mod result_path;
+mod runtime_args;
 mod stmt;
 
 use crate::FieldAccess;
@@ -2178,9 +2179,6 @@ pub(crate) struct LocalMeta {
     /// binding's from its statement or initializer. Where a later use of the
     /// name has no type of its own recorded, this is the answer.
     pub checked_type: Option<Type>,
-    /// Channel/Shared element size in bytes.
-    /// Used by Receiver_recv to allocate correctly-sized output buffers.
-    pub channel_elem_size: Option<i64>,
     /// C1/C2: resource_id local for consumption cancellation.
     /// Set when an ensure registers this variable as its receiver.
     pub resource_id: Option<LocalId>,

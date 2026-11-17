@@ -5639,13 +5639,11 @@ impl<'a> MirLowerer<'a> {
                                 let (tag_offset, tag_bytes) =
                                     (layout.tag_offset as u32, layout.tag_bytes());
                                 let vec_local = self.builder.alloc_temp(MirType::Ptr);
+                                let (ctor, args) = self.internal_ctor("Vec_new", &[enum_ty.clone()], None)?;
                                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                                     dst: Some(vec_local),
-                                    func: FunctionRef::internal("Vec_new".to_string()),
-                                    args: vec![
-                                        MirOperand::Constant(MirConst::Int(rask_layout::size_of(&enum_ty, self.ctx.target()) as i64)),
-                                        crate::elem_strs::elem(enum_ty.clone()),
-                                    ],
+                                    func: ctor,
+                                    args,
                                 }));
                                 for variant in &layout.variants {
                                     let value = self.builder.alloc_temp(enum_ty.clone());
@@ -5938,12 +5936,13 @@ impl<'a> MirLowerer<'a> {
                                 .unwrap_or_default();
                             let wb_mark = self.elem_writebacks.len();
                             let mut arg_operands = Vec::new();
+                            let mut arg_tys = Vec::new();
                             for (i, arg) in args.iter().enumerate() {
                                 // An unannotated closure parameter takes its type
                                 // from the callee's declared `func(...)` parameter;
                                 // `|req| req.method` on a `func(Request) -> Response`
                                 // otherwise defaulted to i64 (#463).
-                                let (op, _) = if let (ExprKind::Closure { params, ret_ty, body, .. }, false) =
+                                let (op, ty) = if let (ExprKind::Closure { params, ret_ty, body, .. }, false) =
                                     (&arg.expr.kind, self.ctx.c_fn_pointers.contains(&arg.expr.id))
                                 {
                                     let expected = self.expected_closure_param_tys(&callee_params, i);
@@ -5964,125 +5963,27 @@ impl<'a> MirLowerer<'a> {
                                     self.lower_arg_for_param(&arg.expr, callee_sig.as_ref(), i)?
                                 };
                                 arg_operands.push(op);
+                                arg_tys.push(ty);
                             }
 
-                            // A channel's element size goes first: (elem_size,
-                            // capacity). It is read from the call's resolved
-                            // result type (`Channel<T>` returns a Sender/Receiver
-                            // tuple; generic_arg_slot_size unwraps that). A
-                            // `Shared`'s payload size is codegen's to add, from
-                            // the value it is handed (`box_new_args`).
-                            if base_name == "Channel" && (method == "buffered" || method == "unbuffered") {
-                                let elem_size = self.generic_arg_slot_size(expr.id, 0)?;
-                                arg_operands.insert(0, MirOperand::Constant(MirConst::Int(elem_size)));
-                            }
-                            // An atomic cell holds its payload at the payload's
-                            // width and does arithmetic by its kind, so the
-                            // constructor is told both: `(bits, size, kind)`.
-                            if base_name == "Atomic" && matches!(method.as_str(), "new" | "default") {
-                                let payload = self.container_elem_mir_type(expr.id, 0).ok_or_else(|| {
-                                    LoweringError::InvalidConstruct("`Atomic` with no payload type".into())
-                                })?;
-                                if let Some(value) = arg_operands.pop() {
-                                    let value = self.as_slot_value(value, &payload);
-                                    arg_operands.push(value);
-                                }
-                                arg_operands.push(MirOperand::Constant(MirConst::Int(rask_layout::size_of(&payload, self.ctx.target()) as i64)));
-                                arg_operands.push(MirOperand::Constant(MirConst::Int(Self::atomic_kind(&payload))));
-                            }
-                            // A box owns its payload, and the payload can be a
-                            // container: `Shared.mutex(Map.new())` moves the map
-                            // in. The map's free belongs to whoever drops the
-                            // box's last reference, and only the runtime knows
-                            // when that is — so which container it is travels to
-                            // the constructor and lives on the box, the way a
-                            // container's element descriptor does. Last argument,
-                            // always, which is what codegen's `box_new_args`
-                            // relies on.
-                            if base_name == "Shared"
-                                && matches!(method.as_str(), "new" | "mutex" | "local")
-                            {
-                                let kind = args
-                                    .first()
-                                    .and_then(|a| self.ctx.lookup_raw_type(a.expr.id).map(std::borrow::Cow::into_owned))
-                                    .map(|ty| {
-                                        let is_box = self.head_name(&ty).as_deref() == Some("Shared");
-                                        crate::elem_strs::box_payload_kind_of(&self.ctx.type_to_mir(&ty), is_box)
-                                    })
-                                    .unwrap_or(crate::elem_strs::BOX_PAYLOAD_NONE);
-                                arg_operands.push(MirOperand::Constant(MirConst::Int(kind)));
-                            }
-
+                            // A constructor whose runtime takes facts about
+                            // the element type the program never wrote — its
+                            // size, what it owns — says which and where in its
+                            // declaration (`@runtime_args`).
+                            let declared = rask_stdlib::mir_metadata::lookup(&func_name)
+                                .and_then(|m| Some((m, m.runtime_args.as_deref()?)));
                             let mut keyed_map = false;
-                            // Vec.new() / Vec.with_capacity(n): inject elem_size so
-                            // the runtime allocates correct slots.
-                            if base_name == "Vec"
-                                && (method == "new" || method == "with_capacity" || method == "fixed")
-                            {
-                                let elem_size = self.generic_arg_slot_size(expr.id, 0)?;
-                                let size_op = MirOperand::Constant(MirConst::Int(elem_size));
-                                arg_operands.insert(0, size_op);
-                                // What the elements are, settled here and kept
-                                // by the container for the rest of its life —
-                                // see `elem_strs`.
-                                arg_operands.push(self.container_elem_desc(expr.id, 0));
-                            }
-                            // Map.new() / Map.with_capacity(n): inject
-                            // key_size, val_size. with_capacity keeps its `n`
-                            // after them, the way Vec's does.
-                            if (base_name == "Map") && (method == "new" || method == "with_capacity") {
-                                let key_size = self.generic_arg_slot_size(expr.id, 0)?;
-                                let val_size = self.generic_arg_slot_size(expr.id, 1)?;
-                                arg_operands.insert(0, MirOperand::Constant(MirConst::Int(key_size)));
-                                arg_operands.insert(1, MirOperand::Constant(MirConst::Int(val_size)));
-                                arg_operands.push(self.container_elem_desc(expr.id, 0));
-                                arg_operands.push(self.container_elem_desc(expr.id, 1));
-                                // A key with its own `eq`/`hash`: their addresses
-                                // follow the sizes, and the capacity if there is one.
-                                if let Some(key_ty) = self.container_elem_mir_type(expr.id, 0) {
-                                    if let Some((hash, eq)) = self.map_key_fn_addrs(expr.id, &key_ty) {
-                                        let at = if method == "with_capacity" { 3 } else { 2 };
-                                        arg_operands.insert(at, hash);
-                                        arg_operands.insert(at + 1, eq);
-                                        keyed_map = true;
-                                    }
-                                }
+                            let mut key_ty: Option<MirType> = None;
+                            if let Some((meta, decl)) = declared {
+                                let tparams = self.decl_type_args(expr.id, meta);
+                                key_ty = tparams.first().and_then(Option::as_ref).map(|t| t.mir.clone());
+                                let written = arg_operands.into_iter().zip(arg_tys.iter().cloned()).map(Some).collect();
+                                let built = self.runtime_call_args(decl, None, written, &tparams, Some(expr.id))?;
+                                arg_operands = built.args;
+                                keyed_map = built.keyed;
                             }
 
-                            // Map.new() with string keys → use string hash/eq.
-                            //
-                            // Only the *key* decides. The old test asked whether the
-                            // receiver's spelling contained "string" anywhere, so
-                            // `Map<Key, string>.new()` — struct key, string value —
-                            // picked the string-keyed constructor and the runtime
-                            // then read the key's 8 bytes as a char pointer. Lookups
-                            // hashed whatever that address held, so an insert and a
-                            // later get disagreed at random (#812).
-                            let func_name = if keyed_map {
-                                match func_name.as_str() {
-                                    "Map_with_capacity" => "Map_with_capacity_keyed".to_string(),
-                                    _ => "Map_new_keyed".to_string(),
-                                }
-                            } else if func_name == "Map_new"
-                                || func_name == "Map_with_capacity"
-                            {
-                                let from_checker = self.container_elem_mir_type(expr.id, 0);
-                                // Same decision either way; `with_capacity`
-                                // just lands on the constructor that also takes
-                                // the capacity.
-                                let with_cap = func_name == "Map_with_capacity";
-                                match from_checker {
-                                    Some(k) if with_cap => {
-                                        crate::elem_strs::map_ctor_with_capacity(&k).to_string()
-                                    }
-                                    Some(k) => {
-                                        crate::elem_strs::map_ctor_for(&k).to_string()
-                                    }
-                                    None => func_name,
-                                }
-                            } else {
-                                func_name
-                            };
+                            let func_name = super::runtime_args::ctor_callee(&func_name, keyed_map, key_ty.as_ref());
 
                             // A static method on a generic type gets one copy per
                             // instantiation, and monomorphization named the copy —
@@ -6419,24 +6320,6 @@ impl<'a> MirLowerer<'a> {
         // code — a `Local` box calls the no-lock runtime directly.
         let (qualified_name, mut shape) = self.resolve_shared_strategy_call(&qualified_name, object);
 
-        // A box owns its payload, and the payload can be a container:
-        // `Shared.mutex(Map.new())` moves the map in, so the map's free belongs
-        // to whoever drops the box's last reference. Only the runtime knows
-        // when that is, so the kind rides along to the constructor — see
-        // `elem_strs::box_payload_kind`. Left out, every box with a container
-        // in it leaked the container and its storage.
-        if matches!(qualified_name.as_str(), "Mutex_new" | "Cell_new" | "Shared_new") {
-            let kind = args
-                .first()
-                .and_then(|a| self.ctx.lookup_raw_type(a.expr.id).map(std::borrow::Cow::into_owned))
-                .map(|ty| {
-                    let is_box = self.head_name(&ty).as_deref() == Some("Shared");
-                    crate::elem_strs::box_payload_kind_of(&self.ctx.type_to_mir(&ty), is_box)
-                })
-                .unwrap_or(crate::elem_strs::BOX_PAYLOAD_NONE);
-            all_args.push(MirOperand::Constant(MirConst::Int(kind)));
-        }
-
         // A value going into a container's slot — an element, a key, a box's
         // payload — is an argument position, so it gains wrapper layers the
         // same way any other one does. Nothing did that here: a stdlib method
@@ -6477,24 +6360,14 @@ impl<'a> MirLowerer<'a> {
                 // `take_all` hands its entries over, so the Vec it builds has
                 // to know what each pair owns.
                 if qualified_name == "Map_take_all" {
-                    let desc = |i: usize, fallback: &MirType| {
-                        self.container_elem_type(object.id, i).unwrap_or_else(|| fallback.clone())
-                    };
-                    let pair = MirType::Tuple(vec![desc(0, &key), desc(1, &val)]);
-                    all_args.push(crate::elem_strs::elem(pair));
+                    all_args.push(crate::elem_strs::elem(MirType::Tuple(vec![key, val])));
                 }
             }
         }
 
-        // A box's constructor is called on the type, so the box is the call's
-        // own result.
-        let (slot_args, holder) = match qualified_name.as_str() {
-            "Shared_new" | "Mutex_new" | "Cell_new" => (&[(0usize, 0usize)][..], expr.id),
-            _ => (slot_args, object.id),
-        };
         for &(arg_index, type_arg_index) in slot_args {
             let (Some(slot_ty), Some(src_ty)) = (
-                self.container_elem_mir_type(holder, type_arg_index),
+                self.container_elem_mir_type(object.id, type_arg_index),
                 arg_types.get(arg_index).cloned(),
             ) else {
                 continue;
@@ -6510,17 +6383,22 @@ impl<'a> MirLowerer<'a> {
             }
         }
 
-        // Both receives take the value through an out-param buffer of the
-        // element's real size and hand back the channel's status, which codegen
-        // turns into the `T or E` the signature promises. Pass the size.
-        //
-        // `receive` used to return the payload itself and panic on a closed
-        // channel, with a separate `_struct` spelling for elements too big to
-        // fit in the return value. One shape covers both, and the error branch
-        // works (#1067).
-        if matches!(qualified_name.as_str(), "Receiver_receive" | "Receiver_try_receive") {
-            let elem_size = self.channel_elem_size(object)?;
-            all_args.push(MirOperand::Constant(MirConst::Int(elem_size)));
+        // A call whose runtime takes more than the program wrote — the
+        // receive buffer's element size — builds its arguments from the
+        // declaration (`@runtime_args`). The receiver stays first.
+        if let Some((meta, decl)) = rask_stdlib::mir_metadata::lookup(&qualified_name)
+            .and_then(|m| Some((m, m.runtime_args.as_deref()?)))
+        {
+            if !meta.takes_self {
+                return Err(LoweringError::InvalidConstruct(format!(
+                    "`{qualified_name}` is called on its type, and reached the method path"
+                )));
+            }
+            let tparams = self.decl_type_args(expr.id, meta);
+            let mut rest = std::mem::take(&mut all_args).into_iter();
+            let receiver = rest.next();
+            let written = rest.zip(arg_types.iter().cloned()).map(Some).collect();
+            all_args = self.runtime_call_args(decl, receiver, written, &tparams, Some(expr.id))?.args;
         }
 
         // What `Vec_get`/`Vec_index` hand back is the receiver's element type,
@@ -9846,18 +9724,13 @@ impl<'a> MirLowerer<'a> {
             ],
         }));
 
-        let ctor = crate::elem_strs::map_ctor_for(&key_ty);
         let map_ty = MirType::Container(crate::types::ContainerKind::Map);
         let map = self.builder.alloc_temp(map_ty.clone());
+        let (ctor, args) = self.internal_ctor("Map_new", &[key_ty.clone(), val_ty.clone()], None)?;
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(map),
-            func: crate::elem_strs::map_ctor_ref(ctor),
-            args: vec![
-                MirOperand::Constant(MirConst::Int(rask_layout::size_of(&key_ty, self.ctx.target()) as i64)),
-                MirOperand::Constant(MirConst::Int(rask_layout::size_of(&val_ty, self.ctx.target()) as i64)),
-                crate::elem_strs::elem(key_ty.clone()),
-                crate::elem_strs::elem(val_ty.clone()),
-            ],
+            func: ctor,
+            args,
         }));
 
         let idx = self.builder.alloc_temp(MirType::I64);
@@ -9991,13 +9864,11 @@ impl<'a> MirLowerer<'a> {
 
         // The rendered entries, one string each, so they can be sorted.
         let rendered = self.builder.alloc_temp(MirType::Ptr);
+        let (ctor, args) = self.internal_ctor("Vec_new", &[MirType::Buffer], None)?;
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(rendered),
-            func: FunctionRef::internal("Vec_new".to_string()),
-            args: vec![
-                MirOperand::Constant(MirConst::Int(16)),
-                crate::elem_strs::elem(MirType::Buffer),
-            ],
+            func: ctor,
+            args,
         }));
 
         let len = self.builder.alloc_temp(MirType::I64);
@@ -10309,7 +10180,7 @@ impl<'a> MirLowerer<'a> {
 
     /// How an atomic cell does arithmetic on `payload`. A struct payload
     /// (GA2) is bits, compared and swapped but never added.
-    fn atomic_kind(payload: &MirType) -> i64 {
+    pub(super) fn atomic_kind(payload: &MirType) -> i64 {
         Self::debug_elem_kind(payload).unwrap_or(rask_mono::runtime_abi::RASK_ELEM_KIND_UNSIGNED)
     }
 

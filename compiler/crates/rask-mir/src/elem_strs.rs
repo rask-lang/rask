@@ -124,58 +124,56 @@ pub fn map_ctor_ref(name: impl Into<String>) -> crate::FunctionRef {
     }
 }
 
-/// Every call that hands back a container the caller owns: how many size
-/// arguments come first, how many element descriptions follow them, and what frees the
-/// result.
+/// Every call that hands back a container the caller owns, and what frees the
+/// result. The drop pass knows a fresh container when it sees one come out of
+/// a call to one of these.
 ///
-/// One list, read by everything that needs it: lowering appends that many descriptions,
-/// codegen's dispatch table builds the C signature from it and expands the descriptions
-/// into offset pointers, the pre-pass that registers those offset blobs finds
-/// the descriptions with it, and the drop pass knows a fresh container when it sees one
-/// come out of a call to one of these.
+/// What the constructor is told about its elements is not here: a declared
+/// one lists it in `@runtime_args`, and codegen expands each element
+/// description it finds among the arguments.
 ///
 /// The free function is spelled out rather than guessed from the name, because
 /// the two part company: `Map_keys` is a `Map_` call that hands back a `Vec`,
 /// and freeing that with `Map_free` would read a Vec as a hash table.
-pub const CTORS: &[(&str, u8, u8, &str)] = &[
-    ("Vec_new", 1, 1, "Vec_free"),
+pub const CTORS: &[(&str, &str)] = &[
+    ("Vec_new", "Vec_free"),
     // `mut v: Vec<T> = []` and `Vec.from([...])`: the elements come from a
     // static blob, but anything pushed later does not.
-    ("rask_vec_from_static", 3, 1, "Vec_free"),
+    ("rask_vec_from_static", "Vec_free"),
     // An array receiver seen as a Vec. The array keeps its elements, so the
     // free gives back the copy and nothing in it (#1405).
-    ("rask_vec_view", 3, 1, "Vec_free_view"),
-    ("Vec_with_capacity", 2, 1, "Vec_free"),
-    ("Vec_fixed", 2, 1, "Vec_free"),
+    ("rask_vec_view", "Vec_free_view"),
+    ("Vec_with_capacity", "Vec_free"),
+    ("Vec_fixed", "Vec_free"),
     // `skip`/`take` outside a fused chain call the runtime, which hands back a
     // freshly allocated Vec. No size arguments and no element descriptions — the source
     // Vec already carries both, and the runtime copies them across — so these
     // are here only to tell the drop pass the result is the caller's to free.
-    ("Vec_skip", 0, 0, "Vec_free"),
-    ("Vec_take", 0, 0, "Vec_free"),
+    ("Vec_skip", "Vec_free"),
+    ("Vec_take", "Vec_free"),
     // `chunks` hands back a fresh `Vec<Vec<T>>`, and the runtime builds it
     // with an element map saying the elements are Vec handles — so freeing it
     // frees the chunks too. The zero here is this table's own count, which
     // describes what *lowering* knows; the nested answer is settled at the
     // construction site in `rask_vec_chunks`.
-    ("Vec_chunks", 0, 0, "Vec_free"),
-    ("Map_new", 2, 2, "Map_free"),
-    ("Map_new_string_keys", 2, 2, "Map_free"),
-    ("Map_with_capacity", 3, 2, "Map_free"),
-    ("Map_with_capacity_string_keys", 3, 2, "Map_free"),
-    ("Map_with_capacity_link_keys", 3, 2, "Map_free"),
-    ("Map_new_link_keys", 2, 2, "Map_free"),
-    ("Map_new_keyed", 4, 2, "Map_free"),
-    ("Map_with_capacity_keyed", 5, 2, "Map_free"),
+    ("Vec_chunks", "Vec_free"),
+    ("Map_new", "Map_free"),
+    ("Map_new_string_keys", "Map_free"),
+    ("Map_with_capacity", "Map_free"),
+    ("Map_with_capacity_string_keys", "Map_free"),
+    ("Map_with_capacity_link_keys", "Map_free"),
+    ("Map_new_link_keys", "Map_free"),
+    ("Map_new_keyed", "Map_free"),
+    ("Map_with_capacity_keyed", "Map_free"),
     // `keys`, `values` and `entries` walk a map and hand back a fresh Vec of
     // what they found — a `Map_` name with a `Vec` result, which is why the
     // free is written down rather than read off the prefix.
-    ("Map_keys", 0, 0, "Vec_free"),
-    ("Map_values", 0, 0, "Vec_free"),
-    ("Map_entries", 0, 0, "Vec_free"),
+    ("Map_keys", "Vec_free"),
+    ("Map_values", "Vec_free"),
+    ("Map_entries", "Vec_free"),
     // The entries move out into a fresh Vec: (map, value offset, pair size),
     // then what a pair owns.
-    ("Map_take_all", 3, 1, "Vec_free"),
+    ("Map_take_all", "Vec_free"),
     // Racks and pools carry no element description: a rack is told about its fields
     // separately, through `rask_link_register_*`, and a pool's slots are opaque
     // bytes. They are here so the drop pass recognises one coming out of a
@@ -187,17 +185,17 @@ pub const CTORS: &[(&str, u8, u8, &str)] = &[
     // `cstring`) needs no row: a native whose declared return type is one
     // hands the caller a fresh one, freed by the declared release
     // (`mir_metadata::fresh_handle_release`).
-    ("Rack_new", 0, 0, "Rack_free"),
-    ("Rack_snapshot", 1, 0, "Rack_free"),
+    ("Rack_new", "Rack_free"),
+    ("Rack_snapshot", "Rack_free"),
     // `rack.nodes()` walks the directory and pushes each node's address into a
     // fresh Vec. The elements are links, which own nothing — freeing the
     // vector doesn't touch a node. `for n in s.nodes()` leaked one vector per
     // call, which is most of what the snapshot files were carrying.
-    ("Rack_nodes", 0, 0, "Vec_free"),
+    ("Rack_nodes", "Vec_free"),
     // Clone the elements into a new vector and clear the source, so the result
     // owns them and carries the source's element map. The source keeps its own
     // allocation, empty.
-    ("Vec_take_all", 0, 0, "Vec_free"),
+    ("Vec_take_all", "Vec_free"),
     // Not `fs.read_lines`, `fs.read_bytes` or `File.lines`, even though the
     // runtime has a function for each: those three are written in Rask now, so
     // these names reach MIR as ordinary functions with bodies and the pass
@@ -209,14 +207,14 @@ pub const CTORS: &[(&str, u8, u8, &str)] = &[
     // `chars()` yields scalars and `graphemes()` copies each cluster into a
     // fresh string. Neither points into the source — unlike the splitters
     // below, which look identical from here and are not.
-    ("string_chars", 0, 0, "Vec_free"),
+    ("string_chars", "Vec_free"),
 
-    ("string_graphemes", 0, 0, "Vec_free"),
+    ("string_graphemes", "Vec_free"),
     // The third of that family and the one left out: `char_indices` pushes a
     // (byte offset, scalar) pair per character into a fresh vector. Two
     // integers — nothing points into the source, and nothing in it owns
     // anything — so the vector is the caller's, elements and all.
-    ("string_char_indices", 0, 0, "Vec_free"),
+    ("string_char_indices", "Vec_free"),
     // The three the runtime builds from the OS: each copies what it found into
     // fresh strings and carries the element map, so the vector it hands back is
     // the caller's to free — elements and all. They were the largest single
@@ -225,8 +223,8 @@ pub const CTORS: &[(&str, u8, u8, &str)] = &[
     //
     // Unlike the string splitters below, nothing here is a view into a source
     // the caller still holds.
-    ("os_env_vars", 0, 0, "Vec_free"),
-    ("os_args", 0, 0, "Vec_free"),
+    ("os_env_vars", "Vec_free"),
+    ("os_args", "Vec_free"),
     // A `Shared` box carries no element description — its payload is opaque bytes it
     // was handed, the same as a pool slot. It is here for the same reason
     // `Rack_new` is: `rask_shared_free` has existed all along with nothing
@@ -236,7 +234,7 @@ pub const CTORS: &[(&str, u8, u8, &str)] = &[
     // The free is a release, not a free: `Shared_drop` decrements and frees at
     // zero, and `Shared_clone` is what incremented. So a box handed to a task
     // outlives the frame that made it, which is the point of the type.
-    ("Shared_new", 0, 0, "Shared_drop"),
+    ("Shared_new", "Shared_drop"),
     // The two halves of a channel. `let (tx, rx) = Channel<T>.buffered(n)`
     // reaches MIR as the constructor plus one accessor per half, and the
     // accessor's result is the handle — one sender, one receiver, which is
@@ -248,76 +246,55 @@ pub const CTORS: &[(&str, u8, u8, &str)] = &[
     //
     // The constructor itself is deliberately absent: what it hands back is the
     // channel, which the two drops own between them.
-    ("channel_tx", 0, 0, "Sender_drop"),
-    ("channel_rx", 0, 0, "Receiver_drop"),
-    ("Sender_clone", 0, 0, "Sender_drop"),
+    ("channel_tx", "Sender_drop"),
+    ("channel_rx", "Receiver_drop"),
+    ("Sender_clone", "Sender_drop"),
     // A string builder is the frame's until `build()` takes it away. Nothing
     // released one on a path that gives up before building, and
     // `string.from_utf8` returns a `Utf8Error` from eight places — so every
     // rejected byte sequence leaked the builder and its buffer.
-    ("StringBuilder_new", 0, 0, "StringBuilder_free"),
-    ("StringBuilder_with_capacity", 0, 0, "StringBuilder_free"),
+    ("StringBuilder_new", "StringBuilder_free"),
+    ("StringBuilder_with_capacity", "StringBuilder_free"),
     // The other two strategies build their own runtime object, so each needs
     // its own release: `Shared.mutex(0)` is `Mutex_new` and `Shared.local(0)`
     // is `Cell_new`, and neither is `Shared_new`. Only the third was listed, so
     // two of the three constructors leaked the box and its payload — the same
     // two allocations #1099 measured, for the two spellings it didn't test.
-    ("Mutex_new", 0, 0, "Mutex_drop"),
-    ("Cell_new", 0, 0, "Cell_drop"),
+    ("Mutex_new", "Mutex_drop"),
+    ("Cell_new", "Cell_drop"),
     // A clone is one more handle on the box, and each handle gives its
     // reference back when it goes. Without these, `let b = a.clone()` held a
     // reference nothing released, so the box outlived every handle.
-    ("Shared_clone", 0, 0, "Shared_drop"),
-    ("Mutex_clone", 0, 0, "Mutex_drop"),
-    ("Cell_clone", 0, 0, "Cell_drop"),
+    ("Shared_clone", "Shared_drop"),
+    ("Mutex_clone", "Mutex_drop"),
+    ("Cell_clone", "Cell_drop"),
     // The clones. These were absent because `clone_elision` can decide a clone
     // is unnecessary and leave the caller's own container in the slot, and
     // freeing that is a double free — `return v.clone()` printed the right
     // length and died on the way out. The drop pass now runs *after* elision,
     // so what it sees is what runs: an elided clone is an assignment, not a
     // call, and never looks like a fresh container at all (#1050, #1045).
-    ("Vec_clone", 0, 0, "Vec_free"),
-    ("Map_clone", 0, 0, "Map_free"),
+    ("Vec_clone", "Vec_free"),
+    ("Map_clone", "Map_free"),
     // `bytes()` builds a fresh Vec of the string's bytes and hands it over —
     // no view into the source, so nothing reads it after the frame ends.
-    ("string_bytes", 0, 0, "Vec_free"),
+    ("string_bytes", "Vec_free"),
     // Same shape on the C side: the bytes up to the terminator, copied into a
     // fresh Vec that `string.from_utf8` reads and nobody else holds (#949).
-    ("cstring_bytes", 0, 0, "Vec_free"),
+    ("cstring_bytes", "Vec_free"),
     // Bytes off standard input, into a Vec the runtime made for this call and
     // nothing else holds. Without it `Stdin.read_bytes` handed back a vector
     // nobody owned — and, because an interface call's answer is only as good as the
     // worst implementation behind it, it also stopped `reader.read_bytes()`
     // from being anyone's (#1199).
-    ("io_read_std_bytes", 0, 0, "Vec_free"),
+    ("io_read_std_bytes", "Vec_free"),
     // `b.to_vec()`: a copy of the bytes in a Vec of its own (std.bytes).
-    ("bytes_to_vec", 0, 0, "Vec_free"),
+    ("bytes_to_vec", "Vec_free"),
 ];
-
-/// Calls that take element descriptions and hand back no container. A JSON
-/// decode shape records what a list's elements or a map's values own, so the
-/// container the decoder builds from it frees them.
-pub const DESCRIBERS: &[(&str, u8, u8)] = &[
-    ("json_shape_vec", 2, 1),
-    ("json_shape_map", 2, 1),
-];
-
-/// `(leading sizes, element descriptions)` for a call that takes element
-/// descriptions — a container constructor or one of `DESCRIBERS` — by the name
-/// MIR calls it, monomorphization's `$` suffix and any module path stripped.
-pub fn ctor_shape(name: &str) -> Option<(usize, usize)> {
-    entry(name).map(|(_, l, t, _)| (*l as usize, *t as usize)).or_else(|| {
-        let base = base_name(name);
-        DESCRIBERS
-            .iter()
-            .find(|(n, _, _)| *n == base)
-            .map(|(_, l, t)| (*l as usize, *t as usize))
-    })
-}
 
 /// What frees the container this call handed back, or `None` if it isn't one.
 pub fn free_fn(name: &str) -> Option<&'static str> {
-    entry(name).map(|(_, _, _, free)| *free)
+    entry(name).map(|(_, free)| *free)
 }
 
 /// Natives that hand back a fresh container *inside* a wrapper — `Vec<u8>?`,
@@ -351,9 +328,9 @@ pub fn wrapped_free_fn(name: &str) -> Option<&'static str> {
     WRAPPED_CTORS.iter().find(|(n, _)| *n == base).map(|(_, free)| *free)
 }
 
-fn entry(name: &str) -> Option<&'static (&'static str, u8, u8, &'static str)> {
+fn entry(name: &str) -> Option<&'static (&'static str, &'static str)> {
     let base = base_name(name);
-    CTORS.iter().find(|(n, _, _, _)| *n == base)
+    CTORS.iter().find(|(n, _)| *n == base)
 }
 
 fn base_name(name: &str) -> &str {

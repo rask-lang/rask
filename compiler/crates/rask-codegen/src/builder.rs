@@ -1515,18 +1515,6 @@ impl<'a> FunctionBuilder<'a> {
         }
     }
 
-    /// `(value_ptr, data_size, payload_kind)` — the shape all three box
-    /// constructors take.
-    ///
-    /// The size is computed here, from the MIR argument's type; the payload
-    /// kind comes from lowering, which is the only place that knows a `Ptr` is
-    /// a `Map` (`elem_strs::box_payload_kind`). MIR passes `(value, kind)` and
-    /// the size goes between them.
-    fn box_new_args(builder: &mut ClifFunctionBuilder, args: &mut Vec<Value>, data_size: i64) {
-        let size = builder.ins().iconst(types::I64, data_size);
-        args.insert(1, size);
-    }
-
     /// Convert a value between Cranelift types (integer widening/narrowing, float conversion).
     /// `from_mir` is the source's MIR type where the caller has it. A Cranelift
     /// type carries no signedness, so without it every widening sign-extends,
@@ -8049,6 +8037,45 @@ impl<'a> FunctionBuilder<'a> {
         }
     }
 
+    /// Each element description (`MirConst::Elem`) becomes the three
+    /// arguments the runtime takes for it: the offsets of what one element
+    /// owns, how many there are, and the element's alignment. No owned parts
+    /// is the null map, which frees nothing.
+    ///
+    /// The descriptions come last, after everything the program and lowering
+    /// put first, so expanding them moves no other argument.
+    fn expand_elem_descs(
+        builder: &mut ClifFunctionBuilder,
+        func_name: &str,
+        args: &mut Vec<Value>,
+        mir_args: &[MirOperand],
+        ctx: &CodegenCtx,
+    ) {
+        let is_desc = |a: &MirOperand| matches!(a, MirOperand::Constant(MirConst::Elem(_)));
+        let Some(first) = mir_args.iter().position(is_desc) else { return };
+        assert!(
+            mir_args[first..].iter().all(is_desc),
+            "`{func_name}`: element descriptions come after every other argument",
+        );
+        assert_eq!(args.len(), mir_args.len(), "`{func_name}`: one value per MIR argument");
+        args.truncate(first);
+        for a in &mir_args[first..] {
+            let MirOperand::Constant(MirConst::Elem(ty)) = a else { unreachable!() };
+            let map = Self::element_owned_offsets(Some(ty), ctx)
+                .filter(|offs| !offs.is_empty())
+                .and_then(|offs| {
+                    let at = Self::element_offsets_global(builder, &offs, ctx)?;
+                    Some((at, offs.len() as i64))
+                });
+            let (at, n) = match map {
+                Some((at, n)) => (at, builder.ins().iconst(types::I64, n)),
+                None => (builder.ins().iconst(types::I64, 0), builder.ins().iconst(types::I64, 0)),
+            };
+            let align = builder.ins().iconst(types::I64, rask_layout::align_of(ty, ctx.target()) as i64);
+            args.extend([at, n, align]);
+        }
+    }
+
     /// Adapt stdlib call args for the typed runtime API.
     /// Looks up adaptation from the dispatch table, applies mechanically.
     /// Custom entries fall through to hand-written code.
@@ -8080,6 +8107,7 @@ impl<'a> FunctionBuilder<'a> {
         if ctx.internal_fns.contains(func_name) {
             return CallAdapt::None;
         }
+        Self::expand_elem_descs(builder, func_name, args, mir_args, ctx);
         if let Some(how) = hand_adaptation(func_name) {
             return Self::adapt_by_hand(builder, how, func_name, args, mir_args, dst, ctx);
         }
@@ -8091,48 +8119,6 @@ impl<'a> FunctionBuilder<'a> {
         // Apply arg adaptation
         let call_adapt = match arg_adapt {
             ArgAdapt::None => CallAdapt::None,
-
-            ArgAdapt::ContainerCtor { leading, tags } => {
-                let leading = leading as usize;
-                // Lowering names every size. A guessed one is a container
-                // whose reads and writes disagree about where elements sit.
-                assert!(
-                    args.len() >= leading,
-                    "`{func_name}` was lowered without its {leading} size argument(s)",
-                );
-                // Then one element tag per container slot, each becoming
-                // (offsets pointer, count, alignment). A path that emitted no
-                // tag gets the null map, which says the elements own nothing,
-                // and alignment 0, which is whatever `malloc` gives.
-                let mut expanded: Vec<Value> = Vec::new();
-                for i in 0..tags as usize {
-                    let elem = mir_args.get(leading + i).and_then(|a| match a {
-                        MirOperand::Constant(MirConst::Elem(ty)) => Some(ty),
-                        _ => None,
-                    });
-                    let map = Self::element_owned_offsets(elem, ctx)
-                        .filter(|offs| !offs.is_empty())
-                        .and_then(|offs| {
-                            let at = Self::element_offsets_global(builder, &offs, ctx)?;
-                            Some((at, offs.len() as i64))
-                        });
-                    match map {
-                        Some((at, n)) => {
-                            expanded.push(at);
-                            expanded.push(builder.ins().iconst(types::I64, n));
-                        }
-                        None => {
-                            expanded.push(builder.ins().iconst(types::I64, 0));
-                            expanded.push(builder.ins().iconst(types::I64, 0));
-                        }
-                    }
-                    let align = elem.map_or(0, |ty| rask_layout::align_of(ty, ctx.target()) as i64);
-                    expanded.push(builder.ins().iconst(types::I64, align));
-                }
-                args.truncate(leading);
-                args.extend(expanded);
-                CallAdapt::None
-            }
 
             ArgAdapt::WrapArg1 => {
                 Self::wrap_arg_as_ptr(builder, args, mir_args, 1, ctx.locals);
@@ -8438,22 +8424,15 @@ impl<'a> FunctionBuilder<'a> {
             }
 
             // Each strategy's constructor takes the value by pointer, so a
-            // scalar spills to a slot first, and its size, which is computed
-            // here.
-            // (payload, kind) in; (payload address, size, kind, alignment)
-            // out, so an `@align(64)` payload gets a block aligned for it.
+            // scalar spills to a slot first. The size, payload kind and
+            // alignment after it come from lowering (`@runtime_args` on
+            // `Shared.new`).
             HandAdapt::BoxNew => {
                 if !args.is_empty() {
-                    let (data_size, is_struct) = Self::runtime_arg_slot(mir_args, 0, ctx);
+                    let (_, is_struct) = Self::runtime_arg_slot(mir_args, 0, ctx);
                     if !is_struct {
                         Self::spill_arg(builder, args, mir_args, 0, ctx.locals);
                     }
-                    Self::box_new_args(builder, args, data_size);
-                    let align = mir_args
-                        .first()
-                        .and_then(|op| Self::operand_mir_type(op, ctx.locals))
-                        .map_or(0, |ty| rask_layout::align_of(&ty, ctx.target()) as i64);
-                    args.push(builder.ins().iconst(types::I64, align));
                 }
                 CallAdapt::None
             }
@@ -8855,9 +8834,9 @@ impl<'a> FunctionBuilder<'a> {
                     MirConst::Char(c) => {
                         Ok(builder.ins().iconst(types::I32, *c as i64))
                     }
-                    // Only ever a container constructor's argument, which the
-                    // call adapter replaces with an offsets pointer and count
-                    // (`ArgAdapt::ContainerCtor`). The placeholder is dead.
+                    // Only ever a stdlib call's argument, which the call
+                    // adapter replaces with an offsets pointer, count and
+                    // alignment (`expand_elem_descs`). The placeholder is dead.
                     MirConst::Elem(_) => Ok(builder.ins().iconst(types::I64, 0)),
                     MirConst::String(_) | MirConst::Bytes(_) => {
                         let s = const_val.static_buffer().expect("a string or bytes literal");

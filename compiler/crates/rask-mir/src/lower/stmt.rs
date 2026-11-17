@@ -2466,22 +2466,6 @@ impl<'a> MirLowerer<'a> {
                     }
                 }
             }
-
-            // Channel<T>.buffered/unbuffered returns (Sender<T>, Receiver<T>).
-            // The element size has to be recorded whether or not the checker
-            // resolved the prefixes: `rx.receive()` picks the struct-aware recv
-            // off it, and without it a 24-byte element was received into an
-            // 8-byte buffer and smashed the stack (#463).
-            if let ExprKind::MethodCall { object, method, .. } = &init.kind {
-                if let Some(type_name) = object.name() {
-                    let base = type_name;
-                    if base == "Channel" && (method == "buffered" || method == "unbuffered") {
-                        // Same source the constructor uses for its elem_size arg.
-                        let elem_size = self.generic_arg_slot_size(init.id, 0)?;
-                        self.meta_mut(name).channel_elem_size = Some(elem_size);
-                    }
-                }
-            }
         }
         Ok(())
     }

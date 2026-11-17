@@ -148,6 +148,9 @@ pub struct StdlibMethodMeta {
     /// own parameters: the `value: T` of `Atomic.store`. What the caller hands
     /// over there is the payload itself, at whatever type `T` is.
     pub payload_args: Vec<usize>,
+    /// Declared `@runtime_args(…)`: what the C call takes after the receiver,
+    /// in order, when that is more than the program wrote.
+    pub runtime_args: Option<Vec<crate::RuntimeArg>>,
 }
 
 /// MIR argument positions whose declared type is a bare type parameter.
@@ -224,6 +227,7 @@ fn build_cache() -> MetadataCache {
                 extended_type_params: method.extended_type_params,
                 param_types: method.params.iter().map(|(_, t)| t.clone()).collect(),
                 payload_args: payload_args(&method.params, method.takes_self, &method.type_params),
+                runtime_args: method.runtime_args.clone(),
             });
         }
     }
@@ -246,6 +250,7 @@ fn build_cache() -> MetadataCache {
             extended_type_params: 0,
             param_types: func.params.iter().map(|(_, t)| t.clone()).collect(),
             payload_args: payload_args(&func.params, false, &func.type_params),
+            runtime_args: None,
         });
     }
 

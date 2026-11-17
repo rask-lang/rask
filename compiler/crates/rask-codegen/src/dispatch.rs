@@ -35,17 +35,6 @@ use crate::{CodegenError, CodegenResult};
 pub enum ArgAdapt {
     /// Pass args as-is
     None,
-    /// A container constructor: `leading` size arguments, then one element tag
-    /// per `tags`, each expanded into (offsets pointer, count).
-    ///
-    /// Lowering says *what* the elements are — nothing, a string, or the struct
-    /// with a given layout (`rask_mir::elem_strs`) — and this turns that into
-    /// where the strings actually sit inside one element, which is a question
-    /// only codegen has the layouts to answer. The runtime keeps the answer on
-    /// the container, so `free` needs no argument and nothing downstream works
-    /// it out again. A missing or unreadable tag means "owns nothing", which is
-    /// what a container built by a path that doesn't know its element type gets.
-    ContainerCtor { leading: u8, tags: u8 },
     /// Wrap args[1] as pointer (skip if string)
     WrapArg1,
     /// Wrap args[2] as pointer (skip if string)
@@ -188,7 +177,7 @@ pub(crate) fn internal_entries() -> Vec<StdlibEntry> {
             mir_name: "rask_vec_from_static", c_name: "rask_vec_from_static",
             params: &[types::I64, types::I64, types::I64, types::I64, types::I64, types::I64],
             ret_ty: Some(types::I64), can_panic: false,
-            arg_adapt: ArgAdapt::ContainerCtor { leading: 3, tags: 1 }, ret_adapt: RetAdapt::None,
+            arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::None,
         },
         // A fixed array's receiver seen as a Vec, and the copy back after a
         // `mutate self` method (#1405).
@@ -196,7 +185,7 @@ pub(crate) fn internal_entries() -> Vec<StdlibEntry> {
             mir_name: "rask_vec_view", c_name: "rask_vec_view",
             params: &[types::I64, types::I64, types::I64, types::I64, types::I64, types::I64],
             ret_ty: Some(types::I64), can_panic: false,
-            arg_adapt: ArgAdapt::ContainerCtor { leading: 3, tags: 1 }, ret_adapt: RetAdapt::None,
+            arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::None,
         },
         StdlibEntry::simple("Vec_free_view", "rask_vec_free_view", &[types::I64], None, false),
         StdlibEntry::simple("rask_vec_copy_back", "rask_vec_copy_back", &[types::I64, types::I64], None, false),
@@ -576,25 +565,25 @@ pub(crate) fn internal_entries() -> Vec<StdlibEntry> {
             mir_name: "Map_new_string_keys", c_name: "rask_map_new_string_keys",
             params: &[types::I64, types::I64, types::I64, types::I64, types::I64, types::I64, types::I64, types::I64],
             ret_ty: Some(types::I64), can_panic: false,
-            arg_adapt: ArgAdapt::ContainerCtor { leading: 2, tags: 2 }, ret_adapt: RetAdapt::None,
+            arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::None,
         },
         StdlibEntry {
             mir_name: "Map_new_link_keys", c_name: "rask_map_new_link_keys",
             params: &[types::I64, types::I64, types::I64, types::I64, types::I64, types::I64, types::I64, types::I64],
             ret_ty: Some(types::I64), can_panic: false,
-            arg_adapt: ArgAdapt::ContainerCtor { leading: 2, tags: 2 }, ret_adapt: RetAdapt::None,
+            arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::None,
         },
         StdlibEntry {
             mir_name: "Map_with_capacity_link_keys", c_name: "rask_map_new_link_keys_cap",
             params: &[types::I64, types::I64, types::I64, types::I64, types::I64, types::I64, types::I64, types::I64, types::I64],
             ret_ty: Some(types::I64), can_panic: false,
-            arg_adapt: ArgAdapt::ContainerCtor { leading: 3, tags: 2 }, ret_adapt: RetAdapt::None,
+            arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::None,
         },
         StdlibEntry {
             mir_name: "Map_with_capacity_string_keys", c_name: "rask_map_new_string_keys_cap",
             params: &[types::I64, types::I64, types::I64, types::I64, types::I64, types::I64, types::I64, types::I64, types::I64],
             ret_ty: Some(types::I64), can_panic: false,
-            arg_adapt: ArgAdapt::ContainerCtor { leading: 3, tags: 2 }, ret_adapt: RetAdapt::None,
+            arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::None,
         },
         // A key compared through its own `eq`/`hash`: the two function
         // addresses ride with the sizes (and the capacity) ahead of the tags.
@@ -602,13 +591,13 @@ pub(crate) fn internal_entries() -> Vec<StdlibEntry> {
             mir_name: "Map_new_keyed", c_name: "rask_map_new_keyed",
             params: &[types::I64, types::I64, types::I64, types::I64, types::I64, types::I64, types::I64, types::I64, types::I64, types::I64],
             ret_ty: Some(types::I64), can_panic: false,
-            arg_adapt: ArgAdapt::ContainerCtor { leading: 4, tags: 2 }, ret_adapt: RetAdapt::None,
+            arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::None,
         },
         StdlibEntry {
             mir_name: "Map_with_capacity_keyed", c_name: "rask_map_new_keyed_cap",
             params: &[types::I64, types::I64, types::I64, types::I64, types::I64, types::I64, types::I64, types::I64, types::I64, types::I64, types::I64],
             ret_ty: Some(types::I64), can_panic: false,
-            arg_adapt: ArgAdapt::ContainerCtor { leading: 5, tags: 2 }, ret_adapt: RetAdapt::None,
+            arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::None,
         },
         StdlibEntry::simple("Map_from", "rask_map_clone", &[types::I64], Some(types::I64), false),
         // `m[k] = v`: insert or replace, releasing the value it replaces.
@@ -715,13 +704,13 @@ pub(crate) fn internal_entries() -> Vec<StdlibEntry> {
             mir_name: "json_shape_vec", c_name: "rask_json_shape_vec",
             params: &[types::I64, types::I64, types::I64, types::I64, types::I64],
             ret_ty: Some(types::I64), can_panic: false,
-            arg_adapt: ArgAdapt::ContainerCtor { leading: 2, tags: 1 }, ret_adapt: RetAdapt::None,
+            arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::None,
         },
         StdlibEntry {
             mir_name: "json_shape_map", c_name: "rask_json_shape_map",
             params: &[types::I64, types::I64, types::I64, types::I64, types::I64],
             ret_ty: Some(types::I64), can_panic: false,
-            arg_adapt: ArgAdapt::ContainerCtor { leading: 2, tags: 1 }, ret_adapt: RetAdapt::None,
+            arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::None,
         },
         StdlibEntry::simple("json_shape_opt", "rask_json_shape_opt", &[types::I64, types::I64, types::I64], Some(types::I64), false),
         StdlibEntry::simple("json_shape_field", "rask_json_shape_field",
@@ -1074,8 +1063,8 @@ pub fn stdlib_entries() -> &'static [StdlibEntry] {
 ///   the null one for `none`; any other `X?` is a negative return for `none`;
 /// - a bare `T` comes back through an out-parameter as wide as the
 ///   destination;
-/// - a constructor in `rask_mir::elem_strs::CTORS` takes the sizes lowering
-///   passes and the element descriptions codegen expands.
+/// - an element description lowering passes (`MirConst::Elem`) becomes the
+///   three arguments the runtime takes for it (`expand_elem_descs`).
 ///
 /// What the types can't say, the attribute does (`rask_stdlib::NativeDecl`),
 /// and a call whose adaptation is written by hand (`builder::hand_adapted`)
@@ -1153,23 +1142,35 @@ fn declared_entry(
         return Ok(entry(ArgAdapt::None, RetAdapt::None));
     }
 
-    if let Some(&(_, leading, tags, _)) = rask_mir::elem_strs::CTORS
-        .iter()
-        .find(|(name, _, tags, _)| *name == mir_name && *tags > 0)
-    {
-        return Ok(entry(ArgAdapt::ContainerCtor { leading, tags }, RetAdapt::None));
-    }
-
     // Parameters of a type parameter's type, by argument position. The
-    // receiver is argument zero.
+    // receiver is argument zero. A declaration that lists its runtime
+    // arguments puts each parameter where the list does, after any facts
+    // ahead of it; a fact that expands to a varying number of arguments
+    // can't come first, or the position would depend on the call.
     let first = usize::from(m.takes_self);
+    let position = |i: usize| -> Result<usize, String> {
+        let Some(list) = &m.runtime_args else { return Ok(first + i) };
+        let at_list = list
+            .iter()
+            .position(|r| matches!(r, rask_stdlib::RuntimeArg::Param { index, .. } if *index == i))
+            .expect("every parameter is listed once");
+        if list[..at_list].iter().any(|r| {
+            matches!(
+                r,
+                rask_stdlib::RuntimeArg::Of(rask_stdlib::TypeFact::Desc | rask_stdlib::TypeFact::HashEq, _)
+            )
+        }) {
+            return Err(format!("{}: parameter {i} follows a fact of varying width", at()));
+        }
+        Ok(first + at_list)
+    };
     let by_address: Vec<usize> = m
         .params
         .iter()
         .enumerate()
         .filter(|(_, (_, ty))| is_type_param(ty))
-        .map(|(i, _)| i + first)
-        .collect();
+        .map(|(i, _)| position(i))
+        .collect::<Result<_, _>>()?;
     let wrap = match by_address.as_slice() {
         [] => ArgAdapt::None,
         [1] => ArgAdapt::WrapArg1,

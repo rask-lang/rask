@@ -7,10 +7,12 @@ public struct Vec<T> { }
 extend Vec<T> {
     /// Create a new empty vector.
     @native("rask_vec_new")
+    @runtime_args(size(T), desc(T))
     public func new() -> Vec<T> {}
 
     /// Create a vector with pre-allocated capacity.
     @native("rask_vec_with_capacity")
+    @runtime_args(size(T), n, desc(T))
     public func with_capacity(n: usize) -> Vec<T> {}
 
     /// A Vec holding each of an array's elements.
@@ -23,6 +25,7 @@ extend Vec<T> {
     /// Create a bounded vector that cannot grow beyond n elements (CP2, CP3).
     /// Pre-allocated at creation, and `push` past the bound panics.
     @native("rask_vec_fixed")
+    @runtime_args(size(T), n, desc(T))
     public func fixed(n: usize) -> Vec<T> {}
 
     /// Number of elements.
@@ -677,6 +680,7 @@ public struct Map<K, V> { }
 extend Map<K, V> {
     /// Create a new empty map.
     @native("rask_map_new")
+    @runtime_args(size(K), size(V), hash_eq(K), desc(K), desc(V))
     public func new() -> Map<K, V> {}
 
     /// A map holding each `(key, value)` pair. A key that appears twice
@@ -686,6 +690,7 @@ extend Map<K, V> {
 
     /// Create a map with pre-allocated capacity.
     @native("rask_map_new_cap")
+    @runtime_args(size(K), size(V), n, hash_eq(K), desc(K), desc(V))
     public func with_capacity(n: usize) -> Map<K, V> {}
 
     /// Number of entries.
