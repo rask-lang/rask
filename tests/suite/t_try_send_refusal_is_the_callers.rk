@@ -1,0 +1,41 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A refused `try_send` hands its value back inside `TrySendError`, and that
+// error is the caller's to release. `try_send` is declared `-> void or
+// TrySendError<T>`; a check that looked for the sender's `T` anywhere in that
+// type counted the error as a view into the sender, so nothing released it and
+// every refused string or struct leaked (leak_gate and memcheck_gate see it).
+
+import async.Sender
+
+struct Msg {
+    name: string
+    id: i64
+}
+
+test "a refused string comes back and is released" {
+    using Multitasking {
+        let (tx, rx) = Channel<string>.buffered(1)
+        rx.close()!
+        let n = 2
+        let r = tx.try_send("late-{n}-padded-past-sso-length")
+        assert r is TrySendError
+        match tx.try_send("again-{n}-padded-past-sso-length") {
+            TrySendError.Closed(v) => { assert v == "again-2-padded-past-sso-length" }
+            _ => { assert false }
+        }
+    }
+}
+
+test "a refused struct comes back and is released" {
+    using Multitasking {
+        let (tx, rx) = Channel<Msg>.buffered(1)
+        rx.close()!
+        let n = 3
+        if tx.try_send(Msg(name: "m-{n}-padded-past-sso-length", id: 3)) is TrySendError.Closed(m) {
+            assert m.name == "m-3-padded-past-sso-length"
+        } else {
+            assert false
+        }
+    }
+}

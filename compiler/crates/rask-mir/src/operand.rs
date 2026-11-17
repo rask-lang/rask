@@ -347,9 +347,14 @@ impl FunctionRef {
         self.shape.is_some_and(|s| s.moves_out())
     }
 
-    /// Does the result point into storage the receiver keeps owning?
+    /// Does the result point into storage an argument keeps owning?
     pub fn returns_a_view(&self) -> bool {
         self.shape.is_some_and(|s| s.returns_a_view())
+    }
+
+    /// Which argument the result points into, receiver first.
+    pub fn viewed_argument(&self) -> Option<usize> {
+        self.shape.and_then(|s| s.viewed_argument())
     }
 }
 
