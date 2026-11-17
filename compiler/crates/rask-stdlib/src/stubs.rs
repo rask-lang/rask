@@ -46,6 +46,7 @@ impl Layer {
 /// test checks.
 const LAYERS: &[(&str, Layer)] = &[
     ("ops.rk", Layer::Core),
+    ("cmp.rk", Layer::Core),
     ("option.rk", Layer::Core),
     ("result.rk", Layer::Core),
     ("int.rk", Layer::Core),
@@ -184,11 +185,6 @@ fn stub_file_id(index: usize) -> u16 {
 /// resolver's symbol for `cancelled` and the checker's declaration of it agree on
 /// which node they mean. They used to be six separate parses, each numbering
 /// from its own base.
-/// Every stdlib declaration as parsed, in source order.
-pub(crate) fn parsed_decls() -> impl Iterator<Item = &'static Decl> {
-    parsed_stdlib().iter().flatten().flatten()
-}
-
 fn parsed_stdlib() -> &'static [Option<Vec<Decl>>] {
     static PARSED: OnceLock<Vec<Option<Vec<Decl>>>> = OnceLock::new();
     PARSED.get_or_init(|| {
@@ -197,6 +193,11 @@ fn parsed_stdlib() -> &'static [Option<Vec<Decl>>] {
             .map(|i| parse_stub(i, &mut next_id))
             .collect()
     })
+}
+
+/// Every stub file's parsed declarations, in file order.
+pub(crate) fn parsed_decls() -> impl Iterator<Item = &'static Decl> {
+    parsed_stdlib().iter().flatten().flatten()
 }
 
 /// One stub file's parsed declarations by its name (`"ops.rk"`), or `None` if
@@ -429,6 +430,7 @@ const STUB_SOURCES: &[(&str, &str)] = &[
     // OR2: the operator interfaces. After num.rk so the numeric roster is in
     // place; nothing here has a body, so load order is otherwise free.
     ("ops.rk", include_str!("../../../../stdlib/ops.rk")),
+    ("cmp.rk", include_str!("../../../../stdlib/cmp.rk")),
     ("reflect.rk", include_str!("../../../../stdlib/reflect.rk")),
     ("fmt.rk", include_str!("../../../../stdlib/fmt.rk")),
     ("encoding.rk", include_str!("../../../../stdlib/encoding.rk")),

@@ -2074,8 +2074,7 @@ impl TypeChecker {
     }
 
     /// Replace the `Self` placeholder in an interface-method signature with the
-    /// receiver type. User interfaces spell it `Self`; builtin interface sigs use the
-    /// `Var(0)` placeholder (see `get_builtin_interface_methods`).
+    /// receiver type, written `Self` or held as the `Var(0)` placeholder.
     fn substitute_self_placeholder(ty: &Type, receiver: &Type) -> Type {
         match ty {
             Type::UnresolvedNamed(n) if n == "Self" => receiver.clone(),
@@ -2196,10 +2195,10 @@ impl TypeChecker {
             let params = if rask_stdlib::operators::is_unary_operator_interface(op) { vec![] } else { vec![ty.clone()] };
             return Some((params, ty.clone()));
         }
+        let interfaces = crate::interfaces::InterfaceChecker::new(&self.types);
         let sig = conformances
             .iter()
-            .filter_map(|i| crate::interfaces::builtin_interface_methods(i))
-            .flatten()
+            .flat_map(|i| interfaces.stdlib_interface_methods(i))
             .find(|m| m.name == method)?;
         let resolve = |t: &Type| match t {
             t if crate::interfaces::is_self_placeholder(t) => ty.clone(),
@@ -3402,9 +3401,10 @@ impl TypeChecker {
     /// `bool` for `lt` and its siblings, `Ordering` for `compare`. Read from
     /// the interface, so a name it doesn't require is never mistaken for one.
     fn comparable_answer(&self, method: &str) -> Option<Type> {
-        let sig = crate::interfaces::builtin_interface_methods("Comparable")?
-            .into_iter()
-            .find(|m| m.name == method)?;
+        // Its own methods only: `eq` comes from `Equal` and isn't an order.
+        let id = self.types.stdlib_interface("Comparable")?;
+        let Some(rask_types::TypeDef::Interface { methods, .. }) = self.types.get(id) else { return None };
+        let sig = methods.iter().find(|m| m.name == method)?;
         Some(match &sig.ret {
             Type::UnresolvedNamed(n) if n == "Ordering" => self.ordering_type(),
             other => other.clone(),

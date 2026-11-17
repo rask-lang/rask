@@ -1,0 +1,38 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+// Equality, order, hashing and copies.
+//
+// The compiler derives these for a type whose parts have them, and a type may
+// write its own (type.generics/G1, EQ2, CO2, HA2, CL1). `==` calls `eq`, and
+// `<`, `<=`, `>`, `>=` call the four below, which come from `compare`. They
+// sit apart from ops.rk, where every interface is one operator's method.
+
+public interface Equal {
+    func eq(self, other: Self) -> bool
+}
+
+public interface Comparable: Equal {
+    func compare(self, other: Self) -> Ordering
+
+    func lt(self, other: Self) -> bool {
+        return self.compare(other) == Ordering.Less
+    }
+    func le(self, other: Self) -> bool {
+        return self.compare(other) != Ordering.Greater
+    }
+    func gt(self, other: Self) -> bool {
+        return self.compare(other) == Ordering.Greater
+    }
+    func ge(self, other: Self) -> bool {
+        return self.compare(other) != Ordering.Less
+    }
+}
+
+@by_shape
+public interface Hashable: Equal {
+    func hash(self) -> u64
+}
+
+public interface Cloneable {
+    func clone(self) -> Self
+}

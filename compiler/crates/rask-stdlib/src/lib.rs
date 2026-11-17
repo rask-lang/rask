@@ -14,6 +14,7 @@ pub mod stubs;
 pub mod modules;
 pub mod mir_metadata;
 pub mod operators;
+pub mod interfaces;
 pub mod ordering;
 pub mod panic_messages;
 pub mod wrappers;

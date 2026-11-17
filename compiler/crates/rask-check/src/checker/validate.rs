@@ -602,12 +602,7 @@ impl TypeChecker {
                 rask_types::TypeDef::Interface { name, .. } => Some(name.clone()),
                 _ => None,
             })
-            .chain(
-                crate::COMPILER_PROVIDED_TRAITS
-                    .iter()
-                    .chain(["Numeric", "Integer", "Float", "Encode", "Decode", "ClaimInput"].iter())
-                    .map(|s| s.to_string()),
-            )
+            .chain(std::iter::once("ClaimInput".to_string()))
             .collect()
     }
 
