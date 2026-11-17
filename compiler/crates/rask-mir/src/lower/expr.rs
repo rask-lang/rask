@@ -2611,12 +2611,10 @@ impl<'a> MirLowerer<'a> {
                     };
                     let ret_ty = self.lookup_expr_type(expr).unwrap_or_else(|| crate::fallback::unknown_type("lower/expr:885"));
                     let result_local = self.builder.alloc_temp(ret_ty.clone());
-                    let taken = self.taken_params(func);
                     self.builder.push_stmt(MirStmt::dummy(MirStmtKind::ClosureCall {
                         dst: Some(result_local),
                         closure: callee_local,
                         args: arg_operands,
-                        taken,
                     }));
                     self.flush_elem_writebacks(wb_mark);
                     return Ok((MirOperand::Local(result_local), ret_ty));
@@ -2630,12 +2628,10 @@ impl<'a> MirLowerer<'a> {
             // element (#869, #1151, #1241, #1421).
             if let Some((closure_local, ret_ty)) = self.callable_local(func) {
                 let result_local = self.builder.alloc_temp(ret_ty.clone());
-                let taken = self.taken_params(func);
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::ClosureCall {
                     dst: Some(result_local),
                     closure: closure_local,
                     args: arg_operands,
-                    taken,
                 }));
                 self.flush_elem_writebacks(wb_mark);
                 return Ok((MirOperand::Local(result_local), ret_ty));
@@ -2900,7 +2896,7 @@ impl<'a> MirLowerer<'a> {
             .map(|(_, p)| MirOperand::Local(*p))
             .collect();
         let dst = if ret_ty == MirType::Void { None } else { Some(tb.alloc_temp(ret_ty.clone())) };
-        tb.push_stmt(MirStmt::dummy(MirStmtKind::ClosureCall { dst, closure: params[cc.spec.at], args: rest, taken: Vec::new() }));
+        tb.push_stmt(MirStmt::dummy(MirStmtKind::ClosureCall { dst, closure: params[cc.spec.at], args: rest }));
         tb.terminate(MirTerminator::dummy(MirTerminatorKind::Return { value: dst.map(MirOperand::Local) }));
         let mut tramp = tb.finish();
         tramp.is_extern_c = true;
@@ -7412,12 +7408,6 @@ impl<'a> MirLowerer<'a> {
             rvalue: MirRValue::Deref(ptr),
         }));
         (MirOperand::Local(value), want)
-    }
-
-    /// Which parameters of the function value `callee` is are `take`, from the
-    /// checker's type for it. A call through it hands those arguments over.
-    fn taken_params(&self, callee: &Expr) -> Vec<bool> {
-        self.param_modes_of(callee).into_iter().map(|m| m == rask_ast::ty::ParamMode::Take).collect()
     }
 
     /// The parameter modes of the function value `expr` is, from the

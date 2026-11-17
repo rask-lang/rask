@@ -547,7 +547,6 @@ impl<'a> MirContext<'a> {
             lent_captures: &records.lent_captures,
             field_reuses: &records.field_reuses,
             quiet_loops: &records.quiet_loops,
-            loops_giving_items_away: &records.loops_giving_items_away,
             return_moves: &records.return_moves,
             task_bound_closures: NodeSet::of(&records.task_bound_closures),
             type_names,
@@ -754,9 +753,6 @@ pub struct MirContext<'a> {
     /// `for` loops over links that no delete can reach, by source expression
     /// (ownership): walked without recording the list or keeping a cursor.
     pub quiet_loops: &'a std::collections::HashSet<NodeId>,
-    /// `for` loops whose body gives its item away, by source expression
-    /// (ownership): over a sequence, the yield body's item is a `take`.
-    pub loops_giving_items_away: &'a std::collections::HashSet<NodeId>,
     /// The bindings each `return` moves, keyed by the returned expression
     /// (ownership). A `for` body over a sequence returns from inside a
     /// closure, and the frame learns from this what left on that exit.
@@ -1106,7 +1102,6 @@ impl<'a> MirContext<'a> {
             lent_captures: &EMPTY_LENT,
             field_reuses: &EMPTY_ESCAPING,
             quiet_loops: &EMPTY_ESCAPING,
-            loops_giving_items_away: &EMPTY_ESCAPING,
             return_moves: &EMPTY_RETURN_MOVES,
             task_bound_closures: NodeSet::of(&EMPTY_ESCAPING),
             try_chain_placement: &EMPTY_TRY_PLACEMENT,
@@ -7960,7 +7955,6 @@ mod tests {
             lent_captures: &empty_lent,
             field_reuses: &empty_escaping,
             quiet_loops: &empty_escaping,
-            loops_giving_items_away: &empty_escaping,
             return_moves: &empty_return_moves,
             task_bound_closures: NodeSet::of(&empty_escaping),
             try_chain_placement: &empty_try_placement,
@@ -8065,7 +8059,6 @@ mod tests {
             lent_captures: &empty_lent,
             field_reuses: &empty_escaping,
             quiet_loops: &empty_escaping,
-            loops_giving_items_away: &empty_escaping,
             return_moves: &empty_return_moves,
             task_bound_closures: NodeSet::of(&empty_escaping),
             try_chain_placement: &empty_try_placement,
@@ -8177,7 +8170,6 @@ mod tests {
             lent_captures: &empty_lent,
             field_reuses: &empty_escaping,
             quiet_loops: &empty_escaping,
-            loops_giving_items_away: &empty_escaping,
             return_moves: &empty_return_moves,
             task_bound_closures: NodeSet::of(&empty_escaping),
             try_chain_placement: &empty_try_placement,

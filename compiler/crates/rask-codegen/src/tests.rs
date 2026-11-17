@@ -80,6 +80,7 @@ mod tests {
             is_extern_c: false,
             inline_hint: false,
             param_modes: Vec::new(),
+            item_mode_from_body: false,
             source_file: None,
         };
 
@@ -104,6 +105,7 @@ mod tests {
             is_extern_c: false,
             inline_hint: false,
             param_modes: Vec::new(),
+            item_mode_from_body: false,
             source_file: None,
         };
 
@@ -141,6 +143,7 @@ mod tests {
             is_extern_c: false,
             inline_hint: false,
             param_modes: Vec::new(),
+            item_mode_from_body: false,
             source_file: None,
         };
 
@@ -183,6 +186,7 @@ mod tests {
             is_extern_c: false,
             inline_hint: false,
             param_modes: Vec::new(),
+            item_mode_from_body: false,
             source_file: None,
         };
 
@@ -202,6 +206,7 @@ mod tests {
             is_extern_c: false,
             inline_hint: false,
             param_modes: Vec::new(),
+            item_mode_from_body: false,
             source_file: None,
         };
 
@@ -226,6 +231,7 @@ mod tests {
             is_extern_c: false,
             inline_hint: false,
             param_modes: Vec::new(),
+            item_mode_from_body: false,
             source_file: None,
         };
 
@@ -243,6 +249,7 @@ mod tests {
             is_extern_c: false,
             inline_hint: false,
             param_modes: Vec::new(),
+            item_mode_from_body: false,
             source_file: None,
         };
 
@@ -294,6 +301,7 @@ mod tests {
             is_extern_c: false,
             inline_hint: false,
             param_modes: Vec::new(),
+            item_mode_from_body: false,
             source_file: None,
         };
 
@@ -363,6 +371,7 @@ mod tests {
             is_extern_c: false,
             inline_hint: false,
             param_modes: Vec::new(),
+            item_mode_from_body: false,
             source_file: None,
         };
 
@@ -407,6 +416,7 @@ mod tests {
             is_extern_c: false,
             inline_hint: false,
             param_modes: Vec::new(),
+            item_mode_from_body: false,
             source_file: None,
         };
 
@@ -450,6 +460,7 @@ mod tests {
             is_extern_c: false,
             inline_hint: false,
             param_modes: Vec::new(),
+            item_mode_from_body: false,
             source_file: None,
         };
 
@@ -479,6 +490,7 @@ mod tests {
             is_extern_c: false,
             inline_hint: false,
             param_modes: Vec::new(),
+            item_mode_from_body: false,
             source_file: None,
         };
 
@@ -523,6 +535,7 @@ mod tests {
             is_extern_c: false,
             inline_hint: false,
             param_modes: Vec::new(),
+            item_mode_from_body: false,
             source_file: None,
         };
 
@@ -553,6 +566,7 @@ mod tests {
             is_extern_c: false,
             inline_hint: false,
             param_modes: Vec::new(),
+            item_mode_from_body: false,
             source_file: None,
         };
 
@@ -583,6 +597,7 @@ mod tests {
             is_extern_c: false,
             inline_hint: false,
             param_modes: Vec::new(),
+            item_mode_from_body: false,
             source_file: None,
         };
 
@@ -608,6 +623,7 @@ mod tests {
             is_extern_c: false,
             inline_hint: false,
             param_modes: Vec::new(),
+            item_mode_from_body: false,
             source_file: None,
         };
 
@@ -650,6 +666,7 @@ mod tests {
             is_extern_c: false,
             inline_hint: false,
             param_modes: Vec::new(),
+            item_mode_from_body: false,
             source_file: None,
         };
 
@@ -690,6 +707,7 @@ mod tests {
             is_extern_c: false,
             inline_hint: false,
             param_modes: Vec::new(),
+            item_mode_from_body: false,
             source_file: None,
         };
 
@@ -729,6 +747,7 @@ mod tests {
             is_extern_c: false,
             inline_hint: false,
             param_modes: Vec::new(),
+            item_mode_from_body: false,
             source_file: None,
         };
 
@@ -782,6 +801,7 @@ mod tests {
             is_extern_c: false,
             inline_hint: false,
             param_modes: Vec::new(),
+            item_mode_from_body: false,
             source_file: None,
         };
 
@@ -821,6 +841,7 @@ mod tests {
             is_extern_c: false,
             inline_hint: false,
             param_modes: Vec::new(),
+            item_mode_from_body: false,
             source_file: None,
         };
 
@@ -855,6 +876,7 @@ mod tests {
             is_extern_c: false,
             inline_hint: false,
             param_modes: Vec::new(),
+            item_mode_from_body: false,
             source_file: None,
         };
 
@@ -891,6 +913,7 @@ mod tests {
             is_extern_c: false,
             inline_hint: false,
             param_modes: Vec::new(),
+            item_mode_from_body: false,
             source_file: None,
         };
 
@@ -923,6 +946,7 @@ mod tests {
             is_extern_c: false,
             inline_hint: false,
             param_modes: Vec::new(),
+            item_mode_from_body: false,
             source_file: None,
         };
 
@@ -956,6 +980,7 @@ mod tests {
             is_extern_c: false,
             inline_hint: false,
             param_modes: Vec::new(),
+            item_mode_from_body: false,
             source_file: None,
         };
 
@@ -989,6 +1014,7 @@ mod tests {
             is_extern_c: false,
             inline_hint: false,
             param_modes: Vec::new(),
+            item_mode_from_body: false,
             source_file: None,
         };
 
@@ -1030,6 +1056,7 @@ mod tests {
             is_extern_c: false,
             inline_hint: false,
             param_modes: Vec::new(),
+            item_mode_from_body: false,
             source_file: None,
         };
 
@@ -1069,6 +1096,7 @@ mod tests {
             is_extern_c: false,
             inline_hint: false,
             param_modes: Vec::new(),
+            item_mode_from_body: false,
             source_file: None,
         };
 
@@ -1117,6 +1145,7 @@ mod tests {
             is_extern_c: false,
             inline_hint: false,
             param_modes: Vec::new(),
+            item_mode_from_body: false,
             source_file: None,
         };
 
@@ -1151,6 +1180,7 @@ mod tests {
             is_extern_c: false,
             inline_hint: false,
             param_modes: Vec::new(),
+            item_mode_from_body: false,
             source_file: None,
         };
 
@@ -1182,6 +1212,7 @@ mod tests {
             is_extern_c: false,
             inline_hint: false,
             param_modes: Vec::new(),
+            item_mode_from_body: false,
             source_file: None,
         };
 
@@ -1215,6 +1246,7 @@ mod tests {
             is_extern_c: false,
             inline_hint: false,
             param_modes: Vec::new(),
+            item_mode_from_body: false,
             source_file: None,
         };
 
@@ -1250,6 +1282,7 @@ mod tests {
             is_extern_c: false,
             inline_hint: false,
             param_modes: Vec::new(),
+            item_mode_from_body: false,
             source_file: None,
         };
 
@@ -1281,6 +1314,7 @@ mod tests {
             is_extern_c: false,
             inline_hint: false,
             param_modes: Vec::new(),
+            item_mode_from_body: false,
             source_file: None,
         };
 
@@ -1302,6 +1336,7 @@ mod tests {
             is_extern_c: false,
             inline_hint: false,
             param_modes: Vec::new(),
+            item_mode_from_body: false,
             source_file: None,
         };
 
@@ -1319,6 +1354,7 @@ mod tests {
             is_extern_c: false,
             inline_hint: false,
             param_modes: Vec::new(),
+            item_mode_from_body: false,
             source_file: None,
         };
 
@@ -1389,6 +1425,7 @@ mod tests {
             is_extern_c: false,
             inline_hint: false,
             param_modes: Vec::new(),
+            item_mode_from_body: false,
             source_file: None,
         };
 
@@ -1413,7 +1450,6 @@ mod tests {
                         dst: Some(LocalId(1)),
                         closure: LocalId(0),
                         args: vec![MirOperand::Constant(MirConst::Int(42))],
-                        taken: Vec::new(),
                     }),
                 ], ret(Some(local_op(1)))),
             ],
@@ -1421,6 +1457,7 @@ mod tests {
             is_extern_c: false,
             inline_hint: false,
             param_modes: Vec::new(),
+            item_mode_from_body: false,
             source_file: None,
         };
 
@@ -1471,6 +1508,7 @@ mod tests {
             is_extern_c: false,
             inline_hint: false,
             param_modes: Vec::new(),
+            item_mode_from_body: false,
             source_file: None,
         };
 
@@ -1506,7 +1544,6 @@ mod tests {
                         dst: Some(LocalId(2)),
                         closure: LocalId(1),
                         args: vec![],
-                        taken: Vec::new(),
                     }),
                 ], ret(Some(local_op(2)))),
             ],
@@ -1514,6 +1551,7 @@ mod tests {
             is_extern_c: false,
             inline_hint: false,
             param_modes: Vec::new(),
+            item_mode_from_body: false,
             source_file: None,
         };
 
@@ -1567,6 +1605,7 @@ mod tests {
             is_extern_c: false,
             inline_hint: false,
             param_modes: Vec::new(),
+            item_mode_from_body: false,
             source_file: None,
         };
 
@@ -1596,6 +1635,7 @@ mod tests {
             is_extern_c: false,
             inline_hint: false,
             param_modes: Vec::new(),
+            item_mode_from_body: false,
             source_file: None,
         };
 
@@ -1614,7 +1654,6 @@ mod tests {
                         dst: Some(LocalId(1)),
                         closure: LocalId(0),
                         args: vec![],
-                        taken: Vec::new(),
                     }),
                 ], ret(Some(local_op(1)))),
             ],
@@ -1622,6 +1661,7 @@ mod tests {
             is_extern_c: false,
             inline_hint: false,
             param_modes: Vec::new(),
+            item_mode_from_body: false,
             source_file: None,
         };
 
@@ -1665,6 +1705,7 @@ mod tests {
             is_extern_c: false,
             inline_hint: false,
             param_modes: Vec::new(),
+            item_mode_from_body: false,
             source_file: None,
         };
 
@@ -1698,6 +1739,7 @@ mod tests {
             is_extern_c: false,
             inline_hint: false,
             param_modes: Vec::new(),
+            item_mode_from_body: false,
             source_file: None,
         };
 
@@ -1751,6 +1793,7 @@ mod tests {
             is_extern_c: false,
             inline_hint: false,
             param_modes: Vec::new(),
+            item_mode_from_body: false,
             source_file: None,
         };
 
@@ -1780,7 +1823,6 @@ mod tests {
                         dst: Some(LocalId(3)),
                         closure: LocalId(2),
                         args: vec![],
-                        taken: Vec::new(),
                     }),
                 ], ret(Some(local_op(3)))),
             ],
@@ -1788,6 +1830,7 @@ mod tests {
             is_extern_c: false,
             inline_hint: false,
             param_modes: Vec::new(),
+            item_mode_from_body: false,
             source_file: None,
         };
 
@@ -1816,7 +1859,6 @@ mod tests {
                         dst: Some(LocalId(2)),
                         closure: LocalId(1),
                         args: vec![],
-                        taken: Vec::new(),
                     }),
                 ], ret(Some(local_op(2)))),
             ],
@@ -1824,6 +1866,7 @@ mod tests {
             is_extern_c: false,
             inline_hint: false,
             param_modes: Vec::new(),
+            item_mode_from_body: false,
             source_file: None,
         };
 
@@ -1870,6 +1913,7 @@ mod tests {
             is_extern_c: false,
             inline_hint: false,
             param_modes: Vec::new(),
+            item_mode_from_body: false,
             source_file: None,
         };
 
@@ -1909,7 +1953,6 @@ mod tests {
                         dst: Some(LocalId(2)),
                         closure: LocalId(1),
                         args: vec![local_op(0)],
-                        taken: Vec::new(),
                     }),
                     assign(0, MirRValue::BinaryOp {
                         op: BinOp::Add,
@@ -1924,6 +1967,7 @@ mod tests {
             is_extern_c: false,
             inline_hint: false,
             param_modes: Vec::new(),
+            item_mode_from_body: false,
             source_file: None,
         };
 
@@ -1973,6 +2017,7 @@ mod tests {
             is_extern_c: false,
             inline_hint: false,
             param_modes: Vec::new(),
+            item_mode_from_body: false,
             source_file: None,
         };
 
@@ -2001,6 +2046,7 @@ mod tests {
             is_extern_c: false,
             inline_hint: false,
             param_modes: Vec::new(),
+            item_mode_from_body: false,
             source_file: None,
         };
 
@@ -2042,7 +2088,6 @@ mod tests {
                         dst: Some(LocalId(2)),
                         closure: LocalId(1),
                         args: vec![MirOperand::Constant(MirConst::Int(10))],
-                        taken: Vec::new(),
                     }),
                 ], ret(Some(local_op(2)))),
             ],
@@ -2050,6 +2095,7 @@ mod tests {
             is_extern_c: false,
             inline_hint: false,
             param_modes: Vec::new(),
+            item_mode_from_body: false,
             source_file: None,
         };
 

@@ -645,9 +645,6 @@ pub struct TypedProgram {
     /// expression: lowering walks those without recording the list with its
     /// rack (mem.racks/RK16). Written back by the ownership pass.
     pub quiet_loops: std::collections::HashSet<NodeId>,
-    /// `for` loops whose body gives its item away, by source expression
-    /// (ownership). Over a sequence, the yield closure takes its item.
-    pub loops_giving_items_away: std::collections::HashSet<NodeId>,
     /// The bindings each `return` moves, keyed by the returned expression
     /// (`rask_ownership::ReturnMoves`). Written back by the ownership pass.
     pub return_moves: std::collections::HashMap<NodeId, Vec<String>>,

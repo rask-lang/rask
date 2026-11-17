@@ -765,11 +765,10 @@ fn remap_stmt(
                 .collect(),
             heap: *heap,
         },
-        MirStmtKind::ClosureCall { dst, closure, args, taken } => MirStmtKind::ClosureCall {
+        MirStmtKind::ClosureCall { dst, closure, args } => MirStmtKind::ClosureCall {
             dst: dst.map(|d| local_map.get(&d).copied().unwrap_or(d)),
             closure: local_map.get(closure).copied().unwrap_or(*closure),
             args: args.iter().map(|a| remap_operand(a, local_map)).collect(),
-            taken: taken.clone(),
         },
         MirStmtKind::BindPlace { dst, addr } => MirStmtKind::BindPlace {
             dst: local_map.get(dst).copied().unwrap_or(*dst),
@@ -1191,6 +1190,7 @@ mod tests {
             is_extern_c: false,
             inline_hint: false,
             param_modes: Vec::new(),
+            item_mode_from_body: false,
             source_file: None,
 
         }
@@ -1220,6 +1220,7 @@ mod tests {
             is_extern_c: false,
             inline_hint: false,
             param_modes: Vec::new(),
+            item_mode_from_body: false,
             source_file: None,
 
         }
@@ -1288,6 +1289,7 @@ mod tests {
             is_extern_c: false,
             inline_hint: false,
             param_modes: Vec::new(),
+            item_mode_from_body: false,
             source_file: None,
         };
         let caller = MirFunction {
@@ -1308,6 +1310,7 @@ mod tests {
             is_extern_c: false,
             inline_hint: false,
             param_modes: Vec::new(),
+            item_mode_from_body: false,
             source_file: None,
         };
 
@@ -1378,6 +1381,7 @@ mod tests {
                 is_extern_c: false,
                 inline_hint: false,
                 param_modes: Vec::new(),
+                item_mode_from_body: false,
                 source_file: None,
     
             },
@@ -1413,6 +1417,7 @@ mod tests {
             is_extern_c: false,
             inline_hint: false,
             param_modes: Vec::new(),
+            item_mode_from_body: false,
             source_file: None,
         }
     }
@@ -1423,7 +1428,6 @@ mod tests {
             dst: None,
             closure: LocalId(1),
             args: vec![MirOperand::Local(LocalId(0))],
-            taken: Vec::new(),
         });
         let written = params_written_through(&[f]);
         assert!(written["write"].contains(&0), "self goes to the closure by address");
@@ -1464,6 +1468,7 @@ mod tests {
             is_extern_c: false,
             inline_hint: false,
             param_modes: Vec::new(),
+            item_mode_from_body: false,
             source_file: None,
 
         }];

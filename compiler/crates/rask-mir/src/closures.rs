@@ -1715,7 +1715,6 @@ mod tests {
                         dst: Some(LocalId(1)),
                         closure: LocalId(0),
                         args: vec![],
-                        taken: Vec::new(),
                     }),
                 ], ret(Some(MirOperand::Local(LocalId(1))))),
             ],
@@ -1723,6 +1722,7 @@ mod tests {
             is_extern_c: false,
             inline_hint: false,
             param_modes: Vec::new(),
+            item_mode_from_body: false,
             source_file: None,
         };
 
@@ -1756,6 +1756,7 @@ mod tests {
             is_extern_c: false,
             inline_hint: false,
             param_modes: Vec::new(),
+            item_mode_from_body: false,
             source_file: None,
         }];
 
@@ -1793,6 +1794,7 @@ mod tests {
             is_extern_c: false,
             inline_hint: false,
             param_modes: Vec::new(),
+            item_mode_from_body: false,
             source_file: None,
         }];
 
@@ -1817,7 +1819,6 @@ mod tests {
                         dst: Some(LocalId(1)),
                         closure: LocalId(0),
                         args: vec![],
-                        taken: Vec::new(),
                     }),
                 ], ret(Some(MirOperand::Local(LocalId(1))))),
             ],
@@ -1825,6 +1826,7 @@ mod tests {
             is_extern_c: false,
             inline_hint: false,
             param_modes: Vec::new(),
+            item_mode_from_body: false,
             source_file: None,
         };
 
@@ -1853,6 +1855,7 @@ mod tests {
             is_extern_c: false,
             inline_hint: false,
             param_modes: Vec::new(),
+            item_mode_from_body: false,
             source_file: None,
         };
 
@@ -1887,6 +1890,7 @@ mod tests {
             is_extern_c: false,
             inline_hint: false,
             param_modes: Vec::new(),
+            item_mode_from_body: false,
             source_file: None,
         };
 
@@ -1915,6 +1919,7 @@ mod tests {
             is_extern_c: false,
             inline_hint: false,
             param_modes: Vec::new(),
+            item_mode_from_body: false,
             source_file: None,
         };
 
@@ -1953,7 +1958,6 @@ mod tests {
                         dst: Some(LocalId(1)),
                         closure: LocalId(0),
                         args: vec![],
-                        taken: Vec::new(),
                     }),
                 ], ret(Some(MirOperand::Local(LocalId(1))))),
             ],
@@ -1961,6 +1965,7 @@ mod tests {
             is_extern_c: false,
             inline_hint: false,
             param_modes: Vec::new(),
+            item_mode_from_body: false,
             source_file: None,
         }];
 
@@ -2012,7 +2017,6 @@ mod tests {
                         dst: Some(LocalId(2)),
                         closure: LocalId(1),
                         args: vec![],
-                        taken: Vec::new(),
                     }),
                 ], ret(Some(MirOperand::Local(LocalId(2))))),
             ],
@@ -2020,6 +2024,7 @@ mod tests {
             is_extern_c: false,
             inline_hint: false,
             param_modes: Vec::new(),
+            item_mode_from_body: false,
             source_file: None,
         };
 
@@ -2041,7 +2046,6 @@ mod tests {
                         dst: Some(LocalId(1)),
                         closure: LocalId(0),
                         args: vec![],
-                        taken: Vec::new(),
                     }),
                 ], ret(Some(MirOperand::Local(LocalId(1))))),
             ],
@@ -2049,6 +2053,7 @@ mod tests {
             is_extern_c: false,
             inline_hint: false,
             param_modes: Vec::new(),
+            item_mode_from_body: false,
             source_file: None,
         };
 
@@ -2107,6 +2112,7 @@ mod tests {
             is_extern_c: false,
             inline_hint: false,
             param_modes: Vec::new(),
+            item_mode_from_body: false,
             source_file: None,
         };
 
@@ -2132,13 +2138,11 @@ mod tests {
                         dst: Some(LocalId(1)),
                         closure: LocalId(0),
                         args: vec![],
-                        taken: Vec::new(),
                     }),
                     MirStmt::dummy(MirStmtKind::ClosureCall {
                         dst: Some(LocalId(2)),
                         closure: LocalId(1),
                         args: vec![],
-                        taken: Vec::new(),
                     }),
                 ], ret(Some(MirOperand::Local(LocalId(2))))),
             ],
@@ -2146,6 +2150,7 @@ mod tests {
             is_extern_c: false,
             inline_hint: false,
             param_modes: Vec::new(),
+            item_mode_from_body: false,
             source_file: None,
         };
 
@@ -2213,7 +2218,6 @@ mod tests {
                         dst: Some(LocalId(2)),
                         closure: LocalId(1),
                         args: vec![],
-                        taken: Vec::new(),
                     }),
                 ], MirTerminator::dummy(MirTerminatorKind::Goto { target: BlockId(1) })),
                 block(3, vec![], ret(Some(MirOperand::Local(LocalId(0))))),
@@ -2222,6 +2226,7 @@ mod tests {
             is_extern_c: false,
             inline_hint: false,
             param_modes: Vec::new(),
+            item_mode_from_body: false,
             source_file: None,
         }];
 
@@ -2280,6 +2285,7 @@ mod tests {
             is_extern_c: false,
             inline_hint: false,
             param_modes: Vec::new(),
+            item_mode_from_body: false,
             source_file: None,
         }];
 
@@ -2341,7 +2347,6 @@ mod tests {
                         dst: Some(LocalId(2)),
                         closure: LocalId(1),
                         args: vec![],
-                        taken: Vec::new(),
                     }),
                 ], MirTerminator::dummy(MirTerminatorKind::Goto { target: BlockId(3) })),
                 block(2, vec![
@@ -2356,7 +2361,6 @@ mod tests {
                         dst: Some(LocalId(4)),
                         closure: LocalId(3),
                         args: vec![],
-                        taken: Vec::new(),
                     }),
                 ], MirTerminator::dummy(MirTerminatorKind::Goto { target: BlockId(3) })),
                 block(3, vec![], ret(Some(MirOperand::Constant(MirConst::Int(0))))),
@@ -2365,6 +2369,7 @@ mod tests {
             is_extern_c: false,
             inline_hint: false,
             param_modes: Vec::new(),
+            item_mode_from_body: false,
             source_file: None,
         }];
 
@@ -2421,6 +2426,7 @@ mod tests {
             is_extern_c: false,
             inline_hint: false,
             param_modes: Vec::new(),
+            item_mode_from_body: false,
             source_file: None,
         }];
 
@@ -2483,7 +2489,6 @@ mod tests {
                         dst: Some(LocalId(2)),
                         closure: LocalId(1),
                         args: vec![],
-                        taken: Vec::new(),
                     }),
                 ], MirTerminator::dummy(MirTerminatorKind::Goto { target: BlockId(1) })),
                 block(3, vec![], ret(None)),
@@ -2492,6 +2497,7 @@ mod tests {
             is_extern_c: false,
             inline_hint: false,
             param_modes: Vec::new(),
+            item_mode_from_body: false,
             source_file: None,
         }];
 
@@ -2546,6 +2552,7 @@ mod tests {
             is_extern_c: false,
             inline_hint: false,
             param_modes: Vec::new(),
+            item_mode_from_body: false,
             source_file: None,
         };
         let mut fns = vec![func];

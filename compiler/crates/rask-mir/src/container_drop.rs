@@ -644,9 +644,9 @@ fn captures_consumed_by_bodies(fns: &[MirFunction]) -> HashMap<&str, HashSet<u32
 ///
 /// A task block runs once, so it owns what it captured (conc.async/S6), and
 /// what it gives away is not the environment's to free when the task ends.
-/// `capture_is_kept_by` answers it for each capture the block loads. Conservative the same way: a capture given
-/// away on one path counts, which leaks on the other path rather than freeing
-/// twice.
+/// `local_is_kept_by` answers it for each capture the block loads. A capture
+/// given away on one path counts, which leaks on the other path rather than
+/// freeing twice.
 ///
 /// `consumed` is what each closure body takes away from its own captures
 /// (`captures_consumed_by_bodies`), so a capture the block only lends to a
@@ -671,7 +671,7 @@ pub(crate) fn task_captures_given_away(
                 Some(*offset)
             }
             MirStmtKind::LoadCapture { dst, offset, access: crate::CaptureAccess::Taken, .. } => {
-                capture_is_kept_by(func, *dst, kept, consumed, targets, reach).then_some(*offset)
+                local_is_kept_by(func, *dst, kept, consumed, targets, reach).then_some(*offset)
             }
             _ => None,
         })
@@ -823,7 +823,43 @@ fn build_env_drop(
         // Codegen calls it on the environment the closure value owns; it
         // releases the captures and leaves the block itself to the caller.
         param_modes: vec![ParamMode::Borrow],
+        item_mode_from_body: false,
         source_file,
+    }
+}
+
+/// Give each `for` body over a sequence the item mode its body calls for:
+/// Take where it keeps the item, so the sequence hands the item over instead of
+/// releasing it after the call (type.sequence/SEQ47).
+///
+/// Ownership can't say this. It tracks bindings by name, so a body-local
+/// that shadows the item read as the item, and `return x`, `keep = x` or a
+/// field store keep a value without passing through a consume. Reading the
+/// body lowering made sees every one.
+///
+/// Grows to a fixed point: a body may keep its item by handing it to a call
+/// through a closure that reaches another loop body.
+pub(crate) fn settle_loop_item_modes(fns: &mut [MirFunction]) {
+    let targets = crate::closure_targets::ClosureTargets::build(fns);
+    let reach = ClosureReach::build(fns);
+    let consumed: HashMap<String, HashSet<u32>> =
+        fns.iter().map(|f| (f.name.clone(), captures_the_body_consumes(f))).collect();
+    let consumed: HashMap<&str, HashSet<u32>> = consumed.iter().map(|(k, v)| (k.as_str(), v.clone())).collect();
+    loop {
+        let kept = params_a_callee_keeps(fns);
+        let keeps: Vec<usize> = fns
+            .iter()
+            .enumerate()
+            .filter(|(_, f)| f.item_mode_from_body && f.param_modes.get(1) == Some(&ParamMode::Borrow))
+            .filter(|(_, f)| local_is_kept_by(f, f.params[1].id, &kept, &consumed, &targets, &reach))
+            .map(|(i, _)| i)
+            .collect();
+        if keeps.is_empty() {
+            return;
+        }
+        for i in keeps {
+            fns[i].param_modes[1] = ParamMode::Take;
+        }
     }
 }
 
@@ -838,11 +874,9 @@ fn build_env_drop(
 /// refilled (PM7), the new value the caller's to release (#1885).
 ///
 /// Every function says how it takes each parameter (`BlockBuilder::add_param`),
-/// lowering's own as well: a yield body takes its item when the loop gives it
-/// away (`loops_giving_items_away`). This was once worked out from each body —
-/// a parameter returned, stored or passed to a keeper counted as kept — which
-/// had to be grown to a fixed point over every function and still guessed for
-/// the ones lowering made up.
+/// lowering's own as well, and a loop body's item once `settle_loop_item_modes`
+/// has run. This was once worked out from every function's body, grown to a
+/// fixed point, though a declared function's mode already said it (PM6).
 pub(crate) fn params_a_callee_keeps(fns: &[MirFunction]) -> HashMap<String, Vec<bool>> {
     fns.iter()
         .map(|f| {
@@ -957,13 +991,14 @@ fn interface_methods_that_hand_back(
         .collect()
 }
 
-/// Does a task block hold on to the capture it loaded into `param`?
+/// Does `func` hold on to the value in `param`: returned, stored, captured by
+/// a closure that outlives the frame, or handed to a parameter written `take`?
 ///
-/// A capture has no declared mode, so this reads the body: returned, stored,
-/// captured by a closure that outlives the block, or handed to a parameter
-/// written `take`. Ownership checked the same moves; recording them there
-/// would let this go.
-fn capture_is_kept_by(
+/// Asked of the two values that arrive without a declared mode: what a task
+/// block loads from its captures, and the item a `for` body over a sequence is
+/// handed (`settle_loop_item_modes`). Both are code lowering made, so reading
+/// it is reading the declaration.
+fn local_is_kept_by(
     func: &MirFunction,
     param: LocalId,
     kept: &HashMap<String, Vec<bool>>,

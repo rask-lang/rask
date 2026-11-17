@@ -525,13 +525,12 @@ fn retain_views_handed_over(
                         }
                     }
                 }
-                // The same through a closure value: a `take` argument the
-                // body keeps.
-                MirStmtKind::ClosureCall { closure, args, taken, .. } => {
+                // The same through a closure value: an argument the bodies
+                // behind it take.
+                MirStmtKind::ClosureCall { closure, args, .. } => {
                     for (i, arg) in args.iter().enumerate() {
                         let Some(id) = uses::operand_local(arg) else { continue };
-                        if taken.get(i) == Some(&true)
-                            && closure_keeps(&func_name, *closure, i, args.len())
+                        if closure_keeps(&func_name, *closure, i, args.len())
                             && copies(si, id, None, &block.statements, &block.terminator)
                         {
                             insertions.push((si, id));
@@ -1545,22 +1544,23 @@ fn insert_aggregate_release(
                 // (#1441).
                 //
                 // An argument goes to the callee the way it does on a direct
-                // call: when the parameter is `take` (the function value's
-                // type says) and the body behind the call keeps it (what
-                // `container_drop` reads). Counted as a loan, a `Heap` read out
-                // of an optional and handed to a `func(take Heap<i64>)` value
-                // was freed by the callee and then again with the optional.
-                // Asking only the bodies counted a lent sequence item put in a
-                // tuple as kept, and the string it came from leaked; asking
-                // only the mode left a `take` argument the body doesn't keep
-                // to nobody.
-                MirStmtKind::ClosureCall { dst, closure, args, taken } => {
+                // call: when the parameter the bodies behind the call declare
+                // is `take`. Counted as a loan, a `Heap` read out of an
+                // optional and handed to a `func(take Heap<i64>)` value was
+                // freed by the callee and then again with the optional.
+                //
+                // The bodies' modes, not the function value's type: a `for`
+                // body over a sequence is called through `func(T) -> bool`
+                // (the yield lends, SEQ34) and still takes an item the chain
+                // owns when it keeps it (SEQ47). Requiring the type to say
+                // `take` as well left a struct item the body returned to be
+                // released by the sequence after the call.
+                MirStmtKind::ClosureCall { dst, closure, args, .. } => {
                     for (i, arg) in args.iter().enumerate() {
                         let Some(id) = uses::operand_local(arg) else { continue };
                         if is_tracked(&id)
                             && !retained.contains(&id)
                             && !retained_for_this.contains(&id)
-                            && taken.get(i) == Some(&true)
                             && closure_keeps(&func_name, *closure, i, args.len())
                         {
                             ev.push(ownership::Event::HandOver(id));
@@ -2705,6 +2705,7 @@ mod tests {
             is_extern_c: false,
             inline_hint: false,
             param_modes: Vec::new(),
+            item_mode_from_body: false,
             source_file: None,
         }
     }
@@ -2768,6 +2769,7 @@ mod tests {
             is_extern_c: false,
             inline_hint: false,
             param_modes: Vec::new(),
+            item_mode_from_body: false,
             source_file: None,
         };
         insert_rc_ops(&mut f, &HashMap::new(), &HashMap::new(), &HashSet::new(), &|_, _, _, _| false, &HashSet::new(), &crate::CopyLayouts::default(), rask_ast::Target::default());

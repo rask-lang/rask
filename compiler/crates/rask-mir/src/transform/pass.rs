@@ -160,6 +160,8 @@ impl PassManager {
         // and one in a block nothing reaches — the code after a `panic` — is
         // not a path the value takes.
         pm.add(UnreachableBlockPass);
+        // First of the passes that ask whether a callee keeps an argument.
+        pm.add(LoopItemModePass);
         pm.add(ContainerDropInsertionPass);
         pm.add(StringRcInsertionPass);
         pm.add(StringRcElisionPass);
@@ -217,6 +219,16 @@ impl MirPass for UnwindRecordPass {
     fn name(&self) -> &str { "unwind_records" }
     fn run(&self, fns: &mut Vec<MirFunction>, ctx: &mut PassContext) {
         crate::transform::unwind::build_unwind_records(fns, ctx.target);
+    }
+}
+
+/// Settle whether each `for` body over a sequence keeps its item.
+pub struct LoopItemModePass;
+
+impl MirPass for LoopItemModePass {
+    fn name(&self) -> &str { "loop_item_modes" }
+    fn run(&self, fns: &mut Vec<MirFunction>, _ctx: &mut PassContext) {
+        crate::container_drop::settle_loop_item_modes(fns);
     }
 }
 

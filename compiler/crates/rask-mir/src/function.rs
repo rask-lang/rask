@@ -26,6 +26,11 @@ pub struct MirFunction {
     /// frame holds for the call and hands back full. Empty for a function
     /// lowering didn't build from a declaration.
     pub param_modes: Vec<rask_ast::ty::ParamMode>,
+    /// A `for` loop's body lowered as the callback a sequence yields to. Its
+    /// item parameter (index 1) is lowered as Borrow, and whether the body
+    /// keeps the item is settled from the body once the program is lowered
+    /// (`container_drop::settle_loop_item_modes`).
+    pub item_mode_from_body: bool,
 }
 
 impl MirFunction {

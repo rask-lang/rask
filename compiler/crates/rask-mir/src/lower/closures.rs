@@ -724,21 +724,19 @@ impl<'a> MirLowerer<'a> {
         // the item's owner: it freed a miss and handed a hit on without a
         // reference, and the string inside came back freed (#1871).
         //
-        // A body that gives the item away (`out.push(x)` in `to_vec`, as the
-        // ownership pass found) takes it: the sequence hands over an item the
-        // chain owns, and a copy of one it was lent (SEQ47). An item that owns
-        // a container can only be kept that way, by moving it.
+        // An item that owns a container can only be kept by moving it, so
+        // a body that keeps one (`out.push(x)` in `to_vec`, `return x`,
+        // `keep = x`) takes it: the sequence hands over an item the chain
+        // owns, and a copy of one it was lent (SEQ47). Which bodies do is read
+        // off this body once the whole program is lowered, since a call in it
+        // may keep the item only through another body
+        // (`container_drop::settle_loop_item_modes`).
         let counted_aggregate = matches!(
             elem_ty,
             MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_) | MirType::Option(_)
                 | MirType::Result { .. } | MirType::Array { .. }
         ) && self.ctx.mir_owns_only_counted(&elem_ty, 0);
-        let item = if !counted_aggregate && self.ctx.loops_giving_items_away.contains(&iter_expr.id) {
-            rask_ast::ty::ParamMode::Take
-        } else {
-            rask_ast::ty::ParamMode::Borrow
-        };
-        let item_param = yb.add_param(param_name.clone(), elem_ty.clone(), item);
+        let item_param = yb.add_param(param_name.clone(), elem_ty.clone(), rask_ast::ty::ParamMode::Borrow);
 
         let mut yield_locals = std::collections::HashMap::new();
         if matches!(binding, ForBinding::Single(_)) {
@@ -879,7 +877,9 @@ impl<'a> MirLowerer<'a> {
             value: Some(MirOperand::Constant(crate::operand::MirConst::Int(0))),
         }));
 
-        self.synthesized_functions.push(yb.finish());
+        let mut yield_fn = yb.finish();
+        yield_fn.item_mode_from_body = !counted_aggregate;
+        self.synthesized_functions.push(yield_fn);
 
         // Build the closure and hand it to the sequence.
         let closure_local = self.builder.alloc_temp(MirType::FuncPtr(crate::types::SignatureId(0)));
@@ -894,7 +894,6 @@ impl<'a> MirLowerer<'a> {
             dst: None,
             closure: seq_local,
             args: vec![MirOperand::Local(closure_local)],
-            taken: Vec::new(),
         }));
 
         // SEQ8: the body asked to leave the enclosing function. Test the flag
