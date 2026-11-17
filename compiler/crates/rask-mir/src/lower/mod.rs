@@ -582,8 +582,6 @@ impl<'a> MirContext<'a> {
             symbols: empty::symbols(),
             resource_types: empty::strings(),
             nominal_underlying: empty::nominal_map(),
-            shared_elem_types: std::cell::RefCell::new(HashMap::new()),
-            shared_elem_conflicts: std::cell::RefCell::new(Default::default()),
             const_slot_types: std::cell::RefCell::new(HashMap::new()),
         }
     }
@@ -718,21 +716,6 @@ pub struct MirContext<'a> {
     pub line_map: Option<&'a LineMap>,
     /// Source file path for runtime error messages (None in tests)
     pub source_file: Option<&'a str>,
-    /// Cross-function Vec element types inferred from push/set calls.
-    /// Key: tracking path (e.g. "v", "self.history"), Value: element MirType.
-    /// Shared across function lowerings via RefCell.
-    ///
-    /// The key is just the path, so two functions with a local of the same name
-    /// hash to the same entry. A name used for a `Vec<string>` in one function
-    /// and a `Vec<i64>` in another is a conflict, and guessing either way
-    /// miscompiles the other — so a conflicting name is dropped from the map
-    /// and never re-added, leaving those functions on their own per-function
-    /// tracking. Two `test` blocks that both call their vector `v` used to make
-    /// the second one fail codegen and vanish from the run.
-    pub shared_elem_types: std::cell::RefCell<HashMap<String, MirType>>,
-    /// Tracking paths seen with more than one element type. Kept out of
-    /// `shared_elem_types` for good.
-    pub shared_elem_conflicts: std::cell::RefCell<std::collections::HashSet<String>>,
     /// Interface method lists for interface object dispatch.
     /// Key: interface name, Value: method names in declaration order.
     pub interface_methods: HashMap<String, Vec<String>>,
@@ -1103,8 +1086,6 @@ impl<'a> MirContext<'a> {
             package_modules: &EMPTY_PACKAGES,
             line_map: None,
             source_file: None,
-            shared_elem_types: std::cell::RefCell::new(HashMap::new()),
-            shared_elem_conflicts: std::cell::RefCell::new(std::collections::HashSet::new()),
             interface_methods: HashMap::new(),
             interface_take_self: HashMap::new(),
             interface_coercions: &EMPTY_COERCIONS,
@@ -2114,37 +2095,6 @@ impl<'a> MirContext<'a> {
         }
     }
 
-    /// CALL6: the method-name prefix dispatch chose for the call at `node`.
-    ///
-    /// This is the receiver type the checker actually resolved, so it stays
-    /// right where the syntactic guesses go wrong — a `self` receiver, a
-    /// pool-element binding, a Handle deref, a nominal newtype, an if-let
-    /// binding of a stdlib type. `None` means nothing was recorded (a call node
-    /// synthesized after checking) or the receiver is a primitive, which
-    /// qualifies through the MIR type instead.
-    /// Record a tracking path's element type across function lowerings.
-    ///
-    /// A path already recorded with a *different* type is a name collision
-    /// between two functions, not new information: the entry is dropped and the
-    /// path blacklisted, so both functions fall back to their own tracking
-    /// instead of one of them getting the other's element width.
-    pub fn record_shared_elem(&self, key: String, ty: MirType) {
-        if self.shared_elem_conflicts.borrow().contains(&key) {
-            return;
-        }
-        let mut shared = self.shared_elem_types.borrow_mut();
-        match shared.get(&key) {
-            Some(existing) if *existing != ty => {
-                shared.remove(&key);
-                self.shared_elem_conflicts.borrow_mut().insert(key);
-            }
-            Some(_) => {}
-            None => {
-                shared.insert(key, ty);
-            }
-        }
-    }
-
     /// XC5: the package whose `extend` block a call reaches, when more than one
     /// declares the method. The checker decided it; monomorphization emitted
     /// the body under the matching symbol.
@@ -2224,16 +2174,10 @@ pub(crate) struct SavedName {
 
 #[derive(Clone, Default)]
 pub(crate) struct LocalMeta {
-    /// Stdlib type prefix (e.g. "Random", "File", "Vec").
-    /// Fallback when the type checker leaves types unresolved.
-    pub type_prefix: Option<String>,
     /// The checker's type for the local: a parameter's from the signature, a
     /// binding's from its statement or initializer. Where a later use of the
     /// name has no type of its own recorded, this is the answer.
     pub checked_type: Option<Type>,
-    /// Collection element MirType (e.g. the T in Vec<T>).
-    /// Propagates element types through for-in iteration after mono.
-    pub elem_type: Option<MirType>,
     /// Channel/Shared element size in bytes.
     /// Used by Receiver_recv to allocate correctly-sized output buffers.
     pub channel_elem_size: Option<i64>,
@@ -2534,6 +2478,27 @@ impl<'a> MirLowerer<'a> {
         self.local_meta.get(name)
     }
 
+    /// The checker's type for `expr`. Every name the program wrote has one
+    /// at its use. A name lowering made up (a `with` block's guard, a hidden
+    /// parameter's alias) has no node the checker saw, so it answers with
+    /// the type recorded when it was bound.
+    pub(crate) fn checked_type_of(&self, expr: &Expr) -> Option<Type> {
+        if let Some(ty) = self.ctx.lookup_raw_type(expr.id).filter(|t| !crate::fallback::type_is_open(t)) {
+            return Some(ty.into_owned());
+        }
+        match &expr.kind {
+            ExprKind::Ident(name) => self.meta(name).and_then(|m| m.checked_type.clone()),
+            _ => None,
+        }
+    }
+
+    /// The name `expr`'s type dispatches under: `Vec` for a `Vec<i64>`,
+    /// `Shared`, `string`, `Person`.
+    pub(crate) fn type_base_of(&self, expr: &Expr) -> Option<String> {
+        let ty = self.checked_type_of(expr)?;
+        MirContext::type_prefix(&ty, self.ctx.type_names).map(|p| p.trim().to_string())
+    }
+
     /// True when this name refers to a value here — a local, a module-level
     /// const (materialised or still pending), or a comptime global. Used to
     /// stop a capitalised value name from being read as a type.
@@ -2544,17 +2509,13 @@ impl<'a> MirLowerer<'a> {
             || self.ctx.folded.consts.contains_key(name)
     }
 
-    /// Record a module-level const's box type from its initializer, e.g.
-    /// `Shared.new(Metrics { … })` → prefix `Shared`, full type `Shared<Metrics>`.
+    /// Record a module-level const's type from its initializer, e.g.
+    /// `Shared.new(Metrics { … })` → `Shared<Metrics>`.
     ///
     /// A cross-module const reference gets left an inference var by the checker,
     /// so guard access can't read the inner type off the use site — the
     /// initializer is the only place it's concrete.
     pub(crate) fn record_module_const_meta(&mut self, name: &str, init: &Expr) {
-        let ExprKind::MethodCall { object, args, .. } = &init.kind else { return };
-        let Some(type_name) = object.name() else { return };
-        let Some(prefix) = type_prefix_from_str(type_name) else { return };
-        self.meta_mut(name).type_prefix = Some(prefix.clone());
         if let Some(ty) = self.ctx.lookup_raw_type(init.id).filter(|t| !crate::fallback::type_is_open(t)) {
             self.meta_mut(name).checked_type = Some(ty.into_owned());
         }
@@ -2810,22 +2771,6 @@ impl<'a> MirLowerer<'a> {
         }
     }
 
-    /// The checker's element type for a collection expression: its own type,
-    /// else the declared type of the field it reads.
-    pub(crate) fn collection_elem_type_of_expr(&self, expr: &Expr) -> Option<Type> {
-        if let Some(elem) = self.ctx.lookup_raw_type(expr.id).and_then(|t| self.collection_elem_type(&t)) {
-            return Some(elem);
-        }
-        match &expr.kind {
-            ExprKind::Field { object, field } => {
-                let layout = self.struct_layout_of_expr(object)?;
-                let f = layout.fields.iter().find(|f| f.name == *field)?;
-                self.collection_elem_type(&f.ty.clone())
-            }
-            _ => None,
-        }
-    }
-
     pub(crate) fn vec_elem_of_checker_type(&self, ty: &Type) -> Option<MirType> {
         self.ctx.vec_elem_mir(ty)
     }
@@ -2879,21 +2824,8 @@ impl<'a> MirLowerer<'a> {
     /// Base type name of an indexed object — `"Vec"` for both `rows[i]` and
     /// `self.rows[i]`. Generics are stripped: `Vec<Row>` → `Vec`.
     ///
-    /// A variable's tracked prefix first (it survives cases the checker leaves as
-    /// an inference variable), then the checker's type, which is the only source
-    /// for a field or any other non-`Ident` object.
     pub(crate) fn index_object_base(&self, object: &Expr) -> Option<String> {
-        let prefix = if let Some(var_name) = object.name() {
-            self.meta(var_name).and_then(|m| m.type_prefix.clone())
-        } else {
-            None
-        }
-        .or_else(|| {
-            self.ctx
-                .lookup_raw_type(object.id)
-                .and_then(|ty| MirContext::type_prefix(&ty, self.ctx.type_names))
-        })?;
-        Some(prefix.as_str().trim().to_string())
+        self.type_base_of(object)
     }
 
     /// The address of `collection[at]`: a Vec element by index, a Map value
@@ -3211,6 +3143,9 @@ impl<'a> MirLowerer<'a> {
                 return Some(elem);
             }
         }
+        if let Some(elem) = self.checked_type_of(expr).and_then(|ty| self.collection_elem_of_checker_type(&ty)) {
+            return Some(elem);
+        }
         if let ExprKind::Field { object, field } = &expr.kind {
             if let Some(layout) = self.struct_layout_of_expr(object) {
                 if let Some(f) = layout.fields.iter().find(|f| f.name == *field) {
@@ -3253,7 +3188,10 @@ impl<'a> MirLowerer<'a> {
             }
         }
         match &expr.kind {
-            ExprKind::Ident(name) => self.meta(name).and_then(|m| m.elem_type.clone()),
+            ExprKind::Ident(name) => self
+                .meta(name)
+                .and_then(|m| m.checked_type.as_ref())
+                .and_then(|t| self.collection_elem_of_checker_type(t)),
             // A `Vec<T>` field: the struct's declaration is the answer, and it's
             // the only one available when the Vec was built somewhere else —
             // push tracking is per-function and the checker doesn't type every
@@ -3269,37 +3207,6 @@ impl<'a> MirLowerer<'a> {
             }
             _ => None,
         }
-    }
-
-    /// Element type of anything that can be fed to `Vec.from` — an array
-    /// literal, another Vec, a slice.
-    pub(crate) fn iterable_elem_of(&self, expr: &Expr) -> Option<MirType> {
-        if let Some(ty) = self.ctx.lookup_raw_type(expr.id) {
-            match &*ty {
-                // An unresolved element is no answer — it lowers to Ptr, which
-                // reads as a real aggregate element and shadows the fallbacks
-                // below that do know.
-                Type::Array { elem, .. }
-                    if !matches!(**elem, Type::Var(_)) =>
-                {
-                    return Some(self.ctx.type_to_mir(elem))
-                }
-                _ => {}
-            }
-        }
-        // The literal's own type can be unresolved while its entries are
-        // concrete: `Vec.from([1, 2, 3])` leaves the checker with `Vec<?>` but
-        // the 1 is plainly an integer.
-        if let ExprKind::Array(elements) = &expr.kind {
-            if let Some(first) = elements.first() {
-                if let Some(ty) = self.ctx.lookup_raw_type(first.id) {
-                    if !matches!(&*ty, Type::Var(_)) {
-                        return Some(self.ctx.type_to_mir(&ty));
-                    }
-                }
-            }
-        }
-        self.vec_elem_of_expr(expr)
     }
 
     /// Value type of a `Map<K, V>` receiver, for sizing what `get` hands back.
@@ -4906,12 +4813,7 @@ impl<'a> MirLowerer<'a> {
             let declared_ty = if scalar_mutate { local_ty.clone() } else { param_ty.clone() };
             let local_id = lowerer.builder.add_param(param.name.clone(), declared_ty);
             lowerer.locals.insert(param.name.clone(), (local_id, local_ty));
-            // Set type prefix for parameters so method calls qualify correctly.
-            // mir_type_name handles Struct/Enum/String/primitives; the written
-            // type catches Ptr types like Vec<T>, Map<K,V>.
             {
-                let prefix = lowerer.mir_type_name(&param_ty)
-                    .or_else(|| written.and_then(type_prefix_of));
                 let meta = lowerer.local_meta.entry(param.name.clone()).or_default();
                 if param.is_mutate {
                     meta.assigns_through = true;
@@ -4919,25 +4821,10 @@ impl<'a> MirLowerer<'a> {
                 if scalar_mutate {
                     meta.scalar_through_ptr = Some(param_ty.clone());
                 }
-                if let Some(p) = prefix {
-                    meta.type_prefix = Some(p);
-                }
                 // The checker's type for the parameter, with this instance's
                 // arguments in: `Sequence<(K, V)>` is `Sequence<(i32, i32)>`
-                // in `to_map`'s copy for one. A collection's element type
-                // comes from it, so `for (k, v) in self` has one (#1046).
-                if let Some(checked) = checked_param.clone() {
-                    if let (Some(name), Type::Generic { args, .. } | Type::UnresolvedGeneric { args, .. }) =
-                        (ctx.generic_head(&checked), &checked)
-                    {
-                        if let ("Vec" | "Sequence" | "SequenceMut", [rask_types::GenericArg::Type(elem)]) =
-                            (name.trim(), args.as_slice())
-                        {
-                            meta.elem_type = Some(ctx.type_to_mir(elem));
-                        }
-                    }
-                    meta.checked_type = Some(checked);
-                }
+                // in `to_map`'s copy for one (#1046).
+                meta.checked_type = checked_param.clone();
             }
         }
 
@@ -5248,13 +5135,6 @@ impl<'a> MirLowerer<'a> {
                     ("fs", "read_bytes") => return Some(MirType::U8),
                     _ => {}
                 }
-            }
-        }
-
-        // Variable bound from a known collection — check tracked element types
-        if let ExprKind::Ident(name) = &expr.kind {
-            if let Some(elem_ty) = self.meta(name).and_then(|m| m.elem_type.as_ref()) {
-                return Some(elem_ty.clone());
             }
         }
 
@@ -6089,9 +5969,6 @@ impl<'a> MirLowerer<'a> {
                     dst: bound,
                     rvalue: MirRValue::Use(value),
                 }));
-                if let Some(prefix) = self.mir_type_name(&field_ty) {
-                    self.meta_mut(binding).type_prefix = Some(prefix);
-                }
                 self.locals.insert(binding.clone(), (bound, field_ty));
             }
             PatternKind::TypePat { .. } => {
@@ -6201,11 +6078,6 @@ impl<'a> MirLowerer<'a> {
                             dst: local,
                             rvalue,
                         }));
-                        // Set type prefix so method calls on this binding
-                        // get correct qualification (e.g., data.lines() → string_lines)
-                        if let Some(prefix) = self.mir_type_name(&field_ty) {
-                            self.meta_mut(&name).type_prefix = Some(prefix);
-                        }
                     } else if self.binds_any(field_pat) && !is_niche {
                         // A nested variant pattern: its tags were tested before
                         // binding, so the field holds that variant. Read it out
@@ -6258,9 +6130,6 @@ impl<'a> MirLowerer<'a> {
                     rvalue,
                 }));
                 self.locals.insert(name.clone(), (local, bound_ty.clone()));
-                if let Some(prefix) = self.mir_type_name(&bound_ty) {
-                    self.meta_mut(name).type_prefix = Some(prefix);
-                }
             }
             // Ident that is a variant name: no binding (pure match)
             // Ident that is a variable: this shouldn't reach here (it's a binding, not a match)
@@ -6658,21 +6527,6 @@ fn is_type_constructor_name(name: &str) -> bool {
     name.chars().next().map(|c| c.is_uppercase()).unwrap_or(false)
         || rask_stdlib::mir_metadata::stdlib_type_names().contains(name)
         || rask_stdlib::mir_metadata::stdlib_module_names().contains(name)
-}
-
-/// Map a qualified function name to the stdlib type prefix of its return value.
-///
-/// When the type checker can't resolve concrete types (leaves `Var(TypeVarId(...))`),
-/// the MIR lowerer uses this to track which type a local holds, so later
-/// method calls get correctly qualified (e.g. `rng.range()` → `Rng_range`).
-///
-/// Derived from stdlib stub files.
-fn func_return_type_prefix(func_name: &str) -> Option<&str> {
-    if let Some(meta) = rask_stdlib::mir_metadata::lookup(func_name) {
-        return meta.ret_type_prefix.as_deref();
-    }
-
-    None
 }
 
 /// The type parameter this type still names, if any.
@@ -8085,8 +7939,6 @@ mod tests {
             folded: &folded,
             extern_funcs: &extern_funcs,
             package_modules: &std::collections::HashSet::new(),
-            shared_elem_types: std::cell::RefCell::new(HashMap::new()),
-            shared_elem_conflicts: std::cell::RefCell::new(std::collections::HashSet::new()),
             line_map: None,
             source_file: None,
             interface_methods: HashMap::new(),
@@ -8191,8 +8043,6 @@ mod tests {
             folded: &folded,
             extern_funcs: &extern_funcs,
             package_modules: &std::collections::HashSet::new(),
-            shared_elem_types: std::cell::RefCell::new(HashMap::new()),
-            shared_elem_conflicts: std::cell::RefCell::new(std::collections::HashSet::new()),
             line_map: None,
             source_file: None,
             interface_methods: HashMap::new(),
@@ -8304,8 +8154,6 @@ mod tests {
             folded: &folded,
             extern_funcs: &extern_funcs,
             package_modules: &std::collections::HashSet::new(),
-            shared_elem_types: std::cell::RefCell::new(HashMap::new()),
-            shared_elem_conflicts: std::cell::RefCell::new(std::collections::HashSet::new()),
             line_map: None,
             source_file: None,
             interface_methods: HashMap::new(),

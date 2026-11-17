@@ -386,23 +386,6 @@ impl<'a> MirLowerer<'a> {
             .unwrap_or_else(|| crate::fallback::unknown_type("lower/expr:call-return"))
     }
 
-    /// The element type push tracking recorded for this receiver.
-    ///
-    /// Two maps, always consulted in this order: what this function's own pushes
-    /// said, then the cross-function record. They were written out longhand at
-    /// eight call sites, which is how arms that answer the same question came to
-    /// consult different subsets of it.
-    fn tracked_elem_of(&self, object: &Expr) -> Option<MirType> {
-        self.tracked_elem_for_key(&Self::vec_tracking_key(object)?)
-    }
-
-    /// Same, for a caller that already has the key.
-    fn tracked_elem_for_key(&self, key: &str) -> Option<MirType> {
-        self.meta(key)
-            .and_then(|m| m.elem_type.clone())
-            .or_else(|| self.ctx.shared_elem_types.borrow().get(key).cloned())
-    }
-
     /// Whether the call's receiver type declares `method` with a body: one
     /// somebody wrote, or one the checker derived and wrote (`eq`, `hash`,
     /// `clone`). A `Structural` method has no body, and the call is answered
@@ -448,13 +431,7 @@ impl<'a> MirLowerer<'a> {
     /// Does this Vec receiver hold string elements? Drives the dispatch choice
     /// for the runtime entry points that need a real string compare.
     fn vec_elem_is_buffer(&self, object: &Expr) -> bool {
-        self.tracked_elem_of(object)
-            // Push tracking only sees a Vec built in this function. A Vec that
-            // came back from a call has none, so `p.components().join(",")`
-            // took the integer join and printed the bytes of each component as
-            // numbers — `97,98,99` for `a,b,c` (#852). The checker knows the
-            // return type; ask it when tracking has nothing.
-            .or_else(|| self.collection_elem_of_expr(object))
+        self.collection_elem_of_expr(object)
             .map_or(false, |ty| matches!(ty, MirType::Buffer))
     }
 
@@ -496,8 +473,7 @@ impl<'a> MirLowerer<'a> {
     /// `Vec_sort_by`'s last argument: how the comparator takes this Vec's
     /// elements.
     fn sort_pass_arg(&self, object: &Expr) -> MirOperand {
-        let elem = self.tracked_elem_of(object)
-            .or_else(|| self.collection_elem_of_expr(object))
+        let elem = self.collection_elem_of_expr(object)
             .unwrap_or_else(|| crate::fallback::unknown_type("lower/expr:sort_by_elem"));
         Self::sort_pass(&elem)
     }
@@ -510,8 +486,7 @@ impl<'a> MirLowerer<'a> {
     /// type-specific runtime comparator, which is the same order its `compare`
     /// would give and cheaper to reach.
     fn vec_elem_compare_fn(&self, object: &Expr) -> Option<String> {
-        let elem = self.tracked_elem_of(object)
-            .or_else(|| self.collection_elem_of_expr(object))?;
+        let elem = self.collection_elem_of_expr(object)?;
         if !matches!(elem, MirType::Struct(_) | MirType::Enum(_)) {
             return None;
         }
@@ -1031,36 +1006,8 @@ impl<'a> MirLowerer<'a> {
     /// compiled to field 2 of an unrelated struct and a string comparison.
     fn elem_closure_param_tys(&self, object: &Expr, method: &str) -> Vec<MirType> {
         let Some(arity) = Self::elem_closure_arity(method) else { return Vec::new() };
-        // The checker's element type first. Push tracking only sees what was
-        // lowered, and a float literal lowers as an f64 wherever it lands, so
-        // `Vec<f32>`'s comparator took two doubles where the sort handed it
-        // two floats.
-        let elem = self.collection_elem_of_expr(object).or_else(|| {
-            Self::vec_tracking_key(object).and_then(|key| self.tracked_elem_for_key(&key))
-        });
-        let Some(elem) = elem else { return Vec::new() };
+        let Some(elem) = self.collection_elem_of_expr(object) else { return Vec::new() };
         vec![elem; arity]
-    }
-
-    /// Derive a tracking key for Vec element type inference.
-    /// Returns `"v"` for `v.push(x)` and `"self.field"` for `self.field.push(x)`.
-    fn vec_tracking_key(object: &Expr) -> Option<String> {
-        match &object.kind {
-            ExprKind::Ident(name) => Some(name.clone()),
-            ExprKind::Field { object: inner, field } => {
-                if let ExprKind::Ident(name) = &inner.kind {
-                    Some(format!("{}.{}", name, field))
-                } else {
-                    None
-                }
-            }
-            // A slice carries its source's element type, so look through to
-            // the container. Without this `parts[2..]` had no tracked element
-            // type and `.join()` fell back to the integer runtime, which
-            // printed each 16-byte string as the number its bytes spell.
-            ExprKind::Index { object: inner, .. } => Self::vec_tracking_key(inner),
-            _ => None,
-        }
     }
 
     /// Resolve a numeric field name on a tuple type.
@@ -2432,13 +2379,6 @@ impl<'a> MirLowerer<'a> {
                 .cloned()
             {
                 // A module const the fold computed.
-                if let Some(meta) = self.ctx.folded.data.get(&folded.symbol) {
-                    if matches!(meta.form, super::FoldedForm::List) {
-                        self.meta_mut(name).type_prefix = Some("Vec".to_string());
-                    } else if matches!(meta.form, super::FoldedForm::Map) {
-                        self.meta_mut(name).type_prefix = Some("Map".to_string());
-                    }
-                }
                 self.load_folded(&folded)
             } else if let Some(fnval) = self.ctx.function_value(expr.id).and_then(|copy| {
                 let modes = self.param_modes_of(expr);
@@ -3514,15 +3454,7 @@ impl<'a> MirLowerer<'a> {
 
             // Vec/Map/etc: dispatch through runtime
             let result_ty = self.index_result_ty(expr, object);
-            let type_prefix = if let Some(var_name) = object.name() {
-                    self.meta(var_name).and_then(|m| m.type_prefix.clone())
-                } else {
-                    None
-                }
-                .or_else(|| {
-                    self.ctx.lookup_raw_type(object.id)
-                        .and_then(|ty| super::MirContext::type_prefix(&ty, self.ctx.type_names))
-                });
+            let type_prefix = self.type_base_of(object);
 
             let (index_name, shape) = type_prefix
                 .map(|prefix| {
@@ -3565,7 +3497,6 @@ impl<'a> MirLowerer<'a> {
     /// printed a string's first bytes as a number.
     fn index_result_ty(&mut self, expr: &Expr, object: &Expr) -> MirType {
         self.ctx.lookup_node_type(expr.id)
-            .or_else(|| self.tracked_elem_of(object))
             .or_else(|| self.collection_elem_of_expr(object))
             .unwrap_or_else(|| crate::fallback::unknown_type("lower/expr:vec_index_elem"))
     }
@@ -3907,19 +3838,6 @@ impl<'a> MirLowerer<'a> {
                     store_size,
                     field: field_slot(&result_ty, layout, &field.name),
                 }));
-
-                // Propagate Vec element types from source var to struct field.
-                // If v has known elem type F64 and we're constructing State(data: v),
-                // record "self.data" so methods can look it up.
-                if let ExprKind::Ident(src_var) = &field.value.kind {
-                    if let Some(elem_ty) = self.meta(src_var).and_then(|m| m.elem_type.clone())
-                        .or_else(|| self.ctx.shared_elem_types.borrow().get(src_var).cloned())
-                    {
-                        let field_key = format!("self.{}", field.name);
-                        self.meta_mut(&field_key).elem_type = Some(elem_ty.clone());
-                        self.ctx.record_shared_elem(field_key, elem_ty);
-                    }
-                }
             }
 
             // Struct update syntax: `Point(x: 10, ..p)`. Every field not
@@ -4084,9 +4002,6 @@ impl<'a> MirLowerer<'a> {
                         dst: local,
                         rvalue: MirRValue::Use(rest),
                     }));
-                    if let Some(prefix) = self.mir_type_name(&other_ty) {
-                        self.meta_mut(name).type_prefix = Some(prefix);
-                    }
                     shadowed = Some((name.to_string(), self.locals.insert(name.to_string(), (local, other_ty))));
                 }
                 let (else_val, _) = self.lower_expr(else_expr)?;
@@ -5811,18 +5726,8 @@ impl<'a> MirLowerer<'a> {
                                 ) || matches!(&*ty, rask_types::Type::UnresolvedNamed(n) if n == "Vec")
                                     || self.vec_elem_of_checker_type(&ty).is_some()
                             });
-                            let is_vec_from_prefix = if !is_vec_from_type {
-                                if let ExprKind::Ident(var_name) = &args[0].expr.kind {
-                                    self.meta(var_name)
-                                        .and_then(|m| m.type_prefix.as_deref())
-                                        .map(|p| p == "Vec")
-                                        .unwrap_or(false)
-                                } else {
-                                    false
-                                }
-                            } else {
-                                false
-                            };
+                            let is_vec_from_prefix = !is_vec_from_type
+                                && self.type_base_of(&args[0].expr).as_deref() == Some("Vec");
                             // Last resort: the callee's declared return type. A
                             // call returning `Vec<T>` doesn't always carry a type
                             // on the argument node, and missing it sent
@@ -6606,29 +6511,6 @@ impl<'a> MirLowerer<'a> {
             }
         }
 
-        // Track collection element types from push/insert so get returns the right type.
-        // Handles both `v.push(x)` and `self.field.push(x)`.
-        // Writes to both per-function and shared cross-function maps.
-        //
-        // Tracking is last-write-wins across every push in the function, so the
-        // *declared* element type gets first refusal: `Vec<i32?>` fed `push(1)`,
-        // `push(none)`, `push(3)` recorded `i32` because the last bare literal
-        // overwrote the option, and reading an element then took a tag out of a
-        // bare slot. It crashed on three elements and not two, decided entirely
-        // by which push came last.
-        if matches!(qualified_name.as_str(), "Vec_push" | "Vec_replace") {
-            let declared = self.container_elem_mir_type(object.id, 0);
-            if let Some(arg_ty) = declared.as_ref().or_else(|| arg_types.first()) {
-                if !matches!(arg_ty, MirType::I64) {
-                    let arg_ty = arg_ty.clone();
-                    if let Some(key) = Self::vec_tracking_key(object) {
-                        self.meta_mut(&key).elem_type = Some(arg_ty.clone());
-                        self.ctx.record_shared_elem(key, arg_ty);
-                    }
-                }
-            }
-        }
-
         // Both receives take the value through an out-param buffer of the
         // element's real size and hand back the channel's status, which codegen
         // turns into the `T or E` the signature promises. Pass the size.
@@ -6653,7 +6535,7 @@ impl<'a> MirLowerer<'a> {
         // elements but not two, purely by which push happened to be last.
         let tracked_elem = if matches!(qualified_name.as_str(), "Vec_get" | "Vec_index") {
             self.container_elem_mir_type(object.id, 0)
-                .or_else(|| self.tracked_elem_of(object))
+                .or_else(|| self.collection_elem_of_expr(object))
         } else {
             None
         };
@@ -6672,7 +6554,7 @@ impl<'a> MirLowerer<'a> {
             // sizes the result slot. From the stub metadata the result came back
             // as a bare `T`, so a `Vec<i64?>` got a 16-byte slot for a 24-byte
             // answer and the tag was read off the wrong bytes.
-            let tracked = self.tracked_elem_of(object);
+            let tracked = self.collection_elem_of_expr(object);
             // In a generic body the checker's payload is still the unresolved
             // type parameter; the receiver's tracked element type is the
             // concrete one after monomorphization.
@@ -6945,8 +6827,7 @@ impl<'a> MirLowerer<'a> {
         // Built before the chain below: emitting the wrapper mutates the
         // builder, and the arms are an expression.
         let sort_scalar = if qualified_name == "Vec_sort" {
-            self.tracked_elem_of(object)
-                .or_else(|| self.collection_elem_of_expr(object))
+            self.collection_elem_of_expr(object)
                 .and_then(|elem| Some((Self::debug_elem_kind(&elem)?, rask_layout::size_of(&elem, self.ctx.target()) as i64)))
         } else {
             None
@@ -6986,8 +6867,7 @@ impl<'a> MirLowerer<'a> {
             if self.vec_elem_is_buffer(object) {
                 (qualified_name.clone(), all_args)
             } else {
-                let kind = self.tracked_elem_of(object)
-                    .or_else(|| self.collection_elem_of_expr(object))
+                let kind = self.collection_elem_of_expr(object)
                     .and_then(|elem| Self::debug_elem_kind(&elem))
                     .ok_or_else(|| LoweringError::InvalidConstruct(
                         "join on a Vec whose elements have no text form".into(),
@@ -8279,17 +8159,9 @@ impl<'a> MirLowerer<'a> {
             true
         } else {
             matches!(obj_ty, MirType::Buffer)
-            || if let Some(var_name) = object.name() {
-                self.meta(var_name)
-                    .and_then(|m| m.type_prefix.as_deref())
-                    .map(|p| matches!(p, "string" | "f32x4" | "f32x8" | "f64x2" | "f64x4" | "i32x4" | "i32x8" | "Ptr"))
-                    .unwrap_or(false)
-            } else {
-                // Unknown type from complex expression — default to native
-                // binop. The common case is numeric field access chains
-                // (e.g. self.entries.len() / 2) where Ptr means lost type info.
-                false
-            }
+            || self.type_base_of(object).is_some_and(|p| {
+                matches!(p.as_str(), "string" | "f32x4" | "f32x8" | "f64x2" | "f64x4" | "i32x4" | "i32x8" | "Ptr")
+            })
         };
 
         // `a + b` desugars to `a.add(b)`, so a method call here may be either.
@@ -11487,9 +11359,6 @@ impl<'a> MirLowerer<'a> {
             }
         }
         self.locals.insert(name.to_string(), (local, payload_ty.clone()));
-        if let Some(prefix) = self.mir_type_name(payload_ty) {
-            self.meta_mut(name).type_prefix = Some(prefix);
-        }
     }
 
     fn lower_if_present(
@@ -11567,9 +11436,6 @@ impl<'a> MirLowerer<'a> {
                 rvalue: self.payload_field(val.clone(), &scrutinee_ty, &err_ty),
             }));
             self.locals.insert(name.clone(), (local, err_ty.clone()));
-            if let Some(prefix) = self.mir_type_name(&err_ty) {
-                self.meta_mut(name).type_prefix = Some(prefix);
-            }
         }
         if let Some(else_expr) = else_branch {
             let (else_val, _) = self.lower_expr(else_expr)?;

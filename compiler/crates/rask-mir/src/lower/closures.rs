@@ -424,15 +424,18 @@ impl<'a> MirLowerer<'a> {
 
         // The checker's parameter list for this closure, for a parameter that
         // was neither annotated nor pinned by the callee's signature.
-        let checked_params: Vec<MirType> = closure_id
+        let checked_param_types: Vec<rask_types::Type> = closure_id
             .and_then(|id| self.ctx.lookup_raw_type(id))
             .and_then(|ty| match &*ty {
                 rask_types::Type::Fn { params, .. } => Some(
-                    params.iter().map(|p| self.ctx.type_to_mir(&p.ty)).collect()
+                    params.iter().map(|p| p.ty.clone()).collect()
                 ),
                 _ => None,
             })
             .unwrap_or_default();
+        let checked_params: Vec<MirType> = checked_param_types.iter()
+            .map(|t| self.ctx.type_to_mir(t))
+            .collect();
 
         // The parameters' metadata is the closure's own. One flat table holds
         // every name, so an outer binding the parameter shadows gets its own
@@ -460,13 +463,7 @@ impl<'a> MirLowerer<'a> {
                 self.meta_mut(&param.name).assigns_through = true;
             }
             self.meta_mut(&param.name).scalar_through_ptr = scalar_mutate;
-            if let Some(prefix) = self.mir_type_name(&param_ty) {
-                self.meta_mut(&param.name).type_prefix = Some(prefix);
-            } else if let Some(t) = written.as_ref() {
-                if let Some(prefix) = super::type_prefix_of(t) {
-                    self.meta_mut(&param.name).type_prefix = Some(prefix);
-                }
-            }
+            self.meta_mut(&param.name).checked_type = checked_param_types.get(i).cloned();
         }
 
         // Emit LoadCapture for each free variable

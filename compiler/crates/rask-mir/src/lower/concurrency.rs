@@ -155,39 +155,16 @@ impl BoxWithSyms {
 }
 
 impl<'a> MirLowerer<'a> {
-    /// Extract the inner type name from a Shared/Mutex expression — the `T` in
-    /// `Shared<T>`/`Mutex<T>`, whether the checker left it a resolved `Generic`
-    /// or an `UnresolvedGeneric`.
-    pub(super) fn resolve_shared_inner_type_name(&self, object: &Expr) -> Option<String> {
-        if let Some(raw_ty) = self.ctx.lookup_raw_type(object.id) {
-            let args = match &*raw_ty {
-                rask_types::Type::UnresolvedGeneric { args, .. }
-                | rask_types::Type::Generic { args, .. } => Some(args),
-                _ => None,
-            };
-            if let Some(args) = args {
-                if let Some(rask_types::GenericArg::Type(inner)) = args.first() {
-                    if let rask_types::Type::UnresolvedNamed(name) = inner.as_ref() {
-                        return Some(name.clone());
-                    }
-                    if let Some(prefix) = super::MirContext::type_prefix(inner, self.ctx.type_names) {
-                        return Some(prefix);
-                    }
-                }
-            }
+
+    /// Type argument `i` of a sync box's type: the `T` (0) or the strategy
+    /// (1) of `Shared<T, S>`, the `T` of `Mutex<T>`.
+    pub(super) fn sync_type_arg(&self, object: &Expr, i: usize) -> Option<rask_types::Type> {
+        let ty = self.checked_type_of(object)?;
+        let (_, args) = self.generic_head(&ty)?;
+        match args.get(i)? {
+            rask_types::GenericArg::Type(t) => Some((**t).clone()),
+            _ => None,
         }
-        if let Some(var_name) = object.name() {
-            if let Some(checked) = self.meta(var_name).and_then(|m| m.checked_type.as_ref()) {
-                if let Some((_, args)) = self.generic_head(checked) {
-                    if let Some(rask_types::GenericArg::Type(inner)) = args.first() {
-                        if let Some(prefix) = super::MirContext::type_prefix(inner, self.ctx.type_names) {
-                            return Some(prefix);
-                        }
-                    }
-                }
-            }
-        }
-        None
     }
 
     /// The strategy of a `Shared<T, S>` receiver — the second type argument.
@@ -197,32 +174,10 @@ impl<'a> MirLowerer<'a> {
     /// you didn't need costs time, and one you did need and skipped costs
     /// correctness (SH8).
     pub(super) fn shared_strategy(&self, object: &Expr) -> SharedStrategy {
-        if let Some(raw_ty) = self.ctx.lookup_raw_type(object.id) {
-            let args = match &*raw_ty {
-                rask_types::Type::UnresolvedGeneric { args, .. }
-                | rask_types::Type::Generic { args, .. } => Some(args.as_slice()),
-                _ => None,
-            };
-            if let Some(rask_types::GenericArg::Type(s)) = args.and_then(|a| a.get(1)) {
-                if let Some(name) = super::MirContext::type_prefix(s, self.ctx.type_names) {
-                    return SharedStrategy::from_name(&name);
-                }
-            }
-        }
-        // The binding's type, when the use has none of its own:
-        // `Shared<Queue, Mutex>` -> Mutex.
-        if let Some(var_name) = object.name() {
-            if let Some(checked) = self.meta(var_name).and_then(|m| m.checked_type.as_ref()) {
-                if let Some((_, args)) = self.generic_head(checked) {
-                    if let Some(rask_types::GenericArg::Type(s)) = args.get(1) {
-                        if let Some(name) = super::MirContext::type_prefix(s, self.ctx.type_names) {
-                            return SharedStrategy::from_name(&name);
-                        }
-                    }
-                }
-            }
-        }
-        SharedStrategy::Readers
+        self.sync_type_arg(object, 1)
+            .and_then(|s| super::MirContext::type_prefix(&s, self.ctx.type_names))
+            .map(|name| SharedStrategy::from_name(&name))
+            .unwrap_or(SharedStrategy::Readers)
     }
 
     /// The MIR type of what a sync box holds: the `T` of `Mutex<T>`/`Shared<T>`.
@@ -232,14 +187,7 @@ impl<'a> MirLowerer<'a> {
     /// loaded eight bytes out of it, which for a `Mutex<string>` is the string's
     /// first half read as a pointer.
     pub(super) fn resolve_sync_payload_mir(&self, object: &Expr) -> Option<MirType> {
-        let raw_ty = self.ctx.lookup_raw_type(object.id)?;
-        let args = match &*raw_ty {
-            rask_types::Type::UnresolvedGeneric { args, .. }
-            | rask_types::Type::Generic { args, .. } => args,
-            _ => return None,
-        };
-        let rask_types::GenericArg::Type(inner) = args.first()? else { return None };
-        Some(self.ctx.type_to_mir(inner))
+        Some(self.ctx.type_to_mir(&self.sync_type_arg(object, 0)?))
     }
 
     /// Lower `with <box> as v { body }` for a box whose payload is reached by
@@ -275,7 +223,6 @@ impl<'a> MirLowerer<'a> {
         // A payload that lives in its own storage is aliased through the pointer
         // acquire hands back; anything word-sized is loaded into the local
         // (codegen does the load), which is why it needs writing back.
-        let inner_type_name = self.resolve_shared_inner_type_name(object);
         let guard_ty = self.resolve_sync_payload_mir(object).unwrap_or_else(|| crate::fallback::unknown_type("lower/concurrency:278"));
         let by_address = guard_ty.passed_by_address();
 
@@ -290,9 +237,7 @@ impl<'a> MirLowerer<'a> {
         // The binding shadows any outer name for the block only, metadata
         // included.
         let saved_meta = self.local_meta.remove(binding_name);
-        if let Some(ref type_name) = inner_type_name {
-            self.meta_mut(binding_name).type_prefix = Some(type_name.clone());
-        }
+        self.meta_mut(binding_name).checked_type = self.sync_type_arg(object, 0);
         // Bound by address, the binding is the box's own payload, so `p = v`
         // replaces what the box holds. It used to rebind the local, and the
         // box kept its old value.
@@ -390,20 +335,9 @@ impl<'a> MirLowerer<'a> {
         self.builder.switch_to_block(continue_block);
     }
 
-    /// True when `object` is a `Shared<T, S>`. Reads the checker's type
-    /// (resolved `Generic` or `UnresolvedGeneric`) so it covers a field
-    /// receiver like `self.store`; falls back to a tracked `type_prefix` on a
-    /// local.
+    /// True when `object` is a `Shared<T, S>`, by the checker's type.
     pub(super) fn is_shared_expr(&self, object: &Expr) -> bool {
-        let from_type = self.ctx.lookup_raw_type(object.id)
-            .and_then(|ty| super::MirContext::type_prefix(&ty, self.ctx.type_names))
-            .is_some_and(|p| p.trim() == "Shared");
-        from_type
-            || object
-                .name()
-                .and_then(|var_name| self.meta(var_name))
-                .and_then(|m| m.type_prefix.as_deref())
-                .is_some_and(|p| p == "Shared")
+        self.type_base_of(object).as_deref() == Some("Shared")
     }
 
     /// If `object` is a no-arg guard access on a `Shared` — `shared.read()`,
@@ -462,7 +396,6 @@ impl<'a> MirLowerer<'a> {
         acquire: Mint,
     ) -> Result<(MirOperand, String, crate::LocalId, MirType), LoweringError> {
         let (box_op, _) = self.lower_expr(box_obj)?;
-        let inner_name = self.resolve_shared_inner_type_name(box_obj);
         let guard_ty = match self.resolve_sync_payload_mir(box_obj) {
             Some(ty @ MirType::Struct(_)) => ty,
             _ => MirType::Ptr,
@@ -478,18 +411,10 @@ impl<'a> MirLowerer<'a> {
             args: vec![box_op.clone()],
         }));
         self.locals.insert(guard_name.clone(), (guard_local, guard_ty.clone()));
-        if let Some(n) = &inner_name {
-            self.meta_mut(&guard_name).type_prefix = Some(n.clone());
-        }
-        // What the payload holds, when the payload is a collection. The guard is
-        // a synthetic local with no checker type of its own, so
-        // `self.counters.lock().get(k)` on a `Mutex<Map<string, u64>>` had
-        // nothing to resolve the value type from once `.lock()` desugared away.
-        if let Some(elem) = self.ctx.lookup_raw_type(box_obj.id)
-            .and_then(|ty| self.collection_elem_of_checker_type(&ty))
-        {
-            self.meta_mut(&guard_name).elem_type = Some(elem);
-        }
+        // The guard is a name lowering made up, so it carries the payload's
+        // type itself: `self.counters.lock().get(k)` on a
+        // `Mutex<Map<string, u64>>` resolves the value type from it.
+        self.meta_mut(&guard_name).checked_type = self.sync_type_arg(box_obj, 0);
         Ok((box_op, guard_name, guard_local, guard_ty))
     }
 

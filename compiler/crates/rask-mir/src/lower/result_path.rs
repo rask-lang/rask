@@ -338,9 +338,6 @@ impl<'a> MirLowerer<'a> {
                     }));
                 }
                 self.locals.insert(name.clone(), (local, tuple_ty.clone()));
-                if let Some(prefix) = self.mir_type_name(&tuple_ty) {
-                    self.meta_mut(name).type_prefix = Some(prefix);
-                }
             }
         }
     }
@@ -350,8 +347,5 @@ impl<'a> MirLowerer<'a> {
         let local = self.builder.alloc_local(name.to_string(), ty.clone());
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign { dst: local, rvalue }));
         self.locals.insert(name.to_string(), (local, ty.clone()));
-        if let Some(prefix) = self.mir_type_name(&ty) {
-            self.meta_mut(name).type_prefix = Some(prefix);
-        }
     }
 }

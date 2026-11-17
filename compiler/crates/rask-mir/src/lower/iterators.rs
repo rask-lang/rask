@@ -162,9 +162,6 @@ impl<'a> MirLowerer<'a> {
         // untyped — so fall back to what lowering tracked for the local.
         if let ExprKind::Ident(name) = &expr.kind {
             if let Some(meta) = self.meta(name) {
-                if meta.type_prefix.as_deref() == Some("Vec") {
-                    return true;
-                }
                 if meta
                     .checked_type
                     .as_ref()
