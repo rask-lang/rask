@@ -122,6 +122,11 @@ pub struct StdlibMethodMeta {
     /// The type whose `extend` block declares this method; `None` for a free
     /// function.
     pub owner: Option<std::string::String>,
+    /// The type parameters the declaration has in scope, the extended type's
+    /// first (`T` of `extend Vec<T>`), then the method's own (`U` of `fold`).
+    pub type_params: Vec<std::string::String>,
+    /// How many of `type_params` are the extended type's.
+    pub extended_type_params: usize,
     /// Which MIR arguments (receiver first) are declared as one of the type's
     /// own parameters: the `value: T` of `Atomic.store`. What the caller hands
     /// over there is the payload itself, at whatever type `T` is.
@@ -129,11 +134,15 @@ pub struct StdlibMethodMeta {
 }
 
 /// MIR argument positions whose declared type is a bare type parameter.
-fn payload_args(params: &[(std::string::String, TypeExpr)], takes_self: bool) -> Vec<usize> {
+fn payload_args(
+    params: &[(std::string::String, TypeExpr)],
+    takes_self: bool,
+    type_params: &[std::string::String],
+) -> Vec<usize> {
     params
         .iter()
         .enumerate()
-        .filter(|(_, (_, ty))| matches!(ret_category(ty), RetCategory::TypeParam(_)))
+        .filter(|(_, (_, ty))| matches!(ret_category(ty, type_params), RetCategory::TypeParam(_)))
         .map(|(i, _)| i + usize::from(takes_self))
         .collect()
 }
@@ -182,7 +191,7 @@ fn build_cache() -> MetadataCache {
         for method in reg.methods(type_name) {
             let qualified = format!("{}_{}", type_name, method.name);
             method_symbols.insert(qualified.clone());
-            let ret_cat = ret_category(&method.ret_ty);
+            let ret_cat = ret_category(&method.ret_ty, &method.type_params);
             let ret_prefix = ret_type_prefix(&ret_cat);
             method_metas.push(StdlibMethodMeta {
                 qualified_name: qualified,
@@ -196,14 +205,16 @@ fn build_cache() -> MetadataCache {
                 places_node: method.effects.places_node,
                 eager_callback: method.effects.eager_callback,
                 owner: Some(type_name.to_string()),
-                payload_args: payload_args(&method.params, method.takes_self),
+                type_params: method.type_params.clone(),
+                extended_type_params: method.extended_type_params,
+                payload_args: payload_args(&method.params, method.takes_self, &method.type_params),
             });
         }
     }
 
     // Top-level functions (println, print, etc. are builtins — skip them)
     for func in reg.functions() {
-        let ret_cat = ret_category(&func.ret_ty);
+        let ret_cat = ret_category(&func.ret_ty, &func.type_params);
         let ret_prefix = ret_type_prefix(&ret_cat);
         method_metas.push(StdlibMethodMeta {
             qualified_name: func.name.clone(),
@@ -217,7 +228,9 @@ fn build_cache() -> MetadataCache {
             places_node: func.effects.places_node,
             eager_callback: func.effects.eager_callback,
             owner: None,
-            payload_args: payload_args(&func.params, false),
+            type_params: func.type_params.clone(),
+            extended_type_params: 0,
+            payload_args: payload_args(&func.params, false, &func.type_params),
         });
     }
 
@@ -404,7 +417,7 @@ impl CallShape {
         let points_into_receiver = m.takes_self
             && !m.take_self
             && !m.moves_out
-            && (m.ret_category == RetCategory::Ptr || m.ret_category.names_a_type_param());
+            && (m.ret_category == RetCategory::Ptr || m.ret_names_extended_type_param());
         // The release of a handle the call hands back, when its declared
         // return type is one that frees itself (`@handle(release: "…")`) and
         // isn't a container, whose free also walks its elements:
@@ -417,13 +430,8 @@ impl CallShape {
         // A `T or E<T>` or `T?` answer: the declaration says it holds one of
         // the type's own parameters, so what the slot is made of is the call
         // site's to say.
-        let generic_result = matches!(m.ret_ty, TypeExpr::Result { .. } | TypeExpr::Optional(_)) && {
-            let mut found = false;
-            m.ret_ty.walk_paths(&mut |path| {
-                found |= matches!(path, [name] if name.len() == 1 && name.chars().all(|c| c.is_ascii_uppercase()));
-            });
-            found
-        };
+        let generic_result = matches!(m.ret_ty, TypeExpr::Result { .. } | TypeExpr::Optional(_))
+            && m.ret_mentions(&m.type_params);
         Self {
             receiver,
             given,
@@ -505,6 +513,24 @@ pub enum ArgMode {
 }
 
 impl StdlibMethodMeta {
+    /// Does the declared return type mention one of these parameters
+    /// anywhere, including inside another type's arguments
+    /// (`TrySendError<T>`)?
+    fn ret_mentions(&self, params: &[std::string::String]) -> bool {
+        let mut found = false;
+        self.ret_ty.walk_paths(&mut |path| {
+            found |= matches!(path, [name] if params.contains(name));
+        });
+        found
+    }
+
+    /// Does the answer hold one of the receiver type's own parameters, so it
+    /// may be a view of what the receiver holds (`Vec.get -> T?`)? A method's
+    /// own parameter (`Vec.fold -> U`) is whatever the caller built.
+    pub fn ret_names_extended_type_param(&self) -> bool {
+        self.ret_mentions(&self.type_params[..self.extended_type_params])
+    }
+
     /// How this declaration treats the argument at `arg_index`; MIR's
     /// argument zero is the receiver on a method.
     pub fn argument_mode(&self, arg_index: usize) -> ArgMode {
@@ -515,18 +541,19 @@ impl StdlibMethodMeta {
 // ── Return types ─────────────────────────────────────────────────
 
 /// What a stub's declared return type is, in the categories MIR asks about.
-fn ret_category(t: &TypeExpr) -> RetCategory {
+/// `type_params` are the parameters the declaration has in scope.
+fn ret_category(t: &TypeExpr, type_params: &[std::string::String]) -> RetCategory {
     match t {
         TypeExpr::Unit | TypeExpr::NoReturn => RetCategory::Void,
         TypeExpr::Result { ok, err } => RetCategory::Result {
-            ok: Box::new(ret_category(ok)),
-            err: Box::new(ret_category(err)),
+            ok: Box::new(ret_category(ok, type_params)),
+            err: Box::new(ret_category(err, type_params)),
         },
-        TypeExpr::Optional(inner) => RetCategory::Option(Box::new(ret_category(inner))),
+        TypeExpr::Optional(inner) => RetCategory::Option(Box::new(ret_category(inner, type_params))),
         TypeExpr::RawPtr(_) => RetCategory::Ptr,
-        TypeExpr::Tuple(parts) => RetCategory::Tuple(parts.iter().map(ret_category).collect()),
+        TypeExpr::Tuple(parts) => RetCategory::Tuple(parts.iter().map(|p| ret_category(p, type_params)).collect()),
         TypeExpr::Named { args, .. } if t.name().as_deref() == Some("Option") && args.len() == 1 => {
-            RetCategory::Option(Box::new(ret_category(&args[0])))
+            RetCategory::Option(Box::new(ret_category(&args[0], type_params)))
         }
         TypeExpr::Named { path, .. } => {
             let name = path.join(".");
@@ -547,11 +574,8 @@ fn ret_category(t: &TypeExpr) -> RetCategory {
                 "usize" => RetCategory::Int(IntWidth::Usize),
                 "isize" => RetCategory::Int(IntWidth::Isize),
                 "f32" | "f64" => RetCategory::F64,
-                // A generic type variable like `T` is not a type — it's a hole.
-                _ if t.bare_name().is_some_and(|n| {
-                    n.len() == 1 && n.chars().all(|c| c.is_ascii_uppercase())
-                }) =>
-                {
+                // A declared type parameter like `T` is not a type — it's a hole.
+                _ if t.bare_name().is_some_and(|n| type_params.iter().any(|p| p == n)) => {
                     RetCategory::TypeParam(name)
                 }
                 _ => RetCategory::Named(name),
@@ -598,23 +622,23 @@ mod tests {
 
     #[test]
     fn void() {
-        assert_eq!(ret_category(&TypeExpr::Unit), RetCategory::Void);
+        assert_eq!(ret_category(&TypeExpr::Unit, &[]), RetCategory::Void);
     }
 
     #[test]
     fn primitives() {
-        assert_eq!(ret_category(&n("bool")), RetCategory::Bool);
-        assert_eq!(ret_category(&n("string")), RetCategory::String);
-        assert_eq!(ret_category(&n("i64")), RetCategory::I64);
-        assert_eq!(ret_category(&n("f64")), RetCategory::F64);
+        assert_eq!(ret_category(&n("bool"), &[]), RetCategory::Bool);
+        assert_eq!(ret_category(&n("string"), &[]), RetCategory::String);
+        assert_eq!(ret_category(&n("i64"), &[]), RetCategory::I64);
+        assert_eq!(ret_category(&n("f64"), &[]), RetCategory::F64);
         // Every other width carries itself. They all used to collapse to `I64`,
         // so a `u64` that filled its range rendered as the signed reading of its
         // bits (#823).
-        assert_eq!(ret_category(&n("usize")), RetCategory::Int(IntWidth::Usize));
-        assert_eq!(ret_category(&n("u64")), RetCategory::Int(IntWidth::U64));
-        assert_eq!(ret_category(&n("u8")), RetCategory::Int(IntWidth::U8));
-        assert_eq!(ret_category(&n("i32")), RetCategory::Int(IntWidth::I32));
-        assert_eq!(ret_category(&n("u128")), RetCategory::Int(IntWidth::U128));
+        assert_eq!(ret_category(&n("usize"), &[]), RetCategory::Int(IntWidth::Usize));
+        assert_eq!(ret_category(&n("u64"), &[]), RetCategory::Int(IntWidth::U64));
+        assert_eq!(ret_category(&n("u8"), &[]), RetCategory::Int(IntWidth::U8));
+        assert_eq!(ret_category(&n("i32"), &[]), RetCategory::Int(IntWidth::I32));
+        assert_eq!(ret_category(&n("u128"), &[]), RetCategory::Int(IntWidth::U128));
     }
 
     #[test]
@@ -623,14 +647,14 @@ mod tests {
         // which cost `T or JoinError` its enum identity all the way to codegen
         // (#677) and left every other error enum in the same shape.
         assert_eq!(
-            ret_category(&result(n("File"), n("IoError"))),
+            ret_category(&result(n("File"), n("IoError")), &[]),
             RetCategory::Result {
                 ok: Box::new(RetCategory::Named("File".into())),
                 err: Box::new(RetCategory::Named("IoError".into())),
             }
         );
         assert_eq!(
-            ret_category(&result(TypeExpr::Unit, n("IoError"))),
+            ret_category(&result(TypeExpr::Unit, n("IoError")), &[]),
             RetCategory::Result {
                 ok: Box::new(RetCategory::Void),
                 err: Box::new(RetCategory::Named("IoError".into())),
@@ -641,51 +665,55 @@ mod tests {
     #[test]
     fn options() {
         assert_eq!(
-            ret_category(&TypeExpr::Optional(Box::new(n("string")))),
+            ret_category(&TypeExpr::Optional(Box::new(n("string"))), &[]),
             RetCategory::Option(Box::new(RetCategory::String))
         );
         assert_eq!(
-            ret_category(&TypeExpr::generic("Option", vec![n("usize")])),
+            ret_category(&TypeExpr::generic("Option", vec![n("usize")]), &[]),
             RetCategory::Option(Box::new(RetCategory::Int(IntWidth::Usize)))
         );
     }
 
     #[test]
     fn named() {
-        assert_eq!(ret_category(&n("File")), RetCategory::Named("File".into()));
+        assert_eq!(ret_category(&n("File"), &[]), RetCategory::Named("File".into()));
         assert_eq!(
-            ret_category(&TypeExpr::generic("Vec", vec![n("string")])),
+            ret_category(&TypeExpr::generic("Vec", vec![n("string")]), &[]),
             RetCategory::Named("Vec".into())
         );
     }
 
     #[test]
     fn pointers() {
-        assert_eq!(ret_category(&TypeExpr::RawPtr(Box::new(n("u8")))), RetCategory::Ptr);
+        assert_eq!(ret_category(&TypeExpr::RawPtr(Box::new(n("u8"))), &[]), RetCategory::Ptr);
     }
 
     #[test]
     fn a_type_parameter_is_a_hole() {
-        // A single-letter type variable is a hole, not a type. It used to be
+        // A declared type variable is a hole, not a type. It used to be
         // recorded as I64, which is how a `Vec<string>.remove(i)` destination
         // got an 8-byte slot (#1020).
-        assert_eq!(ret_category(&n("T")), RetCategory::TypeParam("T".into()));
-        assert!(ret_category(&n("T")).names_a_type_param());
-        assert!(ret_category(&TypeExpr::Optional(Box::new(n("T")))).names_a_type_param());
-        assert!(ret_category(&result(n("T"), n("IoError"))).names_a_type_param());
-        assert!(!ret_category(&n("string")).names_a_type_param());
-        assert!(!ret_category(&n("File")).names_a_type_param());
+        let t = ["T".to_string()];
+        assert_eq!(ret_category(&n("T"), &t), RetCategory::TypeParam("T".into()));
+        assert!(ret_category(&n("T"), &t).names_a_type_param());
+        assert!(ret_category(&TypeExpr::Optional(Box::new(n("T"))), &t).names_a_type_param());
+        assert!(ret_category(&result(n("T"), n("IoError")), &t).names_a_type_param());
+        // A one-letter name the declaration doesn't declare is a type like any
+        // other; the shape of the word was the old test.
+        assert_eq!(ret_category(&n("T"), &[]), RetCategory::Named("T".into()));
+        assert!(!ret_category(&n("string"), &[]).names_a_type_param());
+        assert!(!ret_category(&n("File"), &[]).names_a_type_param());
     }
 
     #[test]
     fn result_prefix_is_ok_type() {
-        let cat = ret_category(&result(n("File"), n("IoError")));
+        let cat = ret_category(&result(n("File"), n("IoError")), &[]);
         assert_eq!(ret_type_prefix(&cat), Some("File".into()));
     }
 
     #[test]
     fn void_result_has_no_prefix() {
-        let cat = ret_category(&result(TypeExpr::Unit, n("IoError")));
+        let cat = ret_category(&result(TypeExpr::Unit, n("IoError")), &[]);
         assert_eq!(ret_type_prefix(&cat), None);
     }
 

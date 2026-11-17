@@ -6468,8 +6468,8 @@ impl TypeChecker {
 
     /// A stdlib static method's parameter types, one per parameter, `None`
     /// where the declared type mentions a type parameter — that needs the
-    /// instantiation, which isn't bound yet. Type parameters are the
-    /// single-letter names (E0357), so the spelling says which is which.
+    /// instantiation, which isn't bound yet. The stub lists its type
+    /// parameters, explicit and single-letter (PC1).
     fn stub_static_param_types(&mut self, type_name: &str, method: &str) -> Vec<Option<Type>> {
         let Some(stub) = rask_stdlib::StubRegistry::load().lookup_method(type_name, method) else {
             return Vec::new();
@@ -6477,9 +6477,8 @@ impl TypeChecker {
         if stub.takes_self {
             return Vec::new();
         }
-        let mentions_type_param = |ty: &TypeExpr| {
-            ty.mentions(&|w| w.len() == 1 && w.chars().all(|c| c.is_ascii_uppercase()))
-        };
+        let mentions_type_param =
+            |ty: &TypeExpr| ty.mentions(&|w| stub.type_params.iter().any(|p| p == w));
         stub.params
             .iter()
             .map(|(_, ty)| (!mentions_type_param(ty)).then(|| self.resolve_type_name(ty)))

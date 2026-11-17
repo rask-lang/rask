@@ -506,9 +506,15 @@ pub struct MethodStub {
     /// symbol means `@native` alone, for the ones lowered by another route.
     pub native: Option<NativeDecl>,
     /// The type parameters in scope: the extended type's (`T` of `extend
-    /// Vec<T>`) and the method's own. A parameter or return of one of these
+    /// Vec<T>`) and the method's own, explicit or a single letter (PC1). A
+    /// parameter or return of one of these
     /// is a value of a width only the call site knows.
     pub type_params: Vec<String>,
+    /// How many of `type_params`, from the front, are the extended type's
+    /// rather than the method's own. `Vec.get -> T?` answers with one of the
+    /// receiver's elements; `Vec.fold -> U` answers with whatever the callback
+    /// built, which points into nothing.
+    pub extended_type_params: usize,
     /// The stub has a Rask body — the implementation is right here, and both
     /// backends run it. The registry couldn't answer this before, which meant
     /// nothing could distinguish "written in Rask" from "declared only".
@@ -641,6 +647,8 @@ pub struct FunctionStub {
     pub span: Span,
     /// `@io`, `@waits` and the rest, as on a method.
     pub effects: rask_ast::decl::DeclaredEffects,
+    /// The function's type parameters, explicit or a single letter (PC1).
+    pub type_params: Vec<String>,
 }
 
 /// Registry of all stub data, lazily loaded.
@@ -895,7 +903,7 @@ impl StubRegistry {
                 });
                 entry.is_private |= !s.is_pub;
                 for m in &s.methods {
-                    entry.methods.push(fn_to_method_stub(m, filename, source, decl_span, false, &declared_type(&s.name, &s.type_params)));
+                    entry.methods.push(fn_to_method_stub(m, filename, source, decl_span, false, &declared_type(&s.name, rask_ast::type_params::struct_type_param_names(s))));
                 }
             }
             DeclKind::Enum(e) => {
@@ -911,7 +919,7 @@ impl StubRegistry {
                 });
                 entry.is_private |= !e.is_pub;
                 for m in &e.methods {
-                    entry.methods.push(fn_to_method_stub(m, filename, source, decl_span, false, &declared_type(&e.name, &e.type_params)));
+                    entry.methods.push(fn_to_method_stub(m, filename, source, decl_span, false, &declared_type(&e.name, rask_ast::type_params::enum_type_param_names(e))));
                 }
             }
             DeclKind::Impl(i) => {
@@ -969,6 +977,7 @@ impl StubRegistry {
                     source_file: format!("stdlib/{}", filename),
                     span: name_span,
                     effects: f.declared_effects(),
+                    type_params: rask_ast::type_params::signature_type_param_names(f),
                 });
             }
             _ => {}
@@ -1038,10 +1047,10 @@ fn lift_inline_methods(decls: &mut Vec<Decl>) {
     for decl in decls.iter_mut() {
         let (target_ty, methods) = match &mut decl.kind {
             DeclKind::Enum(e) if !e.methods.is_empty() => {
-                (declared_type(&e.name, &e.type_params), std::mem::take(&mut e.methods))
+                (declared_type(&e.name, rask_ast::type_params::enum_type_param_names(e)), std::mem::take(&mut e.methods))
             }
             DeclKind::Struct(s) if !s.methods.is_empty() => {
-                (declared_type(&s.name, &s.type_params), std::mem::take(&mut s.methods))
+                (declared_type(&s.name, rask_ast::type_params::struct_type_param_names(s)), std::mem::take(&mut s.methods))
             }
             _ => continue,
         };
@@ -1064,12 +1073,10 @@ fn lift_inline_methods(decls: &mut Vec<Decl>) {
 }
 
 /// The type a declaration declares, written the way an `extend` header would
-/// name it: `Vec<T>` for `struct Vec<T>`.
-fn declared_type(name: &str, type_params: &[rask_ast::decl::TypeParam]) -> TypeExpr {
-    TypeExpr::generic(
-        name.to_string(),
-        type_params.iter().map(|p| TypeExpr::named(p.name.clone())).collect(),
-    )
+/// name it: `Vec<T>` for `struct Vec<T>`, and for `struct Pair { first: T }`
+/// too, whose `T` is a parameter by PC1.
+fn declared_type(name: &str, type_params: Vec<String>) -> TypeExpr {
+    TypeExpr::generic(name.to_string(), type_params.into_iter().map(TypeExpr::named).collect())
 }
 
 /// `in_conformance`: the method is part of an `implements` block, so its
@@ -1103,14 +1110,21 @@ fn fn_to_method_stub(
     // The block's parameters are the bare names its header passes the type
     // (`extend Vec<T>`), the way the resolver puts them in scope; a concrete
     // argument (`extend Sequence<string>`) isn't one.
-    let type_params: Vec<String> = own_ty
+    let mut type_params: Vec<String> = own_ty
         .args()
         .iter()
         .filter_map(TypeExpr::bare_name)
         .filter(|n| !rask_ast::primitives::is_builtin_value_type(n))
         .map(str::to_string)
-        .chain(f.type_params.iter().map(|p| p.name.clone()))
         .collect();
+    let extended_type_params = type_params.len();
+    // The method's own: the explicit `<U>` list plus every single letter its
+    // signature writes (PC1), so `fold(self, init: U, …) -> U` has one.
+    for name in rask_ast::type_params::signature_type_param_names(f) {
+        if !type_params.contains(&name) {
+            type_params.push(name);
+        }
+    }
 
     // Parser appends `<T: Bound>` to generic function names; strip for lookup.
     let bare_name = f.name.clone();
@@ -1138,6 +1152,7 @@ fn fn_to_method_stub(
         native: rask_ast::attr::find(&f.attrs, "native")
             .map(|a| NativeDecl::from_attr(a, &f.name)),
         type_params,
+        extended_type_params,
         type_param_bounds: f.type_params.iter()
             .flat_map(|tp| tp.bounds.iter().map(move |b| (tp.name.clone(), b.ty.clone())))
             .collect(),
