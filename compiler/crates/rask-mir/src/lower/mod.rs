@@ -3079,22 +3079,13 @@ impl<'a> MirLowerer<'a> {
         }
     }
 
-    /// Element type of an expression that evaluates to a `Vec<T>`, or None when
-    /// it isn't one (or the type can't be recovered).
-    ///
-    /// The checker's type first, then the same fallbacks a binding uses: a
-    /// variable's tracked element type, and the callee's declared return type.
-    /// A `Vec.new()` filled by `push` leaves the checker with an inference
-    /// variable, and a call returning `Vec<T>` doesn't always carry a type on the
-    /// argument node.
     /// What the collection this expression evaluates to holds — element for a
     /// `Vec`, value for a `Map`.
     ///
     /// Tries the checker's type for the expression, then the declared type of a
-    /// struct field, then `Vec`-specific tracking. The field case is the one that
-    /// matters most: push-tracking is per-function and the checker doesn't type
-    /// every node, so a collection that arrived as a field of something built
-    /// elsewhere has only its declaration to go on.
+    /// struct field, then what a `Vec` expression's callee declares. The field
+    /// case covers a field node the checker didn't type: the declaration is
+    /// all there is to go on.
     pub(crate) fn collection_elem_of_expr(&self, expr: &Expr) -> Option<MirType> {
         self.collection_elem_of_expr_inner(expr)
     }
@@ -3124,7 +3115,7 @@ impl<'a> MirLowerer<'a> {
             }
         }
         let tracked = match &collection.kind {
-            ExprKind::Ident(name) => self.meta(name).and_then(|m| m.checked_type.clone()),
+            ExprKind::Ident(_) => self.checked_type_of(collection),
             // `v.take_all()` holds what `v` holds.
             ExprKind::MethodCall { object, method, .. } if method == "take_all" => {
                 return self.handed_over_elem(object, elem);
@@ -3188,14 +3179,11 @@ impl<'a> MirLowerer<'a> {
             }
         }
         match &expr.kind {
-            ExprKind::Ident(name) => self
-                .meta(name)
-                .and_then(|m| m.checked_type.as_ref())
-                .and_then(|t| self.collection_elem_of_checker_type(t)),
-            // A `Vec<T>` field: the struct's declaration is the answer, and it's
-            // the only one available when the Vec was built somewhere else —
-            // push tracking is per-function and the checker doesn't type every
-            // field node.
+            ExprKind::Ident(_) => self
+                .checked_type_of(expr)
+                .and_then(|t| self.collection_elem_of_checker_type(&t)),
+            // A `Vec<T>` field: the struct's declaration is the answer when the
+            // checker didn't type the field node.
             ExprKind::Field { object, field } => {
                 let layout = self.struct_layout_of_expr(object)?;
                 let f = layout.fields.iter().find(|f| f.name == *field)?;

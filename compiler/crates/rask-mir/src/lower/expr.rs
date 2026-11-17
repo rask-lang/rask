@@ -3489,12 +3489,11 @@ impl<'a> MirLowerer<'a> {
 
     /// What `object[index]` reads, for a Vec or a Map.
     ///
-    /// The checker's type first, then tracked push/set calls. Last resort: the
-    /// receiver's own `Vec<T>`. Push tracking only sees Vecs built in this
-    /// function, and the checker doesn't type every index node, so a Vec that
-    /// arrived some other way — a field of a struct returned from a call, or
-    /// of a `json.decode` result — fell through to i64 and `h.names[0]`
-    /// printed a string's first bytes as a number.
+    /// The checker's type for the index node first, then what the receiver
+    /// holds. Without the second, an index node the checker left untyped
+    /// — a field of a struct returned from a call, or of a `json.decode`
+    /// result — fell through to i64 and `h.names[0]` printed a string's
+    /// first bytes as a number.
     fn index_result_ty(&mut self, expr: &Expr, object: &Expr) -> MirType {
         self.ctx.lookup_node_type(expr.id)
             .or_else(|| self.collection_elem_of_expr(object))
@@ -5714,7 +5713,7 @@ impl<'a> MirLowerer<'a> {
                             }
 
                             // Vec<T>: generate loop that encodes each element.
-                            // Detection: check type checker first, fall back to local_meta type_prefix.
+                            // Detection: the checker's type of the argument.
                             let raw_ty = self.ctx.lookup_raw_type(args[0].expr.id);
                             // A resolved `Type::Generic { base }` counts too: a
                             // call returning `Vec<T>` comes back that way, and
@@ -5749,9 +5748,9 @@ impl<'a> MirLowerer<'a> {
                                     }
                                     _ => None,
                                 });
-                                // The checker leaves a `Vec.new()` filled by
-                                // `push` with an inference variable, so fall back
-                                // to the element type lowering tracked itself.
+                                // Last, the element type of the argument's own
+                                // checked type (a binding's, for a name the
+                                // checker didn't type at this node).
                                 let elem_mir = elem_ty
                                     .as_ref()
                                     .map(|t| self.ctx.type_to_mir(t))
@@ -6524,15 +6523,10 @@ impl<'a> MirLowerer<'a> {
             all_args.push(MirOperand::Constant(MirConst::Int(elem_size)));
         }
 
-        // Use tracked element type for Vec_get/index return instead of default I64.
-        // Checks per-function map first, then shared cross-function map.
-        //
-        // The receiver's declared element type comes first, because tracking is
-        // last-write-wins over every push in the function and a `Vec<i32?>` fed
-        // `push(1)`, `push(none)`, `push(3)` ended up recorded as `i32`: the
-        // final bare literal overwrote the option. Reading an element then took
-        // a tag out of a bare i32 slot and the loop segfaulted — on three
-        // elements but not two, purely by which push happened to be last.
+        // What `Vec_get`/`Vec_index` hand back is the receiver's element type,
+        // from the checker. It used to come from the last push in the function,
+        // so a `Vec<i32?>` fed `push(1)`, `push(none)`, `push(3)` read its
+        // elements as bare `i32` and took a tag out of the wrong bytes.
         let tracked_elem = if matches!(qualified_name.as_str(), "Vec_get" | "Vec_index") {
             self.container_elem_mir_type(object.id, 0)
                 .or_else(|| self.collection_elem_of_expr(object))
@@ -6556,8 +6550,8 @@ impl<'a> MirLowerer<'a> {
             // answer and the tag was read off the wrong bytes.
             let tracked = self.collection_elem_of_expr(object);
             // In a generic body the checker's payload is still the unresolved
-            // type parameter; the receiver's tracked element type is the
-            // concrete one after monomorphization.
+            // type parameter; the receiver's element type is the concrete one
+            // after monomorphization.
             let elem = Self::better_payload_ty(self.extract_payload_type(expr), tracked)
                 .unwrap_or_else(|| crate::fallback::unknown_type("lower/expr:3765"));
             Some(super::option_of(elem))
@@ -6595,11 +6589,10 @@ impl<'a> MirLowerer<'a> {
         } else if qualified_name == "Vec_index" {
             // Indexing (`v[i]`) panics on OOB and yields the raw element.
             //
-            // Push tracking only sees Vecs built in this function, so a Vec that
-            // arrived some other way — a struct field off a returned value, or a
-            // `json.decode` result — fell through to i64 and `h.names[0]` printed
-            // the string's first bytes as a number. The checker knows what the
-            // index expression is; ask it when tracking has nothing.
+            // The receiver's element type, from the checker. Without it a Vec
+            // reached through a struct field off a returned value, or a
+            // `json.decode` result, fell through to i64 and `h.names[0]` printed
+            // the string's first bytes as a number.
             tracked_elem
         } else if qualified_name == "Vec_remove" {
             // `.remove(i)` hands back the element itself. The stub says `-> T`,
