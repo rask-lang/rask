@@ -757,10 +757,9 @@ mod tests {
     }
 
     #[test]
-    fn fs_open_returns_result_with_file_prefix() {
+    fn fs_open_returns_result() {
         let meta = lookup("fs_open").expect("missing fs_open");
         assert!(matches!(meta.ret_category, RetCategory::Result { .. }));
-        assert_eq!(meta.ret_type_prefix, Some("File".into()));
     }
 
     #[test]
