@@ -929,8 +929,9 @@ fn insert_aggregate_release(
                         })
                 }
                 MirStmtKind::Call { func: fref, args, dst: Some(dst), .. } => {
-                    let views_receiver = crate::own_names::returns_a_view(fref, own)
-                        && args.first().and_then(uses::operand_local).is_some_and(|r| tracked.contains(&r));
+                    let views_receiver = crate::own_names::viewed_argument(fref, args, own)
+                        .and_then(uses::operand_local)
+                        .is_some_and(|r| tracked.contains(&r));
                     let points_into = fref.points_into_args
                         && args.iter().filter_map(uses::operand_local).any(|a| tracked.contains(&a));
                     (views_receiver || points_into).then_some(*dst)
@@ -1138,7 +1139,8 @@ fn insert_aggregate_release(
                     MirStmtKind::Call { func: fref, dst: Some(dst), args }
                         if crate::own_names::returns_a_view(fref, own) =>
                     {
-                        (*dst, args.first().and_then(uses::operand_local).into_iter().collect())
+                        let base = crate::own_names::viewed_argument(fref, args, own);
+                        (*dst, base.and_then(uses::operand_local).into_iter().collect())
                     }
                     _ => continue,
                 };
@@ -1345,10 +1347,11 @@ fn insert_aggregate_release(
                     }
                     if let Some(dst) = dst.filter(|d| is_tracked(d)) {
                         // A call gives up what it returns, unless it hands back
-                        // a view into storage its receiver keeps, the way
+                        // a view into storage an argument keeps, the way
                         // `v.get(i)` points into the vector's own buffer.
                         if crate::own_names::returns_a_view(fref, own) {
-                            match args.first().and_then(uses::operand_local).filter(|r| is_tracked(r)) {
+                            let base = crate::own_names::viewed_argument(fref, args, own);
+                            match base.and_then(uses::operand_local).filter(|r| is_tracked(r)) {
                                 Some(recv) => ev.push(ownership::Event::View { dst, base: recv }),
                                 None => ev.push(ownership::Event::Other(dst)),
                             }

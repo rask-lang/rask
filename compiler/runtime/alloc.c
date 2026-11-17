@@ -270,7 +270,7 @@ static void *alloc_at(int64_t size, int64_t align, void *site) {
     return ptr;
 }
 
-static void free_sized(void *ptr, int64_t size) {
+static void release_at(void *ptr, int64_t size) {
     if (!ptr) return;
     active_allocator.free(ptr, active_allocator.ctx);
     if (size > 0) stats_track_free(size);
@@ -280,7 +280,7 @@ static void free_sized(void *ptr, int64_t size) {
 static void *realloc_at(void *ptr, int64_t old_size, int64_t new_size, int64_t align,
                         void *site) {
     if (new_size <= 0) {
-        free_sized(ptr, old_size);
+        release_at(ptr, old_size);
         return NULL;
     }
     // There is no aligned `realloc`, so a block past 16 moves by hand: a
@@ -290,7 +290,7 @@ static void *realloc_at(void *ptr, int64_t old_size, int64_t new_size, int64_t a
         if (ptr) {
             int64_t keep = old_size < new_size ? old_size : new_size;
             if (keep > 0) memcpy(fresh, ptr, (size_t)keep);
-            free_sized(ptr, old_size);
+            release_at(ptr, old_size);
         }
         return fresh;
     }

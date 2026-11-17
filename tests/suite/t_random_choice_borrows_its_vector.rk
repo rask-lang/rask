@@ -1,0 +1,40 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// `choice` hands back an element where it sits in the vector it was given:
+// `Random.choice(mutate self, vec: Vec<T>) -> T?`. The vector still owns it,
+// so the caller must not release it. The method form used to be marked a view
+// of the generator by accident, and the free function `random.choice` wasn't
+// marked at all, so the picked string was freed at the end of the scope and
+// again by the vector (memcheck_gate sees the invalid reads; the printed
+// answer stays right).
+
+import random
+
+struct Card {
+    name: string
+    rank: i64
+}
+
+test "a string picked by a seeded generator stays the vector's" {
+    let n = 1
+    let v = Vec.from(["item-{n}-padded-past-sso-length", "other-{n}-padded-past-sso-length"])
+    mut rng = random.Random.from_seed(7)
+    let a = rng.choice(v)!
+    assert a.starts_with("item-1") || a.starts_with("other-1")
+    assert v.len() == 2
+}
+
+test "a struct picked by a seeded generator stays the vector's" {
+    let n = 1
+    let v = Vec.from([Card(name: "ace-{n}-padded-past-sso-length", rank: 1), Card(name: "two-{n}-padded-past-sso-length", rank: 2)])
+    mut rng = random.Random.from_seed(7)
+    let c = rng.choice(v)!
+    assert c.rank == 1 || c.rank == 2
+}
+
+test "a string picked by random.choice stays the vector's" {
+    let n = 1
+    let v = Vec.from(["item-{n}-padded-past-sso-length", "other-{n}-padded-past-sso-length"])
+    let a = random.choice(v)!
+    assert a.ends_with("padded-past-sso-length")
+}

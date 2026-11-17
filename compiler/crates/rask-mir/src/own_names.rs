@@ -13,9 +13,22 @@ use std::collections::HashSet;
 
 use crate::FunctionRef;
 
-/// Does this call hand back a view into storage its receiver keeps owning?
+/// Does this call hand back a view into storage an argument keeps owning?
 pub fn returns_a_view(call: &FunctionRef, own: &HashSet<String>) -> bool {
     !own.contains(&call.name) && call.returns_a_view()
+}
+
+/// The argument this call's result points into, when it returns a view: the
+/// receiver for `v.get(i)`, the vector for `rng.choice(v)`.
+pub fn viewed_argument<'a>(
+    call: &FunctionRef,
+    args: &'a [crate::MirOperand],
+    own: &HashSet<String>,
+) -> Option<&'a crate::MirOperand> {
+    if !returns_a_view(call, own) {
+        return None;
+    }
+    args.get(call.viewed_argument()?)
 }
 
 /// Does this call keep the argument at `index`?

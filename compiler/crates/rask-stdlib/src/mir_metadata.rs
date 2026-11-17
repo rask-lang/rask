@@ -80,6 +80,24 @@ impl RetCategory {
             _ => false,
         }
     }
+
+    /// The type parameters the answer is made of: the bare holes, reached
+    /// through `?`, `or` and tuples. Not the arguments of another type: a
+    /// `TrySendError<T>` holds its `T` itself, so the error is the caller's,
+    /// not a view of anything.
+    fn holes(&self) -> Vec<&str> {
+        match self {
+            RetCategory::TypeParam(name) => vec![name.as_str()],
+            RetCategory::Option(inner) => inner.holes(),
+            RetCategory::Result { ok, err } => {
+                let mut v = ok.holes();
+                v.extend(err.holes());
+                v
+            }
+            RetCategory::Tuple(elems) => elems.iter().flat_map(|e| e.holes()).collect(),
+            _ => Vec::new(),
+        }
+    }
 }
 
 /// An integer width other than the `I64` default, by its Rask name.
@@ -127,6 +145,8 @@ pub struct StdlibMethodMeta {
     pub type_params: Vec<std::string::String>,
     /// How many of `type_params` are the extended type's.
     pub extended_type_params: usize,
+    /// The declared parameter types, positionally matching `takes`.
+    pub param_types: Vec<TypeExpr>,
     /// Which MIR arguments (receiver first) are declared as one of the type's
     /// own parameters: the `value: T` of `Atomic.store`. What the caller hands
     /// over there is the payload itself, at whatever type `T` is.
@@ -207,6 +227,7 @@ fn build_cache() -> MetadataCache {
                 owner: Some(type_name.to_string()),
                 type_params: method.type_params.clone(),
                 extended_type_params: method.extended_type_params,
+                param_types: method.params.iter().map(|(_, t)| t.clone()).collect(),
                 payload_args: payload_args(&method.params, method.takes_self, &method.type_params),
             });
         }
@@ -230,6 +251,7 @@ fn build_cache() -> MetadataCache {
             owner: None,
             type_params: func.type_params.clone(),
             extended_type_params: 0,
+            param_types: func.params.iter().map(|(_, t)| t.clone()).collect(),
             payload_args: payload_args(&func.params, false, &func.type_params),
         });
     }
@@ -352,7 +374,8 @@ pub struct CallShape {
     /// An argument past the declared parameters (an element size, a function
     /// address) carries nothing owned.
     given: u64,
-    returns_a_view: bool,
+    /// The argument whose storage the result points into, receiver first.
+    views: Option<u8>,
     moves_out: bool,
     eager_callback: bool,
     fresh_release: Option<&'static str>,
@@ -367,7 +390,7 @@ impl CallShape {
         Self {
             receiver: Receiver::Borrowed,
             given: 0,
-            returns_a_view: false,
+            views: None,
             moves_out: false,
             eager_callback: false,
             fresh_release: None,
@@ -410,14 +433,7 @@ impl CallShape {
                 given |= 1 << (i + first_param);
             }
         }
-        // A `take self` method has no receiver left for the result to point
-        // into: it consumed it, and what comes back is the caller's
-        // (`Handle.join(take self) -> T or JoinError`, #1223). `@moves_out`
-        // says a `mutate self` method hands its element over instead.
-        let points_into_receiver = m.takes_self
-            && !m.take_self
-            && !m.moves_out
-            && (m.ret_category == RetCategory::Ptr || m.ret_names_extended_type_param());
+        let views = m.viewed_argument().and_then(|i| u8::try_from(i).ok());
         // The release of a handle the call hands back, when its declared
         // return type is one that frees itself (`@handle(release: "…")`) and
         // isn't a container, whose free also walks its elements:
@@ -435,7 +451,7 @@ impl CallShape {
         Self {
             receiver,
             given,
-            returns_a_view: points_into_receiver,
+            views,
             moves_out: m.moves_out,
             eager_callback: m.eager_callback,
             fresh_release,
@@ -446,7 +462,7 @@ impl CallShape {
     /// This operation, but handing back a view into its receiver. For an
     /// operation lowering makes up that reads an element where it sits.
     pub const fn viewing(self) -> Self {
-        Self { returns_a_view: true, ..self }
+        Self { views: Some(0), ..self }
     }
 
     /// This operation, but running its closure argument to completion.
@@ -464,10 +480,16 @@ impl CallShape {
         index < 64 && self.given & (1 << index) != 0
     }
 
-    /// Does the result point into storage the receiver keeps owning? The caller
-    /// may read it and must never release it: the container will.
+    /// Does the result point into storage one of the arguments keeps owning
+    /// (usually the receiver)? The caller may read it and must never release
+    /// it: the container will.
     pub fn returns_a_view(&self) -> bool {
-        self.returns_a_view
+        self.views.is_some()
+    }
+
+    /// Which argument the result points into, receiver first.
+    pub fn viewed_argument(&self) -> Option<usize> {
+        self.views.map(usize::from)
     }
 
     /// Is the result an element taken out of the receiver, now the caller's
@@ -524,11 +546,43 @@ impl StdlibMethodMeta {
         found
     }
 
-    /// Does the answer hold one of the receiver type's own parameters, so it
-    /// may be a view of what the receiver holds (`Vec.get -> T?`)? A method's
-    /// own parameter (`Vec.fold -> U`) is whatever the caller built.
-    pub fn ret_names_extended_type_param(&self) -> bool {
-        self.ret_mentions(&self.type_params[..self.extended_type_params])
+    /// Which MIR argument (receiver first) the answer points into, if any.
+    ///
+    /// The answer is an element of something the caller still owns when it is
+    /// one of the type parameters (through `?`, `or`, tuples) that a borrowed
+    /// container holds: the receiver for `Vec.get(self, i) -> T?`, the `vec`
+    /// argument for `Random.choice(mutate self, vec: Vec<T>) -> T?`. A
+    /// method's own parameter the callback built (`Vec.fold -> U`) is held by
+    /// nothing the caller passed, so it is fresh.
+    ///
+    /// A `take self` method has no receiver left for the result to point
+    /// into: it consumed it, and what comes back is the caller's
+    /// (`Handle.join(take self) -> T or JoinError`, #1223). `@moves_out` says
+    /// a `mutate self` method hands its element over instead.
+    pub fn viewed_argument(&self) -> Option<usize> {
+        if self.moves_out {
+            return None;
+        }
+        let holes = self.ret_category.holes();
+        let names_one_of = |params: &[std::string::String]| holes.iter().any(|h| params.iter().any(|p| p == h));
+        if self.takes_self && !self.take_self
+            && (self.ret_category == RetCategory::Ptr
+                || names_one_of(&self.type_params[..self.extended_type_params]))
+        {
+            return Some(0);
+        }
+        let first_param = usize::from(self.takes_self);
+        self.param_types.iter().enumerate().find_map(|(i, ty)| {
+            let borrowed = !self.takes.get(i).copied().unwrap_or(false);
+            // A container of the hole (`Vec<T>`), not the bare value (`init:
+            // U`) or a function that makes one (`f: func(U, T) -> U`).
+            let holds = matches!(ty, TypeExpr::Named { args, .. } if args.iter().any(|a| {
+                let mut found = false;
+                a.walk_paths(&mut |path| found |= matches!(path, [n] if holes.contains(&n.as_str())));
+                found
+            }));
+            (borrowed && holds).then_some(i + first_param)
+        })
     }
 
     /// How this declaration treats the argument at `arg_index`; MIR's
@@ -867,6 +921,14 @@ mod tests {
         assert_eq!(shape("Vec_new").receiver(), Receiver::Absent, "static: no receiver at all");
         assert_eq!(shape("Handle_join").receiver(), Receiver::Consumed, "declared `take self`");
         assert!(!shape("Handle_join").returns_a_view(), "`take self` leaves nothing to point into");
+        // Only the extended type's parameters, and only as the answer itself:
+        // `fold`'s `U` is the callback's, and `TrySendError<T>` holds its `T`.
+        assert!(!shape("Vec_fold").returns_a_view(), "`fold`'s `U` is what the callback built");
+        assert!(!shape("Sender_try_send").returns_a_view(), "a refused send hands the value back");
+        // The element comes out of the vector argument, not the generator.
+        assert_eq!(shape("Random_choice").viewed_argument(), Some(1));
+        assert_eq!(shape("random_choice").viewed_argument(), Some(0));
+        assert_eq!(shape("Vec_get").viewed_argument(), Some(0));
 
         assert!(shape("Vec_remove").moves_out());
         assert!(shape("Vec_sort_by").is_eager_callback());
