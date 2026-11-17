@@ -488,6 +488,16 @@ impl<'a> MirLowerer<'a> {
         (slot, rask_layout::size_of(&union_ty, self.ctx.target()))
     }
 
+    /// What the function a call runs declares it returns: its signature, or
+    /// for a native, the stub's return.
+    fn declared_call_ret(&self, call: &Expr) -> Option<MirType> {
+        if let Some(sig) = self.callee_sig(call.id) {
+            return Some(sig.ret_ty.clone());
+        }
+        let symbol = self.ctx.call_symbol(call.id)?;
+        Some(super::stdlib_return_mir_type_in(&symbol, Some(self.ctx)))
+    }
+
     /// The Ok side of a `try`: read the payload and continue at `merge_block`.
     /// Shared by the propagate-to-caller path and the ER18 handler path.
     fn finish_try_ok_path(
@@ -512,13 +522,10 @@ impl<'a> MirLowerer<'a> {
                 let mut expr = inner;
                 loop {
                     match &expr.kind {
-                        ExprKind::MethodCall { object, method, .. } => {
+                        ExprKind::MethodCall { object, .. } => {
                             if let Some(mod_name) = object.name() {
                                 if super::is_type_constructor_name(mod_name) {
-                                    let func_name = format!("{}_{}", mod_name, method);
-                                    let ret = self.func_sigs.get(&func_name)
-                                        .map(|s| s.ret_ty.clone())
-                                        .unwrap_or_else(|| super::stdlib_return_mir_type_in(&func_name, Some(self.ctx)));
+                                    let ret = self.declared_call_ret(expr)?;
                                     return match ret {
                                         MirType::Result { ok, .. } => Some(*ok),
                                         MirType::Option(inner) => Some(*inner),
@@ -528,19 +535,8 @@ impl<'a> MirLowerer<'a> {
                             }
                             expr = object;
                         }
-                        ExprKind::Call { func, .. } => {
-                            let name = match &func.kind {
-                                ExprKind::Ident(n) => n.clone(),
-                                ExprKind::Field { object: o, field: f } => {
-                                    if let Some(mod_name) = o.name() {
-                                        format!("{}_{}", mod_name, f)
-                                    } else { break; }
-                                }
-                                _ => break,
-                            };
-                            let ret = self.func_sigs.get(&name)
-                                .map(|s| s.ret_ty.clone())
-                                .unwrap_or_else(|| super::stdlib_return_mir_type_in(&name, Some(self.ctx)));
+                        ExprKind::Call { .. } => {
+                            let ret = self.declared_call_ret(expr)?;
                             return match ret {
                                 MirType::Result { ok, .. } => Some(*ok),
                                 MirType::Option(inner) => Some(*inner),

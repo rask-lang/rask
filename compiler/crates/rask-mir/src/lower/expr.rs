@@ -352,7 +352,7 @@ impl<'a> MirLowerer<'a> {
 
     /// A declared return type, unless the declaration is a stdlib stub saying `T`.
     ///
-    /// `func_sigs` is seeded from the stub metadata, and a `-> T` was baked into
+    /// The signatures are seeded from the stub metadata, and a `-> T` was baked into
     /// it as `i64` — so the signature lookup answered with a width the stub
     /// never knew, in front of everything that could have done better. That is
     /// what each per-call-site arm in this file was reaching around. Refusing
@@ -364,7 +364,7 @@ impl<'a> MirLowerer<'a> {
         if stub_says_t {
             return None;
         }
-        self.func_sigs.get(name).map(|s| s.ret_ty.clone())
+        self.signature(name).map(|s| s.ret_ty.clone())
     }
 
     /// The return type of a call once the declared signatures have had their
@@ -516,7 +516,7 @@ impl<'a> MirLowerer<'a> {
             return None;
         }
         let name = format!("{}_compare", self.mir_type_name(&elem)?);
-        self.func_sigs.contains_key(&name).then_some(name)
+        self.signature(&name).is_some().then_some(name)
     }
 
 
@@ -1112,32 +1112,18 @@ impl<'a> MirLowerer<'a> {
     ///   - a chained scalar-mutate param → its pointer, passed through;
     ///   - anything else (a whole Copy var) → the address of a spilled copy, so the
     ///     write-back is discarded (matching `modify_int(x)`).
-    /// Does `<receiver>.<method>()` resolve to something that writes through
-    /// `self`? Uses the receiver's recorded type to build the qualified name, the
-    /// same way dispatch does below.
-    fn receiver_method_mutates(&self, object: &Expr, method: &str) -> bool {
-        // An array has no methods of its own; it borrows `Vec`'s.
+    /// Does the method call `call` write through its receiver? An array's
+    /// methods are `Vec`'s, which no call target names for it.
+    fn call_mutates_receiver(&self, call: &Expr, object: &Expr, method: &str) -> bool {
         if matches!(self.ctx.lookup_raw_type(object.id).as_deref(), Some(rask_types::Type::Array { .. })) {
             return Self::vec_method_mutates(method);
         }
-        let Some(prefix) = self
-            .ctx
-            .lookup_raw_type(object.id)
-            .and_then(|ty| super::MirContext::type_prefix(&ty, self.ctx.type_names))
-        else {
-            return false;
-        };
-        let base = prefix.as_str();
-        self.mutate_self_methods
-            .contains(&format!("{}_{}", base, method))
+        self.callee_sig(call.id).is_some_and(|s| s.mutates_self)
     }
 
-    /// Does `<receiver>.<method>()` consume the receiver (`take self`)?
-    fn receiver_method_takes(&self, object: &Expr, method: &str) -> bool {
-        self.ctx
-            .lookup_raw_type(object.id)
-            .and_then(|ty| super::MirContext::type_prefix(&ty, self.ctx.type_names))
-            .is_some_and(|prefix| self.take_self_methods.contains(&format!("{}_{}", prefix, method)))
+    /// Does the method call `call` consume its receiver (`take self`)?
+    fn call_takes_receiver(&self, call: &Expr) -> bool {
+        self.callee_sig(call.id).is_some_and(|s| s.take_self)
     }
 
     /// Address of a field/index place, as `base` or `base + offset`. `None` when
@@ -1268,11 +1254,10 @@ impl<'a> MirLowerer<'a> {
             aggregate_mutate_params.push(aggregate);
         }
         Some(super::FuncSig {
-            ret_ty: self.ctx.type_to_mir(ret),
             scalar_mutate_params,
             aggregate_mutate_params,
-            ret_vec_elem: None,
-            param_tys: Vec::new(),
+            takes: params.iter().enumerate().filter(|(_, p)| p.mode == rask_ast::ty::ParamMode::Take).map(|(i, _)| i).collect(),
+            ..super::FuncSig::returning(self.ctx.type_to_mir(ret))
         })
     }
 
@@ -2642,12 +2627,8 @@ impl<'a> MirLowerer<'a> {
             // (`mutate`) and which wrapper layers each parameter declares.
             // A function value has no declaration to read, so its type is the
             // signature: the modes are part of it (type.functions/FT1).
-            let callee_sig: Option<super::FuncSig> = self.value_call_sig(func).or_else(|| {
-                func.name().and_then(|name| {
-                    let key = self.ctx.call_symbol(expr.id).unwrap_or_else(|| name.to_string());
-                    self.func_sigs.get(&key).cloned()
-                })
-            });
+            let callee_sig: Option<super::FuncSig> =
+                self.value_call_sig(func).or_else(|| self.callee_sig(expr.id).cloned());
             let callee_params: Vec<Option<Type>> = callee_sig
                 .as_ref()
                 .map(|s| s.param_tys.clone())
@@ -2931,8 +2912,7 @@ impl<'a> MirLowerer<'a> {
             let ret_ty = match &c_macro {
                 Some(call) => c_macro_result(call, self.ctx.target()),
                 None => self
-                    .func_sigs
-                    .get(&func_name)
+                    .signature(&func_name)
                     .map(|s| s.ret_ty.clone())
                     .unwrap_or_else(|| crate::fallback::unknown_type("lower/expr:1156")),
             };
@@ -5404,7 +5384,7 @@ impl<'a> MirLowerer<'a> {
         // is a copy of the element, so the write never reaches the collection.
         // `place_address` below can't help — a Vec element has no base+offset to
         // point at — so take the copy and write it back after the call.
-        let elem_receiver = if self.receiver_method_mutates(object, method) {
+        let elem_receiver = if self.call_mutates_receiver(expr, object, method) {
             self.lower_elem_for_mutate(object)
         } else {
             None
@@ -5439,8 +5419,8 @@ impl<'a> MirLowerer<'a> {
             // interior pointer the frame didn't know about — `self.mt.take()`
             // inside a `take self` body released the whole of `self` before the
             // callee read `mt` out of it, and then released `mt` again (#1497).
-            ) if self.receiver_method_mutates(object, method)
-                && !self.receiver_method_takes(object, method) =>
+            ) if self.call_mutates_receiver(expr, object, method)
+                && !self.call_takes_receiver(expr) =>
             {
                 self.place_address(object).unwrap_or(obj_op)
             }
@@ -5453,7 +5433,7 @@ impl<'a> MirLowerer<'a> {
         // slot; releasing a null handle does nothing.
         if matches!(obj_ty, MirType::Container(crate::types::ContainerKind::Handle(_)))
             && matches!(object.kind, ExprKind::Field { .. })
-            && self.receiver_method_takes(object, method)
+            && self.call_takes_receiver(expr)
         {
             if let Some((base, offset, _, fsize)) = self.lower_place_chain(object) {
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
@@ -5549,9 +5529,8 @@ impl<'a> MirLowerer<'a> {
 
     /// Does the stdlib's `Vec.<method>` take `mutate self`?
     ///
-    /// Asked for an array receiver, which borrows `Vec`'s methods: the stdlib's
-    /// declarations aren't decls of this program, so `mutate_self_methods`
-    /// doesn't list them.
+    /// Asked for an array receiver, which borrows `Vec`'s methods: no call
+    /// target names them for it.
     fn vec_method_mutates(method: &str) -> bool {
         rask_stdlib::stubs::StubRegistry::load()
             .methods("Vec")
@@ -5639,7 +5618,10 @@ impl<'a> MirLowerer<'a> {
                         if self.ctx.package_modules.contains(name)
                             && !super::is_type_constructor_name(name)
                         {
-                            let func_name = method.clone();
+                            // The function the checker resolved: a package's
+                            // declarations are renamed apart when they collide
+                            // (`shout_liba`), so the written name may be none.
+                            let func_name = self.ctx.call_symbol(expr.id).unwrap_or_else(|| method.clone());
                             let mut arg_operands = Vec::new();
                             for arg in args {
                                 let (op, _) = self.lower_expr(&arg.expr)?;
@@ -6045,12 +6027,7 @@ impl<'a> MirLowerer<'a> {
                             // `T?` parameter declares. Lowering them as bare
                             // expressions handed `Canvas.maybe(v)` a Vec pointer
                             // where the callee read an option's tag (#1348).
-                            let callee_sig: Option<super::FuncSig> = self
-                                .ctx
-                                .method_call(expr.id)
-                                .and_then(|c| self.func_sigs.get(&c.symbol))
-                                .or_else(|| self.func_sigs.get(&func_name))
-                                .cloned();
+                            let callee_sig: Option<super::FuncSig> = self.callee_sig(expr.id).cloned();
                             let callee_params: Vec<Option<Type>> = callee_sig
                                 .as_ref()
                                 .map(|s| s.param_tys.clone())
@@ -6269,7 +6246,7 @@ impl<'a> MirLowerer<'a> {
         // else's type is emitted under its package; everything else keeps the
         // plain name, and the calling package asking for a version nobody
         // emitted just means it wanted the only one there is.
-        if self.func_sigs.contains_key(&format!("{}_{}", prefix, suffixed)) {
+        if self.signature(&format!("{}_{}", prefix, suffixed)).is_some() {
             suffixed
         } else {
             method.to_string()
@@ -6309,18 +6286,10 @@ impl<'a> MirLowerer<'a> {
         // must reuse it rather than re-lower `object` — see #349).
         let mut all_args = vec![obj_op.clone()];
         let mut arg_types = Vec::new();
-        // The qualified name isn't resolved until after the arguments are
-        // lowered, but a closure argument needs its parameter types up front.
-        // A module-style receiver (`http.serve(…)`) mangles
-        // predictably, so try that key for the callee's signature.
-        let tentative_params: Vec<Option<Type>> = match &object.kind {
-            ExprKind::Ident(recv) => self
-                .func_sigs
-                .get(&format!("{}_{}", recv, method))
-                .map(|s| s.param_tys.clone())
-                .unwrap_or_default(),
-            _ => Vec::new(),
-        };
+        // What the call runs, as the checker resolved it: a closure argument
+        // needs its parameter types up front, and a `mutate` argument goes by
+        // address.
+        let callee_sig = self.callee_sig(expr.id).cloned();
         let elem_params = self.elem_closure_param_tys(object, &method);
         // #270 write-back applies to methods too. A `mutate` param that isn't
         // passed by pointer already (a Copy scalar, or a stdlib handle like
@@ -6335,9 +6304,6 @@ impl<'a> MirLowerer<'a> {
         // which read the handle as the address of one. Natively that was a
         // segfault as soon as any interface rendered into a builder (#693).
         //
-        // The qualified name isn't resolved until after the arguments are
-        // lowered, so rebuild the candidate keys in the same priority order the
-        // resolution below uses and take the first one with a signature.
         // The receiver's name, for asking whether the calling package has a
         // body of its own for this method.
         let dispatch_prefix = self
@@ -6351,31 +6317,6 @@ impl<'a> MirLowerer<'a> {
             .map(|p| p.as_str().trim().to_string())
             .unwrap_or_default();
         let dispatch_method = self.dispatch_method_name(expr.id, &dispatch_prefix, &method);
-        // A body in Rask is the one `method_call` names, and its signature is
-        // filed under that symbol: per instantiation for a generic type's
-        // method (`BufferedReader_read$Buffer`). Only a native, which has no
-        // body to name, is looked up by the name its receiver spells.
-        let callee_sig = match self.ctx.method_call(expr.id) {
-            Some(call) => self.func_sigs.get(&call.symbol).cloned(),
-            None => {
-                let mut keys: Vec<String> = Vec::new();
-                if let Some(prefix) = self.ctx.recorded_prefix(expr.id) {
-                    keys.push(format!("{}_{}", prefix, dispatch_method));
-                }
-                if let Some(prefix) = self
-                    .ctx
-                    .lookup_raw_type(object.id)
-                    .filter(|ty| super::MirContext::stdlib_type_prefix(ty).is_none())
-                    .and_then(|ty| super::MirContext::type_prefix(&ty, self.ctx.type_names))
-                {
-                    keys.push(format!("{}_{}", prefix, dispatch_method));
-                }
-                if let Some(recv) = object.name() {
-                    keys.push(format!("{}_{}", recv, dispatch_method));
-                }
-                keys.iter().find_map(|k| self.func_sigs.get(k)).cloned()
-            }
-        };
         let callee_params: Vec<Option<Type>> = callee_sig
             .as_ref()
             .map(|s| s.param_tys.clone())
@@ -6397,7 +6338,7 @@ impl<'a> MirLowerer<'a> {
             let (op, ty) = if let (ExprKind::Closure { params, ret_ty, body, .. }, false) =
                 (&arg.expr.kind, self.ctx.c_fn_pointers.contains(&arg.expr.id))
             {
-                let mut expected = self.expected_closure_param_tys(&tentative_params, i);
+                let mut expected = self.expected_closure_param_tys(&callee_params, i + 1);
                 if expected.is_empty() {
                     expected = elem_params.clone();
                 }
@@ -7115,7 +7056,7 @@ impl<'a> MirLowerer<'a> {
         // — a channel end, a task handle, a link — reads it and hands back
         // something fresh, as the interface it comes from says.
         if func.shape.is_none()
-            && !self.func_sigs.contains_key(&final_name)
+            && self.signature(&final_name).is_none()
             && [
                 "Equal", "Comparable", "Hashable", "Cloneable", "Displayable", "Debug",
             ]
@@ -11219,13 +11160,7 @@ impl<'a> MirLowerer<'a> {
                     // pointer. Lowered as a plain expression it handed over the
                     // value, so `r.read(mutate buf)` through an `any Reader`
                     // filled nothing and read `buf.len()` as 0.
-                    let mut sig = super::FuncSig {
-                        ret_ty: MirType::Void,
-                        scalar_mutate_params: Vec::with_capacity(args.len()),
-                        aggregate_mutate_params: Vec::with_capacity(args.len()),
-                        ret_vec_elem: None,
-                        param_tys: Vec::new(),
-                    };
+                    let mut sig = super::FuncSig::returning(MirType::Void);
                     for arg in args {
                         let mode = match arg.mode {
                             rask_ast::expr::ArgMode::Mutate | rask_ast::expr::ArgMode::Deleting => {

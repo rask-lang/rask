@@ -191,8 +191,7 @@ impl<'a> MirLowerer<'a> {
         // renders that as `Vec<T>` — so comparing the whole string only ever
         // matched the bare-`Vec` spelling the `meta` path above supplies. Every
         // Vec reached through a field, an index, or a binding read as "not a Vec"
-        // and lost its element write-back. Compare the base name, the way
-        // `receiver_method_mutates` already does.
+        // and lost its element write-back. Compare the base name.
         self.ctx
             .lookup_raw_type(expr.id)
             .and_then(|ty| super::MirContext::type_prefix(&ty, self.ctx.type_names))
@@ -2414,13 +2413,7 @@ impl<'a> MirLowerer<'a> {
                 .lookup_raw_type(init.id)
                 .and_then(|t| self.vec_elem_of_checker_type(&t));
             let from_callee = || match &init.kind {
-                ExprKind::Call { func, .. } => match &func.kind {
-                    ExprKind::Ident(callee) => {
-                        let key = self.ctx.call_symbol(init.id).unwrap_or_else(|| callee.clone());
-                        self.func_sigs.get(&key).and_then(|s| s.ret_vec_elem.clone())
-                    }
-                    _ => None,
-                },
+                ExprKind::Call { .. } => self.callee_sig(init.id).and_then(|s| s.ret_vec_elem.clone()),
                 ExprKind::MethodCall { object, method, args, .. } => {
                     // `Vec.from([1, 2, 3])` — the receiver is the type name, not
                     // a tracked local, so the prefix lookup below finds nothing.
@@ -2437,14 +2430,7 @@ impl<'a> MirLowerer<'a> {
                             }
                         }
                     }
-                    let prefix = match &object.kind {
-                        ExprKind::Ident(n) => self.meta(n).and_then(|m| m.type_prefix.clone()),
-                        _ => None,
-                    }?;
-                    let base = prefix.as_str().trim();
-                    self.func_sigs
-                        .get(&format!("{}_{}", base, method))
-                        .and_then(|s| s.ret_vec_elem.clone())
+                    self.callee_sig(init.id).and_then(|s| s.ret_vec_elem.clone())
                 }
                 _ => None,
             };

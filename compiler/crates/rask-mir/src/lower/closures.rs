@@ -33,7 +33,7 @@ impl<'a> MirLowerer<'a> {
         name: &str,
         modes: Vec<rask_ast::ty::ParamMode>,
     ) -> Option<TypedOperand> {
-        let sig = self.func_sigs.get(name)?.clone();
+        let sig = self.signature(name)?.clone();
         let ret_ty = sig.ret_ty.clone();
         let param_tys = sig.param_tys.clone();
 
@@ -77,13 +77,6 @@ impl<'a> MirLowerer<'a> {
                 value: call_dst.map(MirOperand::Local),
             }));
 
-            self.func_sigs.insert(wrapper_name.clone(), super::FuncSig {
-                ret_ty,
-                scalar_mutate_params: Vec::new(),
-                aggregate_mutate_params: Vec::new(),
-                ret_vec_elem: None,
-                param_tys: Vec::new(),
-            });
             // The function's own modes, after the environment: a `take`
             // argument is the wrapper's to hand on or release, the same as
             // the function's once its body is inlined here.
@@ -119,7 +112,7 @@ impl<'a> MirLowerer<'a> {
     /// default. Bailing out sorts by the wrong key; guessing at an unknown
     /// return shape reads a tag out of whatever it is, which crashes.
     pub(super) fn lower_compare_as_comparator(&mut self, name: &str) -> Option<TypedOperand> {
-        let sig = self.func_sigs.get(name)?;
+        let sig = self.signature(name)?;
         let param_tys = sig.param_tys.clone();
         let ret_ty = sig.ret_ty.clone();
         if param_tys.len() != 2 || !self.is_ordering_ty(&ret_ty) {
@@ -159,13 +152,6 @@ impl<'a> MirLowerer<'a> {
                 value: Some(MirOperand::Local(normalized)),
             }));
 
-            self.func_sigs.insert(wrapper_name.clone(), super::FuncSig {
-                ret_ty: MirType::I64,
-                scalar_mutate_params: Vec::new(),
-                aggregate_mutate_params: Vec::new(),
-                ret_vec_elem: None,
-                param_tys: Vec::new(),
-            });
             self.synthesized_functions.push(wb.finish());
         }
 
@@ -261,13 +247,6 @@ impl<'a> MirLowerer<'a> {
         wb.terminate(MirTerminator::dummy(MirTerminatorKind::Return {
             value: Some(MirOperand::Local(value)),
         }));
-        self.func_sigs.insert(name.clone(), super::FuncSig {
-            ret_ty,
-            scalar_mutate_params: Vec::new(),
-            aggregate_mutate_params: Vec::new(),
-            ret_vec_elem: None,
-            param_tys: Vec::new(),
-        });
         self.synthesized_functions.push(wb.finish());
         name
     }
@@ -576,13 +555,6 @@ impl<'a> MirLowerer<'a> {
             .chain(params.iter().map(|p| rask_ast::ty::ParamMode::from_flags(p.is_take, p.is_mutate)))
             .collect();
 
-        self.func_sigs.insert(closure_name.clone(), super::FuncSig {
-            ret_ty: closure_ret.clone(),
-            scalar_mutate_params: Vec::new(),
-            aggregate_mutate_params: Vec::new(),
-            ret_vec_elem: None,
-            param_tys: Vec::new(),
-        });
 
         self.synthesized_functions.push(closure_fn);
 
@@ -900,13 +872,6 @@ impl<'a> MirLowerer<'a> {
             value: Some(MirOperand::Constant(crate::operand::MirConst::Int(0))),
         }));
 
-        self.func_sigs.insert(closure_name.clone(), super::FuncSig {
-            ret_ty: MirType::Bool,
-            scalar_mutate_params: Vec::new(),
-            aggregate_mutate_params: Vec::new(),
-            ret_vec_elem: None,
-            param_tys: Vec::new(),
-        });
         // A yield lends its item (type.sequence/SEQ34): the sequence that
         // called it releases what it made once the call returns, as `map`'s
         // does after `yield(f(x))`. For an item that owns only counted things
@@ -1116,13 +1081,6 @@ impl<'a> MirLowerer<'a> {
             value: Some(MirOperand::Local(boxed)),
         }));
 
-        self.func_sigs.insert(thunk_name.clone(), super::FuncSig {
-            ret_ty: MirType::I64,
-            scalar_mutate_params: Vec::new(),
-            aggregate_mutate_params: Vec::new(),
-            ret_vec_elem: None,
-            param_tys: Vec::new(),
-        });
         self.synthesized_functions.push(b.finish());
         thunk_name
     }
