@@ -630,9 +630,17 @@ pub enum RuntimeArg {
     /// (`value: T` on `Shared<T>.new`): the value goes in as that type, an
     /// `i64` into a `Shared<i64?>` wrapped.
     Param { index: usize, holds: Option<usize> },
-    /// A fact about the extended type's parameter at this index (`T` of
-    /// `extend Vec<T>` is 0).
-    Of(TypeFact, usize),
+    /// A fact about one of the extended type's parameters, or a pair of them.
+    Of(TypeFact, FactOf),
+}
+
+/// What a fact is about: the extended type's parameter at this index (`T` of
+/// `extend Vec<T>` is 0), or the tuple of two of them, `(K, V)`, which is how
+/// a map hands out its entries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FactOf {
+    Param(usize),
+    Pair(usize, usize),
 }
 
 /// What a call site tells the runtime about one type parameter.
@@ -650,6 +658,8 @@ pub enum TypeFact {
     /// `hash_eq(K)`: the addresses of a key's own `hash` and `eq`, or nothing
     /// when the key has none.
     HashEq,
+    /// `value_offset((K, V))`: where the second field of the pair starts.
+    ValueOffset,
 }
 
 impl RuntimeArg {
@@ -692,20 +702,36 @@ impl RuntimeArg {
                             "desc" => TypeFact::Desc,
                             "atomic_kind" => TypeFact::AtomicKind,
                             "hash_eq" => TypeFact::HashEq,
+                            "value_offset" => TypeFact::ValueOffset,
                             other => bad(format!("`{other}` is not a type fact")),
                         },
                         _ => bad("a fact is `name(T)`".into()),
                     };
-                    let tp = match args.as_slice() {
-                        [one] => match &one.expr.kind {
-                            ExprKind::Ident(t) => t.clone(),
-                            _ => bad("a fact names a type parameter".into()),
-                        },
-                        _ => bad("a fact takes one type parameter".into()),
+                    let param = |e: &rask_ast::expr::Expr| -> usize {
+                        let ExprKind::Ident(tp) = &e.kind else {
+                            bad("a fact names a type parameter or a pair of them".into())
+                        };
+                        type_params[..extended].iter().position(|p| p == tp).unwrap_or_else(|| {
+                            bad(format!("`{tp}` is not a parameter of the extended type"))
+                        })
                     };
-                    match type_params[..extended].iter().position(|p| *p == tp) {
-                        Some(i) => out.push(RuntimeArg::Of(fact, i)),
-                        None => bad(format!("`{tp}` is not a parameter of the extended type")),
+                    let of = match args.as_slice() {
+                        [one] => match &one.expr.kind {
+                            ExprKind::Tuple(pair) if pair.len() == 2 => {
+                                FactOf::Pair(param(&pair[0]), param(&pair[1]))
+                            }
+                            _ => FactOf::Param(param(&one.expr)),
+                        },
+                        _ => bad("a fact takes one type parameter or one pair".into()),
+                    };
+                    match (fact, of) {
+                        (TypeFact::ValueOffset, FactOf::Param(_)) => {
+                            bad("`value_offset` is about a pair, `(K, V)`".into())
+                        }
+                        (TypeFact::AtomicKind | TypeFact::HashEq, FactOf::Pair(..)) => {
+                            bad("this fact is about one type parameter".into())
+                        }
+                        _ => out.push(RuntimeArg::Of(fact, of)),
                     }
                 }
                 _ => bad("takes parameter names and `fact(T)`".into()),

@@ -783,6 +783,7 @@ extend Map<K, V> {
     /// Move every entry out as `(key, value)` pairs, leaving the map empty
     /// (std.iteration/T1, T2). The order is the map's, which is unspecified.
     @native("rask_map_take_all")
+    @runtime_args(value_offset((K, V)), size((K, V)), desc((K, V)))
     @shrinks
     public func take_all(mutate self) -> Vec<(K, V)> {}
 

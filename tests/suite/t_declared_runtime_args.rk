@@ -173,3 +173,20 @@ test "try_push runs its declared body at each element type" {
     assert words[0].len() == 34
     assert kept.len() == 35
 }
+
+test "Map.take_all lays out and owns its pairs from the declaration" {
+    mut m = Map<i32, string>.new()
+    m.insert(1, "one-long-enough-to-allocate".to_uppercase())
+    m.insert(2, "two-long-enough-to-allocate".to_uppercase())
+    let pairs = m.take_all()
+    assert m.len() == 0
+    assert pairs.len() == 2
+    mut keys: i32 = 0
+    mut chars: usize = 0
+    for p in pairs {
+        keys += p.0
+        chars += p.1.len()
+    }
+    assert keys == 3
+    assert chars == 54
+}

@@ -6326,22 +6326,6 @@ impl<'a> MirLowerer<'a> {
         let slot_args: Vec<(usize, usize)> = declared
             .map(|m| m.slot_params().collect())
             .unwrap_or_default();
-        // An entry is a `(key, value)` tuple, laid out by the caller.
-        if matches!(qualified_name.as_str(), "Map_entries" | "Map_iter" | "Map_take_all") && all_args.len() == 1 {
-            if let (Some(key), Some(val)) = (
-                self.container_elem_mir_type(object.id, 0),
-                self.container_elem_mir_type(object.id, 1),
-            ) {
-                let map = all_args[0].clone();
-                all_args = self.map_entries_args(map, &key, &val);
-                // `take_all` hands its entries over, so the Vec it builds has
-                // to know what each pair owns.
-                if qualified_name == "Map_take_all" {
-                    all_args.push(crate::elem_strs::elem(MirType::Tuple(vec![key, val])));
-                }
-            }
-        }
-
         for (arg_index, type_arg_index) in slot_args {
             let (Some(slot_ty), Some(src_ty)) = (
                 self.container_elem_mir_type(object.id, type_arg_index),
@@ -6378,165 +6362,29 @@ impl<'a> MirLowerer<'a> {
             all_args = self.runtime_call_args(decl, receiver, written, &tparams, Some(expr.id))?.args;
         }
 
-        // What `Vec_get`/`Vec_index` hand back is the receiver's element type,
-        // from the checker. It used to come from the last push in the function,
-        // so a `Vec<i32?>` fed `push(1)`, `push(none)`, `push(3)` read its
-        // elements as bare `i32` and took a tag out of the wrong bytes.
-        let tracked_elem = if matches!(qualified_name.as_str(), "Vec_get" | "Vec_index") {
-            self.container_elem_mir_type(object.id, 0)
-                .or_else(|| self.collection_elem_of_expr(object))
-        } else {
-            None
-        };
-        let ret_ty = if qualified_name == "Vec_get" {
-            // `.get()` returns T? (Option, none on OOB per V3); `v[i]` is
-            // `Vec_index`, which panics instead. The element (Option payload)
-            // type sizes the result slot, so it must be right even when the
-            // Vec wasn't push-tracked in this function (e.g. returned from a
-            // callee): take the checker's `T?` payload first, then tracking.
-            let elem = self.extract_payload_type(expr)
-                .or(tracked_elem)
-                .unwrap_or_else(|| crate::fallback::unknown_type("lower/expr:3750"));
-            Some(super::option_of(elem))
-        } else if matches!(qualified_name.as_str(), "Vec_first" | "Vec_last") {
-            // Same reasoning as Vec_get: these answer `T?`, and the payload type
-            // sizes the result slot. From the stub metadata the result came back
-            // as a bare `T`, so a `Vec<i64?>` got a 16-byte slot for a 24-byte
-            // answer and the tag was read off the wrong bytes.
-            let tracked = self.collection_elem_of_expr(object);
-            // In a generic body the checker's payload is still the unresolved
-            // type parameter; the receiver's element type is the concrete one
-            // after monomorphization.
-            let elem = Self::better_payload_ty(self.extract_payload_type(expr), tracked)
-                .unwrap_or_else(|| crate::fallback::unknown_type("lower/expr:3765"));
-            Some(super::option_of(elem))
-        } else if matches!(qualified_name.as_str(), "Random_choice" | "random_choice") {
-            // `choice(v)` answers `T?`, and the payload type sizes the slot the
-            // DerefOption adapter copies into. From the stub metadata it came
-            // back as a bare `T` → i64, so a `Vec<string>` handed back the
-            // first eight bytes of the string as a number (#857). The element
-            // type is the *argument's*, not the receiver's — the receiver is
-            // the generator.
-            let elem = args
-                .first()
-                .and_then(|a| self.collection_elem_of_expr(&a.expr))
-                .unwrap_or_else(|| crate::fallback::unknown_type("lower/expr:random_choice"));
-            Some(super::option_of(elem))
-        } else if matches!(qualified_name.as_str(),
-            "Map_get" | "Map_remove" | "Map_insert")
-        {
-            // Same reasoning as Vec_get: all three answer `V?`, and the payload
-            // type sizes the result slot. The DerefOption adapter copies
-            // `slot_size - tag` bytes out of the map's storage, so a bare
-            // `i64?` copied only the value's first word — `self.users.get(id)`
-            // handed back eight bytes of a `User` and reading a field off it
-            // dereferenced the id.
-            //
-            // `remove` and `insert` were left off this arm, so on a
-            // `Map<string, string>` both came back as `i64?`: the payload read
-            // took the string's first eight bytes — its inline SSO characters —
-            // and codegen dereferenced them as a `RaskStr *` (#903).
-            let payload = self.extract_payload_type(expr)
-                .or_else(|| self.map_value_mir(object))
-                .or_else(|| self.collection_elem_of_expr(object))
-                .unwrap_or_else(|| crate::fallback::unknown_type("lower/expr:map_get_value"));
-            Some(super::option_of(payload))
-        } else if qualified_name == "Vec_index" {
-            // Indexing (`v[i]`) panics on OOB and yields the raw element.
-            //
-            // The receiver's element type, from the checker. Without it a Vec
-            // reached through a struct field off a returned value, or a
-            // `json.decode` result, fell through to i64 and `h.names[0]` printed
-            // the string's first bytes as a number.
-            tracked_elem
-        } else if qualified_name == "Vec_remove" {
-            // `.remove(i)` hands back the element itself. The stub says `-> T`,
-            // which the metadata fallback reads as a bare i64 — so a
-            // `Vec<string>` element came back through an 8-byte out-param and
-            // `positional.remove(0)` produced half a string's bytes as a number
-            // (#203's grep_clone entry).
-            //
-            // The receiver's own element type first — `self.items` is a
-            // `Vec<string>` once the struct is monomorphized and the layout
-            // knows it — then the checker. A `Stack<T>` whose `pop` did
-            // `self.items.remove(last)` came out as `let _44: i64` at
-            // `T = string`: eight bytes of a string, and no `rc_inc` on the
-            // payload either, since those follow the slot's type. It printed
-            // fine and segfaulted on the next comparison.
-            //
-            // This chain used to start with `tracked_elem`, which is only
-            // computed for `Vec_get` and `Vec_index` and so was always `None`
-            // here — the receiver's layout was doing all the work.
-            self.collection_elem_of_expr(object)
-                .or_else(|| self.ctx.lookup_node_type(expr.id))
-                .map(|t| self.handed_over_elem(object, t))
-        } else if qualified_name == "Vec_pop" {
-            // Same, one level in: `.pop()` is `T?`, and the payload type sizes
-            // the slot the DerefOption adapter copies into. A bare `i64?` slot
-            // took 8 of a string's 16 bytes and reading it segfaulted.
-            //
-            // `tracked_elem` was in front of this too, and `None` here for the
-            // same reason.
-            self.extract_payload_type(expr)
-                .map(|elem| super::option_of(self.handed_over_elem(object, elem)))
-        } else if matches!(qualified_name.as_str(), "Rack_insert" | "Rack_corresponding") {
-            // Both hand back a link. The stub says `Link<T>`, which reaches MIR
-            // without `T`'s layout attached — and a link without its layout
-            // can't project a field, so `rack.insert(n).health` had nothing to
-            // offset from. The call site knows what `T` became.
-            // `insert` answers a bare `Link<T>`; `corresponding` answers
-            // `Link<T>?`, which is the same word with the null address for
-            // `none`. Accept both spellings — filtering to the bare one dropped
-            // the return type for `corresponding` entirely, and its `?` test
-            // then read a tag that isn't there.
-            self.ctx.lookup_node_type(expr.id).filter(|t| t.is_link_slot())
-        } else if qualified_name == "string_parse" {
-            // `parse<T>` yields `T or ParseError`. The stub's signature still
-            // says the literal `T`, which maps to i64, so the fallback below
-            // would land on a bare i64: the local gets no Result slot while the
-            // caller still reads a tag and payload off it — garbage, and a
-            // segfault on the `??`. Prefer the checker's type; when node types
-            // aren't available (instantiated bodies) rebuild it from the call's
-            // written type argument.
-            let target = type_args
-                .as_ref()
-                .and_then(|ta| ta.first())
-                .map(|ta| self.ctx.resolve_type_expr(ta))
-                .unwrap_or(MirType::I64);
-            Some(self.ctx.lookup_node_type(expr.id)
-                .filter(|t| matches!(t, MirType::Result { ok, .. } if !matches!(**ok, MirType::Ptr)))
-                .unwrap_or_else(|| MirType::Result {
-                    ok: Box::new(target),
-                    err: Box::new(self.ctx.resolve_type_name("ParseError")),
-                }))
-        } else if rask_stdlib::mir_metadata::declared_shape(&qualified_name)
-            .is_some_and(|s| s.generic_result())
-        {
-            // `receive` is `T or ReceiveError`, `try_send` is `void or
-            // TrySendError<T>`: the declaration's `T` is a placeholder word, so
-            // neither side has a name by the time it gets here and the result
-            // took a bare i64 or the shared layout of the error enum. `r?` then
-            // read a tag off a local that never got a Result slot and every
-            // receive looked like a failure (#463); for `try_receive` the ok/err
-            // routing fell through to a capitalization guess that sent the
-            // success case to the error tag (#631); and a `string` handed back in
-            // `Full(v)` is sixteen bytes, written and read past its slot.
-            //
-            // The checker's answer has to be a wrapper — a `Result` or an
-            // `Option`. `lookup_node_type` refuses a real type parameter and
-            // keeps a channel of `Vec`s, which is legitimately `Ptr` inside.
-            // Without one, the declaration's type is the fallback below.
-            self.ctx.lookup_node_type(expr.id)
-                .filter(|t| matches!(t, MirType::Result { .. } | MirType::Option(_)))
-        } else {
-            None
-        }.unwrap_or_else(|| self
-            // `Type_method` names exactly one function. The bare method name is
-            // whatever free function shares it, so it is never asked: when the
-            // stub's return names `T`, a program's own `func join(n) -> i64`
+        // What the call hands back is the checker's type for the call node,
+        // read with this instance's type arguments in. The declaration's
+        // `-> T` only says "a type parameter", which reaches MIR as a bare word:
+        // a `Map<string, string>.get` answered `i64?` and read a string's
+        // first eight bytes as the payload (#903).
+        //
+        // An element taken out of a collection keeps which container it is
+        // (`handed_over_elem`), so the frame frees a `Vec<Vec<T>>`'s element
+        // with `Vec_free`.
+        let ret_ty = match self.ctx.lookup_node_type(expr.id) {
+            Some(t) if qualified_name == "Vec_remove" => self.handed_over_elem(object, t),
+            Some(MirType::Option(t)) if qualified_name == "Vec_pop" => {
+                super::option_of(self.handed_over_elem(object, *t))
+            }
+            Some(t) => t,
+            // `Type_method` names exactly one function. The bare method name
+            // is whatever free function shares it, so it is never asked: when
+            // the stub's return names `T`, a program's own `func join(n) -> i64`
             // typed `h.join()` as an `i64` and the `!` after it segfaulted.
-            .sig_ret_ty(&qualified_name)
-            .unwrap_or_else(|| self.call_ret_ty(&qualified_name, expr.id)));
+            None => self
+                .sig_ret_ty(&qualified_name)
+                .unwrap_or_else(|| self.call_ret_ty(&qualified_name, expr.id)),
+        };
 
         // A method on a generic type is lowered once, so its signature says `T`
         // — which reaches MIR as a bare `Ptr`. The call site knows what `T`

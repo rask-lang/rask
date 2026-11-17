@@ -12,7 +12,7 @@
 use super::{LoweringError, MirLowerer};
 use crate::{operand::MirConst, MirOperand, MirType};
 use rask_ast::NodeId;
-use rask_stdlib::{RuntimeArg, TypeFact};
+use rask_stdlib::{FactOf, RuntimeArg, TypeFact};
 
 /// What `runtime_call_args` built.
 pub(super) struct RuntimeCall {
@@ -114,17 +114,30 @@ impl MirLowerer<'_> {
                     // The checker rejects a call whose type arguments it
                     // couldn't settle (E0361), so a missing one is a lowering
                     // bug, never an 8-byte guess.
-                    let at = tparams.get(p).and_then(Option::as_ref).ok_or_else(|| {
-                        LoweringError::InvalidConstruct(format!(
-                            "stdlib call at {call:?}: no type for type argument {p}"
-                        ))
-                    })?;
+                    let arg = |p: usize| {
+                        tparams.get(p).and_then(Option::as_ref).cloned().ok_or_else(|| {
+                            LoweringError::InvalidConstruct(format!(
+                                "stdlib call at {call:?}: no type for type argument {p}"
+                            ))
+                        })
+                    };
+                    let at = match p {
+                        FactOf::Param(p) => arg(p)?,
+                        FactOf::Pair(a, b) => MirType::Tuple(vec![arg(a)?, arg(b)?]),
+                    };
+                    let at = &at;
                     let int = |n: i64| MirOperand::Constant(MirConst::Int(n));
                     match fact {
                         TypeFact::Size => args.push(int(rask_layout::size_of(at, target) as i64)),
                         TypeFact::Align => args.push(int(rask_layout::align_of(at, target) as i64)),
                         TypeFact::Desc => args.push(crate::elem_strs::elem(at.clone())),
                         TypeFact::AtomicKind => args.push(int(Self::atomic_kind(at))),
+                        TypeFact::ValueOffset => {
+                            let MirType::Tuple(fields) = at else {
+                                unreachable!("the stub parser only lets `value_offset` name a pair")
+                            };
+                            args.push(int(rask_layout::tuple_offsets(fields, target)[1] as i64));
+                        }
                         TypeFact::HashEq => {
                             let mir = at.clone();
                             if let Some((hash, eq)) = call.and_then(|c| self.map_key_fn_addrs(c, &mir)) {
