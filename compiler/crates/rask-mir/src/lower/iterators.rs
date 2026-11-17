@@ -188,7 +188,7 @@ impl<'a> MirLowerer<'a> {
         match method {
             "to_vec" if args.is_empty() => {
                 if let Some(chain) = self.try_parse_iter_chain(object) {
-                    let elem = self.container_elem_type(_full_expr.id, 0);
+                    let elem = self.container_elem_mir_type(_full_expr.id, 0);
                     let result = self.lower_iter_collect(&chain, elem)?;
                     return Ok(Some(result));
                 }
@@ -197,9 +197,9 @@ impl<'a> MirLowerer<'a> {
             // The checker has already rejected a non-pair element type.
             "to_map" if args.is_empty() => {
                 if let Some(chain) = self.try_parse_iter_chain(object) {
-                    let key = self.container_elem_type(_full_expr.id, 0);
-                    let value = self.container_elem_type(_full_expr.id, 1);
-                    let result = self.lower_iter_to_map(&chain, key, value)?;
+                    let key = self.container_elem_mir_type(_full_expr.id, 0);
+                    let value = self.container_elem_mir_type(_full_expr.id, 1);
+                    let result = self.lower_iter_to_map(&chain, key, value, _full_expr.id)?;
                     return Ok(Some(result));
                 }
             }
@@ -370,7 +370,7 @@ impl<'a> MirLowerer<'a> {
             // as a call to `Vec_zip`, which nothing emits (#887).
             "zip" if args.len() == 1 => {
                 if let Some(chain) = self.try_parse_iter_chain(object) {
-                    let pair = self.container_elem_type(_full_expr.id, 0);
+                    let pair = self.container_elem_mir_type(_full_expr.id, 0);
                     let result = self.lower_iter_zip(&chain, &args[0].expr, pair)?;
                     return Ok(Some(result));
                 }
@@ -1302,12 +1302,9 @@ impl<'a> MirLowerer<'a> {
         // body computes an `i32` can still yield `i64`s, widened on the way
         // out because the binding asked for a `Vec<i64>`; sized by the body,
         // the vector held 4-byte elements that every reader took 8 at a time.
-        let slot_ty = elem.clone().unwrap_or_else(|| final_ty.clone());
-        let args = vec![
-            MirOperand::Constant(MirConst::Int(rask_layout::size_of(&slot_ty, self.ctx.target()) as i64)),
-            crate::elem_strs::elem(elem.unwrap_or_else(|| final_ty.clone())),
-        ];
-        self.builder.set_call_args(vec_new_pos.0, vec_new_pos.1, "Vec_new", args);
+        let slot_ty = elem.unwrap_or_else(|| final_ty.clone());
+        let (ctor, args) = self.internal_ctor("Vec_new", &[slot_ty.clone()], None)?;
+        self.builder.set_call(vec_new_pos.0, vec_new_pos.1, "Vec_new", &ctor.name, args);
         self.collected_elem_types.insert(result_vec, slot_ty.clone());
 
         let final_op = self.as_slot_value(final_op, &slot_ty);
@@ -1338,13 +1335,23 @@ impl<'a> MirLowerer<'a> {
         chain: &super::IterChain<'_>,
         key: Option<MirType>,
         value: Option<MirType>,
+        call: rask_ast::NodeId,
     ) -> Result<TypedOperand, LoweringError> {
         let result_map = self.builder.alloc_temp(MirType::Container(crate::types::ContainerKind::Map));
+        // With the checker's key and value types the constructor goes out
+        // complete, a key's own `hash`/`eq` included: their addresses are
+        // computed here, ahead of the call. Without them it waits for the
+        // adapters to settle what the loop produces.
         let map_new_pos = self.builder.next_stmt_pos();
+        let (ctor, args) = match (&key, &value) {
+            (Some(k), Some(v)) => self.internal_ctor("Map_new", &[k.clone(), v.clone()], Some(call))?,
+            _ => (FunctionRef::internal("Map_new".to_string()), vec![]),
+        };
+        let deferred = args.is_empty();
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(result_map),
-            func: FunctionRef::internal("Map_new".to_string()),
-            args: vec![],
+            func: ctor,
+            args,
         }));
 
         let setup = self.setup_iter_chain_loop(chain)?;
@@ -1362,22 +1369,23 @@ impl<'a> MirLowerer<'a> {
                 )))
             }
         };
-        // `Map_new` sizes its key and value slots the way `Vec_new` sizes its
-        // element — from the type the loop actually produces, filled in here
-        // because the adapters decide it. So does the constructor: a string
-        // key hashes by its contents.
-        self.builder.set_call(
-            map_new_pos.0,
-            map_new_pos.1,
-            "Map_new",
-            crate::elem_strs::map_ctor_for(&key_ty),
-            vec![
-                MirOperand::Constant(MirConst::Int((rask_layout::size_of(&key_ty, self.ctx.target()) as i64))),
-                MirOperand::Constant(MirConst::Int((rask_layout::size_of(&val_ty, self.ctx.target()) as i64))),
-                crate::elem_strs::elem(key.unwrap_or_else(|| key_ty.clone())),
-                crate::elem_strs::elem(value.unwrap_or_else(|| val_ty.clone())),
-            ],
-        );
+        // The map's slots are the checker's types when it has them, so a
+        // key the loop computes narrower goes in widened, as `collect` does.
+        let key_slot = key.unwrap_or_else(|| key_ty.clone());
+        let val_slot = value.unwrap_or_else(|| val_ty.clone());
+        if deferred {
+            // A key with its own `hash`/`eq` has them on record only when the
+            // checker typed this call, and then the constructor went out
+            // complete above. Built here without them, such a map would bucket
+            // by the key's bytes.
+            if self.ctx.map_key_fns.get(&call).is_some() {
+                return Err(LoweringError::InvalidConstruct(format!(
+                    "to_map at {call:?}: the key has its own hash/eq but the map's types weren't known up front"
+                )));
+            }
+            let (ctor, args) = self.internal_ctor("Map_new", &[key_slot.clone(), val_slot.clone()], None)?;
+            self.builder.set_call(map_new_pos.0, map_new_pos.1, "Map_new", &ctor.name, args);
+        }
 
         // The pair is a `(key, value)` tuple, each field at its own offset
         // and width.
@@ -1402,16 +1410,14 @@ impl<'a> MirLowerer<'a> {
                 access: FieldAccess::for_field(&val_ty, rask_layout::size_of(&val_ty, self.ctx.target())),
             },
         }));
+        let key = self.as_slot_value(MirOperand::Local(key), &key_slot);
+        let val = self.as_slot_value(MirOperand::Local(val), &val_slot);
         // SEQ29: a later key overwrites an earlier one. `Map_set`, because
         // nothing takes the value it displaces, so the map releases it.
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: None,
             func: FunctionRef::like("Map_set", "Map_insert"),
-            args: vec![
-                MirOperand::Local(result_map),
-                MirOperand::Local(key),
-                MirOperand::Local(val),
-            ],
+            args: vec![MirOperand::Local(result_map), key, val],
         }));
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: setup.inc_block }));
 
@@ -2070,19 +2076,17 @@ impl<'a> MirLowerer<'a> {
             args: vec![MirOperand::Local(other_vec), MirOperand::Local(pair_idx)],
         }));
 
-        let (pair_op, pair_ty) = self.build_pair_tuple(
-            (final_op, final_ty),
-            (MirOperand::Local(other_elem), other_elem_ty),
-        );
-        self.builder.set_call_args(
-            vec_new_pos.0,
-            vec_new_pos.1,
-            "Vec_new",
-            vec![
-                MirOperand::Constant(MirConst::Int((rask_layout::size_of(&pair_ty, self.ctx.target()) as i64))),
-                crate::elem_strs::elem(pair.unwrap_or_else(|| pair_ty.clone())),
-            ],
-        );
+        // Each half at the width the checker's pair type gives it, so the
+        // tuple's layout is the one the vector is described with.
+        let (first_ty, second_ty) = match &pair {
+            Some(MirType::Tuple(parts)) if parts.len() == 2 => (parts[0].clone(), parts[1].clone()),
+            _ => (final_ty, other_elem_ty),
+        };
+        let first = self.as_slot_value(final_op, &first_ty);
+        let second = self.as_slot_value(MirOperand::Local(other_elem), &second_ty);
+        let (pair_op, pair_ty) = self.build_pair_tuple((first, first_ty), (second, second_ty));
+        let (ctor, args) = self.internal_ctor("Vec_new", &[pair_ty.clone()], None)?;
+        self.builder.set_call(vec_new_pos.0, vec_new_pos.1, "Vec_new", &ctor.name, args);
         self.collected_elem_types.insert(result_vec, pair_ty);
 
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
@@ -2332,12 +2336,10 @@ impl<'a> MirLowerer<'a> {
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: ex_check }));
 
         self.builder.switch_to_block(ex_done);
-        self.builder.set_call_args(
-            keys_new_pos.0,
-            keys_new_pos.1,
-            "Vec_new",
-            vec![MirOperand::Constant(MirConst::Int((rask_layout::size_of(&key_ty, self.ctx.target()) as i64)))],
-        );
+        // The keys vector owns its keys: each is the closure's result, a new
+        // reference or a new value, and freeing the vector releases them.
+        let (ctor, args) = self.internal_ctor("Vec_new", &[key_ty.clone()], None)?;
+        self.builder.set_call(keys_new_pos.0, keys_new_pos.1, "Vec_new", &ctor.name, args);
 
         // The sort itself is the runtime's merge sort, over the keys.
         //

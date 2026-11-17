@@ -148,8 +148,7 @@ impl PassManager {
         // an elided `v.clone()` becomes `dst = src`, so the "fresh container"
         // is the caller's own. Running first, the pass saw a `Vec_clone` call,
         // registered the result as ours to free, and elision then made that a
-        // free of the source — which is why the clones could never be listed in
-        // `elem_strs::CTORS` (#1050, #1045).
+        // free of the source (#1050, #1045).
         // Right here, because the three passes below are the ones that read
         // ownership metadata, and a name is only "treated as owning everything
         // it touches" if one of them asks about it. Sweeping before inlining

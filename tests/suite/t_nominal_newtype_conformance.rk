@@ -46,6 +46,22 @@ Counted implements Hashable {
 // needing a block.
 type Ticket = i64 implements Equal, Hashable
 
+// An inherited method's `Self` is the newtype. Once `Comparable` was read from
+// its stdlib declaration, `Self` was left for the call site to fill, which
+// filled it with the type the *calling* method extends: inside `extend Queue`,
+// `a.compare(b)` wanted two `Queue`s (it broke the flagship's tracker).
+type Rank = u64 implements Equal, Comparable
+
+struct Queue {
+    top: Rank
+}
+
+extend Queue {
+    func outranks(self, other: Rank) -> bool {
+        return self.top.compare(other) == Ordering.Greater
+    }
+}
+
 func describe<T: Labeled>(x: T) -> string {
     return x.label()
 }
@@ -71,4 +87,10 @@ test "an inherited conformance still comes from the clause" {
     mut keys = Map<Ticket, string>.new()
     keys.insert(Ticket(4), "four")
     assert keys.get(Ticket(4)) == "four"
+}
+
+test "an inherited method compares two newtypes inside another type's method" {
+    let q = Queue(top: Rank(9))
+    assert q.outranks(Rank(3))
+    assert !q.outranks(Rank(12))
 }

@@ -2200,6 +2200,7 @@ impl TypeChecker {
             generic_methods,
             is_unsafe: t.is_unsafe,
             is_duck: t.is_duck,
+            by_shape: rask_ast::attr::has(&t.attrs, "by_shape"),
         });
         if !defaults.is_empty() {
             self.types.interface_defaults.insert(id, defaults);

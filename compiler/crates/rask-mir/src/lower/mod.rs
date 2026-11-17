@@ -11,6 +11,7 @@ mod iterators;
 mod json_decode;
 mod match_lower;
 mod result_path;
+mod runtime_args;
 mod stmt;
 
 use crate::FieldAccess;
@@ -2178,9 +2179,6 @@ pub(crate) struct LocalMeta {
     /// binding's from its statement or initializer. Where a later use of the
     /// name has no type of its own recorded, this is the answer.
     pub checked_type: Option<Type>,
-    /// Channel/Shared element size in bytes.
-    /// Used by Receiver_recv to allocate correctly-sized output buffers.
-    pub channel_elem_size: Option<i64>,
     /// C1/C2: resource_id local for consumption cancellation.
     /// Set when an ensure registers this variable as its receiver.
     pub resource_id: Option<LocalId>,
@@ -2933,7 +2931,14 @@ impl<'a> MirLowerer<'a> {
     ///   owns.
     /// - Anything else is its bytes: a scalar is loaded, an aggregate copied
     ///   out, so changing the copy leaves the constant alone.
-    pub(crate) fn load_folded(&mut self, folded: &FoldedNode) -> Result<(MirOperand, MirType), LoweringError> {
+    ///
+    /// `at` is the expression being lowered, where a map's key `hash`/`eq`
+    /// are recorded.
+    pub(crate) fn load_folded(
+        &mut self,
+        folded: &FoldedNode,
+        at: NodeId,
+    ) -> Result<(MirOperand, MirType), LoweringError> {
         let Some(meta) = self.ctx.folded.data.get(&folded.symbol) else {
             return Err(LoweringError::InvalidConstruct(format!(
                 "folded value `{}` has no data", folded.symbol
@@ -2965,7 +2970,7 @@ impl<'a> MirLowerer<'a> {
                 let vec_local = self.builder.alloc_temp(vec_ty.clone());
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                     dst: Some(vec_local),
-                    func: FunctionRef::keeping("rask_vec_from_static", &[0]),
+                    func: FunctionRef::keeping("rask_vec_from_static", &[0]).handing_back("Vec_free"),
                     args: vec![
                         MirOperand::Local(data),
                         MirOperand::Constant(MirConst::Int(meta.elem_count as i64)),
@@ -2980,7 +2985,7 @@ impl<'a> MirLowerer<'a> {
                 // types off, and holds nothing that could tell the
                 // difference, so any pair will do for one.
                 let (k, v) = meta.map_types.clone().unwrap_or((MirType::I64, MirType::I64));
-                self.build_comptime_map(data, meta.elem_count, k, v)
+                self.build_comptime_map(data, meta.elem_count, k, v, at)
             }
             FoldedForm::Value | FoldedForm::Text => {
                 let value = self.builder.alloc_temp(folded.ty.clone());
@@ -3314,6 +3319,21 @@ impl<'a> MirLowerer<'a> {
                 _ => return (layers, cur),
             }
         }
+    }
+
+    /// An argument coerced into its parameter's type, with the type it has
+    /// afterwards. Handing back the type it was written as let a later step
+    /// wrap it a second time: `v.try_insert(0, 5)` on a `Vec<i32?>` passed
+    /// `Some(Some(5))` truncated to four bytes, and read back as absent.
+    pub(super) fn coerce_arg(
+        &mut self,
+        op: MirOperand,
+        src_ty: MirType,
+        dst_ty: &MirType,
+    ) -> (MirOperand, MirType) {
+        let wraps = Self::wrapper_layers(dst_ty).0.len() > Self::wrapper_layers(&src_ty).0.len();
+        let op = self.coerce_into_wrapper(rask_ast::coercion::CoercionSite::Argument, op, &src_ty, dst_ty);
+        (op, if wraps { dst_ty.clone() } else { src_ty })
     }
 
     /// Wrap `val` into the layers `dst_ty` has and `src_ty` doesn't.
@@ -8321,3 +8341,12 @@ mod tests {
     }
 }
 
+/// The call that builds one end of a channel (`channel_tx`, `channel_rx`) on
+/// demand. The end is the caller's, released as its declared type says: one
+/// sender or one receiver fewer, and the channel goes with the last of them.
+pub(crate) fn channel_half(extract: &'static str) -> FunctionRef {
+    let end = if extract == "channel_tx" { "Sender" } else { "Receiver" };
+    let release = rask_stdlib::handles::declared_release(end)
+        .unwrap_or_else(|| panic!("stdlib/async.rk declares no release for `{end}`"));
+    FunctionRef::reading(extract).handing_back(release)
+}

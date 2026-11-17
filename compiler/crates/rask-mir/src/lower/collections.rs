@@ -91,11 +91,11 @@ impl<'a> MirLowerer<'a> {
         // container is a `Ptr` in MIR like every other pointer, so `[a, b]`
         // being a `Vec<Vec<i32>>` is only known there.
         let elem_desc = literal_id
-            .and_then(|id| self.container_elem_type(id, 0))
+            .and_then(|id| self.container_elem_mir_type(id, 0))
             .or_else(|| {
                 let first = elems.first()?;
                 let raw = self.ctx.lookup_raw_type(first.id)?.clone();
-                Some(self.elem_type_of(&raw))
+                Some(self.ctx.type_to_mir(&raw))
             })
             .unwrap_or_else(|| elem_ty.clone());
 
@@ -105,7 +105,7 @@ impl<'a> MirLowerer<'a> {
         let vec_local = self.builder.alloc_temp(MirType::Ptr);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(vec_local),
-            func: FunctionRef::keeping("rask_vec_from_static", &[0]),
+            func: FunctionRef::keeping("rask_vec_from_static", &[0]).handing_back("Vec_free"),
             args: vec![
                 MirOperand::Local(arr_local),
                 MirOperand::Constant(MirConst::Int(elems.len() as i64)),
@@ -158,30 +158,11 @@ impl<'a> MirLowerer<'a> {
         let key_ty = arg_ty(0).or_else(|| pair_ty(0)).unwrap_or(MirType::I64);
         let val_ty = arg_ty(1).or_else(|| pair_ty(1)).unwrap_or(MirType::I64);
 
-        let mut args = vec![
-            MirOperand::Constant(MirConst::Int(rask_layout::size_of(&key_ty, self.ctx.target()) as i64)),
-            MirOperand::Constant(MirConst::Int(rask_layout::size_of(&val_ty, self.ctx.target()) as i64)),
-        ];
-        let ctor = match self.map_key_fn_addrs(call.id, &key_ty) {
-            Some((hash, eq)) => {
-                args.extend([hash, eq]);
-                "Map_new_keyed"
-            }
-            None => crate::elem_strs::map_ctor_for(&key_ty),
-        };
-        // What keys and values are, with their containers named — the same
-        // sources in the same order, through the conversions that keep a
-        // `Vec` a `Vec`.
-        let desc = |i: usize, fallback: &MirType| -> MirType {
-            self.container_elem_type(call.id, i)
-                .unwrap_or_else(|| fallback.clone())
-        };
-        args.push(crate::elem_strs::elem(desc(0, &key_ty)));
-        args.push(crate::elem_strs::elem(desc(1, &val_ty)));
+        let (ctor, args) = self.internal_ctor("Map_new", &[key_ty.clone(), val_ty.clone()], Some(call.id))?;
         let map_local = self.builder.alloc_temp(MirType::Ptr);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(map_local),
-            func: crate::elem_strs::map_ctor_ref(ctor),
+            func: ctor,
             args,
         }));
 
@@ -923,62 +904,8 @@ impl<'a> MirLowerer<'a> {
         }
     }
 
-    /// Size of the Nth generic argument of the collection/box type inferred at
-    /// `node_id` (e.g. the `T` of `Vec<T>` / `Channel<T>`, or the key/value of
-    /// `Map<K, V>`).
-    ///
-    /// The checker rejects a container whose element type it couldn't work out
-    /// (E0361), so a missing one here is a lowering bug. It used to be an
-    /// 8-byte guess, which halved every string stored in the container.
-    pub(super) fn generic_arg_slot_size(
-        &self,
-        node_id: rask_ast::NodeId,
-        index: usize,
-    ) -> Result<i64, LoweringError> {
-        use rask_types::{GenericArg, Type};
-        fn generic_args(ty: &Type) -> Option<&[GenericArg]> {
-            match ty {
-                Type::Generic { args, .. } | Type::UnresolvedGeneric { args, .. } => Some(args),
-                _ => None,
-            }
-        }
-        // The enclosing struct field's declared type, when the checker has nothing
-        // for this node. `Headers(entries: Map<string, string>)` initialised by
-        // `Map.new()` inside a stdlib body is exactly that case, and falling back
-        // to an 8-byte slot silently halved every `string` value stored in it.
-        if self.ctx.lookup_raw_type(node_id).is_none() {
-            if let Some(hint) = self.field_type_hint.clone() {
-                if let Some(GenericArg::Type(arg)) = generic_args(&hint).and_then(|a| a.get(index)) {
-                    return Ok(rask_layout::size_of(&self.ctx.type_to_mir(arg), self.ctx.target()) as i64);
-                }
-            }
-        }
-        let size = self.ctx.lookup_raw_type(node_id).and_then(|ty| {
-            // `Channel<T>.buffered()` resolves to `(Sender<T>, Receiver<T>)` — the
-            // element type lives in the tuple's first component. Everything else
-            // (Vec/Map/Shared/Mutex) resolves to the wrapper directly.
-            let container = match &*ty {
-                Type::Tuple(elems) => elems.first()?,
-                other => &other,
-            };
-            let GenericArg::Type(inner) = generic_args(container)?.get(index)? else {
-                return None;
-            };
-            self.slot_size_for_type(inner)
-        });
-        size.ok_or_else(|| {
-            LoweringError::InvalidConstruct(format!(
-                "no type for type argument {index} of the container built at {node_id:?}"
-            ))
-        })
-    }
-
     /// The MIR type of a container's Nth type argument — `Vec<i32?>` at index 0
     /// is `i32?`.
-    ///
-    /// Element *size* has a helper already (`generic_arg_slot_size`); the full
-    /// type is what a value going into the slot has to be coerced to, and a size
-    /// can't say whether the slot wants a wrapper layer added.
     pub(super) fn container_elem_mir_type(
         &self,
         node_id: rask_ast::NodeId,
@@ -1012,48 +939,8 @@ impl<'a> MirLowerer<'a> {
         Some(inner.as_ref().clone())
     }
 
-    /// What a container's `index`-th type argument is, for its constructor to
-    /// describe (`elem_strs`), or `None` when the checker has no type here.
-    pub(super) fn container_elem_type(&self, node_id: rask_ast::NodeId, index: usize) -> Option<MirType> {
-        match self.container_elem_rask_type(node_id, index)? {
-            rask_types::Type::Var(_) => None,
-            ty => Some(self.elem_type_of(&ty)),
-        }
-    }
-
-    /// `container_elem_type` as a constructor argument: plain words when the
-    /// checker has nothing here, which describes them as owning nothing.
-    pub(super) fn container_elem_desc(&self, node_id: rask_ast::NodeId, index: usize) -> MirOperand {
-        crate::elem_strs::elem(self.container_elem_type(node_id, index).unwrap_or(MirType::I64))
-    }
-
-    /// An element's checked type the way its container describes it.
-    ///
-    /// A nested container is `Container(kind)`: described as a bare pointer,
-    /// a `Map<string, Vec<i32>>` freed its keys and left every value vector to
-    /// nobody.
-    pub(super) fn elem_type_of(&self, ty: &rask_types::Type) -> MirType {
-        self.ctx.type_to_mir(ty)
-    }
-
     pub(super) fn head_name(&self, ty: &rask_types::Type) -> Option<String> {
         ty.head_name(self.ctx.type_names).map(str::to_string)
-    }
-
-    /// How wide one channel element is, for the receive buffer.
-    ///
-    /// The tracked size comes from the `Channel.buffered()` call site, which
-    /// only reaches a variable bound directly to it. A receiver pulled out of
-    /// the returned pair (`let rx = ch.1`) has no such record, so fall back
-    /// to its own `Receiver<T>` type — otherwise a 24-byte struct was received
-    /// into an 8-byte buffer and smashed the stack (#360).
-    pub(super) fn channel_elem_size(&self, object: &rask_ast::expr::Expr) -> Result<i64, LoweringError> {
-        if let Some(var_name) = object.name() {
-            if let Some(size) = self.meta(var_name).and_then(|m| m.channel_elem_size) {
-                return Ok(size);
-            }
-        }
-        self.generic_arg_slot_size(object.id, 0)
     }
 
     /// Clone function name for a type, or None if the type is Copy.

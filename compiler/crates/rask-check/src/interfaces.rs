@@ -255,25 +255,16 @@ impl<'a> InterfaceChecker<'a> {
     /// eligibility and keep structural matching; only user-declared interfaces
     /// require an explicit `T implements Interface` conformance.
     fn is_nominal_user_interface(&self, interface: &TypeExpr) -> bool {
-        let base = self.types.interface_name(interface);
-        let base = base.as_str();
-        // A compiler-provided interface is satisfied by shape, whether or not
-        // `stdlib/` also writes the declaration down. `Displayable` means "has
-        // `to_string`" — std.fmt/D5 says an error type gets it from `message()`
-        // alone — and `Error`, `Debug` and `Hashable` are the same kind of rule.
-        //
-        // The G1 gate below is for an interface a program *declares*, where a
-        // matching shape without `T implements Interface` is deliberately rejected.
-        // Reading the name off a declaration alone conflated the two: putting
-        // `fmt.rk` in the stub set gave `Displayable` a declaration and every
-        // inherent `to_string` in the stdlib stopped counting — `StringView`
-        // declares one and was reported as not implementing the interface (#990).
-        if COMPILER_PROVIDED_TRAITS.contains(&base) {
-            return false;
-        }
+        // A `@by_shape` stdlib interface is had by having its methods.
+        // `Displayable` means "has `to_string`" — std.fmt/D5 says an error type
+        // gets it from `message()` alone — and `Error`, `Debug` and `Hashable`
+        // are the same kind of rule. Gating them like a program's own
+        // interface made every inherent `to_string` in the stdlib stop
+        // counting: `StringView` declares one and was reported as not
+        // implementing `Displayable` (#990).
         matches!(
             self.types.interface_decl(interface).and_then(|id| self.types.get(id)),
-            Some(TypeDef::Interface { is_duck: false, .. })
+            Some(TypeDef::Interface { is_duck: false, by_shape: false, .. })
         )
     }
 
@@ -336,7 +327,6 @@ impl<'a> InterfaceChecker<'a> {
         let name = self.types.interface_name(interface);
         matches!(name.as_str(), "Copy" | "Encode" | "Decode" | "ClaimInput")
             || numeric_interface_members(&name).is_some()
-            || builtin_interface_methods(&name).is_some()
     }
 
     /// Check if a type satisfies an interface bound.
@@ -1132,20 +1122,25 @@ impl<'a> InterfaceChecker<'a> {
     fn interface_methods(&self, interface: &TypeExpr) -> Result<Vec<MethodSig>, InterfaceError> {
         match self.types.interface_decl(interface) {
             Some(id) => Ok(self.declared_interface_methods(id, &mut Vec::new())),
-            None => {
-                let name = self.types.interface_name(interface);
-                self.get_builtin_interface_methods(&name)
-                    .ok_or_else(|| InterfaceError::UnknownInterface(interface.name().unwrap_or_default()))
-            }
+            None => Err(InterfaceError::UnknownInterface(interface.name().unwrap_or_default())),
         }
     }
 
-    /// The methods an `any` of this interface offers: its declaration's, or a
-    /// compiler-provided interface's by name.
+    /// Every method the stdlib's interface `name` requires, its parents'
+    /// included, whatever the program declares under that name.
+    pub fn stdlib_interface_methods(&self, name: &str) -> Vec<MethodSig> {
+        self.types
+            .stdlib_interface(name)
+            .map(|id| self.declared_interface_methods(id, &mut Vec::new()))
+            .unwrap_or_default()
+    }
+
+    /// The methods an `any` of this interface offers, read off its
+    /// declaration (by name when `decl` is `None`).
     pub fn interface_object_methods(&self, interface_name: &str, decl: Option<TypeId>) -> Vec<MethodSig> {
         match decl {
             Some(id) => self.declared_interface_methods(id, &mut Vec::new()),
-            None => self.get_builtin_interface_methods(interface_name).unwrap_or_default(),
+            None => self.get_interface_methods_public(interface_name),
         }
     }
 
@@ -1236,362 +1231,9 @@ impl<'a> InterfaceChecker<'a> {
             .filter(|id| matches!(self.types.get(*id), Some(TypeDef::Interface { .. })));
         match declared {
             Some(id) => Ok(self.declared_interface_methods(id, &mut Vec::new())),
-            None => self
-                .get_builtin_interface_methods(interface_name)
-                .ok_or_else(|| InterfaceError::UnknownInterface(interface_name.to_string())),
+            None => Err(InterfaceError::UnknownInterface(interface_name.to_string())),
         }
     }
-
-    /// Get builtin interface methods for standard interfaces.
-    fn get_builtin_interface_methods(&self, interface_name: &str) -> Option<Vec<MethodSig>> {
-        builtin_interface_methods(interface_name)
-    }
-}
-
-/// Signatures of an interface the compiler provides, with no type table needed.
-///
-/// Free-standing because the reachability pass needs the method *names* before
-/// a type table exists, and duplicating the list there is how the two would
-/// drift.
-pub fn builtin_interface_methods(interface_name: &str) -> Option<Vec<MethodSig>> {
-    {
-        match interface_name {
-            "Add" => Some(vec![MethodSig {
-                param_names: Vec::new(),
-                origin: rask_types::MethodOrigin::Declared,
-                decl: None,
-                effect: Default::default(),
-                is_public: true,
-                owner_patterns: Vec::new(),
-                owner_bounds: Vec::new(),
-                type_params: Vec::new(),
-                name: "add".to_string(),
-                self_param: SelfParam::Value,
-                params: vec![(Type::Var(rask_types::TypeVarId(0)), ParamMode::Borrow)], // Self type
-                ret: Type::Var(rask_types::TypeVarId(0)),
-                defaults: Vec::new(),
-            }]),
-            "Sub" => Some(vec![MethodSig {
-                param_names: Vec::new(),
-                origin: rask_types::MethodOrigin::Declared,
-                decl: None,
-                effect: Default::default(),
-                is_public: true,
-                owner_patterns: Vec::new(),
-                owner_bounds: Vec::new(),
-                type_params: Vec::new(),
-                name: "sub".to_string(),
-                self_param: SelfParam::Value,
-                params: vec![(Type::Var(rask_types::TypeVarId(0)), ParamMode::Borrow)],
-                ret: Type::Var(rask_types::TypeVarId(0)),
-                defaults: Vec::new(),
-            }]),
-            "Mul" => Some(vec![MethodSig {
-                param_names: Vec::new(),
-                origin: rask_types::MethodOrigin::Declared,
-                decl: None,
-                effect: Default::default(),
-                is_public: true,
-                owner_patterns: Vec::new(),
-                owner_bounds: Vec::new(),
-                type_params: Vec::new(),
-                name: "mul".to_string(),
-                self_param: SelfParam::Value,
-                params: vec![(Type::Var(rask_types::TypeVarId(0)), ParamMode::Borrow)],
-                ret: Type::Var(rask_types::TypeVarId(0)),
-                defaults: Vec::new(),
-            }]),
-            "Div" => Some(vec![MethodSig {
-                param_names: Vec::new(),
-                origin: rask_types::MethodOrigin::Declared,
-                decl: None,
-                effect: Default::default(),
-                is_public: true,
-                owner_patterns: Vec::new(),
-                owner_bounds: Vec::new(),
-                type_params: Vec::new(),
-                name: "div".to_string(),
-                self_param: SelfParam::Value,
-                params: vec![(Type::Var(rask_types::TypeVarId(0)), ParamMode::Borrow)],
-                ret: Type::Var(rask_types::TypeVarId(0)),
-                defaults: Vec::new(),
-            }]),
-            "Rem" => Some(vec![MethodSig {
-                param_names: Vec::new(),
-                origin: rask_types::MethodOrigin::Declared,
-                decl: None,
-                effect: Default::default(),
-                is_public: true,
-                owner_patterns: Vec::new(),
-                owner_bounds: Vec::new(),
-                type_params: Vec::new(),
-                name: "rem".to_string(),
-                self_param: SelfParam::Value,
-                params: vec![(Type::Var(rask_types::TypeVarId(0)), ParamMode::Borrow)],
-                ret: Type::Var(rask_types::TypeVarId(0)),
-                defaults: Vec::new(),
-            }]),
-            "Neg" => Some(vec![MethodSig {
-                param_names: Vec::new(),
-                origin: rask_types::MethodOrigin::Declared,
-                decl: None,
-                effect: Default::default(),
-                is_public: true,
-                owner_patterns: Vec::new(),
-                owner_bounds: Vec::new(),
-                type_params: Vec::new(),
-                name: "neg".to_string(),
-                self_param: SelfParam::Value,
-                params: vec![],
-                ret: Type::Var(rask_types::TypeVarId(0)),
-                defaults: Vec::new(),
-            }]),
-            "Equal" => Some(vec![MethodSig {
-                param_names: Vec::new(),
-                origin: rask_types::MethodOrigin::Declared,
-                decl: None,
-                effect: Default::default(),
-                is_public: true,
-                owner_patterns: Vec::new(),
-                owner_bounds: Vec::new(),
-                type_params: Vec::new(),
-                name: "eq".to_string(),
-                self_param: SelfParam::Value,
-                params: vec![(Type::Var(rask_types::TypeVarId(0)), ParamMode::Borrow)],
-                ret: Type::Bool,
-                defaults: Vec::new(),
-            }]),
-            "Comparable" => Some(vec![
-                MethodSig {
-                    param_names: Vec::new(),
-                    origin: rask_types::MethodOrigin::Declared,
-                    decl: None,
-                    effect: Default::default(),
-                    is_public: true,
-                    owner_patterns: Vec::new(),
-                    owner_bounds: Vec::new(),
-                    type_params: Vec::new(),
-                    name: "compare".to_string(),
-                    self_param: SelfParam::Value,
-                    params: vec![(Type::Var(rask_types::TypeVarId(0)), ParamMode::Borrow)],
-                    // Type variable 0 is `Self` throughout these signatures,
-                    // so `compare` has to name Ordering outright — as a
-                    // placeholder it read as "returns Self", and a nominal
-                    // newtype inheriting Comparable got a `compare` that
-                    // claimed to answer with itself (#551).
-                    ret: Type::UnresolvedNamed("Ordering".to_string()),
-                    defaults: Vec::new(),
-                },
-                MethodSig {
-                    param_names: Vec::new(),
-                    origin: rask_types::MethodOrigin::Declared,
-                    decl: None,
-                    effect: Default::default(),
-                    is_public: true,
-                    owner_patterns: Vec::new(),
-                    owner_bounds: Vec::new(),
-                    type_params: Vec::new(),
-                    name: "lt".to_string(),
-                    self_param: SelfParam::Value,
-                    params: vec![(Type::Var(rask_types::TypeVarId(0)), ParamMode::Borrow)],
-                    ret: Type::Bool,
-                    defaults: Vec::new(),
-                },
-                MethodSig {
-                    param_names: Vec::new(),
-                    origin: rask_types::MethodOrigin::Declared,
-                    decl: None,
-                    effect: Default::default(),
-                    is_public: true,
-                    owner_patterns: Vec::new(),
-                    owner_bounds: Vec::new(),
-                    type_params: Vec::new(),
-                    name: "le".to_string(),
-                    self_param: SelfParam::Value,
-                    params: vec![(Type::Var(rask_types::TypeVarId(0)), ParamMode::Borrow)],
-                    ret: Type::Bool,
-                    defaults: Vec::new(),
-                },
-                MethodSig {
-                    param_names: Vec::new(),
-                    origin: rask_types::MethodOrigin::Declared,
-                    decl: None,
-                    effect: Default::default(),
-                    is_public: true,
-                    owner_patterns: Vec::new(),
-                    owner_bounds: Vec::new(),
-                    type_params: Vec::new(),
-                    name: "gt".to_string(),
-                    self_param: SelfParam::Value,
-                    params: vec![(Type::Var(rask_types::TypeVarId(0)), ParamMode::Borrow)],
-                    ret: Type::Bool,
-                    defaults: Vec::new(),
-                },
-                MethodSig {
-                    param_names: Vec::new(),
-                    origin: rask_types::MethodOrigin::Declared,
-                    decl: None,
-                    effect: Default::default(),
-                    is_public: true,
-                    owner_patterns: Vec::new(),
-                    owner_bounds: Vec::new(),
-                    type_params: Vec::new(),
-                    name: "ge".to_string(),
-                    self_param: SelfParam::Value,
-                    params: vec![(Type::Var(rask_types::TypeVarId(0)), ParamMode::Borrow)],
-                    ret: Type::Bool,
-                    defaults: Vec::new(),
-                },
-            ]),
-            "Cloneable" => Some(vec![MethodSig {
-                param_names: Vec::new(),
-                origin: rask_types::MethodOrigin::Declared,
-                decl: None,
-                effect: Default::default(),
-                is_public: true,
-                owner_patterns: Vec::new(),
-                owner_bounds: Vec::new(),
-                type_params: Vec::new(),
-                name: "clone".to_string(),
-                self_param: SelfParam::Value,
-                params: vec![],
-                ret: Type::Var(rask_types::TypeVarId(0)),
-                defaults: Vec::new(),
-            }]),
-            "Hashable" => Some(vec![
-                MethodSig {
-                    param_names: Vec::new(),
-                    origin: rask_types::MethodOrigin::Declared,
-                    decl: None,
-                    effect: Default::default(),
-                    is_public: true,
-                    owner_patterns: Vec::new(),
-                    owner_bounds: Vec::new(),
-                    type_params: Vec::new(),
-                    name: "hash".to_string(),
-                    self_param: SelfParam::Value,
-                    params: vec![],
-                    ret: Type::U64,
-                    defaults: Vec::new(),
-                },
-                MethodSig {
-                    param_names: Vec::new(),
-                    origin: rask_types::MethodOrigin::Declared,
-                    decl: None,
-                    effect: Default::default(),
-                    is_public: true,
-                    owner_patterns: Vec::new(),
-                    owner_bounds: Vec::new(),
-                    type_params: Vec::new(),
-                    name: "eq".to_string(),
-                    self_param: SelfParam::Value,
-                    params: vec![(Type::Var(rask_types::TypeVarId(0)), ParamMode::Borrow)],
-                    ret: Type::Bool,
-                    defaults: Vec::new(),
-                },
-            ]),
-            "Displayable" => Some(vec![MethodSig {
-                param_names: Vec::new(),
-                origin: rask_types::MethodOrigin::Declared,
-                decl: None,
-                effect: Default::default(),
-                is_public: true,
-                owner_patterns: Vec::new(),
-                owner_bounds: Vec::new(),
-                type_params: Vec::new(),
-                name: "to_string".to_string(),
-                self_param: SelfParam::Value,
-                params: vec![],
-                ret: Type::String,
-                defaults: Vec::new(),
-            }]),
-            "Debug" => Some(vec![MethodSig {
-                param_names: Vec::new(),
-                origin: rask_types::MethodOrigin::Declared,
-                decl: None,
-                effect: Default::default(),
-                is_public: true,
-                owner_patterns: Vec::new(),
-                owner_bounds: Vec::new(),
-                type_params: Vec::new(),
-                name: "debug".to_string(),
-                self_param: SelfParam::Value,
-                params: vec![],
-                ret: Type::String,
-                defaults: Vec::new(),
-            }]),
-            // NT1–NT3 / the standard-interface roster. `Numeric` is a nominal
-            // interface with these eight; `Integer` and `Float` extend it with
-            // constants, which have no MethodSig to stand for them — a
-            // primitive answers through the membership test above, and a user
-            // type is held to the methods it can actually declare.
-            "Numeric" => Some(numeric_method_sigs()),
-            // `Integer` gets the shared eight plus the overflow-hatch methods
-            // (type.integer-overflow M1) — floats have no wrapping/saturating
-            // semantics, so these don't belong on `Numeric` itself. Needed so
-            // a generic body bounded by `T: Integer` (e.g. `Wrapping<T>`'s
-            // `add`) can call `.wrapping_add()` on its receiver — without this
-            // the concrete-type methods exist but a generic `T` can't see
-            // them (#838).
-            "Integer" => {
-                let mut sigs = numeric_method_sigs();
-                sigs.extend(integer_overflow_hatch_method_sigs());
-                sigs.extend(ordered_method_sigs());
-                Some(sigs)
-            }
-            "Float" => {
-                let mut sigs = numeric_method_sigs();
-                sigs.extend(ordered_method_sigs());
-                sigs.push(MethodSig {
-                    param_names: Vec::new(),
-                    origin: rask_types::MethodOrigin::Declared,
-                    decl: None,
-                    effect: Default::default(),
-                    is_public: true,
-                    owner_patterns: Vec::new(),
-                    owner_bounds: Vec::new(),
-                    type_params: Vec::new(),
-                    name: "is_nan".to_string(),
-                    self_param: SelfParam::Value,
-                    params: vec![],
-                    ret: Type::Bool,
-                    defaults: Vec::new(),
-                });
-                Some(sigs)
-            }
-            // ER4/ER32: the Error interface — `func message(self) -> string`
-            "Error" => Some(vec![MethodSig {
-                param_names: Vec::new(),
-                origin: rask_types::MethodOrigin::Declared,
-                decl: None,
-                effect: Default::default(),
-                is_public: true,
-                owner_patterns: Vec::new(),
-                owner_bounds: Vec::new(),
-                type_params: Vec::new(),
-                name: "message".to_string(),
-                self_param: SelfParam::Value,
-                params: vec![],
-                ret: Type::String,
-                defaults: Vec::new(),
-            }]),
-            _ => None,
-        }
-    }
-}
-
-/// Object-compatible method names of a compiler-provided interface, in vtable
-/// order. Empty for an interface the compiler doesn't provide.
-pub fn builtin_interface_method_names(interface_name: &str) -> Vec<String> {
-    builtin_interface_methods(interface_name)
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|m| {
-            m.type_params.is_empty()
-                && !matches!(&m.ret, Type::UnresolvedNamed(n) if n == "Self")
-        })
-        .map(|m| m.name)
-        .collect()
 }
 
 impl<'a> InterfaceChecker<'a> {
@@ -1888,109 +1530,6 @@ fn is_abstract_arg(ty: &Type) -> bool {
     }
 }
 
-/// The wrapping/saturating one-off methods (type.integer-overflow M1) that
-/// `Integer` adds on top of `Numeric`'s eight. Same shape as `Numeric`'s
-/// binary operators — one operand of the receiver's own type, same type back
-/// — since each is the checked operator with the panic swapped for wrap or
-/// saturate.
-fn integer_overflow_hatch_method_sigs() -> Vec<MethodSig> {
-    let binary = |name: &str| MethodSig {
-        param_names: Vec::new(),
-        origin: rask_types::MethodOrigin::Declared,
-        decl: None,
-        effect: Default::default(),
-        is_public: true,
-        owner_patterns: Vec::new(),
-        owner_bounds: Vec::new(),
-        type_params: Vec::new(),
-        name: name.to_string(),
-        self_param: SelfParam::Value,
-        params: vec![(Type::Var(rask_types::TypeVarId(0)), ParamMode::Borrow)],
-        ret: Type::Var(rask_types::TypeVarId(0)),
-        defaults: Vec::new(),
-    };
-    vec![
-        binary("wrapping_add"),
-        binary("wrapping_sub"),
-        binary("wrapping_mul"),
-        binary("saturating_add"),
-        binary("saturating_sub"),
-        binary("saturating_mul"),
-    ]
-}
-
-/// The eight methods the roster gives `Numeric`.
-/// Comparison and remainder — what every `Integer` and `Float` member has and
-/// `Numeric` alone doesn't declare.
-///
-/// A bound has to declare a method for a generic body to call it, and membership
-/// in these two sets is decided by what the type *is* — so a `T: Integer` that
-/// couldn't be compared was the bound describing less than it knows. That's what
-/// stopped `stdlib/range.rk` from asking `self.start < self.end`.
-fn ordered_method_sigs() -> Vec<MethodSig> {
-    let mut sigs = builtin_interface_methods("Comparable").unwrap_or_default();
-    sigs.extend(builtin_interface_methods("Equal").unwrap_or_default());
-    sigs.extend(builtin_interface_methods("Rem").unwrap_or_default());
-    sigs
-}
-
-fn numeric_method_sigs() -> Vec<MethodSig> {
-    let binary = |name: &str| MethodSig {
-        param_names: Vec::new(),
-        origin: rask_types::MethodOrigin::Declared,
-        decl: None,
-        effect: Default::default(),
-        is_public: true,
-        owner_patterns: Vec::new(),
-        owner_bounds: Vec::new(),
-        type_params: Vec::new(),
-        name: name.to_string(),
-        self_param: SelfParam::Value,
-        params: vec![(Type::Var(rask_types::TypeVarId(0)), ParamMode::Borrow)],
-        ret: Type::Var(rask_types::TypeVarId(0)),
-        defaults: Vec::new(),
-    };
-    let nullary = |name: &str, self_param| MethodSig {
-        param_names: Vec::new(),
-        origin: rask_types::MethodOrigin::Declared,
-        decl: None,
-        effect: Default::default(),
-        is_public: true,
-        owner_patterns: Vec::new(),
-        owner_bounds: Vec::new(),
-        type_params: Vec::new(),
-        name: name.to_string(),
-        self_param,
-        params: vec![],
-        ret: Type::Var(rask_types::TypeVarId(0)),
-        defaults: Vec::new(),
-    };
-    vec![
-        binary("add"),
-        binary("sub"),
-        binary("mul"),
-        binary("div"),
-        nullary("neg", SelfParam::Value),
-        nullary("zero", SelfParam::None),
-        nullary("one", SelfParam::None),
-        MethodSig {
-            param_names: Vec::new(),
-            origin: rask_types::MethodOrigin::Declared,
-            decl: None,
-            effect: Default::default(),
-            is_public: true,
-            owner_patterns: Vec::new(),
-            owner_bounds: Vec::new(),
-            type_params: Vec::new(),
-            name: "from_int".to_string(),
-            self_param: SelfParam::None,
-            params: vec![(Type::I64, ParamMode::Borrow)],
-            ret: Type::Var(rask_types::TypeVarId(0)),
-            defaults: Vec::new(),
-        },
-    ]
-}
-
 /// A type parameter with this bound is Copy whatever it is instantiated with:
 /// `Copy` says so, and every member of `Integer`, `Float` and `Numeric` is a
 /// primitive.
@@ -2001,9 +1540,9 @@ pub fn bound_implies_copy(name: &str) -> bool {
 /// Membership test for one of the numeric interfaces, or `None` if `name` isn't
 /// one of them.
 ///
-/// NT2/NT3 spell these as interfaces over associated constants. Nothing declares
-/// them and nothing can implement them — a type is a member because of what it
-/// is, so the bound is a set test.
+/// `stdlib/num.rk` declares what they require, but nothing can implement them:
+/// a type is a member because of what it is (NT1–NT3), so the bound is a set
+/// test.
 fn numeric_interface_members(name: &str) -> Option<fn(&Type) -> bool> {
     match name {
         "Integer" => Some(is_integer_type),
@@ -2105,25 +1644,10 @@ pub(crate) fn shape_of(types: &TypeTable, ty: &Type) -> Option<Shape> {
     }
 }
 
-/// Whether `interface` requires a method called `method`: an operator
-/// interface's from `stdlib/ops.rk`, a compiler-provided one's from
-/// `builtin_interface_methods`.
+/// Whether the stdlib interface `interface` requires a method called `method`.
 pub fn interface_requires(interface: &str, method: &str) -> bool {
-    rask_stdlib::operators::operator_interface_method(interface) == Some(method)
-        || builtin_interface_methods(interface).is_some_and(|ms| ms.iter().any(|m| m.name == method))
+    rask_stdlib::interfaces::requires(interface, method)
 }
-
-/// Interfaces the compiler provides rather than the program declaring them.
-///
-/// A vtable can only be built for an interface whose method list is known, and both
-/// places that build one — the reachability pass and the CLI's vtable
-/// collection — read that list off `interface Foo { … }` declarations. A
-/// compiler-provided interface has no declaration, so `any Error` boxed fine
-/// and then had nothing to dispatch through: MIR skipped the vtable path and
-/// fell back to static dispatch, which failed lowering with "method `message`
-/// on receiver of unresolved type" (#708).
-pub const COMPILER_PROVIDED_TRAITS: [&str; 4] =
-    ["Error", "Displayable", "Debug", "Hashable"];
 
 /// Method names an interface object of `interface_name` can dispatch, in vtable order.
 ///
@@ -2197,7 +1721,7 @@ pub fn implements_interface_object(
     // Where the name means this declaration anyway, the full check by name
     // applies — it also holds a conformance header to the methods it promises.
     if let Some(id) = decl.filter(|id| types.get_type_id(interface_name) != Some(*id)) {
-        let nominal = matches!(types.get(id), Some(TypeDef::Interface { is_duck: false, .. }));
+        let nominal = matches!(types.get(id), Some(TypeDef::Interface { is_duck: false, by_shape: false, .. }));
         let target = match ty {
             Type::Named(t) | Type::Generic { base: t, .. } => Some(*t),
             _ => None,
@@ -2215,19 +1739,10 @@ pub fn implements_interface_object(
 /// vtables out from this and MIR reads its dispatch offsets from it, so the
 /// two agree by construction.
 pub fn interface_vtable_methods(types: &TypeTable) -> std::collections::HashMap<String, Vec<String>> {
-    let mut methods: std::collections::HashMap<String, Vec<String>> = types
+    types
         .interfaces()
         .map(|(id, name)| (types.interface_symbol(name, Some(id)), object_compatible_methods_of(types, id)))
-        .collect();
-    // An interface the compiler provides has no declaration to read, so `any Error`
-    // got a box with no vtable behind it and dispatch fell through to the
-    // static path (#708). A declared one of the same name keeps its own.
-    for name in COMPILER_PROVIDED_TRAITS {
-        methods
-            .entry(name.to_string())
-            .or_insert_with(|| object_compatible_methods(types, name));
-    }
-    methods
+        .collect()
 }
 
 /// The methods of each interface that are declared `take self`, super-interfaces
@@ -2308,16 +1823,6 @@ pub fn implements_interface(
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_primitive_interface_satisfaction() {
-        let types = TypeTable::new(rask_ast::Target::LP64);
-
-        // i32 should implement Add
-        assert!(implements_interface(&types, &Type::I32, "Add"));
-        assert!(implements_interface(&types, &Type::I32, "Equal"));
-        assert!(implements_interface(&types, &Type::I32, "Comparable"));
-    }
-
     // CC1: `Ring<T> implements Show where T: Show` — the conformance holds for
     // Ring<Coin> (Coin: Show) and fails for Ring<Blob> (Blob not Show).
     #[test]
@@ -2352,6 +1857,7 @@ mod tests {
             generic_methods: vec![],
             is_unsafe: false,
             is_duck: false,
+            by_shape: false,
         });
         let ring = types.register_type(TypeDef::Struct {
             name: "Ring".to_string(),

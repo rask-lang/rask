@@ -108,6 +108,13 @@ pub const COMPILER_ATTRS: &[(&str, ArgForm, Writer)] = &[
     // The last argument is a node going into a rack's storage, so the call
     // carries the node type's layout (mem.racks)
     ("places_node", ArgForm::Exprs, Writer::Stdlib),
+    // The C call's arguments in order, when it takes facts about a type
+    // parameter the program never wrote: `@runtime_args(size(T), n, desc(T))`
+    ("runtime_args", ArgForm::Exprs, Writer::Stdlib),
+    // An interface a type has by having its methods, with no
+    // `implements` block: `Error`, `Displayable`, `Debug`, `Hashable`
+    // (type.generics/G1, std.fmt/D5)
+    ("by_shape", ArgForm::Exprs, Writer::Stdlib),
     // The call runs its closure argument to completion and keeps nothing of it
     ("eager_callback", ArgForm::Exprs, Writer::Stdlib),
     ("blocks", ArgForm::Exprs, Writer::Stdlib),

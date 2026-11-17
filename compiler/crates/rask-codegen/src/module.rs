@@ -2643,14 +2643,9 @@ fn collect_element_offsets(
                 }
                 continue;
             }
-            let rask_mir::MirStmtKind::Call { func, args, .. } = &stmt.kind else { continue };
-            let Some((leading, tags)) = rask_mir::elem_strs::ctor_shape(&func.name) else {
-                continue;
-            };
-            for i in 0..tags {
-                let Some(rask_mir::MirOperand::Constant(rask_mir::MirConst::Elem(ty))) =
-                    args.get(leading + i)
-                else {
+            let rask_mir::MirStmtKind::Call { args, .. } = &stmt.kind else { continue };
+            for arg in args {
+                let rask_mir::MirOperand::Constant(rask_mir::MirConst::Elem(ty)) = arg else {
                     continue;
                 };
                 if let Some(offs) = crate::elem_offsets::owned_offsets(ty, shapes) {

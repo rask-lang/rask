@@ -487,8 +487,10 @@ impl TypeChecker {
         }
     }
 
-    /// Operator methods desugared from +, *, etc. on primitive types.
-    /// These are resolved at the MIR level, not in the type checker.
+    /// A method a primitive answers: one its conformances require (`add` on
+    /// an integer, `compare` on a float) or one its stdlib file declares
+    /// (`abs`, `pow`). Read from the declarations, so a float has no
+    /// `bit_and` here just as it has none in `stdlib/float.rk` (#813).
     fn is_operator_on_primitive(ty: &Type, method: &str) -> bool {
         let is_primitive = matches!(
             ty,
@@ -496,17 +498,11 @@ impl TypeChecker {
             | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128 | Type::Usize
             | Type::F32 | Type::F64 | Type::Bool | Type::Char
         );
-        if !is_primitive {
-            return false;
-        }
-        matches!(
-            method,
-            "add" | "sub" | "mul" | "div" | "rem"
-            | "eq" | "ne" | "lt" | "gt" | "le" | "ge"
-            | "neg" | "not" | "and" | "or"
-            | "bit_and" | "bit_or" | "bit_xor" | "shl" | "shr" | "bit_not"
-            | "abs" | "min" | "max" | "pow" | "to_float" | "compare"
-        )
+        is_primitive
+            && (crate::interfaces::primitive_conformances(ty)
+                .iter()
+                .any(|i| crate::interfaces::interface_requires(i, method))
+                || rask_stdlib::has_method(&ty.to_string(), method))
     }
 
     /// Whether an operator's operand type works with its receiver.

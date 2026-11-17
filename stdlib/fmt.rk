@@ -18,6 +18,7 @@
 /// Error bridge (D5): types with message(self) -> string auto-satisfy
 /// Displayable — to_string() delegates to message(). No boilerplate for
 /// error types in format("{}", err).
+@by_shape
 public interface Displayable {
     func to_string(self) -> string
 }
@@ -29,6 +30,7 @@ public interface Displayable {
 ///
 /// format("{:debug}", x) calls debug() (G4) — the verb matches the interface.
 /// Auto-derived output shows struct fields and enum variants.
+@by_shape
 public interface Debug {
     func debug(self) -> string
 }

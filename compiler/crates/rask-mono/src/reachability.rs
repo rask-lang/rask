@@ -403,17 +403,6 @@ impl<'a> Monomorphizer<'a> {
                 interface_methods.insert(t.name.clone(), compatible);
             }
         }
-        // Compiler-provided interfaces have no declaration to read. Without an
-        // entry, boxing a value as `any Error` marked none of the concrete
-        // type's `message` bodies reachable, so the vtable slot pointed at a
-        // function nobody had emitted (#708). Method names only — the
-        // signatures live in rask-types, and the concrete bodies are found by
-        // bare name below, same as for a declared interface.
-        for name in rask_check::COMPILER_PROVIDED_TRAITS {
-            interface_methods
-                .entry(name.to_string())
-                .or_insert_with(|| rask_check::builtin_interface_method_names(name));
-        }
 
         Self {
             fn_table,
@@ -1421,6 +1410,12 @@ impl<'a> Monomorphizer<'a> {
             self.note_map_key_fns(expr.id);
             self.note_json_decode(expr.id);
             self.note_claim_input(expr.id);
+        }
+        // A map the fold computed is built where it's used: the name of a
+        // `const` or a `comptime` block. Its key's `hash`/`eq` are found the
+        // same way as for a call.
+        if matches!(expr.kind, ExprKind::Ident(_) | ExprKind::Comptime { .. }) {
+            self.note_map_key_fns(expr.id);
         }
 
         match &expr.kind {

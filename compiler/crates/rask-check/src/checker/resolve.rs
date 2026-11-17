@@ -672,10 +672,12 @@ impl TypeChecker {
     /// The signature `method` gets on a nominal newtype from one of the interfaces
     /// its `implements` clause lists (type.aliases/T11).
     ///
-    /// The interface signatures write `Self` as type variable 0, so binding that to
-    /// the newtype is the whole of T12's delegation: `Id`'s `eq` takes an `Id`,
-    /// and its `clone` gives one back. Positions the interface spells out concretely
-    /// — `hash`'s `u64`, `compare`'s `Ordering` — stay as written.
+    /// Binding the interface's written `Self` to the newtype is the whole of
+    /// T12's delegation: `Id`'s `eq` takes an `Id`, and its `clone` gives one
+    /// back. Left unbound, `Self` meant whatever type the *calling* method
+    /// extends, so `a.compare(b)` inside `extend Store` wanted a `Store`.
+    /// Positions the interface spells out concretely — `hash`'s `u64`,
+    /// `compare`'s `Ordering` — stay as written.
     fn inherited_interface_method(
         &self,
         ty: &Type,
@@ -683,21 +685,14 @@ impl TypeChecker {
         method: &str,
     ) -> Option<MethodSig> {
         let checker = crate::interfaces::InterfaceChecker::new(&self.types);
-        let self_var = Type::Var(TypeVarId(0));
-        for interface_name in with_interfaces {
-            let Some(mut sig) = checker
+        let this = HashMap::from([("Self".to_string(), ty.clone())]);
+        with_interfaces.iter().find_map(|interface_name| {
+            checker
                 .interface_methods_written(interface_name)
                 .into_iter()
                 .find(|m| m.name == method)
-            else {
-                continue;
-            };
-            let bind_self = |t: &Type| if *t == self_var { ty.clone() } else { t.clone() };
-            sig.params = sig.params.iter().map(|(t, m)| (bind_self(t), *m)).collect();
-            sig.ret = bind_self(&sig.ret);
-            return Some(sig);
-        }
-        None
+                .map(|sig| crate::interfaces::substitute_signature(&sig, &this))
+        })
     }
 
     /// A type as the user wrote it. `Type`'s own Display can't name a
@@ -2074,8 +2069,7 @@ impl TypeChecker {
     }
 
     /// Replace the `Self` placeholder in an interface-method signature with the
-    /// receiver type. User interfaces spell it `Self`; builtin interface sigs use the
-    /// `Var(0)` placeholder (see `get_builtin_interface_methods`).
+    /// receiver type, written `Self` or held as the `Var(0)` placeholder.
     fn substitute_self_placeholder(ty: &Type, receiver: &Type) -> Type {
         match ty {
             Type::UnresolvedNamed(n) if n == "Self" => receiver.clone(),
@@ -2196,10 +2190,10 @@ impl TypeChecker {
             let params = if rask_stdlib::operators::is_unary_operator_interface(op) { vec![] } else { vec![ty.clone()] };
             return Some((params, ty.clone()));
         }
+        let interfaces = crate::interfaces::InterfaceChecker::new(&self.types);
         let sig = conformances
             .iter()
-            .filter_map(|i| crate::interfaces::builtin_interface_methods(i))
-            .flatten()
+            .flat_map(|i| interfaces.stdlib_interface_methods(i))
             .find(|m| m.name == method)?;
         let resolve = |t: &Type| match t {
             t if crate::interfaces::is_self_placeholder(t) => ty.clone(),
@@ -3402,9 +3396,10 @@ impl TypeChecker {
     /// `bool` for `lt` and its siblings, `Ordering` for `compare`. Read from
     /// the interface, so a name it doesn't require is never mistaken for one.
     fn comparable_answer(&self, method: &str) -> Option<Type> {
-        let sig = crate::interfaces::builtin_interface_methods("Comparable")?
-            .into_iter()
-            .find(|m| m.name == method)?;
+        // Its own methods only: `eq` comes from `Equal` and isn't an order.
+        let id = self.types.stdlib_interface("Comparable")?;
+        let Some(rask_types::TypeDef::Interface { methods, .. }) = self.types.get(id) else { return None };
+        let sig = methods.iter().find(|m| m.name == method)?;
         Some(match &sig.ret {
             Type::UnresolvedNamed(n) if n == "Ordering" => self.ordering_type(),
             other => other.clone(),

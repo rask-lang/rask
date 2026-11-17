@@ -5388,7 +5388,11 @@ impl TypeChecker {
             // unified with whatever the surrounding code wanted, so any
             // spelling at all type-checked and the two backends disagreed
             // about what it meant at runtime.
-            if name == "Error" && self.types.get_type_id("Error").is_none() {
+            if name == "Error"
+                && self.types.get_type_id("Error").map_or(true, |id| {
+                    matches!(self.types.get(id), Some(rask_types::TypeDef::Interface { .. }))
+                })
+            {
                 self.errors.push(TypeError::ErrorInterfaceMember {
                     member: field.to_string(),
                     span,

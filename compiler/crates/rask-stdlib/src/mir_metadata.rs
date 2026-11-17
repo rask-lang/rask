@@ -148,6 +148,13 @@ pub struct StdlibMethodMeta {
     /// own parameters: the `value: T` of `Atomic.store`. What the caller hands
     /// over there is the payload itself, at whatever type `T` is.
     pub payload_args: Vec<usize>,
+    /// Declared `@runtime_args(…)`: what the C call takes after the receiver,
+    /// in order, when that is more than the program wrote.
+    pub runtime_args: Option<Vec<crate::RuntimeArg>>,
+    /// No Rask body (`@native`, `@builtin`, `@unimplemented`): nothing for a
+    /// pass to analyse, so what the call hands back is only what the
+    /// declaration says.
+    pub bodiless: bool,
 }
 
 /// MIR argument positions whose declared type is a bare type parameter.
@@ -224,6 +231,8 @@ fn build_cache() -> MetadataCache {
                 extended_type_params: method.extended_type_params,
                 param_types: method.params.iter().map(|(_, t)| t.clone()).collect(),
                 payload_args: payload_args(&method.params, method.takes_self, &method.type_params),
+                runtime_args: method.runtime_args.clone(),
+                bodiless: method.native.is_some() || method.builtin || method.unimplemented,
             });
         }
     }
@@ -246,6 +255,8 @@ fn build_cache() -> MetadataCache {
             extended_type_params: 0,
             param_types: func.params.iter().map(|(_, t)| t.clone()).collect(),
             payload_args: payload_args(&func.params, false, &func.type_params),
+            runtime_args: None,
+            bodiless: false,
         });
     }
 
@@ -372,6 +383,7 @@ pub struct CallShape {
     moves_out: bool,
     eager_callback: bool,
     fresh_release: Option<&'static str>,
+    fresh_wrapped: Option<&'static str>,
     generic_result: bool,
 }
 
@@ -387,6 +399,7 @@ impl CallShape {
             moves_out: false,
             eager_callback: false,
             fresh_release: None,
+            fresh_wrapped: None,
             generic_result: false,
         }
     }
@@ -427,15 +440,24 @@ impl CallShape {
             }
         }
         let views = m.viewed_argument().and_then(|i| u8::try_from(i).ok());
-        // The release of a handle the call hands back, when its declared
-        // return type is one that frees itself (`@handle(release: "…")`) and
-        // isn't a container, whose free also walks its elements:
-        // `Random.new()`, `Rack.staged()`, `Atomic.new(v)`.
-        let fresh_release = m
-            .ret_ty
-            .last_segment()
-            .filter(|head| !matches!(*head, "Vec" | "Map" | "Rack"))
-            .and_then(crate::handles::declared_release);
+        // What frees the value the call hands back, when it is the caller's.
+        // A handle that frees itself (`@handle(release: "…")`) is, by its
+        // type: `Random.new()`, `Rack.staged()`, `Atomic.new(v)`. A container
+        // is when no Rask body stands behind the declaration, which is the
+        // runtime building one for this call (`Vec.new()`, `os.args()`,
+        // `m.take_all()`); a body says for itself what it hands back, and a
+        // result pointing into an argument is never fresh.
+        let made_here = m.bodiless && !m.moves_out && views.is_none();
+        let fresh_release = match container_free(&m.ret_ty) {
+            Some(free) => made_here.then_some(free),
+            None => m.ret_ty.last_segment().and_then(crate::handles::declared_release),
+        };
+        // The same, for a container the runtime made and handed back inside
+        // a `Vec<u8>?` or `T or E`: the caller owns what it unwraps.
+        let fresh_wrapped = match &m.ret_ty {
+            TypeExpr::Optional(inner) | TypeExpr::Result { ok: inner, .. } if made_here => container_free(inner),
+            _ => None,
+        };
         // A `T or E<T>` or `T?` answer: the declaration says it holds one of
         // the type's own parameters, so what the slot is made of is the call
         // site's to say.
@@ -448,6 +470,7 @@ impl CallShape {
             moves_out: m.moves_out,
             eager_callback: m.eager_callback,
             fresh_release,
+            fresh_wrapped,
             generic_result,
         }
     }
@@ -509,6 +532,30 @@ impl CallShape {
     pub fn fresh_release(&self) -> Option<&'static str> {
         self.fresh_release
     }
+
+    /// What frees the container this call hands back inside an optional or a
+    /// result, when the call made it.
+    pub fn fresh_wrapped(&self) -> Option<&'static str> {
+        self.fresh_wrapped
+    }
+
+    /// This operation, handing back something made for the call that
+    /// `release` frees. For a spelling lowering makes up, which no
+    /// declaration answers for (`rask_vec_from_static`, a channel's halves).
+    pub const fn handing_back(self, release: &'static str) -> Self {
+        Self { fresh_release: Some(release), ..self }
+    }
+}
+
+/// The free of a declared container type: its elements' release walks
+/// with it. `None` for anything that isn't `Vec`, `Map` or `Rack`.
+fn container_free(ty: &TypeExpr) -> Option<&'static str> {
+    match ty.last_segment()? {
+        "Vec" => Some("Vec_free"),
+        "Map" => Some("Map_free"),
+        "Rack" => Some("Rack_free"),
+        _ => None,
+    }
 }
 
 /// The shape of the stdlib symbol `qualified_name` (`Vec_push`, `fs_open`),
@@ -528,6 +575,18 @@ pub enum ArgMode {
 }
 
 impl StdlibMethodMeta {
+    /// Each declared parameter whose type is one of the extended type's own
+    /// parameters, with which one: `(1, 0)` for `Vec.insert(index, value: T)`,
+    /// `(0, 0), (1, 1)` for `Map.insert(key: K, value: V)`. What goes there is
+    /// stored in a slot of that type, so it is widened to it first.
+    pub fn slot_params(&self) -> impl Iterator<Item = (usize, usize)> + '_ {
+        let own = &self.type_params[..self.extended_type_params];
+        self.param_types.iter().enumerate().filter_map(move |(i, ty)| {
+            let name = ty.bare_name()?;
+            Some((i, own.iter().position(|t| t == name)?))
+        })
+    }
+
     /// Does the declared return type mention one of these parameters
     /// anywhere, including inside another type's arguments
     /// (`TrySendError<T>`)?
@@ -897,7 +956,11 @@ mod tests {
     #[test]
     fn a_fresh_handle_names_its_release() {
         assert!(shape("Random_new").fresh_release().is_some());
-        assert!(shape("Vec_new").fresh_release().is_none(), "a container's free also walks its elements");
+        assert_eq!(shape("Vec_new").fresh_release(), Some("Vec_free"), "the runtime made it for this call");
+        assert_eq!(shape("os_args").fresh_release(), Some("Vec_free"));
+        assert_eq!(shape("File_read_bytes_raw").fresh_wrapped(), Some("Vec_free"));
+        assert!(shape("Vec_get").fresh_release().is_none(), "a view into the receiver");
+        assert!(shape("Vec_from").fresh_release().is_some());
     }
 
     /// A program function named like a stdlib symbol, or like one lowering

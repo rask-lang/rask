@@ -1406,21 +1406,30 @@ impl Interpreter {
                 };
                 let (mut arg_vals, arg_places) = self.eval_call_args(args)?;
 
-                // A value going into a container's element slot widens the way a
-                // declared parameter does: `v.push(1)` on a `Vec<i32?>` stores
-                // `Some(1)`, not a bare 1. Builtin collection methods take their
-                // arguments untyped, so nothing else was doing this and the
-                // element came back as an i64 that `?` refused to test.
-                if let Some((arg_index, type_arg_index)) = match (&receiver, method.as_str()) {
-                    (Value::Vec(_), "push") => Some((0usize, 0usize)),
-                    (Value::Vec(_), "replace" | "insert") => Some((1, 0)),
-                    (Value::Map(_), "insert") => Some((1, 1)),
+                // A stdlib parameter declared as one of its type's own
+                // parameters (`take value: T` of `Vec.push`, of `Shared.new`)
+                // takes the type argument, so the value widens to it the way a
+                // declared parameter of a user function does: `v.push(1)` on a
+                // `Vec<i32?>` stores `Some(1)`, and `Shared<Big?>.new(b)` holds
+                // `Some(b)`. Builtin methods take their arguments untyped, so
+                // nothing else does this. A constructor's type arguments are on
+                // the call; a method's on its receiver.
+                let declared_at = match &receiver {
+                    Value::Vec(_) => Some(("Vec", object.id)),
+                    Value::Map(_) => Some(("Map", object.id)),
+                    Value::TypeConstructor(kind) => Some((kind.name(), expr.id)),
                     _ => None,
-                } {
-                    let want = self.container_elem_option_depth(object.id, type_arg_index);
-                    if let (Some(want), Some(slot)) = (want, arg_vals.get_mut(arg_index)) {
-                        for _ in super::call::option_depth(slot)..want {
-                            *slot = Value::some(slot.clone());
+                };
+                if let Some(meta) = declared_at
+                    .and_then(|(ty, _)| rask_stdlib::mir_metadata::lookup(&format!("{ty}_{method}")))
+                {
+                    let typed_at = declared_at.map(|(_, at)| at).unwrap_or(expr.id);
+                    for (i, p) in meta.slot_params() {
+                        let Some(slot) = arg_vals.get_mut(i) else { continue };
+                        if let Some(want) = self.container_elem_option_depth(typed_at, p) {
+                            for _ in super::call::option_depth(slot)..want {
+                                *slot = Value::some(slot.clone());
+                            }
                         }
                     }
                 }

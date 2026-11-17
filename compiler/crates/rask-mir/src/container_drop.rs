@@ -33,22 +33,12 @@ use crate::{
     MirStmtKind, MirTerminatorKind, MirType,
 };
 
-/// A call's symbol without the module path it was qualified with and the `$`
-/// suffix monomorphization gave its instance.
-fn symbol_base(name: &str) -> &str {
-    let head = name.rsplit("::").next().unwrap_or(name);
-    head.split('$').next().unwrap_or(head)
-}
-
-/// What frees a container made by `ctor`, or `None` if this isn't one.
-///
-/// `elem_strs::CTORS` names both — the calls that hand a container back and
-/// the free that matches each. The free takes nothing but the container: it
-/// knows what its elements are.
-/// What frees a value fresh out of a call to `ctor`: a container's free from
-/// its constructor row, or the declared release of a handle a native hands back.
+/// What frees a value fresh out of a call to `ctor`, or `None` if the call
+/// made nothing the caller owns. The call's shape says: a stdlib declaration's
+/// gives it (`Vec.new()`, `Random.new()`), and a call lowering makes up states
+/// it where it is emitted (`rask_vec_from_static`, a channel's ends).
 pub(crate) fn free_for(ctor: &FunctionRef) -> Option<&'static str> {
-    crate::elem_strs::free_fn(symbol_base(&ctor.name)).or_else(|| ctor.shape.and_then(|s| s.fresh_release()))
+    ctor.shape.and_then(|s| s.fresh_release())
 }
 
 /// The call that gives back what `free` frees. A handle's declared release is
@@ -69,10 +59,10 @@ pub(crate) fn free_call(free: &str) -> FunctionRef {
 /// getting it wrong closes a channel under a task still sending into it.
 fn retain_for(free: &str) -> Option<&'static str> {
     match free {
-        "Sender_drop" => Some("Sender_clone"),
-        "Shared_drop" => Some("Shared_clone"),
-        "Mutex_drop" => Some("Mutex_clone"),
-        "Cell_drop" => Some("Cell_clone"),
+        "rask_sender_drop_i64" => Some("Sender_clone"),
+        "rask_shared_drop_i64" => Some("Shared_clone"),
+        "rask_mutex_drop" => Some("Mutex_clone"),
+        "rask_cell_free" => Some("Cell_clone"),
         _ => None,
     }
 }
@@ -130,7 +120,8 @@ fn retain_handle_captures(func: &mut MirFunction) {
 
     for bi in 0..func.blocks.len() {
         // (statement index, the clone to run before it, captures to rewrite)
-        let mut work: Vec<(usize, Vec<(usize, LocalId, LocalId, &'static str)>)> = Vec::new();
+        let mut work: Vec<(usize, Vec<(usize, LocalId, LocalId, &'static str, &'static str)>)> =
+            Vec::new();
         for (si, stmt) in func.blocks[bi].statements.iter().enumerate() {
             let MirStmtKind::ClosureCreate { captures, heap: true, .. } = &stmt.kind else {
                 continue;
@@ -140,7 +131,9 @@ fn retain_handle_captures(func: &mut MirFunction) {
                 if c.by_ref {
                     continue;
                 }
-                let Some(retain) = made.get(&c.local_id).and_then(|f| retain_for(f)) else {
+                let Some((free, retain)) =
+                    made.get(&c.local_id).and_then(|f| Some((*f, retain_for(f)?)))
+                else {
                     continue;
                 };
                 // Still the frame's after this? Then the environment needs a
@@ -157,7 +150,7 @@ fn retain_handle_captures(func: &mut MirFunction) {
                 }
                 let fresh_id = LocalId(next_id);
                 next_id += 1;
-                here.push((ci, c.local_id, fresh_id, retain));
+                here.push((ci, c.local_id, fresh_id, retain, free));
             }
             if !here.is_empty() {
                 work.push((si, here));
@@ -165,7 +158,7 @@ fn retain_handle_captures(func: &mut MirFunction) {
         }
         for (si, here) in work.into_iter().rev() {
             let mut clones = Vec::new();
-            for (ci, from, to, retain) in here {
+            for (ci, from, to, retain, free) in here {
                 let ty = func.local_ty(from).cloned().unwrap_or(MirType::Ptr);
                 func.locals.push(crate::MirLocal {
                     id: to,
@@ -175,7 +168,8 @@ fn retain_handle_captures(func: &mut MirFunction) {
                 });
                 clones.push(MirStmt::dummy(MirStmtKind::Call {
                     dst: Some(to),
-                    func: FunctionRef::borrowing(retain),
+                    // A new reference, given back the way the original is.
+                    func: FunctionRef::borrowing(retain).handing_back(free),
                     args: vec![MirOperand::Local(from)],
                 }));
                 if let MirStmtKind::ClosureCreate { captures, .. } =
@@ -2641,7 +2635,7 @@ fn containers_and_makers(
                         }
                         _ => {}
                     }
-                } else if let Some(free) = crate::elem_strs::wrapped_free_fn(symbol_base(&fref.name)) {
+                } else if let Some(free) = fref.shape.and_then(|s| s.fresh_wrapped()) {
                     unwrap_for.insert(*dst, free);
                 } else if let Some((back, free)) =
                     handing_over.get(&fref.name).and_then(|b| Some((b, b.made()?)))

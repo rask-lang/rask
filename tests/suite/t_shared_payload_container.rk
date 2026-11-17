@@ -8,15 +8,9 @@
 // had no idea what its payload was. It freed its own slot and left the map and
 // its tables behind, and the same for a `Vec`.
 //
-// So the payload kind travels to the constructor and lives on the Shared for the
-// rest of its life, the way a container's element descriptor does. Last
-// argument, always, whatever else lowering injected — `Shared.new(v)` pushes a
-// size of its own and `Shared.mutex(v)` doesn't, so the position isn't fixed
-// but "last" is.
-//
-// The three constants live twice, in `elem_strs::BOX_PAYLOAD_*` and
-// `RASK_BOX_PAYLOAD_*`. Three integers with no other reader; each comment
-// names the other.
+// So the constructor is told what the payload owns, as the same element
+// description a `Vec` of that type carries, and the Shared keeps it for the rest
+// of its life.
 //
 // Every test reads the payload back through the Shared after writing it. A
 // payload freed early reads as an empty or garbage container rather than as a

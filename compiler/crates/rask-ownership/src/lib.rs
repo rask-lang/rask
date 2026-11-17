@@ -3937,6 +3937,15 @@ impl<'a> OwnershipChecker<'a> {
                         ExprKind::Ident(name) => {
                             let name = name.clone();
                             let sink = method.clone();
+                            // A `mutate` parameter consumed as a receiver
+                            // (`b.build()`) is given away the same as one
+                            // passed to a `take` parameter: taken, so the
+                            // write that refills the slot has nothing to free.
+                            if self.mutate_params.contains_key(&name)
+                                && !self.node_ty(&object.id).is_some_and(|t| self.is_copy(t))
+                            {
+                                self.mutate_param_moves.insert(object.id);
+                            }
                             self.consume_binding(&name, expr.span, Some(&sink));
                         }
                         // `w.conn.close()` — the receiver is a field, so the

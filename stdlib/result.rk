@@ -24,3 +24,10 @@
 /// An error is never dropped without the source saying so — that's why
 /// `catch`'s binder is mandatory and there is no bare-value form.
 public enum Result<T, E> { }
+
+/// What every `E` of a `T or E` is (type.errors/ER4). Enums get it derived
+/// (ER6); anything else writes `message`.
+@by_shape
+public interface Error {
+    func message(self) -> string
+}

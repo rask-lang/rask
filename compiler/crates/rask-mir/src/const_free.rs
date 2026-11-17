@@ -56,7 +56,7 @@ pub fn add_const_free(fns: &mut Vec<MirFunction>, thunks: &std::collections::Has
 /// The const this init thunk builds, if the thing it built is ours to free.
 ///
 /// Reads the thunk rather than the declaration: which release a value wants is
-/// decided by the constructor that made it (`elem_strs::CTORS`), and the
+/// decided by the constructor that made it (its call's shape), and the
 /// declaration only says what type it is. `const S: Shared<i64> = Shared.local(0)`
 /// and `Shared.new(0)` are one declared type over two runtime objects with two
 /// different releases.

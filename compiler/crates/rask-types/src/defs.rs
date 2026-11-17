@@ -157,6 +157,9 @@ pub enum TypeDef {
         is_unsafe: bool,
         /// G1: `duck interface` — satisfied by shape, no declaration needed.
         is_duck: bool,
+        /// `@by_shape`: a stdlib interface a type has by having its methods,
+        /// with no `implements` block (`Error`, `Displayable`).
+        by_shape: bool,
     },
     Union {
         name: String,

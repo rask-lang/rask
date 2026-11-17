@@ -327,6 +327,12 @@ impl FunctionRef {
         Self::shaped(name, CallShape::giving(positions))
     }
 
+    /// This call, handing back something made for it that `release` frees.
+    pub fn handing_back(self, release: &'static str) -> Self {
+        let shape = self.shape.unwrap_or_else(CallShape::no_receiver).handing_back(release);
+        Self { shape: Some(shape), ..self }
+    }
+
     /// Does the call keep the argument at `index`, as far as its shape says?
     pub fn gives(&self, index: usize) -> bool {
         self.shape.is_some_and(|s| s.gives(index))

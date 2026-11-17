@@ -162,16 +162,20 @@ fn resolve_named_expr(
     if types.is_type_param_in_scope(&name) {
         return Ok(Type::UnresolvedNamed(name));
     }
-    if let Some(ty) = types.lookup(&name) {
-        return Ok(ty);
+    // Bare `Error` means the erased error box, same as `any Error` (#1095),
+    // where the name is the interface: a program's own `struct Error` is
+    // that struct. After the type-parameter check on purpose: a `<Error>`
+    // parameter is still the parameter.
+    match types.lookup(&name) {
+        Some(Type::Named(id))
+            if rask_ast::interfaces::is_bare_error(&name)
+                && matches!(types.get(id), Some(rask_types::TypeDef::Interface { .. })) =>
+        {
+            Ok(types.interface_object("Error"))
+        }
+        Some(ty) => Ok(ty),
+        None => Ok(Type::UnresolvedNamed(name)),
     }
-    // Bare `Error` means the erased error box, same as `any Error` (#1095).
-    // After the type-parameter check on purpose: a `<Error>` parameter is
-    // still the parameter.
-    if rask_ast::interfaces::is_bare_error(&name) {
-        return Ok(types.interface_object("Error"));
-    }
-    Ok(Type::UnresolvedNamed(name))
 }
 
 /// Written type arguments, resolved.

@@ -56,6 +56,16 @@ pub fn declared_release(type_name: &str) -> Option<&'static str> {
 /// `rask_mono::drop_names::box_release_for` picks one.
 pub const SHARED_RELEASES: &[&str] = &["rask_shared_drop_i64", "rask_mutex_drop", "rask_cell_free"];
 
+/// The release of a `Shared` box with strategy `strategy` (`Local`, `Mutex`;
+/// anything else is `Readers`).
+pub fn shared_release(strategy: Option<&str>) -> &'static str {
+    match strategy {
+        Some("Local") => SHARED_RELEASES[2],
+        Some("Mutex") => SHARED_RELEASES[1],
+        _ => SHARED_RELEASES[0],
+    }
+}
+
 /// Every release a handle declares, the compiler-provided boxes' included.
 pub fn declared_releases() -> Vec<&'static str> {
     let mut out: Vec<&'static str> = crate::stubs::parsed_decls()

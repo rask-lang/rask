@@ -2406,7 +2406,7 @@ impl<'a> MirLowerer<'a> {
                 let extract_fn = if i == 0 { "channel_tx" } else { "channel_rx" };
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                     dst: Some(local_id),
-                    func: FunctionRef::reading(extract_fn),
+                    func: super::channel_half(extract_fn),
                     args: vec![init_op.clone()],
                 }));
             } else if let (true, Some(&offset), Some(base)) =
@@ -2463,22 +2463,6 @@ impl<'a> MirLowerer<'a> {
                 if borrowed {
                     if let Some(elem) = tuple_elems.as_ref().and_then(|e| e.get(i)) {
                         self.retain_bound_copy(local_id, elem);
-                    }
-                }
-            }
-
-            // Channel<T>.buffered/unbuffered returns (Sender<T>, Receiver<T>).
-            // The element size has to be recorded whether or not the checker
-            // resolved the prefixes: `rx.receive()` picks the struct-aware recv
-            // off it, and without it a 24-byte element was received into an
-            // 8-byte buffer and smashed the stack (#463).
-            if let ExprKind::MethodCall { object, method, .. } = &init.kind {
-                if let Some(type_name) = object.name() {
-                    let base = type_name;
-                    if base == "Channel" && (method == "buffered" || method == "unbuffered") {
-                        // Same source the constructor uses for its elem_size arg.
-                        let elem_size = self.generic_arg_slot_size(init.id, 0)?;
-                        self.meta_mut(name).channel_elem_size = Some(elem_size);
                     }
                 }
             }
@@ -2686,7 +2670,7 @@ impl<'a> MirLowerer<'a> {
             let args = self.map_entries_args(MirOperand::Local(map_tmp), &pair[0], &pair[1]);
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: Some(entries_vec),
-                func: FunctionRef::borrowing("Map_entries"),
+                func: FunctionRef::borrowing("Map_entries").handing_back("Vec_free"),
                 args,
             }));
             (MirOperand::Local(entries_vec), MirType::I64)

@@ -82,18 +82,6 @@ runtime_constants! {
     /// it freezes into `bytes` without moving.
     RASK_STRING_HEADER_SIZE = 16;
 
-    /// What a box's payload is, so the box's last release can give it back.
-    RASK_BOX_PAYLOAD_NONE = 0;
-    RASK_BOX_PAYLOAD_VEC = 1;
-    RASK_BOX_PAYLOAD_MAP = 2;
-    /// A closure block (#1253).
-    RASK_BOX_PAYLOAD_CLOSURE = 3;
-    /// Another box: freed through its own header (#1302).
-    RASK_BOX_PAYLOAD_BOX = 4;
-    /// A handle that frees itself: the kind is this plus the handle's index
-    /// in `RASK_HANDLE_RELEASES`.
-    RASK_BOX_PAYLOAD_HANDLE_BASE = 16;
-
     /// An owned-entry word: the byte offset in the low 28 bits, the kind in
     /// the top 4.
     RASK_OWNED_KIND_SHIFT = 28;
@@ -239,12 +227,12 @@ pub fn abi_header() -> String {
             out.push_str(&format!("#define {name} {value}\n"));
         }
     }
-    // The releases a `RASK_OWNED_HANDLE` entry or a handle box payload
+    // The releases a `RASK_OWNED_HANDLE` entry
     // indexes, as an X-macro the runtime builds its table from: every stdlib
     // type's `@handle(release: …)`, in `handle_release_index` order.
     out.push_str(
         "\n// Every stdlib handle's declared release, in index order: what a\n\
-         // `RASK_OWNED_HANDLE` entry or a handle box payload calls.\n\
+         // `RASK_OWNED_HANDLE` entry calls.\n\
          #define RASK_HANDLE_RELEASES(X)",
     );
     for release in rask_stdlib::handles::declared_releases() {

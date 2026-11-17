@@ -1254,6 +1254,14 @@ impl TypeTable {
     /// own `interface Sub` is neither (#1329).
     ///
     /// A check run without the stdlib loaded falls back to the program's.
+    /// The stdlib's interface called `name`, whatever the program declares.
+    pub fn stdlib_interface(&self, name: &str) -> Option<TypeId> {
+        self.stdlib_type_names
+            .get(name)
+            .copied()
+            .filter(|id| matches!(self.get(*id), Some(TypeDef::Interface { .. })))
+    }
+
     pub fn stdlib_interface_ident(&self, name: &str) -> InterfaceIdent {
         self.stdlib_type_names
             .get(name)

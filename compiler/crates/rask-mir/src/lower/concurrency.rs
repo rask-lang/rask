@@ -66,6 +66,15 @@ impl SharedStrategy {
         }
     }
 
+    /// What gives back one handle on a box of this strategy.
+    pub(super) fn release(self) -> &'static str {
+        rask_stdlib::handles::shared_release(Some(match self {
+            SharedStrategy::Local => "Local",
+            SharedStrategy::Readers => "Readers",
+            SharedStrategy::Mutex => "Mutex",
+        }))
+    }
+
     /// The acquire/data/release triple for a `with` block over this strategy.
     /// `write` picks the exclusive side where the strategy has two.
     pub(super) fn with_syms(self, write: bool) -> BoxWithSyms {
