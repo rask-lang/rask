@@ -533,6 +533,18 @@ pub enum ArgMode {
 }
 
 impl StdlibMethodMeta {
+    /// Each declared parameter whose type is one of the extended type's own
+    /// parameters, with which one: `(1, 0)` for `Vec.insert(index, value: T)`,
+    /// `(0, 0), (1, 1)` for `Map.insert(key: K, value: V)`. What goes there is
+    /// stored in a slot of that type, so it is widened to it first.
+    pub fn slot_params(&self) -> impl Iterator<Item = (usize, usize)> + '_ {
+        let own = &self.type_params[..self.extended_type_params];
+        self.param_types.iter().enumerate().filter_map(move |(i, ty)| {
+            let name = ty.bare_name()?;
+            Some((i, own.iter().position(|t| t == name)?))
+        })
+    }
+
     /// Does the declared return type mention one of these parameters
     /// anywhere, including inside another type's arguments
     /// (`TrySendError<T>`)?

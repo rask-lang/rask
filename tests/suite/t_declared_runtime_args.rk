@@ -17,9 +17,15 @@
 // `Vec` of that type carries. It used to take a one-number kind (vector, map,
 // closure, handle) worked out from the payload's type, which had no answer for
 // an optional vector or a struct holding a string, so those leaked.
+//
+// Which arguments go into a slot is read the same way: a parameter declared
+// as the type's own `T`, `K` or `V`. A table of method names used to say it,
+// and `try_insert`, `get_clone` and `read` were missing from it. A Rask-bodied
+// method (`try_insert`, `try_push`) had its argument widened twice.
 
 import sync.Shared
 import sync.Atomic
+import collections.GrowError
 
 struct Cell2 {
     row: i64
@@ -128,4 +134,42 @@ test "a box frees the strings inside a struct payload" {
 test "a comptime map keeps its key's own hash and eq" {
     assert TABLE.len() == 2
     assert (TABLE.get(Cell2(row: 1, col: 5)) ?? -1) == 10
+}
+
+test "a value going into a slot widens to the slot's type, by declaration" {
+    mut v = Vec<i32?>.new()
+    try v.try_insert(0, 5)
+    try v.try_push(7)
+    assert (v[0] ?? 0) == 5
+    assert (v[1] ?? 0) == 7
+    mut m = Map<i32, string>.new()
+    m.insert(3, "three")
+    assert (m.get_clone(3) ?? "") == "three"
+    let n = m.read(3, |s| s.len()) ?? 0
+    assert n == 5
+}
+
+test "try_push runs its declared body at each element type" {
+    mut nums = Vec<i32>.fixed(1)
+    try nums.try_push(4)
+    mut back: i32 = 0
+    if nums.try_push(9) is GrowError<i32> as e {
+        match e {
+            GrowError.Full(x) => { back = x }
+            GrowError.NoMemory(x) => { back = -x }
+        }
+    }
+    assert nums[0] == 4
+    assert back == 9
+    mut words = Vec<string>.fixed(1)
+    try words.try_push("first-word-long-enough-to-allocate".to_uppercase())
+    mut kept = ""
+    if words.try_push("second-word-long-enough-to-allocate".to_uppercase()) is GrowError<string> as e {
+        match e {
+            GrowError.Full(w) => { kept = w }
+            GrowError.NoMemory(w) => { kept = w }
+        }
+    }
+    assert words[0].len() == 34
+    assert kept.len() == 35
 }

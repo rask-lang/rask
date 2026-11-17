@@ -3321,6 +3321,21 @@ impl<'a> MirLowerer<'a> {
         }
     }
 
+    /// An argument coerced into its parameter's type, with the type it has
+    /// afterwards. Handing back the type it was written as let a later step
+    /// wrap it a second time: `v.try_insert(0, 5)` on a `Vec<i32?>` passed
+    /// `Some(Some(5))` truncated to four bytes, and read back as absent.
+    pub(super) fn coerce_arg(
+        &mut self,
+        op: MirOperand,
+        src_ty: MirType,
+        dst_ty: &MirType,
+    ) -> (MirOperand, MirType) {
+        let wraps = Self::wrapper_layers(dst_ty).0.len() > Self::wrapper_layers(&src_ty).0.len();
+        let op = self.coerce_into_wrapper(rask_ast::coercion::CoercionSite::Argument, op, &src_ty, dst_ty);
+        (op, if wraps { dst_ty.clone() } else { src_ty })
+    }
+
     /// Wrap `val` into the layers `dst_ty` has and `src_ty` doesn't.
     ///
     /// Every position that can coerce a bare value into a wrapper goes through

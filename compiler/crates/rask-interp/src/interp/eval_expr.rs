@@ -1424,11 +1424,8 @@ impl Interpreter {
                     .and_then(|(ty, _)| rask_stdlib::mir_metadata::lookup(&format!("{ty}_{method}")))
                 {
                     let typed_at = declared_at.map(|(_, at)| at).unwrap_or(expr.id);
-                    let own = &meta.type_params[..meta.extended_type_params];
-                    for (slot, decl) in arg_vals.iter_mut().zip(&meta.param_types) {
-                        let Some(p) = decl.bare_name().and_then(|n| own.iter().position(|t| t == n)) else {
-                            continue;
-                        };
+                    for (i, p) in meta.slot_params() {
+                        let Some(slot) = arg_vals.get_mut(i) else { continue };
                         if let Some(want) = self.container_elem_option_depth(typed_at, p) {
                             for _ in super::call::option_depth(slot)..want {
                                 *slot = Value::some(slot.clone());

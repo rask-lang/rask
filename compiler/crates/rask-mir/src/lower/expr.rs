@@ -968,13 +968,7 @@ impl<'a> MirLowerer<'a> {
         let Some(dst_ty) = declared.map(|t| self.ctx.type_to_mir(t)) else {
             return (op, mir_ty);
         };
-        let op = self.coerce_into_wrapper(
-            rask_ast::coercion::CoercionSite::Argument,
-            op,
-            &mir_ty,
-            &dst_ty,
-        );
-        (op, mir_ty)
+        self.coerce_arg(op, mir_ty, &dst_ty)
     }
 
     /// Parameter types a closure argument at position `i` should take, read off
@@ -1247,16 +1241,10 @@ impl<'a> MirLowerer<'a> {
             .and_then(|s| s.param_tys.get(param))
             .and_then(|o| o.as_ref())
             .map(|t| self.ctx.type_to_mir(t));
-        let op = match declared {
-            Some(dst_ty) => self.coerce_into_wrapper(
-                rask_ast::coercion::CoercionSite::Argument,
-                op,
-                &mir_ty,
-                &dst_ty,
-            ),
-            None => op,
-        };
-        Ok((op, mir_ty))
+        Ok(match declared {
+            Some(dst_ty) => self.coerce_arg(op, mir_ty, &dst_ty),
+            None => (op, mir_ty),
+        })
     }
 
     fn lower_call_arg(
@@ -5219,9 +5207,6 @@ impl<'a> MirLowerer<'a> {
             let (value, ty) = self.build_claim_value(&target)?;
             return Ok((MirOperand::Local(value), ty));
         }
-        if let Some(r) = self.try_lower_try_push(expr, object, method, args)? {
-            return Ok(r);
-        }
         // Iterator terminal methods: .collect(), .fold(), .any(), .all(), etc.
         // Try to recognize an iterator chain on the receiver and fuse it inline.
         if let Some(result) = self.try_lower_iter_terminal(expr, object, method, args)? {
@@ -6310,6 +6295,9 @@ impl<'a> MirLowerer<'a> {
 
         // A method with its own type parameters was monomorphized per call, so
         // dispatch has to name the copy rather than the generic body.
+        // The declaration, under its own name: a monomorphized copy's symbol
+        // isn't one.
+        let declared = rask_stdlib::mir_metadata::lookup(&qualified_name);
         let qualified_name = self.ctx.method_call(expr.id)
             .map(|c| c.symbol)
             .unwrap_or(qualified_name);
@@ -6332,23 +6320,12 @@ impl<'a> MirLowerer<'a> {
         // into a `Vec<u8>` has to be one byte, and a `2.5` into a `Vec<f32>`
         // an f32.
         //
-        // Each entry: (argument index, which of the container's type arguments
-        // the slot holds). `all_args[0]` is the receiver.
-        let slot_args: &[(usize, usize)] = match qualified_name.as_str() {
-            "Vec_push" | "Vec_try_push" | "Vec_remove_item" | "Vec_contains" => &[(0, 0)],
-            "Vec_replace" | "Vec_insert" => &[(1, 0)],
-            "Map_insert" | "Map_set" => &[(0, 0), (1, 1)],
-            "Map_get" | "Map_get_unwrap" | "Map_contains" | "Map_remove" | "Map_slot"
-            | "Map_borrow_elem" => &[(0, 0)],
-            "Sender_send" | "Sender_try_send" | "Rack_insert" => &[(0, 0)],
-            "Shared_set" | "Shared_replace" | "Mutex_set" | "Mutex_replace" | "Cell_set"
-            | "Cell_replace" => &[(0, 0)],
-            "Atomic_store" | "Atomic_swap" | "Atomic_fetch_add" | "Atomic_fetch_sub"
-            | "Atomic_fetch_and" | "Atomic_fetch_or" | "Atomic_fetch_xor" | "Atomic_fetch_nand"
-            | "Atomic_fetch_max" | "Atomic_fetch_min" => &[(0, 0)],
-            "Atomic_compare_exchange" | "Atomic_compare_exchange_weak" => &[(0, 0), (1, 0)],
-            _ => &[],
-        };
+        // Which arguments those are comes from the declaration: a parameter
+        // declared as one of the type's own (`value: T`, `key: K`). The
+        // declaration is `Shared`'s for all three box families.
+        let slot_args: Vec<(usize, usize)> = declared
+            .map(|m| m.slot_params().collect())
+            .unwrap_or_default();
         // An entry is a `(key, value)` tuple, laid out by the caller.
         if matches!(qualified_name.as_str(), "Map_entries" | "Map_iter" | "Map_take_all") && all_args.len() == 1 {
             if let (Some(key), Some(val)) = (
@@ -6365,7 +6342,7 @@ impl<'a> MirLowerer<'a> {
             }
         }
 
-        for &(arg_index, type_arg_index) in slot_args {
+        for (arg_index, type_arg_index) in slot_args {
             let (Some(slot_ty), Some(src_ty)) = (
                 self.container_elem_mir_type(object.id, type_arg_index),
                 arg_types.get(arg_index).cloned(),
@@ -6954,114 +6931,6 @@ impl<'a> MirLowerer<'a> {
             _ => false,
         };
         is_link.then(|| (func, vec![container.clone(), value.clone()]))
-    }
-
-    /// `v.try_push(x)` — lowered here rather than called, because the element
-    /// can't cross a function boundary generically.
-    ///
-    /// The stdlib body reads `if self.is_full() { return GrowError.Full(value) }`
-    /// then `self.push(value)`, and that is exactly what this emits. Compiling
-    /// it as an ordinary function instead gives one `Vec_try_push` shared by
-    /// every element type, so `value: T` has to be a pointer — and a `Vec<i32>`
-    /// then pushed the address of a register while a `Vec<string>` pushed a
-    /// pointer to a pointer. Stdlib generic bodies aren't monomorphized per
-    /// element type; until they are, the call site is the only place that knows
-    /// what `T` is. Same shape on the interpreter, which keeps its own builtin.
-    fn try_lower_try_push(
-        &mut self,
-        expr: &Expr,
-        object: &Expr,
-        method: &String,
-        args: &[CallArg],
-    ) -> Result<Option<TypedOperand>, LoweringError> {
-        if method != "try_push" || args.len() != 1 {
-            return Ok(None);
-        }
-        let (recv, recv_ty) = self.lower_expr(object)?;
-        // A Vec is a runtime pointer; anything else with a `try_push` isn't ours.
-        if !matches!(recv_ty, MirType::Ptr | MirType::Container(_)) {
-            return Ok(None);
-        }
-        // `void or GrowError<T>` — the err side names the enum whose `Full`
-        // variant carries the rejected element.
-        let Some(result_ty @ MirType::Result { .. }) = self.ctx.lookup_node_type(expr.id) else {
-            return Ok(None);
-        };
-        let MirType::Result { err, .. } = &result_ty else { return Ok(None) };
-        let MirType::Enum(crate::types::EnumLayoutId { id: enum_id, .. }) = err.as_ref() else {
-            return Ok(None);
-        };
-        let Some(layout) = self.ctx.enum_layouts.get(*enum_id as usize) else {
-            return Ok(None);
-        };
-        let Some(full) = layout.variants.iter().find(|v| v.name == "Full") else {
-            return Ok(None);
-        };
-        let (full_tag, payload_offset) = (full.tag, full.payload_offset);
-        let full_field_size = full.fields.first().map(|f| f.size);
-        let tag_offset = layout.tag_offset as u32;
-        let tag_bytes = layout.tag_bytes();
-
-        let (value, value_ty) = self.lower_expr(&args[0].expr)?;
-        let value_size = rask_layout::size_of(&value_ty, self.ctx.target());
-
-        let full_local = self.builder.alloc_temp(MirType::Bool);
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-            dst: Some(full_local),
-            func: FunctionRef::internal("Vec_is_full".to_string()),
-            args: vec![recv.clone()],
-        }));
-
-        let result_local = self.builder.alloc_temp(result_ty.clone());
-        let full_block = self.builder.create_block();
-        let push_block = self.builder.create_block();
-        let merge_block = self.builder.create_block();
-        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
-            cond: MirOperand::Local(full_local),
-            then_block: full_block,
-            else_block: push_block,
-        }));
-
-        // At the bound: build GrowError.Full(value) and hand it back as the
-        // error branch. Nothing is pushed, so the caller still owns the value.
-        self.builder.switch_to_block(full_block);
-        let err_local = self.builder.alloc_temp((**err).clone());
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-            addr: err_local,
-            offset: tag_offset,
-            value: MirOperand::Constant(MirConst::Int(full_tag as i64)),
-            store_size: tag_bytes,
-            field: None,
-        }));
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-            addr: err_local,
-            offset: payload_offset,
-            value: value.clone(),
-            store_size: full_field_size.unwrap_or(value_size),
-            field: None,
-        }));
-        self.store_wrapper_tag(result_local, &result_ty, rask_mono::runtime_abi::RASK_TAG_ABSENT);
-        self.store_wrapper_payload(result_local, &result_ty, MirOperand::Local(err_local), err);
-        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
-            target: merge_block,
-        }));
-
-        // Room left: an ordinary push, and the ok branch carries nothing.
-        self.builder.switch_to_block(push_block);
-        let push_ret = self.builder.alloc_temp(MirType::I64);
-        let value = self.as_slot_value(value, &value_ty);
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-            dst: Some(push_ret),
-            func: FunctionRef::internal("Vec_push".to_string()),
-            args: vec![recv, value],
-        }));
-        self.store_wrapper_tag(result_local, &result_ty, rask_mono::runtime_abi::RASK_TAG_PRESENT);
-        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
-            target: merge_block,
-        }));
-
-        self.builder.switch_to_block(merge_block);
-        Ok(Some((MirOperand::Local(result_local), result_ty)))
     }
 
     /// `Enum.from_value(n)` on a fieldless enum → `Enum?`.
