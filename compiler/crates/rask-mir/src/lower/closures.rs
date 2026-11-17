@@ -1000,7 +1000,12 @@ impl<'a> MirLowerer<'a> {
         for local in self.captured_closure_values(block, params).into_iter().filter(|_| !borrows) {
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: None,
-                func: FunctionRef::internal("rask_closure_refuse_crossing".to_string()),
+                // Reads a closure's header before a task block captures it, and
+                // keeps nothing of it.
+                func: FunctionRef::shaped(
+                    "rask_closure_refuse_crossing",
+                    rask_stdlib::mir_metadata::CallShape::no_receiver().eager_callback(),
+                ),
                 args: vec![MirOperand::Local(local)],
             }));
         }
@@ -1033,9 +1038,9 @@ impl<'a> MirLowerer<'a> {
             let which = MirOperand::Constant(crate::operand::MirConst::Int(which));
             (FunctionRef::runtime("rask_task_spawn_borrowed".to_string()), vec![which, task, boxes, requires_pool])
         } else if target == rask_ast::expr::SpawnTarget::Pool {
-            (FunctionRef::internal(entry.to_string()), vec![task, boxes, requires_pool])
+            (FunctionRef::keeping(entry, &[0]), vec![task, boxes, requires_pool])
         } else {
-            (FunctionRef::internal(entry.to_string()), vec![task, boxes])
+            (FunctionRef::keeping(entry, &[0]), vec![task, boxes])
         };
         let handle_ty = self.lookup_expr_type(expr).unwrap_or(MirType::Ptr);
         let handle = self.builder.alloc_temp(handle_ty.clone());

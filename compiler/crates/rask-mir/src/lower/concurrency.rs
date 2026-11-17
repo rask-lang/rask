@@ -3,6 +3,7 @@
 //! Concurrency lowering: Shared read/write blocks, Mutex lock blocks.
 
 use super::{LoweringError, MirLowerer, TypedOperand};
+use crate::operand::Mint;
 use crate::{
     operand::MirConst, FunctionRef,
     MirOperand, MirRValue, MirStmt, MirStmtKind, MirTerminator, MirTerminatorKind, MirType,
@@ -19,12 +20,12 @@ use rask_ast::{NodeId, Span};
 /// so there's nothing to unlock on the way out.
 pub(super) struct BoxWithSyms {
     /// Takes exclusive access, returns the payload's address.
-    pub acquire: &'static str,
+    pub acquire: Mint,
     /// The payload's address again, for the write-back — acquire consumed its own
     /// result. Must not re-take access.
-    pub data: &'static str,
+    pub data: Mint,
     /// Drops access. `None` when the box holds none.
-    pub release: Option<&'static str>,
+    pub release: Option<Mint>,
 }
 
 /// Which synchronization a `Shared<T, S>` takes (`conc.sync/SH1`). The strategy
@@ -93,47 +94,47 @@ impl SharedStrategy {
     /// `Cell_noop_release`, was declared nowhere and codegen stopped at
     /// "Function not found" for every inline `.read()`/`.write()` chain on a
     /// `Shared<T, Local>`.
-    pub(super) fn guard_syms(self, write: bool) -> (&'static str, Option<&'static str>) {
+    pub(super) fn guard_syms(self, write: bool) -> (Mint, Option<Mint>) {
         match self {
-            SharedStrategy::Local => ("Cell_acquire", None),
-            SharedStrategy::Mutex => ("Mutex_acquire", Some("Mutex_release")),
+            SharedStrategy::Local => (BoxWithSyms::CELL.acquire, None),
+            SharedStrategy::Mutex => (BoxWithSyms::MUTEX.acquire, BoxWithSyms::MUTEX.release),
             SharedStrategy::Readers => {
-                if write {
-                    ("Shared_write_acquire", Some("Shared_release"))
-                } else {
-                    ("Shared_read_acquire", Some("Shared_release"))
-                }
+                let syms = if write { BoxWithSyms::SHARED_WRITE } else { BoxWithSyms::SHARED_READ };
+                (syms.acquire, syms.release)
             }
         }
     }
 }
 
 impl BoxWithSyms {
+    // Each strategy's acquire and data are the declared `Shared.read`: the
+    // payload's address, which the box keeps owning. The release hands the
+    // access back and keeps nothing.
     pub(super) const MUTEX: Self = Self {
-        acquire: "Mutex_acquire",
-        data: "Mutex_data",
-        release: Some("Mutex_release"),
+        acquire: Mint::like("Mutex_acquire", "Shared_read"),
+        data: Mint::like("Mutex_data", "Shared_read"),
+        release: Some(Mint::borrowing("Mutex_release")),
     };
 
     /// `Cell_acquire` and `Cell_data` both land on `rask_cell_get` — the slot's
     /// address, no lock involved. They stay distinct MIR names so this path and
     /// the `cell.get()` path (CE6, which copies out) can't drift into each other.
     pub(super) const CELL: Self = Self {
-        acquire: "Cell_acquire",
-        data: "Cell_data",
+        acquire: Mint::like("Cell_acquire", "Shared_read"),
+        data: Mint::like("Cell_data", "Shared_read"),
         release: None,
     };
 
     pub(super) const SHARED_READ: Self = Self {
-        acquire: "Shared_read_acquire",
-        data: "Shared_data",
-        release: Some("Shared_release"),
+        acquire: Mint::like("Shared_read_acquire", "Shared_read"),
+        data: Mint::like("Shared_data", "Shared_read"),
+        release: Some(Mint::borrowing("Shared_release")),
     };
 
     pub(super) const SHARED_WRITE: Self = Self {
-        acquire: "Shared_write_acquire",
-        data: "Shared_data",
-        release: Some("Shared_release"),
+        acquire: Mint::like("Shared_write_acquire", "Shared_write"),
+        data: Mint::like("Shared_data", "Shared_read"),
+        release: Some(Mint::borrowing("Shared_release")),
     };
 
     /// ST1–ST3. `release` is the *commit*: it copies the working copy back and
@@ -141,15 +142,15 @@ impl BoxWithSyms {
     /// chains through (ST2); a panic skips it and the runtime's unwind drain runs
     /// the discard the acquire registered instead (ST3).
     pub(super) const MUTEX_STAGED: Self = Self {
-        acquire: "Mutex_staged_acquire",
-        data: "Mutex_staged_data",
-        release: Some("Mutex_staged_commit"),
+        acquire: Mint::like("Mutex_staged_acquire", "Shared_read"),
+        data: Mint::like("Mutex_staged_data", "Shared_read"),
+        release: Some(Mint::borrowing("Mutex_staged_commit")),
     };
 
     pub(super) const SHARED_STAGED: Self = Self {
-        acquire: "Shared_staged_acquire",
-        data: "Shared_staged_data",
-        release: Some("Shared_staged_commit"),
+        acquire: Mint::like("Shared_staged_acquire", "Shared_staged"),
+        data: Mint::like("Shared_staged_data", "Shared_staged"),
+        release: Some(Mint::borrowing("Shared_staged_commit")),
     };
 }
 
@@ -281,7 +282,7 @@ impl<'a> MirLowerer<'a> {
         let guard_local = self.builder.alloc_local(binding_name.to_string(), guard_ty.clone());
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(guard_local),
-            func: FunctionRef::internal(syms.acquire.to_string()),
+            func: syms.acquire.call(),
             args: vec![box_op.clone()],
         }));
 
@@ -365,7 +366,7 @@ impl<'a> MirLowerer<'a> {
             let slot = self.builder.alloc_temp(MirType::Ptr);
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: Some(slot),
-                func: FunctionRef::internal(syms.data.to_string()),
+                func: syms.data.call(),
                 args: vec![box_op.clone()],
             }));
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
@@ -379,7 +380,7 @@ impl<'a> MirLowerer<'a> {
         if let Some(release) = syms.release {
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: None,
-                func: FunctionRef::internal(release.to_string()),
+                func: release.call(),
                 args: vec![box_op.clone()],
             }));
         }
@@ -412,7 +413,7 @@ impl<'a> MirLowerer<'a> {
     pub(super) fn sync_guard<'e>(
         &self,
         object: &'e Expr,
-    ) -> Option<(&'e Expr, &'static str, Option<&'static str>)> {
+    ) -> Option<(&'e Expr, Mint, Option<Mint>)> {
         let ExprKind::MethodCall { object: box_obj, method, args, .. } = &object.kind else {
             return None;
         };
@@ -458,7 +459,7 @@ impl<'a> MirLowerer<'a> {
     pub(super) fn acquire_sync_guard(
         &mut self,
         box_obj: &Expr,
-        acquire: &str,
+        acquire: Mint,
     ) -> Result<(MirOperand, String, crate::LocalId, MirType), LoweringError> {
         let (box_op, _) = self.lower_expr(box_obj)?;
         let inner_name = self.resolve_shared_inner_type_name(box_obj);
@@ -473,7 +474,7 @@ impl<'a> MirLowerer<'a> {
         // the guard already holds the value here — no deref at this level.
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(guard_local),
-            func: FunctionRef::internal(acquire.to_string()),
+            func: acquire.call(),
             args: vec![box_op.clone()],
         }));
         self.locals.insert(guard_name.clone(), (guard_local, guard_ty.clone()));
@@ -495,8 +496,8 @@ impl<'a> MirLowerer<'a> {
     pub(super) fn lower_sync_guard_access(
         &mut self,
         box_obj: &Expr,
-        acquire: &str,
-        release: Option<&str>,
+        acquire: Mint,
+        release: Option<Mint>,
         ret_hint: Option<MirType>,
         make_op: impl FnOnce(Expr) -> Expr,
     ) -> Result<TypedOperand, LoweringError> {
@@ -517,7 +518,7 @@ impl<'a> MirLowerer<'a> {
         if let Some(release) = release {
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: None,
-                func: FunctionRef::internal(release.to_string()),
+                func: release.call(),
                 args: vec![box_op],
             }));
         }
@@ -653,7 +654,7 @@ impl<'a> MirLowerer<'a> {
         self.builder.switch_to_block(poll_block);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(epoch),
-            func: FunctionRef::internal("rask_select_epoch".to_string()),
+            func: FunctionRef::reading("rask_select_epoch"),
             args: vec![],
         }));
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
@@ -683,7 +684,7 @@ impl<'a> MirLowerer<'a> {
             let start = self.builder.alloc_temp(MirType::I64);
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: Some(start),
-                func: FunctionRef::internal("rask_select_rotate".to_string()),
+                func: FunctionRef::reading("rask_select_rotate"),
                 args: vec![MirOperand::Constant(MirConst::Int(probes.len() as i64))],
             }));
             let cases = (0..probes.len()).map(|i| (i as u64, probe_blocks[i])).collect();
@@ -706,7 +707,7 @@ impl<'a> MirLowerer<'a> {
                     let status = self.builder.alloc_temp(MirType::I64);
                     self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                         dst: Some(status),
-                        func: FunctionRef::internal("rask_channel_try_recv_into".to_string()),
+                        func: FunctionRef::reading("rask_channel_try_recv_into"),
                         args: vec![rx.clone(), MirOperand::Local(addr)],
                     }));
                     (status, *match probe { Probe::Recv { arm, .. } => arm, _ => unreachable!() })
@@ -720,7 +721,7 @@ impl<'a> MirLowerer<'a> {
                     let status = self.builder.alloc_temp(MirType::I64);
                     self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                         dst: Some(status),
-                        func: FunctionRef::internal("rask_channel_try_send_ptr".to_string()),
+                        func: FunctionRef::reading("rask_channel_try_send_ptr"),
                         args: vec![tx.clone(), MirOperand::Local(addr)],
                     }));
                     (status, *arm)
@@ -826,7 +827,7 @@ impl<'a> MirLowerer<'a> {
             let cancelled = self.builder.alloc_temp(MirType::I64);
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: Some(cancelled),
-                func: FunctionRef::internal("rask_select_wait".to_string()),
+                func: FunctionRef::reading("rask_select_wait"),
                 args: vec![MirOperand::Local(epoch)],
             }));
             let cancelled_block = self.builder.create_block();

@@ -153,7 +153,7 @@ mod tests {
     fn concat_call(dst: u32, src: u32, arg: MirOperand) -> MirStmt {
         MirStmt::dummy(MirStmtKind::Call {
             dst: Some(local(dst)),
-            func: FunctionRef::internal("concat".to_string()),
+            func: FunctionRef::reading("concat"),
             args: vec![MirOperand::Local(local(src)), arg],
         })
     }
@@ -295,7 +295,7 @@ mod tests {
         let mut f = make_fn(vec![
             MirStmt::dummy(MirStmtKind::Call {
                 dst: Some(local(1)),
-                func: FunctionRef::internal("concat".to_string()),
+                func: FunctionRef::reading("concat"),
                 args: vec![
                     MirOperand::Constant(crate::MirConst::String("hello".into())),
                     MirOperand::Local(local(2)),

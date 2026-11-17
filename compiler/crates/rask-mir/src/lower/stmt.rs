@@ -627,7 +627,7 @@ impl<'a> MirLowerer<'a> {
         if matches!(self.builder.local_type(base), Some(MirType::Link(_))) {
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: None,
-                func: FunctionRef::internal("Link_set_node".to_string()),
+                func: FunctionRef::borrowing("Link_set_node"),
                 args: vec![MirOperand::Local(base), offset, value],
             }));
             return;
@@ -635,7 +635,7 @@ impl<'a> MirLowerer<'a> {
         let slot = self.emit_address_at(MirOperand::Local(base), offset);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: None,
-            func: FunctionRef::internal("Link_set".to_string()),
+            func: FunctionRef::borrowing("Link_set"),
             args: vec![MirOperand::Local(slot), value],
         }));
     }
@@ -1179,7 +1179,7 @@ impl<'a> MirLowerer<'a> {
                                 if let Some(release) = release {
                                     self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                                         dst: None,
-                                        func: FunctionRef::internal(release.to_string()),
+                                        func: release.call(),
                                         args: vec![box_op],
                                     }));
                                 }
@@ -1190,7 +1190,7 @@ impl<'a> MirLowerer<'a> {
                             if let Some(release) = release {
                                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                                     dst: None,
-                                    func: FunctionRef::internal(release.to_string()),
+                                    func: release.call(),
                                     args: vec![box_op],
                                 }));
                             }
@@ -1393,7 +1393,7 @@ impl<'a> MirLowerer<'a> {
                             if self.is_map_expr(object) {
                                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                                     dst: None,
-                                    func: FunctionRef::internal("Map_set".to_string()),
+                                    func: FunctionRef::like("Map_set", "Map_insert"),
                                     args: vec![obj_op, idx_op, val_op],
                                 }));
                             } else {
@@ -1637,7 +1637,7 @@ impl<'a> MirLowerer<'a> {
                     let consumed = self.builder.alloc_temp(MirType::I64);
                     self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                         dst: Some(consumed),
-                        func: crate::FunctionRef::internal(crate::RESOURCE_IS_CONSUMED.to_string()),
+                        func: crate::FunctionRef::reading(crate::RESOURCE_IS_CONSUMED),
                         args: vec![MirOperand::Local(resource_id)],
                     }));
                     let body_block = self.builder.create_block();
@@ -1976,8 +1976,7 @@ impl<'a> MirLowerer<'a> {
             ExprKind::MethodCall { method, .. } => {
                 let Some(prefix) = self.ctx.recorded_prefix(expr.id) else { return false };
                 let name = format!("{prefix}_{method}");
-                rask_stdlib::mir_metadata::lookup(&name).is_some()
-                    && rask_stdlib::mir_metadata::returns_a_view(&name)
+                rask_stdlib::mir_metadata::declared_shape(&name).is_some_and(|s| s.returns_a_view())
             }
             _ => false,
         }
@@ -2689,7 +2688,7 @@ impl<'a> MirLowerer<'a> {
                 let extract_fn = if i == 0 { "channel_tx" } else { "channel_rx" };
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                     dst: Some(local_id),
-                    func: FunctionRef::internal(extract_fn.to_string()),
+                    func: FunctionRef::reading(extract_fn),
                     args: vec![init_op.clone()],
                 }));
             } else if let (true, Some(&offset), Some(base)) =
@@ -2724,7 +2723,7 @@ impl<'a> MirLowerer<'a> {
                     }));
                     self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                         dst: Some(local_id),
-                        func: FunctionRef::internal("Field_take".to_string()),
+                        func: FunctionRef::like("Field_take", "Vec_remove"),
                         args: vec![
                             MirOperand::Local(addr),
                             MirOperand::Constant(MirConst::Int(rask_layout::size_of(&elem_ty, self.ctx.target()) as i64)),
@@ -2988,7 +2987,7 @@ impl<'a> MirLowerer<'a> {
             let args = self.map_entries_args(MirOperand::Local(map_tmp), &pair[0], &pair[1]);
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: Some(entries_vec),
-                func: FunctionRef::internal("Map_entries".to_string()),
+                func: FunctionRef::borrowing("Map_entries"),
                 args,
             }));
             (MirOperand::Local(entries_vec), MirType::I64)
@@ -3122,7 +3121,7 @@ impl<'a> MirLowerer<'a> {
             // binds the value below.
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: Some(elem_slot),
-                func: FunctionRef::internal("Vec_index".to_string()),
+                func: FunctionRef::like("Vec_index", "Vec_get"),
                 args: vec![MirOperand::Local(collection), MirOperand::Local(idx)],
             }));
         }
@@ -3848,7 +3847,7 @@ impl<'a> MirLowerer<'a> {
         if consumes {
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: Some(elem_slot),
-                func: FunctionRef::internal("Vec_move_out".to_string()),
+                func: FunctionRef::like("Vec_move_out", "Vec_remove"),
                 args: vec![MirOperand::Local(setup.collection), MirOperand::Local(setup.idx)],
             }));
         } else {

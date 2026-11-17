@@ -124,7 +124,7 @@ fn source_is_borrowed(func: &MirFunction, source: LocalId, own: &HashSet<String>
                     _ => {}
                 },
                 MirStmtKind::Call { dst: Some(dst), func: fref, .. }
-                    if *dst == local && crate::own_names::returns_a_view(&fref.name, own) =>
+                    if *dst == local && crate::own_names::returns_a_view(fref, own) =>
                 {
                     return true;
                 }
@@ -417,7 +417,7 @@ mod tests {
     fn non_clone_call_not_affected() {
         let mut f = single_block_fn(vec![MirStmt::dummy(MirStmtKind::Call {
             dst: Some(local(1)),
-            func: FunctionRef::internal("string_concat".to_string()),
+            func: FunctionRef::borrowing("string_concat"),
             args: vec![MirOperand::Local(local(0))],
         })]);
         elide_clones_in_function(&mut f);

@@ -123,13 +123,13 @@ fn views_and_handovers(
             continue;
         }
         let MirStmtKind::Call { dst, func: fref, args } = &stmt.kind else { continue };
-        if crate::own_names::returns_a_view(&fref.name, own) {
+        if crate::own_names::returns_a_view(fref, own) {
             if let Some(dst) = dst.filter(|d| string_locals.contains(d)) {
                 views.insert(dst);
             }
         }
         for (i, arg) in args.iter().enumerate() {
-            if !crate::own_names::keeps_argument(&fref.name, i, own) {
+            if !crate::own_names::keeps_argument(fref, i, own) {
                 continue;
             }
             if let Some(id) =
@@ -759,7 +759,7 @@ mod tests {
                     }),
                     MirStmt::dummy(MirStmtKind::Call {
                         dst: Some(local(0)),
-                        func: FunctionRef::internal("string_concat".into()),
+                        func: FunctionRef::borrowing("string_concat"),
                         args: vec![],
                     }),
                     MirStmt::dummy(MirStmtKind::RcInc { local: local(0) }),

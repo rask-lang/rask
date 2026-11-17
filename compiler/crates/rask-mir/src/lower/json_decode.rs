@@ -99,7 +99,7 @@ impl<'a> MirLowerer<'a> {
         let dst_size = if scalar_dst { 16 } else { rask_layout::size_of(&target_mir, self.ctx.target()) as i64 };
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: None,
-            func: FunctionRef::internal("json_decode_zero".to_string()),
+            func: FunctionRef::reading("json_decode_zero"),
             args: vec![
                 MirOperand::Local(dst),
                 MirOperand::Constant(MirConst::Int(dst_size)),
@@ -109,12 +109,12 @@ impl<'a> MirLowerer<'a> {
         let status = self.builder.alloc_temp(MirType::I64);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(status),
-            func: FunctionRef::internal("json_decode_into".to_string()),
+            func: FunctionRef::reading("json_decode_into"),
             args: vec![MirOperand::Local(dst), MirOperand::Local(shape), input],
         }));
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: None,
-            func: FunctionRef::internal("json_shape_free".to_string()),
+            func: FunctionRef::releasing("json_shape_free"),
             args: vec![MirOperand::Local(shape)],
         }));
 
@@ -187,7 +187,7 @@ impl<'a> MirLowerer<'a> {
         let msg = self.builder.alloc_temp(MirType::Buffer);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(msg),
-            func: FunctionRef::internal("json_error_message".to_string()),
+            func: FunctionRef::reading("json_error_message"),
             args: vec![MirOperand::Constant(MirConst::Int(TEXT_MESSAGE))],
         }));
 
@@ -249,7 +249,7 @@ impl<'a> MirLowerer<'a> {
                 let path = self.builder.alloc_temp(MirType::Buffer);
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                     dst: Some(path),
-                    func: FunctionRef::internal("json_error_message".to_string()),
+                    func: FunctionRef::reading("json_error_message"),
                     args: vec![MirOperand::Constant(MirConst::Int(TEXT_PATH))],
                 }));
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
@@ -384,7 +384,7 @@ impl<'a> MirLowerer<'a> {
             let key = field_attrs::serial_name(&field.attrs, &field.name);
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: None,
-                func: FunctionRef::internal("json_shape_field".to_string()),
+                func: FunctionRef::reading("json_shape_field"),
                 args: vec![
                     MirOperand::Local(shape),
                     MirOperand::Constant(MirConst::String(key)),
@@ -827,7 +827,7 @@ impl<'a> MirLowerer<'a> {
     fn add_shape_field(&mut self, shape: crate::LocalId, offset: i64, field_shape: crate::LocalId) {
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: None,
-            func: FunctionRef::internal("json_shape_field".to_string()),
+            func: FunctionRef::reading("json_shape_field"),
             args: vec![
                 MirOperand::Local(shape),
                 MirOperand::Constant(MirConst::String(String::new())),
@@ -916,7 +916,7 @@ impl<'a> MirLowerer<'a> {
         let local = self.builder.alloc_temp(MirType::I64);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(local),
-            func: FunctionRef::internal(name.to_string()),
+            func: FunctionRef::reading(name),
             args,
         }));
         local
@@ -1006,12 +1006,12 @@ impl<'a> MirLowerer<'a> {
         let out = self.builder.alloc_temp(MirType::Buffer);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(out),
-            func: FunctionRef::internal("json_encode_shaped".to_string()),
+            func: FunctionRef::reading("json_encode_shaped"),
             args: vec![MirOperand::Local(slot), MirOperand::Local(shape)],
         }));
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: None,
-            func: FunctionRef::internal("json_shape_free".to_string()),
+            func: FunctionRef::releasing("json_shape_free"),
             args: vec![MirOperand::Local(shape)],
         }));
         Some(out)

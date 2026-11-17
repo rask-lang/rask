@@ -64,7 +64,7 @@ fn const_a_thunk_owns(func: &MirFunction) -> Option<(String, &'static str, MirTy
     // Which locals hold the address of which slot, and which hold the result of
     // which call.
     let mut slot_of: HashMap<LocalId, String> = HashMap::new();
-    let mut made_by: HashMap<LocalId, &str> = HashMap::new();
+    let mut made_by: HashMap<LocalId, &crate::FunctionRef> = HashMap::new();
     let mut copied_from: HashMap<LocalId, LocalId> = HashMap::new();
     let mut stored: Option<(String, LocalId)> = None;
 
@@ -77,7 +77,7 @@ fn const_a_thunk_owns(func: &MirFunction) -> Option<(String, &'static str, MirTy
                     }
                 }
                 MirStmtKind::Call { dst: Some(d), func: f, .. } => {
-                    made_by.insert(*d, f.name.as_str());
+                    made_by.insert(*d, f);
                 }
                 MirStmtKind::Assign { dst, rvalue: MirRValue::Use(MirOperand::Local(src)) } => {
                     copied_from.insert(*dst, *src);
@@ -121,7 +121,7 @@ fn const_a_thunk_owns(func: &MirFunction) -> Option<(String, &'static str, MirTy
     // const, say — is the "where did a value go after it crossed into an
     // aggregate" question (#1035), and freeing the header doesn't answer it or
     // make it worse.
-    if *ctor == "rask_alloc" || *ctor == "rask_alloc_aligned" {
+    if ctor.name == "rask_alloc" || ctor.name == "rask_alloc_aligned" {
         return Some((slot, "rask_free", MirType::Ptr));
     }
 

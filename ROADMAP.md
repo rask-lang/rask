@@ -436,7 +436,7 @@ left the stdlib for a package ([specs/packages/tls.md](specs/packages/tls.md)).
 ## Next: v0.7 — Each fact has one owner
 
 **Done when `cargo test -p rask-cli --test one_owner_sites` reads every
-ratchet at its target. Today: 304 sites restate a fact, 297 to go.**
+ratchet at its target. Today: 222 sites restate a fact, 215 to go.**
 
 Most bugs here are one thing: a fact an earlier pass already knew, worked out
 again later from a name, a spelling or a hand-kept list, and drifting. The rule
@@ -453,11 +453,11 @@ each pinned at today's count, each with the count it has to reach.
 
 | Restated fact | Today | Target | Issue |
 |---|---|---|---|
-| MIR or codegen asks a name what it is (`ends_with`/`starts_with` on a callee or type) | 3 | 0 | #1564, #1566 |
-| Method names the checker answers by matching the name instead of reading a declaration or interface | 7 | 0 | #1561, #1565 |
+| MIR or codegen asks a name what it is (`ends_with`/`starts_with` on a callee or type) | 0 (at target) | 0 | #1564, #1566 |
+| Method names the checker answers by matching the name instead of reading a declaration or interface | 0 (at target) | 0 | #1561, #1565 |
 | `_Any` wildcards that skip argument checks | 0 (at target) | 0 | #1561 |
-| Rows in `INTERNAL_SPELLINGS`, `BORROWS_ITS_CALLBACK` | 69 | 0 | #1564, #1565 |
-| Hand-written codegen dispatch entries (`internal_entries`) | 212 | 0 | #1555, #1565 |
+| Rows in `INTERNAL_SPELLINGS`, `BORROWS_ITS_CALLBACK` | 0 (at target) | 0 | #1564, #1565 |
+| Hand-written codegen dispatch entries (`internal_entries`) | 210 | 0 | #1555, #1565 |
 | Public entry points into the passes | 13 | 7 | #1568 |
 | Interpreters run without the driver's setup (`prepare_interpreter`) | 0 (at target) | 0 | #1568 |
 | Size or alignment computed outside the layout model | 0 (at target) | 0 | #1567 |
@@ -532,6 +532,12 @@ for a checker type by accident, and no grep test has to say so.
 5. **#1564 + #1565.** A call carries its callee's identity and signature;
    stdlib facts live only on the `.rk` declarations. #1656 is the first
    consumer of that flow and a good proof it works, but not a gate.
+   Half done: a call now carries a `CallShape` (what it does with each
+   argument and its result), read from the declaration for a stdlib method
+   and stated at the emit site for a spelling lowering makes up, and
+   `INTERNAL_SPELLINGS` is gone. Still to do: the call names its callee by
+   symbol rather than by declaration id, `func_sigs` and the body-based mode
+   inference remain, and so do `is_io_source` and `elem_strs::CTORS`.
 6. **#1555.** MIR states what an assignment and a runtime call do; codegen
    translates. That's what v0.8 needs.
 7. **#1569** any time, and a good lane for a session that shouldn't touch

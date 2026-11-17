@@ -367,6 +367,7 @@ extend Vec<T> {
     /// Sort using a custom comparator, which answers with an `Ordering`.
     /// An integer comparator isn't accepted — `|a, b| a - b` is a type error.
     @native("rask_vec_sort_by")
+    @eager_callback
     @reorders
     public func sort_by(mutate self, f: func(T, T) -> Ordering) {}
 

@@ -394,11 +394,6 @@ pub(crate) fn internal_entries() -> Vec<StdlibEntry> {
             arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::None,
         },
         StdlibEntry {
-            mir_name: "string_parse_isize", c_name: "rask_string_parse_int_into",
-            params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
-            arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::None,
-        },
-        StdlibEntry {
             mir_name: "string_parse_u8", c_name: "rask_string_parse_u8_into",
             params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
             arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::None,
@@ -415,11 +410,6 @@ pub(crate) fn internal_entries() -> Vec<StdlibEntry> {
         },
         StdlibEntry {
             mir_name: "string_parse_u64", c_name: "rask_string_parse_uint_into",
-            params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
-            arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::None,
-        },
-        StdlibEntry {
-            mir_name: "string_parse_usize", c_name: "rask_string_parse_uint_into",
             params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
             arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::None,
         },

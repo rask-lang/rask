@@ -210,7 +210,7 @@ fn retain_borrowed_closures_handed_on(
                 borrowed.insert(*dst);
             }
             MirStmtKind::Call { dst: Some(dst), func: callee, .. }
-                if is_closure(dst) && crate::own_names::returns_a_view(&callee.name, own) =>
+                if is_closure(dst) && crate::own_names::returns_a_view(callee, own) =>
             {
                 borrowed.insert(*dst);
             }
@@ -332,7 +332,7 @@ fn callee_keeps(callee_escapes: &HashMap<String, Vec<bool>>, callee: &crate::Fun
 /// returns: one written down as using its callback up, or a runtime call
 /// lowering made for itself, which only reads what it's handed (#1555).
 fn uses_up_callback(callee: &crate::FunctionRef) -> bool {
-    callee.runtime || rask_stdlib::mir_metadata::borrows_its_callback(&callee.name)
+    callee.runtime || callee.shape.is_some_and(|s| s.is_eager_callback())
 }
 
 /// The hand-overs of a closure this frame owns where the frame still uses the
@@ -801,7 +801,7 @@ fn insert_drops(
                 // without this nothing freed it.
                 MirStmtKind::Call { dst: Some(dst), func: callee, .. }
                     if matches!(func.local_ty(*dst), Some(crate::MirType::FuncPtr(_)))
-                        && rask_stdlib::mir_metadata::transfers_out(&callee.name) =>
+                        && callee.moves_out() =>
                 {
                     owned.insert(*dst, true);
                 }

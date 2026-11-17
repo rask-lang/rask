@@ -354,7 +354,7 @@ fn hand_adaptation(name: &str) -> Option<HandAdapt> {
         "Sender_send" | "send" => HandAdapt::Send,
         "Sender_try_send" => HandAdapt::TrySend,
         "Receiver_receive" | "Receiver_try_receive" => HandAdapt::Receive,
-        n if n.starts_with("string_parse") => HandAdapt::Parse,
+        n if rask_mir::parse_runtime::writes(n).is_some() => HandAdapt::Parse,
         "join" | "cancel" | "Handle_join" | "Handle_cancel" => HandAdapt::JoinOutcome,
         "string_clone" | "string_to_owned" => {
             HandAdapt::ShareString
@@ -8553,12 +8553,9 @@ impl<'a> FunctionBuilder<'a> {
             // destination type instead read a double's bits as an integer,
             // so "42".parse() came out as 4631107791820423168.
             HandAdapt::Parse => {
-                let writer_ty = if matches!(func_name,
-                    "string_parse_float" | "string_parse_f32" | "string_parse_f64")
-                {
-                    types::F64
-                } else {
-                    types::I64
+                let writer_ty = match rask_mir::parse_runtime::writes(func_name) {
+                    Some(rask_mir::parse_runtime::ParseWrites::Float) => types::F64,
+                    _ => types::I64,
                 };
                 let ss = LocalSlot::plain(builder.create_sized_stack_slot(StackSlotData::new(
                     StackSlotKind::ExplicitSlot, 8, 0,

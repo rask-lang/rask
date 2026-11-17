@@ -108,6 +108,8 @@ pub const COMPILER_ATTRS: &[(&str, ArgForm, Writer)] = &[
     // The last argument is a node going into a rack's storage, so the call
     // carries the node type's layout (mem.racks)
     ("places_node", ArgForm::Exprs, Writer::Stdlib),
+    // The call runs its closure argument to completion and keeps nothing of it
+    ("eager_callback", ArgForm::Exprs, Writer::Stdlib),
     ("blocks", ArgForm::Exprs, Writer::Stdlib),
     ("prints", ArgForm::Exprs, Writer::Stdlib),
     ("ambient", ArgForm::Exprs, Writer::StdlibOrExtern),

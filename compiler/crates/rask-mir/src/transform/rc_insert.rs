@@ -303,11 +303,9 @@ fn call_keeps_arg(fref: &crate::FunctionRef, i: usize, kept: &HashMap<String, Ve
     if fref.runtime {
         return false;
     }
-    let fname = fref.name.as_str();
-    match kept.get(fname) {
+    match kept.get(fref.name.as_str()) {
         Some(v) => v.get(i).copied().unwrap_or(true),
-        None => rask_stdlib::mir_metadata::argument_mode(fname, i)
-            != Some(rask_stdlib::mir_metadata::ArgMode::Lent),
+        None => fref.gives(i) || fref.shape.is_none(),
     }
 }
 
@@ -383,7 +381,7 @@ fn retain_views_handed_over(
         for stmt in func.blocks.iter().flat_map(|b| b.statements.iter()) {
             let found = match &stmt.kind {
                 MirStmtKind::Call { func: fref, dst: Some(dst), args } => {
-                    (crate::own_names::returns_a_view(&fref.name, own) && !args.is_empty())
+                    (crate::own_names::returns_a_view(fref, own) && !args.is_empty())
                         .then_some(*dst)
                 }
                 // A capture stays where it was captured: in the frame that
@@ -419,7 +417,6 @@ fn retain_views_handed_over(
             }
         }
     }
-    let hands_out_views = crate::own_names::returns_a_view(&func.name, own);
     let live = liveness::analyze_phis_on_edges(func);
     let aliases = AddrAliases::build(func);
     // What each name was read out of or copied from: `_22 = _19.0` is part
@@ -572,7 +569,7 @@ fn retain_views_handed_over(
         | MirTerminatorKind::CleanupReturn { value: Some(MirOperand::Local(id)), .. } =
             &block.terminator.kind
         {
-            if views.contains(id) && !hands_out_views {
+            if views.contains(id) {
                 insertions.push((block.statements.len(), *id));
             }
         }
@@ -932,7 +929,7 @@ fn insert_aggregate_release(
                         })
                 }
                 MirStmtKind::Call { func: fref, args, dst: Some(dst), .. } => {
-                    let views_receiver = crate::own_names::returns_a_view(&fref.name, own)
+                    let views_receiver = crate::own_names::returns_a_view(fref, own)
                         && args.first().and_then(uses::operand_local).is_some_and(|r| tracked.contains(&r));
                     let points_into = fref.points_into_args
                         && args.iter().filter_map(uses::operand_local).any(|a| tracked.contains(&a));
@@ -1139,7 +1136,7 @@ fn insert_aggregate_release(
                         (*dst, args.iter().filter_map(uses::operand_local).collect())
                     }
                     MirStmtKind::Call { func: fref, dst: Some(dst), args }
-                        if crate::own_names::returns_a_view(&fref.name, own) =>
+                        if crate::own_names::returns_a_view(fref, own) =>
                     {
                         (*dst, args.first().and_then(uses::operand_local).into_iter().collect())
                     }
@@ -1350,7 +1347,7 @@ fn insert_aggregate_release(
                         // A call gives up what it returns, unless it hands back
                         // a view into storage its receiver keeps, the way
                         // `v.get(i)` points into the vector's own buffer.
-                        if crate::own_names::returns_a_view(&fref.name, own) {
+                        if crate::own_names::returns_a_view(fref, own) {
                             match args.first().and_then(uses::operand_local).filter(|r| is_tracked(r)) {
                                 Some(recv) => ev.push(ownership::Event::View { dst, base: recv }),
                                 None => ev.push(ownership::Event::Other(dst)),
@@ -2118,13 +2115,11 @@ fn slot_is_releasable(ty: &MirType) -> bool {
 ///
 /// A string read out of a container is the same: `return names[0]` hands
 /// the caller the vector's own reference, and the caller releases it as its
-/// own. Unless this function is one whose callers expect a view.
+/// own.
 fn retain_returned_params(func: &mut MirFunction, string_locals: &[LocalId], own: &HashSet<String>) {
     let strings: HashSet<LocalId> = string_locals.iter().copied().collect();
     let mut params: HashSet<LocalId> = func.params.iter().map(|p| p.id).collect();
-    if !crate::own_names::returns_a_view(&func.name, own) {
-        params.extend(string_views(func, &strings, own));
-    }
+    params.extend(string_views(func, &strings, own));
 
     for block in &mut func.blocks {
         let returned = match &block.terminator.kind {
@@ -2154,7 +2149,7 @@ fn string_views(func: &MirFunction, strings: &HashSet<LocalId>, own: &HashSet<St
             MirStmtKind::Call { func: fref, dst: Some(dst), args }
                 if strings.contains(dst)
                     && !args.is_empty()
-                    && crate::own_names::returns_a_view(&fref.name, own) =>
+                    && crate::own_names::returns_a_view(fref, own) =>
             {
                 Some(*dst)
             }
@@ -2189,7 +2184,7 @@ fn retain_params_handed_over(
                 let Some(id) = uses::operand_local(arg) else { continue };
                 if params.contains(&id)
                     && strings.contains(&id)
-                    && crate::own_names::keeps_argument(&fref.name, i, own)
+                    && crate::own_names::keeps_argument(fref, i, own)
                 {
                     insertions.push((si, MirStmt::new(MirStmtKind::RcInc { local: id }, stmt.span)));
                 }
@@ -2205,7 +2200,7 @@ fn retain_params_handed_over(
 fn handed_to_a_keeper(stmt: &MirStmt, local: LocalId, own: &HashSet<String>) -> bool {
     let MirStmtKind::Call { func: fref, args, .. } = &stmt.kind else { return false };
     args.iter().enumerate().any(|(i, arg)| {
-        uses::operand_local(arg) == Some(local) && crate::own_names::keeps_argument(&fref.name, i, own)
+        uses::operand_local(arg) == Some(local) && crate::own_names::keeps_argument(fref, i, own)
     })
 }
 
@@ -2934,7 +2929,7 @@ mod tests {
                         }),
                         MirStmt::dummy(MirStmtKind::Call {
                             dst: None,
-                            func: FunctionRef::internal("panic_forced_error".into()),
+                            func: FunctionRef::reading("panic_forced_error"),
                             args: vec![MirOperand::Local(local(1))],
                         }),
                     ],
@@ -3058,7 +3053,7 @@ mod tests {
                 id: BlockId(0),
                 statements: vec![MirStmt::dummy(MirStmtKind::Call {
                     dst: Some(local(0)),
-                    func: FunctionRef::internal("string_new".into()),
+                    func: FunctionRef::reading("string_new"),
                     args: vec![],
                 })],
                 terminator: MirTerminator::dummy(MirTerminatorKind::Return { value: None }),
@@ -3141,7 +3136,7 @@ mod tests {
             id: BlockId(2),
             statements: vec![MirStmt::dummy(MirStmtKind::Call {
                 dst: Some(local(1)),
-                func: FunctionRef::internal("string_new".into()),
+                func: FunctionRef::reading("string_new"),
                 args: vec![],
             })],
             terminator: MirTerminator::dummy(MirTerminatorKind::Goto { target: BlockId(1) }),

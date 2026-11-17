@@ -105,7 +105,7 @@ impl<'a> MirLowerer<'a> {
         let vec_local = self.builder.alloc_temp(MirType::Ptr);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(vec_local),
-            func: FunctionRef::internal("rask_vec_from_static".to_string()),
+            func: FunctionRef::keeping("rask_vec_from_static", &[0]),
             args: vec![
                 MirOperand::Local(arr_local),
                 MirOperand::Constant(MirConst::Int(elems.len() as i64)),
@@ -181,7 +181,7 @@ impl<'a> MirLowerer<'a> {
         let map_local = self.builder.alloc_temp(MirType::Ptr);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(map_local),
-            func: FunctionRef::internal(ctor.to_string()),
+            func: crate::elem_strs::map_ctor_ref(ctor),
             args,
         }));
 
@@ -202,7 +202,7 @@ impl<'a> MirLowerer<'a> {
             args.insert(2, MirOperand::Constant(MirConst::Int(*len as i64)));
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: None,
-                func: FunctionRef::internal("rask_map_insert_pairs".to_string()),
+                func: FunctionRef::reading("rask_map_insert_pairs"),
                 args,
             }));
             return Ok((MirOperand::Local(map_local), MirType::Ptr));
@@ -228,7 +228,7 @@ impl<'a> MirLowerer<'a> {
             // key displaces, so the map has to release it.
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: None,
-                func: FunctionRef::internal("Map_set".to_string()),
+                func: FunctionRef::like("Map_set", "Map_insert"),
                 args: vec![MirOperand::Local(map_local), key_op, val_op],
             }));
         }
@@ -254,7 +254,7 @@ impl<'a> MirLowerer<'a> {
         let dst = self.builder.alloc_temp(MirType::Buffer);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(dst),
-            func: FunctionRef::internal("json_pretty".to_string()),
+            func: FunctionRef::reading("json_pretty"),
             args: vec![op],
         }));
         (MirOperand::Local(dst), MirType::Buffer)
@@ -270,7 +270,7 @@ impl<'a> MirLowerer<'a> {
         let buf = self.builder.alloc_temp(MirType::I64);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(buf),
-            func: FunctionRef::internal("json_buf_new".to_string()),
+            func: FunctionRef::reading("json_buf_new"),
             args: vec![],
         }));
 
@@ -304,7 +304,7 @@ impl<'a> MirLowerer<'a> {
         let result = self.builder.alloc_temp(MirType::Buffer);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(result),
-            func: FunctionRef::internal("json_buf_finish".to_string()),
+            func: FunctionRef::releasing("json_buf_finish"),
             args: vec![MirOperand::Local(buf)],
         }));
 
@@ -331,7 +331,7 @@ impl<'a> MirLowerer<'a> {
         if let Some(text) = self.custom_encode_text(MirOperand::Local(field_val), field_ty) {
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: None,
-                func: FunctionRef::internal("json_buf_add_raw".to_string()),
+                func: FunctionRef::reading("json_buf_add_raw"),
                 args: vec![
                     MirOperand::Local(buf),
                     MirOperand::Constant(MirConst::String(key.to_string())),
@@ -353,7 +353,7 @@ impl<'a> MirLowerer<'a> {
             )?;
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: None,
-                func: FunctionRef::internal("json_buf_add_raw".to_string()),
+                func: FunctionRef::reading("json_buf_add_raw"),
                 args: vec![
                     MirOperand::Local(buf),
                     MirOperand::Constant(MirConst::String(key.to_string())),
@@ -374,7 +374,7 @@ impl<'a> MirLowerer<'a> {
             if let Some(json) = self.lower_json_encode_shaped(field_val, field_ty) {
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                     dst: None,
-                    func: FunctionRef::internal("json_buf_add_raw".to_string()),
+                    func: FunctionRef::reading("json_buf_add_raw"),
                     args: vec![
                         MirOperand::Local(buf),
                         MirOperand::Constant(MirConst::String(key.to_string())),
@@ -402,7 +402,7 @@ impl<'a> MirLowerer<'a> {
             )?;
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: None,
-                func: FunctionRef::internal("json_buf_add_raw".to_string()),
+                func: FunctionRef::reading("json_buf_add_raw"),
                 args: vec![
                     MirOperand::Local(buf),
                     MirOperand::Constant(MirConst::String(key.to_string())),
@@ -421,7 +421,7 @@ impl<'a> MirLowerer<'a> {
             let (nested_json, _) = self.lower_json_encode_enum(MirOperand::Local(field_val), &layout)?;
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: None,
-                func: FunctionRef::internal("json_buf_add_raw".to_string()),
+                func: FunctionRef::reading("json_buf_add_raw"),
                 args: vec![
                     MirOperand::Local(buf),
                     MirOperand::Constant(MirConst::String(key.to_string())),
@@ -495,7 +495,7 @@ impl<'a> MirLowerer<'a> {
                     None => {
                         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                             dst: Some(result),
-                            func: FunctionRef::internal("json_encode_string".to_string()),
+                            func: FunctionRef::reading("json_encode_string"),
                             args: vec![MirOperand::Constant(MirConst::String(variant_name))],
                         }));
                     }
@@ -544,7 +544,7 @@ impl<'a> MirLowerer<'a> {
                     let outer = self.new_json_buf();
                     self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                         dst: None,
-                        func: FunctionRef::internal("json_buf_add_raw".to_string()),
+                        func: FunctionRef::reading("json_buf_add_raw"),
                         args: vec![
                             MirOperand::Local(outer),
                             MirOperand::Constant(MirConst::String(variant_name)),
@@ -571,7 +571,7 @@ impl<'a> MirLowerer<'a> {
         let buf = self.builder.alloc_temp(MirType::I64);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(buf),
-            func: FunctionRef::internal("json_buf_new".to_string()),
+            func: FunctionRef::reading("json_buf_new"),
             args: vec![],
         }));
         buf
@@ -580,7 +580,7 @@ impl<'a> MirLowerer<'a> {
     fn push_json_add_string(&mut self, buf: crate::LocalId, key: &str, value: MirOperand) {
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: None,
-            func: FunctionRef::internal("json_buf_add_string".to_string()),
+            func: FunctionRef::reading("json_buf_add_string"),
             args: vec![MirOperand::Local(buf), MirOperand::Constant(MirConst::String(key.to_string())), value],
         }));
     }
@@ -588,7 +588,7 @@ impl<'a> MirLowerer<'a> {
     fn push_json_finish(&mut self, buf: crate::LocalId, dst: crate::LocalId) {
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(dst),
-            func: FunctionRef::internal("json_buf_finish".to_string()),
+            func: FunctionRef::releasing("json_buf_finish"),
             args: vec![MirOperand::Local(buf)],
         }));
     }
@@ -664,7 +664,7 @@ impl<'a> MirLowerer<'a> {
         if let Some(text) = self.custom_encode_text(MirOperand::Local(payload), payload_decl) {
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: None,
-                func: FunctionRef::internal("json_buf_add_raw".to_string()),
+                func: FunctionRef::reading("json_buf_add_raw"),
                 args: vec![
                     MirOperand::Local(buf),
                     MirOperand::Constant(MirConst::String(field_name.to_string())),
@@ -681,7 +681,7 @@ impl<'a> MirLowerer<'a> {
                                 self.lower_json_encode_struct(MirOperand::Local(payload), l)?;
                             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                                 dst: None,
-                                func: FunctionRef::internal("json_buf_add_raw".to_string()),
+                                func: FunctionRef::reading("json_buf_add_raw"),
                                 args: vec![
                                     MirOperand::Local(buf),
                                     MirOperand::Constant(MirConst::String(field_name.to_string())),
@@ -700,7 +700,7 @@ impl<'a> MirLowerer<'a> {
         self.builder.switch_to_block(none_block);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: None,
-            func: FunctionRef::internal("json_buf_add_raw".to_string()),
+            func: FunctionRef::reading("json_buf_add_raw"),
             args: vec![
                 MirOperand::Local(buf),
                 MirOperand::Constant(MirConst::String(field_name.to_string())),
@@ -729,7 +729,7 @@ impl<'a> MirLowerer<'a> {
         };
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: None,
-            func: FunctionRef::internal(helper.to_string()),
+            func: FunctionRef::reading(helper),
             args: vec![
                 MirOperand::Local(buf),
                 MirOperand::Constant(MirConst::String(field_name.to_string())),
@@ -754,7 +754,7 @@ impl<'a> MirLowerer<'a> {
         let arr_buf = self.builder.alloc_temp(MirType::I64);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(arr_buf),
-            func: FunctionRef::internal("json_buf_new_array".to_string()),
+            func: FunctionRef::reading("json_buf_new_array"),
             args: vec![],
         }));
 
@@ -833,7 +833,7 @@ impl<'a> MirLowerer<'a> {
         let elem = self.builder.alloc_temp(elem_local_ty);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(elem),
-            func: FunctionRef::internal("Vec_index".to_string()),
+            func: FunctionRef::like("Vec_index", "Vec_get"),
             args: vec![MirOperand::Local(collection), MirOperand::Local(idx)],
         }));
 
@@ -844,7 +844,7 @@ impl<'a> MirLowerer<'a> {
         if let Some(text) = custom {
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: None,
-                func: FunctionRef::internal("json_buf_array_add_raw".to_string()),
+                func: FunctionRef::reading("json_buf_array_add_raw"),
                 args: vec![MirOperand::Local(arr_buf), MirOperand::Local(text)],
             }));
         } else if let Some((_, layout)) = nested_struct {
@@ -854,7 +854,7 @@ impl<'a> MirLowerer<'a> {
             )?;
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: None,
-                func: FunctionRef::internal("json_buf_array_add_raw".to_string()),
+                func: FunctionRef::reading("json_buf_array_add_raw"),
                 args: vec![MirOperand::Local(arr_buf), json_str],
             }));
         } else {
@@ -883,7 +883,7 @@ impl<'a> MirLowerer<'a> {
             };
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: None,
-                func: FunctionRef::internal(helper.to_string()),
+                func: FunctionRef::reading(helper),
                 args: vec![MirOperand::Local(arr_buf), elem_op],
             }));
         }
@@ -905,7 +905,7 @@ impl<'a> MirLowerer<'a> {
         let result = self.builder.alloc_temp(MirType::Buffer);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(result),
-            func: FunctionRef::internal("json_buf_finish_array".to_string()),
+            func: FunctionRef::releasing("json_buf_finish_array"),
             args: vec![MirOperand::Local(arr_buf)],
         }));
 
@@ -1141,7 +1141,7 @@ impl<'a> MirLowerer<'a> {
                             }));
                             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                                 dst: None,
-                                func: FunctionRef::internal(cfn.to_string()),
+                                func: FunctionRef::borrowing(cfn),
                                 args: vec![MirOperand::Local(field_addr)],
                             }));
                             continue;
@@ -1161,7 +1161,7 @@ impl<'a> MirLowerer<'a> {
                         let cloned = self.builder.alloc_temp(MirType::I64);
                         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                             dst: Some(cloned),
-                            func: FunctionRef::internal(cfn.to_string()),
+                            func: FunctionRef::borrowing(cfn),
                             args: vec![MirOperand::Local(field_val)],
                         }));
                         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {

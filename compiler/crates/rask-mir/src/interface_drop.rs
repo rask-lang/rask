@@ -373,7 +373,7 @@ fn boxes_handed_over(
             MirStmtKind::Call { dst: Some(dst), func: callee, .. } => (
                 dst,
                 hands_back.contains(&callee.name)
-                    || rask_stdlib::mir_metadata::transfers_out(&callee.name),
+                    || callee.moves_out(),
             ),
             MirStmtKind::ClosureCall { dst: Some(dst), closure, .. } => (
                 dst,

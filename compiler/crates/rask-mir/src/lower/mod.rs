@@ -14,6 +14,7 @@ mod result_path;
 mod stmt;
 
 use crate::FieldAccess;
+use crate::operand::Mint;
 use crate::{
     BlockBuilder, MirFunction, MirOperand, MirRValue, MirStmt, MirStmtKind, MirTerminator,
     MirTerminatorKind, MirType, BlockId, LocalId, operand::{MirConst, FunctionRef},
@@ -76,7 +77,7 @@ pub(crate) fn alloc_block_for(dst: LocalId, size: u32, ty: &MirType, target: ras
     };
     MirStmt::dummy(MirStmtKind::Call {
         dst: Some(dst),
-        func: FunctionRef::internal(name.to_string()),
+        func: FunctionRef::reading(name),
         args,
     })
 }
@@ -2799,7 +2800,11 @@ impl<'a> MirLowerer<'a> {
         let slot = self.builder.alloc_temp(MirType::Ptr);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(slot),
-            func: FunctionRef::internal(if map { "Map_slot" } else { "Vec_slot" }.to_string()),
+            func: if map {
+                FunctionRef::like("Map_slot", "Map_get")
+            } else {
+                FunctionRef::like("Vec_slot", "Vec_get")
+            },
             args: vec![collection, at],
         }));
         slot
@@ -2925,7 +2930,7 @@ impl<'a> MirLowerer<'a> {
                 let vec_local = self.builder.alloc_temp(vec_ty.clone());
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                     dst: Some(vec_local),
-                    func: FunctionRef::internal("rask_vec_from_static".to_string()),
+                    func: FunctionRef::keeping("rask_vec_from_static", &[0]),
                     args: vec![
                         MirOperand::Local(data),
                         MirOperand::Constant(MirConst::Int(meta.elem_count as i64)),
@@ -4380,7 +4385,7 @@ impl<'a> MirLowerer<'a> {
             let consumed = thunk_builder.alloc_temp(MirType::I64);
             thunk_builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: Some(consumed),
-                func: crate::FunctionRef::internal(crate::RESOURCE_IS_CONSUMED.to_string()),
+                func: crate::FunctionRef::reading(crate::RESOURCE_IS_CONSUMED),
                 args: vec![MirOperand::Local(res_local)],
             }));
             let body_block = thunk_builder.create_block();
@@ -6692,17 +6697,6 @@ fn vec_elem_of_type(ret_ty: Option<&TypeExpr>, ctx: &MirContext) -> Option<MirTy
     }
 }
 
-/// Is `name` one of the integer primitives (as spelled in source)?
-/// Register-width only — `string.parse<i128>` isn't supported.
-pub(crate) fn is_integer_type_name(name: &str) -> bool {
-    rask_ast::primitives::is_machine_integer(name)
-}
-
-/// Type arguments `string.parse<T>` accepts — the numeric primitives.
-pub(crate) fn is_parse_target_type_name(name: &str) -> bool {
-    is_integer_type_name(name) || matches!(name, "f32" | "f64")
-}
-
 /// The MIR operator a desugared method name stands for: `add` is `+`.
 fn operator_method_to_binop(method: &str) -> Option<crate::operand::BinOp> {
     rask_ast::expr::binary_op_of_method(method).map(lower_binop)
@@ -7070,7 +7064,7 @@ pub(crate) enum ElemWriteback {
         /// The collection the element was borrowed from.
         collection: MirOperand,
         /// Which release to call — Vec and Map keep separate borrow counts.
-        release: &'static str,
+        release: Mint,
     },
     /// A scalar variable handed over as `mutate`. Codegen keeps scalars in
     /// registers, so the address the callee wrote through is a spilled copy —

@@ -31,7 +31,7 @@ struct Ratchet {
 const RATCHETS: &[Ratchet] = &[
     Ratchet {
         name: "name sniffs in the back half",
-        today: 3,
+        today: 0,
         target: 0,
         why: "MIR or codegen asked a callee's or type's spelling what it is. The \
               checker resolved that call; carry its identity on the call \
@@ -40,7 +40,7 @@ const RATCHETS: &[Ratchet] = &[
     },
     Ratchet {
         name: "method names the checker answers by hand",
-        today: 7,
+        today: 0,
         target: 0,
         why: "a method answered by matching its name as a string literal in the \
               checker instead of reading its declaration in stdlib/*.rk, or the \
@@ -57,16 +57,16 @@ const RATCHETS: &[Ratchet] = &[
     },
     Ratchet {
         name: "MIR metadata rows keyed by spelling",
-        today: 68,
+        today: 0,
         target: 0,
         why: "a row in INTERNAL_SPELLINGS or BORROWS_ITS_CALLBACK: a \
-              fact about a call stated by its name instead of on its \
-              declaration (rask-lang/rask#1564, #1565)",
+              fact about a call stated by its name instead of on the call \
+              (`FunctionRef::shape`) or its declaration (rask-lang/rask#1564, #1565)",
         count: mir_metadata_rows,
     },
     Ratchet {
         name: "hand-written codegen dispatch entries",
-        today: 211,
+        today: 209,
         target: 0,
         why: "an `internal_entries` row in rask-codegen/src/dispatch.rs: a runtime \
               call whose shape lowering didn't state (rask-lang/rask#1555, #1565)",

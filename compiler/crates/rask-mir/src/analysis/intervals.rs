@@ -790,7 +790,7 @@ mod tests {
         MirStmt {
             kind: MirStmtKind::Call {
                 dst: Some(local(dst)),
-                func: FunctionRef::internal("Vec_index".into()),
+                func: FunctionRef::like("Vec_index", "Vec_get"),
                 args: vec![
                     MirOperand::Local(local(vec_local)),
                     MirOperand::Local(local(idx_local)),
