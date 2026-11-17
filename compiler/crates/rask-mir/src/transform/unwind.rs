@@ -357,7 +357,7 @@ fn unwind_glue(func: &MirFunction, target: rask_ast::Target) -> Option<MirFuncti
         entry_block: check(0),
         is_extern_c: false,
         inline_hint: false,
-        param_modes: Vec::new(),
+        param_modes: vec![rask_ast::ty::ParamMode::Borrow],
         source_file: func.source_file.clone(),
     })
 }

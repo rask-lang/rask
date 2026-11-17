@@ -644,8 +644,7 @@ fn captures_consumed_by_bodies(fns: &[MirFunction]) -> HashMap<&str, HashSet<u32
 ///
 /// A task block runs once, so it owns what it captured (conc.async/S6), and
 /// what it gives away is not the environment's to free when the task ends.
-/// The question is the one a parameter is asked (`param_is_kept_by`), asked
-/// of each capture the block loads. Conservative the same way: a capture given
+/// `capture_is_kept_by` answers it for each capture the block loads. Conservative the same way: a capture given
 /// away on one path counts, which leaks on the other path rather than freeing
 /// twice.
 ///
@@ -672,7 +671,7 @@ pub(crate) fn task_captures_given_away(
                 Some(*offset)
             }
             MirStmtKind::LoadCapture { dst, offset, access: crate::CaptureAccess::Taken, .. } => {
-                param_is_kept_by(func, *dst, kept, consumed, targets, reach).then_some(*offset)
+                capture_is_kept_by(func, *dst, kept, consumed, targets, reach).then_some(*offset)
             }
             _ => None,
         })
@@ -821,7 +820,9 @@ fn build_env_drop(
         entry_block: entry,
         is_extern_c: false,
         inline_hint: false,
-        param_modes: Vec::new(),
+        // Codegen calls it on the environment the closure value owns; it
+        // releases the captures and leaves the block itself to the caller.
+        param_modes: vec![ParamMode::Borrow],
         source_file,
     }
 }
@@ -955,6 +956,166 @@ fn interface_methods_that_hand_back(
         .filter_map(|(method, back)| back.map(|b| (method.to_string(), b)))
         .collect()
 }
+
+/// Does a task block hold on to the capture it loaded into `param`?
+///
+/// A capture has no declared mode, so this reads the body: returned, stored,
+/// captured by a closure that outlives the block, or handed to a parameter
+/// written `take`. Ownership checked the same moves; recording them there
+/// would let this go.
+fn capture_is_kept_by(
+    func: &MirFunction,
+    param: LocalId,
+    kept: &HashMap<String, Vec<bool>>,
+    consumed: &HashMap<&str, HashSet<u32>>,
+    targets: &ClosureTargets,
+    reach: &ClosureReach,
+) -> bool {
+    // Follow the value through renames: lowering copies a parameter into a
+    // local before doing anything with it often enough that reading only the
+    // parameter's own id saw nothing.
+    //
+    // Not into a copy that took references of its own: that one is a new
+    // value, and handing it on hands on its references, not the parameter.
+    // `return p` on a Copy aggregate parameter returns such a copy (#1447).
+    let owns_copy: HashSet<LocalId> = func
+        .blocks
+        .iter()
+        .flat_map(|b| b.statements.iter())
+        .filter_map(|st| match &st.kind {
+            MirStmtKind::RcIncContents { local, for_hand_off: false } => Some(*local),
+            _ => None,
+        })
+        .collect();
+    // Which names hold the parameter at each point. A name stops holding it
+    // where a whole new value is made in its slot: `mut x = first` then
+    // `x = second`, with `x` reassigned in place because the rack records its
+    // links, is `first` until the write and the frame's own value after it,
+    // so `return x` hands back the new value and `first` is still the
+    // caller's to free.
+    let preds = crate::analysis::cfg::predecessors(func);
+    let step = |names: &mut HashSet<LocalId>, stmt: &MirStmt| match &stmt.kind {
+        MirStmtKind::Assign { dst, rvalue: MirRValue::Use(MirOperand::Local(src)) }
+            if names.contains(src) && !owns_copy.contains(dst) =>
+        {
+            names.insert(*dst);
+        }
+        MirStmtKind::Phi { dst, args } => {
+            if args.iter().any(|(_, op)| matches!(op, MirOperand::Local(s) if names.contains(s))) {
+                names.insert(*dst);
+            }
+        }
+        MirStmtKind::ZeroAggregate { local } if *local != param => {
+            names.remove(local);
+        }
+        _ => {}
+    };
+    let mut entry: HashMap<BlockId, HashSet<LocalId>> = HashMap::new();
+    let mut exit: HashMap<BlockId, HashSet<LocalId>> = HashMap::new();
+    loop {
+        let mut changed = false;
+        for (bi, block) in func.blocks.iter().enumerate() {
+            let mut names: HashSet<LocalId> = if bi == 0 { HashSet::from([param]) } else { HashSet::new() };
+            for p in preds.get(&block.id).into_iter().flatten() {
+                if let Some(out) = exit.get(p) {
+                    names.extend(out.iter().copied());
+                }
+            }
+            if entry.get(&block.id) != Some(&names) {
+                entry.insert(block.id, names.clone());
+                changed = true;
+            }
+            for stmt in &block.statements {
+                step(&mut names, stmt);
+            }
+            if exit.get(&block.id) != Some(&names) {
+                exit.insert(block.id, names);
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+
+    // A closure this frame builds and frees itself holds the parameter only
+    // while the frame runs, so capturing it is a borrow. Its glue frees only
+    // what the frame made (`env_drop_glue`), never a parameter. Read as a keep,
+    // the caller stopped owning the argument and nobody freed it: an inlined
+    // `s.as_sequence()` on a borrowed `s` leaked the caller's vector, and
+    // `for v in s` over a `Set` parameter goes through exactly that.
+    //
+    // A stack environment is the same case without a drop to point at: it
+    // dies with the frame. The body of a `for` over a sequence is one, and
+    // read as a keep, `for x in items { if opts.flag { … } }` left the
+    // caller's `opts` to nobody.
+    let frees_last = crate::closures::closures_the_frame_frees_last(func);
+
+    for block in &func.blocks {
+        let mut names = entry.get(&block.id).cloned().unwrap_or_default();
+        for stmt in &block.statements {
+            let holds = |op: &MirOperand| matches!(op, MirOperand::Local(id) if names.contains(id));
+            match &stmt.kind {
+                MirStmtKind::Call { func: fref, args, .. } => {
+                    for (i, arg) in args.iter().enumerate() {
+                        if holds(arg) && call_keeps_argument(fref, i, kept) {
+                            return true;
+                        }
+                    }
+                }
+                MirStmtKind::ClosureCall { closure, args, .. } => {
+                    for (i, arg) in args.iter().enumerate() {
+                        if holds(arg)
+                            && closure_call_keeps_argument(targets, reach, kept, &func.name, *closure, i, args.len())
+                        {
+                            return true;
+                        }
+                    }
+                }
+                MirStmtKind::InterfaceCall { args, .. } => {
+                    if args.iter().any(holds) {
+                        return true;
+                    }
+                }
+                MirStmtKind::Store { value, .. }
+                | MirStmtKind::ArrayStore { value, .. }
+                | MirStmtKind::InterfaceBox { value, .. } => {
+                    if holds(value) {
+                        return true;
+                    }
+                }
+                MirStmtKind::ClosureCreate { dst, func_name, captures, heap, .. } => {
+                    let body_consumes = |offset: u32| {
+                        consumed.get(func_name.as_str()).is_none_or(|offs| offs.contains(&offset))
+                    };
+                    let dies_with_frame = !*heap || frees_last.contains(dst);
+                    // A lent capture is held for the caller, never handed over
+                    // (CM3): the frame that owns it still frees it (#1679).
+                    if captures.iter().any(|c| {
+                        names.contains(&c.local_id)
+                            && !c.lent
+                            && (!dies_with_frame || body_consumes(c.offset))
+                    }) {
+                        return true;
+                    }
+                }
+                _ => {}
+            }
+            step(&mut names, stmt);
+        }
+        match &block.terminator.kind {
+            MirTerminatorKind::Return { value: Some(op) }
+            | MirTerminatorKind::CleanupReturn { value: Some(op), .. } => {
+                if matches!(op, MirOperand::Local(id) if names.contains(id)) {
+                    return true;
+                }
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
 
 /// Does this call keep the argument at `index`?
 ///
