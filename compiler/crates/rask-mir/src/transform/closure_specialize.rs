@@ -192,7 +192,7 @@ fn sorted_targets(
 /// the next one in a capture slot, and those are keyed by the created body's
 /// name — so a copy that kept pointing at the original's inner body would put
 /// both back into one set, and nothing would have changed.
-fn copy_with_closures(
+pub(crate) fn copy_with_closures(
     fns: &[MirFunction],
     name: &str,
     suffix: &str,
