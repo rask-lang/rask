@@ -252,7 +252,8 @@ struct FuncSig {
     /// Writes through `self`: `mutate self` or `take self` as declared, or a
     /// private method whose mode type.gradual/GC9 inferred from its body. A
     /// receiver reached through a field or an element has to be handed over
-    /// as the place, or the write lands in a copy.
+    /// as the place, or the write lands in a copy. Never set for a native
+    /// method, which writes through the receiver value it is handed.
     mutates_self: bool,
     /// The arguments declared `take`, counted without `self`. Handing a linear
     /// value to one moves it (mem.linear/L5); a borrowed parameter doesn't.
@@ -309,7 +310,10 @@ fn program_signatures(all_decls: &[Decl], ctx: &MirContext) -> HashMap<String, F
         for m in reg.methods(ty) {
             let Some(sig) = sigs.get_mut(&format!("{}_{}", ty, m.name)) else { continue };
             sig.take_self = m.take_self;
-            sig.mutates_self = m.mutate_self || m.take_self;
+            // `mutates_self` stays false: a native gets its receiver as the
+            // value it is (a `Vec` is a pointer to its header), and writes
+            // through that. Handing it the place's address instead gives it a
+            // pointer to the pointer.
             sig.takes = m.param_modes.iter().enumerate().filter(|(_, mode)| mode.is_take).map(|(i, _)| i).collect();
         }
     }
