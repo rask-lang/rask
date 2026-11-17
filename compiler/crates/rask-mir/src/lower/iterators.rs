@@ -157,23 +157,14 @@ impl<'a> MirLowerer<'a> {
             }
             _ => {}
         }
-        // The checker doesn't type every Ident node — an annotated
-        // `const v: Vec<i64> = Vec.new()` leaves the later uses of `v`
-        // untyped — so fall back to what lowering tracked for the local.
+        // A name lowering made up (a lock guard) has no node the checker
+        // typed; it answers with the type recorded when it was bound.
+        if self.checked_type_of(expr)
+            .is_some_and(|t| self.generic_head(&t).is_some_and(|(name, _)| name == "Vec"))
+        {
+            return true;
+        }
         if let ExprKind::Ident(name) = &expr.kind {
-            if let Some(meta) = self.meta(name) {
-                if meta.type_prefix.as_deref() == Some("Vec") {
-                    return true;
-                }
-                if meta
-                    .checked_type
-                    .as_ref()
-                    .and_then(|t| self.generic_head(t))
-                    .is_some_and(|(name, _)| name == "Vec")
-                {
-                    return true;
-                }
-            }
             if let Some((local_id, _)) = self.locals.get(name) {
                 if matches!(self.builder.local_type(*local_id), Some(MirType::Array { .. })) {
                     return true;

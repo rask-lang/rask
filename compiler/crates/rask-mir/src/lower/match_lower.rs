@@ -768,10 +768,6 @@ impl<'a> MirLowerer<'a> {
             // enum prefix so the layout lookup matches the variant's
             // bare name (same as the PatternKind::Struct path below).
             let variant_name = name.rsplit('.').next().unwrap_or(name);
-            let enum_layout_id = match &scrutinee_ty {
-                MirType::Enum(crate::types::EnumLayoutId { id, .. }) => Some(*id),
-                _ => None,
-            };
             let payload_base = scrutinee_op.clone();
             // (mir type, absolute byte offset within the enum, field size)
             let variant_fields =
@@ -829,30 +825,8 @@ impl<'a> MirLowerer<'a> {
                         field_tests.push((MirOperand::Local(payload_local), field_ty, field_checked, field_pat.clone()));
                         continue;
                     };
-                    let prefix = self.mir_type_name(&field_ty)
-                        .or_else(|| {
-                            enum_layout_id.and_then(|idx| {
-                                self.ctx.enum_layouts.get(idx as usize).and_then(|layout| {
-                                    layout.variants.iter().find(|v| v.name == variant_name).and_then(|v| {
-                                        v.fields.get(j).and_then(|f| {
-                                            super::MirContext::type_prefix(&f.ty, self.ctx.type_names)
-                                        })
-                                    })
-                                })
-                            })
-                        })
-                        .or_else(|| {
-                            let payload_mir = match (&scrutinee_ty, name.as_str()) {
-                                (MirType::Result { err, .. }, "Err") => Some(err.as_ref()),
-                                (MirType::Result { ok, .. }, _) => Some(ok.as_ref()),
-                                (MirType::Option(inner), _) => Some(inner.as_ref()),
-                                _ => None,
-                            };
-                            payload_mir.and_then(|t| self.mir_type_name(t))
-                        });
-                    if let Some(p) = prefix {
-                        self.meta_mut(binding).type_prefix = Some(p);
-                    }
+                    self.meta_mut(binding).checked_type =
+                        self.ctx.variant_payload_type(scrutinee_raw.as_ref(), variant_name, j);
                     self.locals.insert(binding.clone(), (payload_local, field_ty));
                 }
             }
@@ -902,11 +876,9 @@ impl<'a> MirLowerer<'a> {
                                         field_tests.push((MirOperand::Local(payload_local), field_ty, field_checked, field_pat.clone()));
                                         continue;
                                     };
-                                    if let Some(p) = self.mir_type_name(&field_ty)
-                                        .or_else(|| super::MirContext::type_prefix(&field_layout.ty, self.ctx.type_names))
-                                    {
-                                        self.meta_mut(binding).type_prefix = Some(p);
-                                    }
+                                    self.meta_mut(binding).checked_type = self.ctx.variant_payload_type(
+                                        scrutinee_raw.as_ref(), variant_name, field_idx,
+                                    );
                                     self.locals.insert(binding.clone(), (payload_local, field_ty));
                                 }
                             }
@@ -940,9 +912,6 @@ impl<'a> MirLowerer<'a> {
                         dst: payload_local,
                         rvalue,
                     }));
-                    if let Some(p) = self.mir_type_name(&payload_ty) {
-                        self.meta_mut(binding_name).type_prefix = Some(p);
-                    }
                     self.locals.insert(binding_name.clone(), (payload_local, payload_ty));
                 }
             }
@@ -973,9 +942,6 @@ impl<'a> MirLowerer<'a> {
                     dst: bind_local,
                     rvalue: MirRValue::Use(scrutinee_op.clone()),
                 }));
-                if let Some(prefix) = self.mir_type_name(&scrutinee_ty) {
-                    self.meta_mut(name).type_prefix = Some(prefix);
-                }
                 self.locals.insert(name.clone(), (bind_local, scrutinee_ty.clone()));
             }
         }
@@ -1543,9 +1509,7 @@ impl<'a> MirLowerer<'a> {
         for read in reads {
             match &read.pattern.kind {
                 PatternKind::Ident(binding) if self.pattern_binds(read.pattern) => {
-                    if let Some(p) = self.mir_type_name(&read.ty) {
-                        self.meta_mut(binding.as_str()).type_prefix = Some(p);
-                    }
+                    self.meta_mut(binding.as_str()).checked_type = Some(read.checked.clone());
                     self.locals.insert(binding.clone(), (read.local, read.ty.clone()));
                 }
                 PatternKind::TypePat { .. } => {

@@ -179,38 +179,14 @@ impl<'a> MirLowerer<'a> {
         cur
     }
 
-    /// True when `expr` refers to a `Vec` collection (by local metadata or the
-    /// type checker's recorded type).
+    /// True when `expr` is a `Vec`.
     pub(crate) fn is_vec_expr(&self, expr: &Expr) -> bool {
-        if let ExprKind::Ident(name) = &expr.kind {
-            if self.meta(name).and_then(|m| m.type_prefix.as_deref()) == Some("Vec") {
-                return true;
-            }
-        }
-        // The checker records an instantiated Vec as a generic, and `type_prefix`
-        // renders that as `Vec<T>` — so comparing the whole string only ever
-        // matched the bare-`Vec` spelling the `meta` path above supplies. Every
-        // Vec reached through a field, an index, or a binding read as "not a Vec"
-        // and lost its element write-back. Compare the base name.
-        self.ctx
-            .lookup_raw_type(expr.id)
-            .and_then(|ty| super::MirContext::type_prefix(&ty, self.ctx.type_names))
-            .is_some_and(|p| p == "Vec")
+        self.type_base_of(expr).as_deref() == Some("Vec")
     }
 
-    /// True when `expr` refers to a `Map`. Same two sources as `is_vec_expr`,
-    /// and the same base-name comparison — the checker spells an instantiated
-    /// one `Map<K, V>`.
+    /// True when `expr` is a `Map`.
     pub(crate) fn is_map_expr(&self, expr: &Expr) -> bool {
-        if let ExprKind::Ident(name) = &expr.kind {
-            if self.meta(name).and_then(|m| m.type_prefix.as_deref()) == Some("Map") {
-                return true;
-            }
-        }
-        self.ctx
-            .lookup_raw_type(expr.id)
-            .and_then(|ty| super::MirContext::type_prefix(&ty, self.ctx.type_names))
-            .is_some_and(|p| p == "Map")
+        self.type_base_of(expr).as_deref() == Some("Map")
     }
 
     /// Peel a `.f.g.h` chain off a place, returning what it's rooted at and the
@@ -2208,262 +2184,18 @@ impl<'a> MirLowerer<'a> {
         // stride and dispatches methods on the right type.
         if let MirOperand::Local(src) = &init_op {
             if let Some(elem) = self.collected_elem_types.get(src).cloned() {
-                self.collected_elem_types.insert(local_id, elem.clone());
-                self.meta_mut(name).elem_type = Some(elem);
+                self.collected_elem_types.insert(local_id, elem);
             }
         }
 
-        // Track collection element types for for-in iteration heuristics
-        if let ExprKind::MethodCall { object, method, .. } = &init.kind {
-            if let Some(obj_name) = object.name() {
-                match (obj_name, method.as_str()) {
-                    ("fs", "read_lines") => {
-                        self.meta_mut(name).elem_type = Some(MirType::Buffer);
-                    }
-                    ("fs", "read_bytes") => {
-                        self.meta_mut(name).elem_type = Some(MirType::U8);
-                    }
-                    _ => {}
-                }
-            }
-            // String methods that always return Vec<string>
-            match method.as_str() {
-                "lines" | "split" | "split_whitespace" | "graphemes" => {
-                    self.meta_mut(name).elem_type = Some(MirType::Buffer);
-                }
-                _ => {}
-            }
-        }
-
-        // Track stdlib type prefix for variables assigned from type constructors,
-        // known module functions, or method calls on tracked variables,
-        // so later method calls dispatch correctly.
-        // Unwrap try/unwrap/catch to see the underlying expression. A `catch`
-        // binds the ok side exactly as `try` does; without it a file opened
-        // with `fs.open(p) catch e => { … }` had no prefix, so `f.close()`
-        // never cancelled its `ensure` and the file was closed twice.
-        let init_inner = match &init.kind {
-            ExprKind::Try { expr, .. } => expr.as_ref(),
-            ExprKind::Unwrap { expr, .. } => expr.as_ref(),
-            ExprKind::Catch { value, .. } => value.as_ref(),
-            _ => init,
-        };
-        if let ExprKind::MethodCall { object, method, .. } = &init_inner.kind {
-            if let Some(obj_name) = object.name() {
-                // What `Type.method()` returns is whatever the checker says it
-                // is. `Thread.spawn` hands back a `Handle`, not a
-                // `Thread`, and reading the prefix off the type name gave the
-                // handle `Thread_join`, which isn't known to consume it — so an
-                // `ensure t.detach()` ran after the join and freed the handle
-                // twice. The type name is the fallback for a call the checker
-                // left no type on.
-                //
-                // Not for a `T or E` or `T?`: the binding holds the wrapper, and
-                // the code that later unwraps it reads the prefix as the payload's.
-                let checked = self
-                    .ctx
-                    .lookup_raw_type(init_inner.id)
-                    .filter(|ty| !matches!(&**ty, rask_types::Type::Result { .. })
-                        && !ty.is_option())
-                    .and_then(|ty| super::MirContext::type_prefix(&ty, self.ctx.type_names))
-                    .map(|p| p.as_str().to_string());
-                if let (true, Some(prefix)) = (super::is_type_constructor_name(obj_name), checked) {
-                    self.meta_mut(name).type_prefix = Some(prefix);
-                } else if super::is_type_constructor_name(obj_name) {
-                    // Type.method() → prefix is the type name.
-                    // Covers stdlib (Vec, Map, string) and user types (Person, Document).
-                    // Strip generic args: Map<string, JsonValue> → Map
-                    let base_name = obj_name;
-                    let is_module = rask_stdlib::mir_metadata::stdlib_module_names()
-                        .contains(base_name);
-                    if !is_module && (super::MirContext::stdlib_type_prefix(
-                        &rask_types::Type::UnresolvedNamed(base_name.to_string())
-                    ).is_some()
-                        || base_name.chars().next().map_or(false, |c| c.is_uppercase()))
-                    {
-                        self.meta_mut(name).type_prefix = Some(base_name.to_string());
-                    } else {
-                        // Module function (fs.open) → check return type prefix
-                        let func_name = format!("{}_{}", obj_name, method);
-                        if let Some(prefix) = super::func_return_type_prefix(&func_name) {
-                            self.meta_mut(name).type_prefix = Some(prefix.to_string());
-                        }
-                    }
-                } else if let Some(obj_prefix) = self.meta(obj_name).and_then(|m| m.type_prefix.clone()) {
-                    // Instance method on tracked variable (file.lines() → File_lines)
-                    let func_name = format!("{}_{}", obj_prefix, method);
-                    if let Some(prefix) = super::func_return_type_prefix(&func_name) {
-                        self.meta_mut(name).type_prefix = Some(prefix.to_string());
-                    }
-                    // A clone is the same type (Shared, Sender, Receiver).
-                    if method == "clone" {
-                        if let Some(ty) = self.meta(obj_name).and_then(|m| m.checked_type.clone()) {
-                            self.meta_mut(name).checked_type = Some(ty);
-                        }
-                    }
-                }
-            }
-            // Module.Type.method() pattern: http.HttpServer.listen() → prefix "HttpServer".
-            // What the call returns is the checker's word, as for `Type.method()`
-            // above: `http.Method.variants()` is a `Vec<Method>`, and a prefix of
-            // `Method` sent `all[0]` to `Method_index`.
-            if let ExprKind::Field { object: inner_obj, field: type_name } = &object.kind {
-                if let Some(module_name) = inner_obj.name() {
-                    if !self.locals.contains_key(module_name)
-                        && super::is_type_constructor_name(module_name)
-                    {
-                        let checked = self
-                            .ctx
-                            .lookup_raw_type(init_inner.id)
-                            .filter(|ty| !matches!(&**ty, rask_types::Type::Result { .. })
-                                && !ty.is_option())
-                            .and_then(|ty| super::MirContext::type_prefix(&ty, self.ctx.type_names))
-                            .map(|p| p.as_str().to_string());
-                        self.meta_mut(name).type_prefix = Some(checked.unwrap_or_else(|| type_name.clone()));
-                    }
-                }
-            }
-        }
-        // Iterator terminal .collect() returns a Vec
-        if let ExprKind::MethodCall { method, .. } = &init.kind {
-            if method == "to_vec" {
-                self.meta_mut(name).type_prefix = Some("Vec".to_string());
-            }
-        }
-        // A task block's value is its `Handle`, which `join`/`detach` dispatch
-        // through and an `ensure` on it is cancelled by.
-        if let ExprKind::Spawn { .. } = &init.kind {
-            if let Some(prefix) = self
-                .ctx
-                .lookup_raw_type(init.id)
-                .and_then(|ty| super::MirContext::type_prefix(&ty, self.ctx.type_names))
-            {
-                self.meta_mut(name).type_prefix = Some(prefix.as_str().to_string());
-            }
-        }
-        // Also track for simple function calls
-        if let ExprKind::Call { func, .. } = &init.kind {
-            if let Some(func_name) = func.name() {
-                if let Some(prefix) = super::func_return_type_prefix(func_name) {
-                    self.meta_mut(name).type_prefix = Some(prefix.to_string());
-                }
-            }
-        }
-        // Index expression: args[1] → if args has known element type, propagate it
-        if let ExprKind::Index { object, .. } = &init.kind {
-            if let Some(coll_name) = object.name() {
-                if let Some(elem_ty) = self.meta(coll_name).and_then(|m| m.elem_type.clone()) {
-                    if let Some(prefix) = self.mir_type_name(&elem_ty) {
-                        self.meta_mut(name).type_prefix = Some(prefix);
-                    }
-                }
-            }
-        }
-
-        // Aliasing a variable (`let players = __ctx_players`) carries its type
-        // metadata forward, so pool/collection indexing on the alias still
-        // resolves. Used by the hidden-param pass's SIG2 named-context alias,
-        // and correct for any `const b = a` where `a` is a tracked container.
+        // A synthesized alias (`let players = __ctx_players`, the hidden
+        // parameter pass's SIG2) has no checked type of its own: it is the
+        // source's.
         if let ExprKind::Ident(src) = &init.kind {
-            let carried = self.meta(src).map(|m| {
-                (m.type_prefix.clone(), m.checked_type.clone(), m.elem_type.clone())
-            });
-            if let Some((prefix, full, elem)) = carried {
-                if let Some(p) = prefix {
-                    self.meta_mut(name).type_prefix = Some(p);
+            if self.meta(name).and_then(|m| m.checked_type.as_ref()).is_none() {
+                if let Some(ty) = self.meta(src).and_then(|m| m.checked_type.clone()) {
+                    self.meta_mut(name).checked_type = Some(ty);
                 }
-                if let Some(f) = full {
-                    self.meta_mut(name).checked_type = Some(f);
-                }
-                if let Some(e) = elem {
-                    self.meta_mut(name).elem_type = Some(e);
-                }
-            }
-        }
-
-        // Fallback: derive prefix from the MIR type (catches String, Struct, Enum)
-        // or from the type annotation string (catches Ptr types like Vec<T>, Map<K,V>)
-        if self.meta(name).and_then(|m| m.type_prefix.as_ref()).is_none() {
-            if let Some(prefix) = self.mir_type_name(&var_ty) {
-                self.meta_mut(name).type_prefix = Some(prefix);
-            } else if let Some(prefix) =
-                declared.as_ref().and_then(|t| super::MirContext::type_prefix(t, self.ctx.type_names))
-            {
-                self.meta_mut(name).type_prefix = Some(prefix);
-            }
-        }
-
-        // Track collection element types from type annotations (Vec<u8>, …)
-        if self.meta(name).and_then(|m| m.elem_type.as_ref()).is_none() {
-            if let Some(elem) = declared.as_ref().and_then(|t| self.vec_elem_of_checker_type(t)) {
-                self.meta_mut(name).elem_type = Some(elem);
-            }
-        }
-
-        // Unannotated binding from a call: take the element type from the
-        // initializer's own type, then from the callee's declared return type.
-        //
-        // Without this `const rows = build()` where `build() -> Vec<Ranked>`
-        // left the element type unknown, so `for r in rows` typed the loop
-        // variable i64 and Vec_get's scalar deref read the element's first
-        // 8 bytes as a pointer (#478).
-        if self.meta(name).and_then(|m| m.elem_type.as_ref()).is_none() {
-            let from_init = self
-                .ctx
-                .lookup_raw_type(init.id)
-                .and_then(|t| self.vec_elem_of_checker_type(&t));
-            let from_callee = || match &init.kind {
-                ExprKind::Call { .. } => self.callee_sig(init.id).and_then(|s| s.ret_vec_elem.clone()),
-                ExprKind::MethodCall { object, method, args, .. } => {
-                    // `Vec.from([1, 2, 3])` — the receiver is the type name, not
-                    // a tracked local, so the prefix lookup below finds nothing.
-                    // Take the element type off the argument instead. Left
-                    // unknown, the loop element defaulted to a pointer and
-                    // `|x| { return x + 1 }` compiled to pointer arithmetic:
-                    // x + 8 instead of x + 1.
-                    if matches!(&object.kind, ExprKind::Ident(n) if n == "Vec")
-                        && method == "from"
-                    {
-                        if let Some(arg) = args.first() {
-                            if let Some(elem) = self.iterable_elem_of(&arg.expr) {
-                                return Some(elem);
-                            }
-                        }
-                    }
-                    self.callee_sig(init.id).and_then(|s| s.ret_vec_elem.clone())
-                }
-                _ => None,
-            };
-            if let Some(elem) = from_init.or_else(from_callee) {
-                self.meta_mut(name).elem_type = Some(elem);
-            }
-        }
-
-        // Propagate Vec element types from "self.field" to "<name>.field"
-        // so struct field access like `state.data.get(i)` finds the right type.
-        if let ExprKind::StructLit { fields, .. } = &init.kind {
-            let shared = self.ctx.shared_elem_types.borrow();
-            let mut to_add = Vec::new();
-            for field in fields {
-                let self_key = format!("self.{}", field.name);
-                if let Some(elem_ty) = shared.get(&self_key) {
-                    let var_key = format!("{}.{}", name, field.name);
-                    to_add.push((var_key, elem_ty.clone()));
-                }
-                // Also check if the source variable directly has an element type
-                if let ExprKind::Ident(src_var) = &field.value.kind {
-                    if let Some(elem_ty) = self.meta(src_var).and_then(|m| m.elem_type.as_ref())
-                        .or_else(|| shared.get(src_var))
-                    {
-                        let var_key = format!("{}.{}", name, field.name);
-                        to_add.push((var_key, elem_ty.clone()));
-                    }
-                }
-            }
-            drop(shared);
-            for (key, ty) in to_add {
-                self.meta_mut(&key).elem_type = Some(ty.clone());
-                self.ctx.record_shared_elem(key, ty);
             }
         }
 
@@ -2735,17 +2467,6 @@ impl<'a> MirLowerer<'a> {
                 }
             }
 
-            // Track type prefix so method calls get qualified names.
-            // First try type-checker info (works when types are fully resolved).
-            let mut found_prefix = false;
-            if let Some(ref elems) = tuple_elems {
-                if let Some(elem_type) = elems.get(i) {
-                    if let Some(prefix) = super::MirContext::type_prefix(elem_type, self.ctx.type_names) {
-                        self.meta_mut(name).type_prefix = Some(prefix);
-                        found_prefix = true;
-                    }
-                }
-            }
             // Channel<T>.buffered/unbuffered returns (Sender<T>, Receiver<T>).
             // The element size has to be recorded whether or not the checker
             // resolved the prefixes: `rx.receive()` picks the struct-aware recv
@@ -2758,14 +2479,6 @@ impl<'a> MirLowerer<'a> {
                         // Same source the constructor uses for its elem_size arg.
                         let elem_size = self.generic_arg_slot_size(init.id, 0)?;
                         self.meta_mut(name).channel_elem_size = Some(elem_size);
-                        if !found_prefix {
-                            let prefix = match i {
-                                0 => "Sender",
-                                1 => "Receiver",
-                                _ => continue,
-                            };
-                            self.meta_mut(name).type_prefix = Some(prefix.to_string());
-                        }
                     }
                 }
             }
@@ -3071,22 +2784,8 @@ impl<'a> MirLowerer<'a> {
                 .or_else(|| self.collection_elem_of_expr(iter_expr))
                 .unwrap_or_else(|| crate::fallback::unknown_type("lower/stmt:for_loop_elem"))
         };
-        let (pair_tys, binding_ty, binding_local, elem_slot) =
+        let (pair_tys, _binding_ty, binding_local, elem_slot) =
             self.alloc_destructure_slots(&elem_ty, binding, single_name);
-        if let Some(prefix) = self.mir_type_name(&elem_ty) {
-            self.meta_mut(single_name).type_prefix = Some(prefix);
-        } else {
-            // MirType is Ptr — try to derive element prefix from iterable context.
-            // Method calls like .chunks() return Vec elements, .handles() returns Handle elements.
-            if let ExprKind::MethodCall { method, .. } = &iter_expr.kind {
-                match method.as_str() {
-                    "chunks" => {
-                        self.meta_mut(single_name).type_prefix = Some("Vec".to_string());
-                    }
-                    _ => {}
-                }
-            }
-        }
         if let Some(elem_size) = array_elem_size {
             // Fixed-size array: direct memory load
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
@@ -3117,9 +2816,6 @@ impl<'a> MirLowerer<'a> {
         // mutate` over a map binds the value in the map itself rather than in
         // the snapshot, because that is the entry it writes.
         if let ForBinding::Tuple(names) = binding {
-            if let Some(prefix) = self.mir_type_name(&binding_ty) {
-                self.meta_mut(single_name).type_prefix = Some(prefix);
-            }
             let lend_from = map_local.filter(|_| mutate);
             self.split_destructured_element(names, &pair_tys, elem_slot, binding_local, lend_from);
         }
@@ -3186,9 +2882,6 @@ impl<'a> MirLowerer<'a> {
         } else {
             self.builder.alloc_temp(elem_ty.clone())
         };
-        if let Some(prefix) = self.mir_type_name(&binding_ty) {
-            self.meta_mut(first_name).type_prefix = Some(prefix);
-        }
         self.locals.insert(first_name.to_string(), (binding_local, binding_ty.clone()));
         (pair_tys, binding_ty, binding_local, elem_slot)
     }
@@ -3212,9 +2905,6 @@ impl<'a> MirLowerer<'a> {
             let field_ty = pair_tys.get(i).cloned().unwrap_or_else(|| crate::fallback::unknown_type("lower/stmt:1828"));
             let field_local = self.builder.alloc_local(name.clone(), field_ty.clone());
             self.locals.insert(name.clone(), (field_local, field_ty.clone()));
-            if let Some(prefix) = self.mir_type_name(&field_ty) {
-                self.meta_mut(name).type_prefix = Some(prefix);
-            }
             if i == 1 {
                 second = Some(field_local);
                 if lend_from.is_some() {

@@ -17,7 +17,7 @@ use crate::stubs::StubRegistry;
 /// parser that knows `f32` from `f64`, transparent aliases, arrays, unions,
 /// generic instantiations, and which named stdlib types are word-sized runtime
 /// handles. This answers the two questions that aren't about layout —
-/// `names_a_type_param` and `ret_type_prefix` — and nothing else reads it.
+/// `names_a_type_param` — and nothing else reads it.
 ///
 /// It used to answer the layout question too, and got two things wrong that no
 /// caller could see: `f32` and `f64` shared a variant, and every named stdlib
@@ -120,9 +120,6 @@ pub struct StdlibMethodMeta {
     pub ret_category: RetCategory,
     /// The stub's return type as written.
     pub ret_ty: TypeExpr,
-    /// Type prefix of the return value (for local_type_prefix tracking).
-    /// E.g., "fs_open" returns File → prefix "File".
-    pub ret_type_prefix: Option<std::string::String>,
     /// Declared `self`, in any mode — so MIR's argument zero is the receiver.
     pub takes_self: bool,
     /// Declared `take self` — the call consumes its receiver.
@@ -212,12 +209,10 @@ fn build_cache() -> MetadataCache {
             let qualified = format!("{}_{}", type_name, method.name);
             method_symbols.insert(qualified.clone());
             let ret_cat = ret_category(&method.ret_ty, &method.type_params);
-            let ret_prefix = ret_type_prefix(&ret_cat);
             method_metas.push(StdlibMethodMeta {
                 qualified_name: qualified,
                 ret_category: ret_cat,
                 ret_ty: method.ret_ty.clone(),
-                ret_type_prefix: ret_prefix,
                 takes_self: method.takes_self,
                 take_self: method.take_self,
                 takes: method.param_modes.iter().map(|m| m.is_take).collect(),
@@ -236,12 +231,10 @@ fn build_cache() -> MetadataCache {
     // Top-level functions (println, print, etc. are builtins — skip them)
     for func in reg.functions() {
         let ret_cat = ret_category(&func.ret_ty, &func.type_params);
-        let ret_prefix = ret_type_prefix(&ret_cat);
         method_metas.push(StdlibMethodMeta {
             qualified_name: func.name.clone(),
             ret_category: ret_cat,
             ret_ty: func.ret_ty.clone(),
-            ret_type_prefix: ret_prefix,
             takes_self: false,
             take_self: false,
             takes: func.param_modes.iter().map(|m| m.is_take).collect(),
@@ -639,29 +632,6 @@ fn ret_category(t: &TypeExpr, type_params: &[std::string::String]) -> RetCategor
     }
 }
 
-/// Extract the type prefix from a return category.
-fn ret_type_prefix(cat: &RetCategory) -> Option<std::string::String> {
-    match cat {
-        RetCategory::Void | RetCategory::Bool | RetCategory::I64 | RetCategory::Int(_)
-        | RetCategory::F64 => None,
-        // The stub doesn't know what `T` is, so it can't name a prefix for it.
-        // Same answer it gave when `T` was recorded as I64.
-        RetCategory::TypeParam(_) => None,
-        RetCategory::String => Some("string".to_string()),
-        // Keep the "char" prefix it had as a Named type, so `char` methods
-        // still resolve on the result of a char-returning stdlib call.
-        RetCategory::Char => Some("char".to_string()),
-        RetCategory::Ptr => Some("Ptr".to_string()),
-        RetCategory::Named(name) => Some(name.clone()),
-        RetCategory::Tuple(_) => None,
-        RetCategory::Option(_) => Some("Option".to_string()),
-        RetCategory::Result { ok, .. } => {
-            // The prefix is the ok type's prefix (e.g., Result<File, _> → "File")
-            ret_type_prefix(ok)
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -760,18 +730,6 @@ mod tests {
     }
 
     #[test]
-    fn result_prefix_is_ok_type() {
-        let cat = ret_category(&result(n("File"), n("IoError")), &[]);
-        assert_eq!(ret_type_prefix(&cat), Some("File".into()));
-    }
-
-    #[test]
-    fn void_result_has_no_prefix() {
-        let cat = ret_category(&result(TypeExpr::Unit, n("IoError")), &[]);
-        assert_eq!(ret_type_prefix(&cat), None);
-    }
-
-    #[test]
     fn cache_has_types_and_modules() {
         let types = stdlib_type_names();
         let mods = stdlib_module_names();
@@ -799,10 +757,9 @@ mod tests {
     }
 
     #[test]
-    fn fs_open_returns_result_with_file_prefix() {
+    fn fs_open_returns_result() {
         let meta = lookup("fs_open").expect("missing fs_open");
         assert!(matches!(meta.ret_category, RetCategory::Result { .. }));
-        assert_eq!(meta.ret_type_prefix, Some("File".into()));
     }
 
     #[test]
