@@ -217,6 +217,7 @@
     X(rask_sender_drop_i64) \
     X(rask_shared_drop_i64) \
     X(rask_staged_free) \
+    X(rask_string_builder_free) \
     X(rask_vec_free)
 
 #endif
