@@ -196,7 +196,7 @@ pub fn insert_container_drops(fns: &mut Vec<MirFunction>) {
     // and the "hands a container back" fixed point needs it.
     let targets = crate::closure_targets::ClosureTargets::build(fns);
     let reach = ClosureReach::build(fns);
-    let kept = params_a_callee_keeps(fns, &targets, &reach);
+    let kept = params_a_callee_keeps(fns);
     let handing_over = functions_that_hand_a_container_back(fns, &kept, &targets);
     let interface_kept = interface_method_args_kept(fns, &kept);
     let keeps = Keeps { by_name: &kept, interface: &interface_kept, targets: &targets, reach: &reach };
@@ -826,81 +826,31 @@ fn build_env_drop(
     }
 }
 
-/// Per function, which of its parameters it *keeps* rather than just reads.
+/// Per function, which of its parameters it *keeps* rather than just reads:
+/// the ones written `take`.
 ///
 /// Borrow is the default (`mem.parameters/PM1`): `func first(v: Vec<i32>)`
-/// reads the vector and the caller still owns it. `find_escaping` treated every
-/// argument as given away, so `first(v)` left the vector to nobody — the caller
-/// had handed it over, and the callee never built it, so neither freed it
-/// (#1047).
+/// reads the vector and the caller still owns it. A borrowed Copy value the
+/// callee stores is a copy with references of its own
+/// (`rc_insert::retains_what_it_hands_on`), a borrowed non-Copy one can't be
+/// given away (PM6), and a `mutate` slot the callee moves out of comes back
+/// refilled (PM7), the new value the caller's to release (#1885).
 ///
-/// Read off the body rather than the declaration, because MIR doesn't carry
-/// parameter modes and `closures.rs` already answers the same question about
-/// closure arguments the same way. A parameter that is returned, stored,
-/// captured, or passed on to something that keeps it counts as kept; anything
-/// else is a borrow.
-///
-/// That reads like an approximation of `take` and, for a program that compiles,
-/// isn't one: PM6 makes giving away a borrow a compile error, so a body that
-/// keeps a parameter has `take` on the declaration and a body that doesn't,
-/// doesn't. `dst.push(v)` on a plain `v: Vec<i32>` is rejected with "cannot give
-/// away `v` — it's borrowed, not owned". The two answers can't disagree.
-///
-/// Where it could still drift is MIR the checker never saw, or a body this pass
-/// can't read. Both land on "kept", which leaves a container to nobody — a leak,
-/// where the other direction would be a double free.
-///
-/// Grows to a fixed point because "passed on to something that keeps it" is
-/// itself one of these answers.
-pub(crate) fn params_a_callee_keeps(
-    fns: &[MirFunction],
-    targets: &ClosureTargets,
-    reach: &ClosureReach,
-) -> HashMap<String, Vec<bool>> {
-    let mut kept: HashMap<String, Vec<bool>> =
-        fns.iter().map(|f| (f.name.clone(), vec![false; f.params.len()])).collect();
-    let consumed: HashMap<&str, HashSet<u32>> = fns
-        .iter()
-        .map(|f| (f.name.as_str(), captures_the_body_consumes(f)))
-        .collect();
-    loop {
-        let mut grew = false;
-        for func in fns {
-            for (i, param) in func.params.iter().enumerate() {
-                if kept.get(&func.name).is_some_and(|v| v[i]) {
-                    continue;
-                }
-                // Not written `take`: the caller still owns it after the
-                // call. A borrowed Copy value the callee stores is a copy with
-                // references of its own (`rc_insert::retains_what_it_hands_on`),
-                // a borrowed non-Copy one can't be given away (PM6), and a
-                // `mutate` slot the callee moves out of comes back refilled
-                // (PM7), the new value the caller's to release (#1885).
-                match func.param_modes.get(i) {
-                    Some(ParamMode::Borrow | ParamMode::Mutate) => continue,
-                    // Written `take`: the frame owns it from the call on, and
-                    // releases what it doesn't hand on.
-                    Some(ParamMode::Take) => {
-                        if let Some(v) = kept.get_mut(&func.name) {
-                            v[i] = true;
-                            grew = true;
-                        }
-                        continue;
-                    }
-                    None => {}
-                }
-                if param_is_kept_by(func, param.id, &kept, &consumed, targets, reach) {
-                    if let Some(v) = kept.get_mut(&func.name) {
-                        v[i] = true;
-                        grew = true;
-                    }
-                }
-            }
-        }
-        if !grew {
-            return kept;
-        }
-    }
+/// Every function says how it takes each parameter (`BlockBuilder::add_param`),
+/// lowering's own as well: a yield body takes its item when the loop gives it
+/// away (`loops_giving_items_away`). This was once worked out from each body —
+/// a parameter returned, stored or passed to a keeper counted as kept — which
+/// had to be grown to a fixed point over every function and still guessed for
+/// the ones lowering made up.
+pub(crate) fn params_a_callee_keeps(fns: &[MirFunction]) -> HashMap<String, Vec<bool>> {
+    fns.iter()
+        .map(|f| {
+            let kept = (0..f.params.len())
+                .map(|i| f.param_modes.get(i) == Some(&ParamMode::Take))
+                .collect();
+            (f.name.clone(), kept)
+        })
+        .collect()
 }
 
 /// Every function a vtable can hold, with the method it answers for.
@@ -1004,160 +954,6 @@ fn interface_methods_that_hand_back(
         .into_iter()
         .filter_map(|(method, back)| back.map(|b| (method.to_string(), b)))
         .collect()
-}
-
-/// Does `func` hold on to what arrived in `param`?
-fn param_is_kept_by(
-    func: &MirFunction,
-    param: LocalId,
-    kept: &HashMap<String, Vec<bool>>,
-    consumed: &HashMap<&str, HashSet<u32>>,
-    targets: &ClosureTargets,
-    reach: &ClosureReach,
-) -> bool {
-    // Follow the value through renames: lowering copies a parameter into a
-    // local before doing anything with it often enough that reading only the
-    // parameter's own id saw nothing.
-    //
-    // Not into a copy that took references of its own: that one is a new
-    // value, and handing it on hands on its references, not the parameter.
-    // `return p` on a Copy aggregate parameter returns such a copy (#1447).
-    let owns_copy: HashSet<LocalId> = func
-        .blocks
-        .iter()
-        .flat_map(|b| b.statements.iter())
-        .filter_map(|st| match &st.kind {
-            MirStmtKind::RcIncContents { local, for_hand_off: false } => Some(*local),
-            _ => None,
-        })
-        .collect();
-    // Which names hold the parameter at each point. A name stops holding it
-    // where a whole new value is made in its slot: `mut x = first` then
-    // `x = second`, with `x` reassigned in place because the rack records its
-    // links, is `first` until the write and the frame's own value after it,
-    // so `return x` hands back the new value and `first` is still the
-    // caller's to free.
-    let preds = crate::analysis::cfg::predecessors(func);
-    let step = |names: &mut HashSet<LocalId>, stmt: &MirStmt| match &stmt.kind {
-        MirStmtKind::Assign { dst, rvalue: MirRValue::Use(MirOperand::Local(src)) }
-            if names.contains(src) && !owns_copy.contains(dst) =>
-        {
-            names.insert(*dst);
-        }
-        MirStmtKind::Phi { dst, args } => {
-            if args.iter().any(|(_, op)| matches!(op, MirOperand::Local(s) if names.contains(s))) {
-                names.insert(*dst);
-            }
-        }
-        MirStmtKind::ZeroAggregate { local } if *local != param => {
-            names.remove(local);
-        }
-        _ => {}
-    };
-    let mut entry: HashMap<BlockId, HashSet<LocalId>> = HashMap::new();
-    let mut exit: HashMap<BlockId, HashSet<LocalId>> = HashMap::new();
-    loop {
-        let mut changed = false;
-        for (bi, block) in func.blocks.iter().enumerate() {
-            let mut names: HashSet<LocalId> = if bi == 0 { HashSet::from([param]) } else { HashSet::new() };
-            for p in preds.get(&block.id).into_iter().flatten() {
-                if let Some(out) = exit.get(p) {
-                    names.extend(out.iter().copied());
-                }
-            }
-            if entry.get(&block.id) != Some(&names) {
-                entry.insert(block.id, names.clone());
-                changed = true;
-            }
-            for stmt in &block.statements {
-                step(&mut names, stmt);
-            }
-            if exit.get(&block.id) != Some(&names) {
-                exit.insert(block.id, names);
-                changed = true;
-            }
-        }
-        if !changed {
-            break;
-        }
-    }
-
-    // A closure this frame builds and frees itself holds the parameter only
-    // while the frame runs, so capturing it is a borrow. Its glue frees only
-    // what the frame made (`env_drop_glue`), never a parameter. Read as a keep,
-    // the caller stopped owning the argument and nobody freed it: an inlined
-    // `s.as_sequence()` on a borrowed `s` leaked the caller's vector, and
-    // `for v in s` over a `Set` parameter goes through exactly that.
-    //
-    // A stack environment is the same case without a drop to point at: it
-    // dies with the frame. The body of a `for` over a sequence is one, and
-    // read as a keep, `for x in items { if opts.flag { … } }` left the
-    // caller's `opts` to nobody.
-    let frees_last = crate::closures::closures_the_frame_frees_last(func);
-
-    for block in &func.blocks {
-        let mut names = entry.get(&block.id).cloned().unwrap_or_default();
-        for stmt in &block.statements {
-            let holds = |op: &MirOperand| matches!(op, MirOperand::Local(id) if names.contains(id));
-            match &stmt.kind {
-                MirStmtKind::Call { func: fref, args, .. } => {
-                    for (i, arg) in args.iter().enumerate() {
-                        if holds(arg) && call_keeps_argument(fref, i, kept) {
-                            return true;
-                        }
-                    }
-                }
-                MirStmtKind::ClosureCall { closure, args, .. } => {
-                    for (i, arg) in args.iter().enumerate() {
-                        if holds(arg)
-                            && closure_call_keeps_argument(targets, reach, kept, &func.name, *closure, i, args.len())
-                        {
-                            return true;
-                        }
-                    }
-                }
-                MirStmtKind::InterfaceCall { args, .. } => {
-                    if args.iter().any(holds) {
-                        return true;
-                    }
-                }
-                MirStmtKind::Store { value, .. }
-                | MirStmtKind::ArrayStore { value, .. }
-                | MirStmtKind::InterfaceBox { value, .. } => {
-                    if holds(value) {
-                        return true;
-                    }
-                }
-                MirStmtKind::ClosureCreate { dst, func_name, captures, heap, .. } => {
-                    let body_consumes = |offset: u32| {
-                        consumed.get(func_name.as_str()).is_none_or(|offs| offs.contains(&offset))
-                    };
-                    let dies_with_frame = !*heap || frees_last.contains(dst);
-                    // A lent capture is held for the caller, never handed over
-                    // (CM3): the frame that owns it still frees it (#1679).
-                    if captures.iter().any(|c| {
-                        names.contains(&c.local_id)
-                            && !c.lent
-                            && (!dies_with_frame || body_consumes(c.offset))
-                    }) {
-                        return true;
-                    }
-                }
-                _ => {}
-            }
-            step(&mut names, stmt);
-        }
-        match &block.terminator.kind {
-            MirTerminatorKind::Return { value: Some(op) }
-            | MirTerminatorKind::CleanupReturn { value: Some(op), .. } => {
-                if matches!(op, MirOperand::Local(id) if names.contains(id)) {
-                    return true;
-                }
-            }
-            _ => {}
-        }
-    }
-    false
 }
 
 /// Does this call keep the argument at `index`?

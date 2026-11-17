@@ -547,6 +547,7 @@ impl<'a> MirContext<'a> {
             lent_captures: &records.lent_captures,
             field_reuses: &records.field_reuses,
             quiet_loops: &records.quiet_loops,
+            loops_giving_items_away: &records.loops_giving_items_away,
             return_moves: &records.return_moves,
             task_bound_closures: NodeSet::of(&records.task_bound_closures),
             type_names,
@@ -753,6 +754,9 @@ pub struct MirContext<'a> {
     /// `for` loops over links that no delete can reach, by source expression
     /// (ownership): walked without recording the list or keeping a cursor.
     pub quiet_loops: &'a std::collections::HashSet<NodeId>,
+    /// `for` loops whose body gives its item away, by source expression
+    /// (ownership): over a sequence, the yield body's item is a `take`.
+    pub loops_giving_items_away: &'a std::collections::HashSet<NodeId>,
     /// The bindings each `return` moves, keyed by the returned expression
     /// (ownership). A `for` body over a sequence returns from inside a
     /// closure, and the frame learns from this what left on that exit.
@@ -1102,6 +1106,7 @@ impl<'a> MirContext<'a> {
             lent_captures: &EMPTY_LENT,
             field_reuses: &EMPTY_ESCAPING,
             quiet_loops: &EMPTY_ESCAPING,
+            loops_giving_items_away: &EMPTY_ESCAPING,
             return_moves: &EMPTY_RETURN_MOVES,
             task_bound_closures: NodeSet::of(&EMPTY_ESCAPING),
             try_chain_placement: &EMPTY_TRY_PLACEMENT,
@@ -4324,7 +4329,7 @@ impl<'a> MirLowerer<'a> {
         self.closure_counter += 1;
 
         let mut thunk_builder = BlockBuilder::new(thunk_name.clone(), MirType::Void);
-        let env_param = thunk_builder.add_param("__env".to_string(), MirType::Ptr);
+        let env_param = thunk_builder.add_param("__env".to_string(), MirType::Ptr, rask_ast::ty::ParamMode::Borrow);
 
         let captures = crate::stmt::lay_out_captures(
             caps.iter().map(|c| (c.outer, c.ty.clone(), c.by_ref, c.copy)),
@@ -4819,7 +4824,11 @@ impl<'a> MirLowerer<'a> {
             // The parameter keeps saying which container it is, so a frame that
             // gets it back from a call knows which free matches (#1502).
             let declared_ty = if scalar_mutate { local_ty.clone() } else { param_ty.clone() };
-            let local_id = lowerer.builder.add_param(param.name.clone(), declared_ty);
+            let local_id = lowerer.builder.add_param(
+                param.name.clone(),
+                declared_ty,
+                rask_ast::ty::ParamMode::from_flags(param.is_take, param.is_mutate),
+            );
             lowerer.locals.insert(param.name.clone(), (local_id, local_ty));
             {
                 let meta = lowerer.local_meta.entry(param.name.clone()).or_default();
@@ -4990,19 +4999,6 @@ impl<'a> MirLowerer<'a> {
         let mut main_fn = lowerer.builder.finish();
         main_fn.is_extern_c = fn_decl.abi.is_some();
         main_fn.inline_hint = fn_decl.attrs.iter().any(|a| a.is("inline"));
-        // By name: lowering can add parameters the declaration doesn't write.
-        main_fn.param_modes = main_fn
-            .params
-            .iter()
-            .map(|p| {
-                p.name
-                    .as_deref()
-                    .and_then(|n| fn_decl.params.iter().find(|d| d.name == n))
-                    .map_or(rask_ast::ty::ParamMode::Borrow, |d| {
-                        rask_ast::ty::ParamMode::from_flags(d.is_take, d.is_mutate)
-                    })
-            })
-            .collect();
         main_fn.source_file = ctx.source_file.map(|s| s.to_string());
         let mut result = vec![main_fn];
         for f in &mut lowerer.synthesized_functions {
@@ -7964,6 +7960,7 @@ mod tests {
             lent_captures: &empty_lent,
             field_reuses: &empty_escaping,
             quiet_loops: &empty_escaping,
+            loops_giving_items_away: &empty_escaping,
             return_moves: &empty_return_moves,
             task_bound_closures: NodeSet::of(&empty_escaping),
             try_chain_placement: &empty_try_placement,
@@ -8068,6 +8065,7 @@ mod tests {
             lent_captures: &empty_lent,
             field_reuses: &empty_escaping,
             quiet_loops: &empty_escaping,
+            loops_giving_items_away: &empty_escaping,
             return_moves: &empty_return_moves,
             task_bound_closures: NodeSet::of(&empty_escaping),
             try_chain_placement: &empty_try_placement,
@@ -8179,6 +8177,7 @@ mod tests {
             lent_captures: &empty_lent,
             field_reuses: &empty_escaping,
             quiet_loops: &empty_escaping,
+            loops_giving_items_away: &empty_escaping,
             return_moves: &empty_return_moves,
             task_bound_closures: NodeSet::of(&empty_escaping),
             try_chain_placement: &empty_try_placement,

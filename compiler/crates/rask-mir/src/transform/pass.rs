@@ -309,11 +309,11 @@ impl MirPass for StringRcInsertionPass {
     fn name(&self) -> &str { "string_rc_insert" }
     // Whole-program rather than per-function: releasing a struct that arrived
     // by value needs to know whether the callee kept it, and that answer is
-    // read off every body (see `container_drop::params_a_callee_keeps`).
+    // the callee's parameter modes (`container_drop::params_a_callee_keeps`).
     fn run(&self, fns: &mut Vec<MirFunction>, ctx: &mut PassContext) {
         let targets = crate::closure_targets::ClosureTargets::build(fns);
         let reach = crate::closure_reach::ClosureReach::build(fns);
-        let kept = crate::container_drop::params_a_callee_keeps(fns, &targets, &reach);
+        let kept = crate::container_drop::params_a_callee_keeps(fns);
         let closure_keeps = |func: &str, closure, i, n| {
             crate::container_drop::closure_call_keeps_argument(&targets, &reach, &kept, func, closure, i, n)
         };

@@ -108,7 +108,9 @@ impl BlockBuilder {
         }
     }
 
-    pub fn add_param(&mut self, name: String, ty: MirType) -> LocalId {
+    /// A parameter, with how it is passed. Every parameter has a mode: what
+    /// the call does with an argument is read off it (`params_a_callee_keeps`).
+    pub fn add_param(&mut self, name: String, ty: MirType, mode: rask_ast::ty::ParamMode) -> LocalId {
         let id = LocalId(self.next_local_id);
         self.next_local_id += 1;
         let local = MirLocal {
@@ -118,6 +120,7 @@ impl BlockBuilder {
             is_param: true,
         };
         self.function.params.push(local.clone());
+        self.function.param_modes.push(mode);
         self.function.locals.push(local);
         id
     }

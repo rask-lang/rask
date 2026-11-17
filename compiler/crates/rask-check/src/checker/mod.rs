@@ -1333,6 +1333,7 @@ impl TypeChecker {
             escaping_closures: std::collections::HashSet::new(),
             field_reuses: std::collections::HashSet::new(),
             quiet_loops: std::collections::HashSet::new(),
+            loops_giving_items_away: std::collections::HashSet::new(),
             return_moves: std::collections::HashMap::new(),
             // The ownership pass works these out; the driver writes them back.
             task_bound_closures: std::collections::HashSet::new(),

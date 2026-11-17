@@ -89,6 +89,12 @@ pub struct OwnershipResult {
     /// delete anything, so lowering walks the list without recording it with
     /// its rack or keeping a cursor (mem.racks/RK16).
     pub quiet_loops: HashSet<rask_ast::NodeId>,
+    /// The source expressions of `for` loops whose body gives its item away
+    /// (`out.push(x)` in `Sequence.to_vec`). Over a sequence the body is the
+    /// yield closure, and its item parameter is then a `take`: the sequence
+    /// hands over an item the chain owns and a copy of one it was lent
+    /// (type.sequence/SEQ47).
+    pub loops_giving_items_away: HashSet<rask_ast::NodeId>,
 }
 
 /// The bindings each `return` hands to the caller, keyed by the returned
@@ -429,6 +435,10 @@ pub struct OwnershipChecker<'a> {
     summarizing: std::cell::Cell<bool>,
     link_param_hits: std::cell::RefCell<std::collections::BTreeSet<String>>,
     quiet_loops: HashSet<rask_ast::NodeId>,
+    loops_giving_items_away: HashSet<rask_ast::NodeId>,
+    /// The item names of the `for` loops being checked, innermost last, with
+    /// the loop's source expression.
+    loop_items: Vec<(rask_ast::NodeId, Vec<String>)>,
     /// Method names some declaration gives no Rask body (`@native`,
     /// `@builtin`): a call that could reach one of them can't be summarised.
     bodyless_methods: HashSet<String>,
@@ -733,6 +743,8 @@ impl<'a> OwnershipChecker<'a> {
             summarizing: std::cell::Cell::new(false),
             link_param_hits: std::cell::RefCell::new(std::collections::BTreeSet::new()),
             quiet_loops: HashSet::new(),
+            loops_giving_items_away: HashSet::new(),
+            loop_items: Vec::new(),
             bodyless_methods: HashSet::new(),
             method_resizes: HashMap::new(),
             type_params_in_scope: Vec::new(),
@@ -1002,6 +1014,7 @@ impl<'a> OwnershipChecker<'a> {
             mutate_param_moves: self.mutate_param_moves,
             consuming_tasks: self.consuming_tasks,
             quiet_loops: self.quiet_loops,
+            loops_giving_items_away: self.loops_giving_items_away,
         }
     }
 
@@ -3480,7 +3493,9 @@ impl<'a> OwnershipChecker<'a> {
                         }
                     }
                 }
+                self.loop_items.push((iter.id, binding_names.clone()));
                 self.check_loop_body(body, &binding_names, label.as_ref(), false);
+                self.loop_items.pop();
                 self.borrowed_loop_items = saved_items;
                 self.parts = saved_parts;
                 if pushed {
@@ -9272,6 +9287,11 @@ impl<'a> OwnershipChecker<'a> {
     }
 
     fn consume_binding(&mut self, name: &str, span: Span, sink: Option<&str>) {
+        // The innermost loop naming it: a nested loop's item of the same name
+        // shadows an outer one.
+        if let Some((source, _)) = self.loop_items.iter().rev().find(|(_, names)| names.iter().any(|n| n == name)) {
+            self.loops_giving_items_away.insert(*source);
+        }
         // Reported, and the consume still goes ahead: the mistake is when it
         // happens, and refusing it would add "never consumed" on top.
         self.report_part_owner_changed(name, &[], name.to_string(), "give away", span, None);
@@ -10458,6 +10478,7 @@ pub fn check_ownership_with_stdlib(
     result.mutate_param_moves.extend(stdlib.mutate_param_moves);
     result.generic_closure_captures.extend(stdlib.generic_closure_captures);
     result.quiet_loops.extend(stdlib.quiet_loops);
+    result.loops_giving_items_away.extend(stdlib.loops_giving_items_away);
     result
 }
 

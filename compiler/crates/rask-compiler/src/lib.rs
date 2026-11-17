@@ -662,6 +662,7 @@ fn check_loaded_scoped(
     typed.generic_closure_captures = ownership_result.generic_closure_captures.clone();
     typed.lent_captures = ownership_result.lent_captures.clone();
     typed.quiet_loops = ownership_result.quiet_loops.clone();
+    typed.loops_giving_items_away = ownership_result.loops_giving_items_away.clone();
     // Which writes build on the old value is a lowering input for every
     // body, the stdlib's as well as the program's.
     typed.field_reuses = rask_ownership::field_reuses(
@@ -1190,6 +1191,7 @@ fn check_package_scoped(
     typed.generic_closure_captures = ownership_result.generic_closure_captures.clone();
     typed.lent_captures = ownership_result.lent_captures.clone();
     typed.quiet_loops = ownership_result.quiet_loops.clone();
+    typed.loops_giving_items_away = ownership_result.loops_giving_items_away.clone();
     // Which writes build on the old value is a lowering input for every
     // body, the stdlib's as well as the program's.
     typed.field_reuses = rask_ownership::field_reuses(

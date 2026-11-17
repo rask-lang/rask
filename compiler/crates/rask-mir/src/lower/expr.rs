@@ -2891,7 +2891,7 @@ impl<'a> MirLowerer<'a> {
             .c_params
             .iter()
             .enumerate()
-            .map(|(i, t)| tb.add_param(format!("a{}", i), self.ctx.type_to_mir(t)))
+            .map(|(i, t)| tb.add_param(format!("a{}", i), self.ctx.type_to_mir(t), rask_ast::ty::ParamMode::Borrow))
             .collect();
         let rest: Vec<MirOperand> = params
             .iter()
