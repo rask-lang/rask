@@ -672,10 +672,12 @@ impl TypeChecker {
     /// The signature `method` gets on a nominal newtype from one of the interfaces
     /// its `implements` clause lists (type.aliases/T11).
     ///
-    /// The interface signatures write `Self` as type variable 0, so binding that to
-    /// the newtype is the whole of T12's delegation: `Id`'s `eq` takes an `Id`,
-    /// and its `clone` gives one back. Positions the interface spells out concretely
-    /// — `hash`'s `u64`, `compare`'s `Ordering` — stay as written.
+    /// Binding the interface's written `Self` to the newtype is the whole of
+    /// T12's delegation: `Id`'s `eq` takes an `Id`, and its `clone` gives one
+    /// back. Left unbound, `Self` meant whatever type the *calling* method
+    /// extends, so `a.compare(b)` inside `extend Store` wanted a `Store`.
+    /// Positions the interface spells out concretely — `hash`'s `u64`,
+    /// `compare`'s `Ordering` — stay as written.
     fn inherited_interface_method(
         &self,
         ty: &Type,
@@ -683,21 +685,14 @@ impl TypeChecker {
         method: &str,
     ) -> Option<MethodSig> {
         let checker = crate::interfaces::InterfaceChecker::new(&self.types);
-        let self_var = Type::Var(TypeVarId(0));
-        for interface_name in with_interfaces {
-            let Some(mut sig) = checker
+        let this = HashMap::from([("Self".to_string(), ty.clone())]);
+        with_interfaces.iter().find_map(|interface_name| {
+            checker
                 .interface_methods_written(interface_name)
                 .into_iter()
                 .find(|m| m.name == method)
-            else {
-                continue;
-            };
-            let bind_self = |t: &Type| if *t == self_var { ty.clone() } else { t.clone() };
-            sig.params = sig.params.iter().map(|(t, m)| (bind_self(t), *m)).collect();
-            sig.ret = bind_self(&sig.ret);
-            return Some(sig);
-        }
-        None
+                .map(|sig| crate::interfaces::substitute_signature(&sig, &this))
+        })
     }
 
     /// A type as the user wrote it. `Type`'s own Display can't name a
