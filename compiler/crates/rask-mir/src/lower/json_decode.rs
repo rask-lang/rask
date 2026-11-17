@@ -436,13 +436,6 @@ impl<'a> MirLowerer<'a> {
             field: None,
         }));
         wb.terminate(MirTerminator::dummy(MirTerminatorKind::Return { value: None }));
-        self.func_sigs.insert(name.clone(), super::FuncSig {
-            ret_ty: MirType::Void,
-            scalar_mutate_params: Vec::new(),
-            aggregate_mutate_params: Vec::new(),
-            ret_vec_elem: None,
-            param_tys: Vec::new(),
-        });
         self.synthesized_functions.push(wb.finish());
         let addr = self.builder.alloc_temp(MirType::I64);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
@@ -621,13 +614,6 @@ impl<'a> MirLowerer<'a> {
             field: None,
         }));
         wb.terminate(MirTerminator::dummy(MirTerminatorKind::Return { value: None }));
-        self.func_sigs.insert(fn_name.clone(), super::FuncSig {
-            ret_ty: MirType::Void,
-            scalar_mutate_params: Vec::new(),
-            aggregate_mutate_params: Vec::new(),
-            ret_vec_elem: None,
-            param_tys: Vec::new(),
-        });
         self.synthesized_functions.push(wb.finish());
         let addr = self.builder.alloc_temp(MirType::I64);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
@@ -744,13 +730,6 @@ impl<'a> MirLowerer<'a> {
         wb.terminate(MirTerminator::dummy(MirTerminatorKind::Return {
             value: Some(MirOperand::Constant(MirConst::Int(1))),
         }));
-        self.func_sigs.insert(fn_name.clone(), super::FuncSig {
-            ret_ty: MirType::I64,
-            scalar_mutate_params: Vec::new(),
-            aggregate_mutate_params: Vec::new(),
-            ret_vec_elem: None,
-            param_tys: Vec::new(),
-        });
         let mut trampoline = wb.finish();
         // An aggregate wire is the trampoline's to hand on: the runtime made it
         // and gives it up here, and the adapter takes it. Left as a borrowed
@@ -804,13 +783,6 @@ impl<'a> MirLowerer<'a> {
             field: None,
         }));
         wb.terminate(MirTerminator::dummy(MirTerminatorKind::Return { value: None }));
-        self.func_sigs.insert(name.clone(), super::FuncSig {
-            ret_ty: MirType::Void,
-            scalar_mutate_params: Vec::new(),
-            aggregate_mutate_params: Vec::new(),
-            ret_vec_elem: None,
-            param_tys: Vec::new(),
-        });
         self.synthesized_functions.push(wb.finish());
         let addr = self.builder.alloc_temp(MirType::I64);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {

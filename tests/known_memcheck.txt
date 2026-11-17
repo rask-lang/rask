@@ -14,4 +14,3 @@
 # Found the day the gate first ran valgrind on the test binaries instead of on
 # `timeout`, which is what it had been instrumenting since it was written.
 t_fixed_array_clone.rk            # #1588 b = a.clone() frees a's strings first
-t_fs_handle_imported_ensure.rk   # #1601 an imported create_file/open closes its File twice natively

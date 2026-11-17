@@ -217,7 +217,11 @@ pub(crate) fn mutate_param_passing(mode: ParamMode, name: &str, ty: &MirType) ->
     }
 }
 
-/// Function signature for type inference
+/// What lowering knows about a function a call can name: the program's own
+/// functions by the symbol each is emitted under, and the stdlib's natives by
+/// `Type_method`. A call finds its callee's through the symbol the checker's
+/// target resolves to (`MirLowerer::callee_sig`), never by putting a name
+/// together from what the source spelled.
 #[derive(Clone)]
 struct FuncSig {
     ret_ty: MirType,
@@ -242,6 +246,101 @@ struct FuncSig {
     /// has nothing else to go on when the closure has no checked type of its
     /// own. `None` for a function made after checking.
     param_tys: Vec<Option<Type>>,
+    /// `take self`: the call consumes its receiver (an `ensure` on it is
+    /// cancelled, a handle field it came from is emptied).
+    take_self: bool,
+    /// Writes through `self`: `mutate self` or `take self` as declared, or a
+    /// private method whose mode type.gradual/GC9 inferred from its body. A
+    /// receiver reached through a field or an element has to be handed over
+    /// as the place, or the write lands in a copy. Never set for a native
+    /// method, which writes through the receiver value it is handed.
+    mutates_self: bool,
+    /// The arguments declared `take`, counted without `self`. Handing a linear
+    /// value to one moves it (mem.linear/L5); a borrowed parameter doesn't.
+    takes: Vec<usize>,
+}
+
+impl FuncSig {
+    /// A function lowering makes up: it returns `ret_ty`, and nothing about
+    /// its parameters is asked of it.
+    fn returning(ret_ty: MirType) -> Self {
+        FuncSig {
+            ret_ty,
+            scalar_mutate_params: Vec::new(),
+            aggregate_mutate_params: Vec::new(),
+            ret_vec_elem: None,
+            param_tys: Vec::new(),
+            take_self: false,
+            mutates_self: false,
+            takes: Vec::new(),
+        }
+    }
+
+    /// A function declared in Rask, at the instance `sig` describes.
+    fn declared(f: &rask_ast::decl::FnDecl, sig: Option<rask_types::FnSignature>, ctx: &MirContext) -> Self {
+        let (ret_ty, ret_vec_elem) = match &sig {
+            Some(s) => (ctx.type_to_mir(&s.ret), ctx.vec_elem_mir(&s.ret)),
+            None => (ctx.fn_ret_ty(&f.name, f.ret_ty.as_ref()), vec_elem_of_type(f.ret_ty.as_ref(), ctx)),
+        };
+        FuncSig {
+            ret_ty,
+            scalar_mutate_params: scalar_mutate_params(f, sig.as_ref(), ctx),
+            aggregate_mutate_params: aggregate_mutate_params(&f.params, sig.as_ref(), ctx),
+            ret_vec_elem,
+            param_tys: sig_param_tys(&f.params, sig.as_ref()),
+            take_self: f.params.first().is_some_and(|p| p.name == "self" && p.is_take),
+            mutates_self: method_mutates_self(f, ctx),
+            takes: take_positions(&f.params),
+        }
+    }
+}
+
+/// Every signature a call in this program can reach (`FuncSig`).
+///
+/// The natives go in first and a declaration replaces one of the same symbol:
+/// a stdlib method with a body in Rask is a function of this program, and its
+/// declaration is the whole truth about it.
+fn program_signatures(all_decls: &[Decl], ctx: &MirContext) -> HashMap<String, FuncSig> {
+    let mut sigs = HashMap::new();
+    for meta in rask_stdlib::mir_metadata::method_metas() {
+        sigs.insert(meta.qualified_name.clone(), FuncSig::returning(ctx.resolve_type_expr(&meta.ret_ty)));
+    }
+    let reg = rask_stdlib::stubs::StubRegistry::load();
+    for ty in reg.type_names() {
+        for m in reg.methods(ty) {
+            let Some(sig) = sigs.get_mut(&format!("{}_{}", ty, m.name)) else { continue };
+            sig.take_self = m.take_self;
+            // `mutates_self` stays false: a native gets its receiver as the
+            // value it is (a `Vec` is a pointer to its header), and writes
+            // through that. Handing it the place's address instead gives it a
+            // pointer to the pointer.
+            sig.takes = m.param_modes.iter().enumerate().filter(|(_, mode)| mode.is_take).map(|(i, _)| i).collect();
+        }
+    }
+    for d in all_decls {
+        match &d.kind {
+            // A monomorphized function's declaration is named by its
+            // instance's symbol.
+            DeclKind::Fn(f) => {
+                sigs.insert(f.name.clone(), FuncSig::declared(f, ctx.instance_sig(f, &f.name), ctx));
+            }
+            DeclKind::Extern(ext) => {
+                let ret = ext.ret_ty.as_ref().map(|t| ctx.resolve_type_expr(t)).unwrap_or(MirType::Void);
+                sigs.insert(ext.name.clone(), FuncSig::returning(ret));
+            }
+            // Only a unit test hands lowering an `extend` block: a real
+            // compile gets every method as a function of its own.
+            DeclKind::Impl(impl_decl) => {
+                for m in &impl_decl.methods {
+                    let symbol = format!("{}_{}", impl_decl.target_ty.name().unwrap_or_default(), m.name);
+                    let sig = ctx.instance_sig(m, &symbol);
+                    sigs.insert(symbol, FuncSig::declared(m, sig, ctx));
+                }
+            }
+            _ => {}
+        }
+    }
+    sigs
 }
 
 /// Loop context for break/continue
@@ -465,6 +564,7 @@ impl<'a> MirContext<'a> {
             fn_sigs: &typed.fn_sigs,
             typed: Some(typed),
             instance_bindings: HashMap::new(),
+            signatures: std::cell::OnceCell::new(),
             // Defaults; the `with_*` below set the ones a caller has.
             folded: empty::folded(),
             extern_funcs: empty::strings(),
@@ -739,6 +839,9 @@ pub struct MirContext<'a> {
     pub typed: Option<&'a rask_check::TypedProgram>,
     /// Each generic function's instances, by the instance's symbol.
     pub instance_bindings: HashMap<String, &'a rask_mono::MonoFunction>,
+    /// Every callable's signature (`program_signatures`), filled by the first
+    /// function lowered.
+    signatures: std::cell::OnceCell<HashMap<String, FuncSig>>,
 }
 
 /// A per-node record as lowering reads it. Outside a generic instance it is
@@ -1038,6 +1141,7 @@ impl<'a> MirContext<'a> {
             fn_sigs: &EMPTY_FN_SIGS,
             typed: None,
             instance_bindings: HashMap::new(),
+            signatures: std::cell::OnceCell::new(),
         }
     }
 
@@ -2163,8 +2267,6 @@ pub struct MirLowerer<'a> {
     /// The type tests a pattern's fields passed, by the field pattern's id,
     /// for the binding that follows the test (`field_type_tests`).
     field_type_tests: HashMap<rask_ast::NodeId, PatternTest>,
-    /// Function name → signature (for call return types)
-    func_sigs: HashMap<String, FuncSig>,
     /// Stack of enclosing loops (innermost last)
     loop_stack: Vec<LoopContext>,
     /// Layout context from monomorphization
@@ -2243,21 +2345,9 @@ pub struct MirLowerer<'a> {
     /// parameter would write into that copy, so it gets a pointer to the real
     /// element instead, held across exactly the one call.
     elem_writebacks: Vec<ElemWriteback>,
-    /// Qualified method names that have `take self` (consume the receiver).
-    /// Used for consumption cancellation (C1/C2).
-    take_self_methods: std::collections::HashSet<String>,
-    /// Which parameter positions a callee declares `take`, keyed the same way
-    /// `take_self_methods` is. Passing a linear value to one of them is a move
-    /// (mem.linear/L5), so it cancels the `ensure` the caller scheduled — and a
-    /// borrowed parameter must not, which is why this can't be read off the
-    /// argument alone. Positions exclude `self`.
-    take_param_positions: std::collections::HashMap<String, Vec<usize>>,
     /// Lowering an `ensure` body into its own thunk function, where a consuming
     /// call cancels nothing and the resource slot isn't in this frame.
     in_ensure_thunk: bool,
-    /// Methods that write through `self` — declared `mutate self`/`take self`,
-    /// or private ones that assign into self (GC9 infers the mode there).
-    pub(crate) mutate_self_methods: std::collections::HashSet<String>,
     /// For each ensure cleanup block, the receiver variable name and its
     /// resource_id local. Used for consumption cancellation (C1/C2):
     /// if the receiver was consumed before scope exit, skip the ensure.
@@ -2352,6 +2442,19 @@ pub(crate) struct CatchFrame {
 }
 
 impl<'a> MirLowerer<'a> {
+    /// The signature of the program function or stdlib native `symbol` names.
+    fn signature(&self, symbol: &str) -> Option<&FuncSig> {
+        self.ctx.signatures.get()?.get(symbol)
+    }
+
+    /// The signature of what the call `call` runs, at this instance: the
+    /// function the checker resolved it to, by the symbol that function is
+    /// emitted under (`MirContext::call_symbol`). `None` for a call through a
+    /// function value, a builtin, and a call the checker has no target for.
+    fn callee_sig(&self, call: rask_ast::NodeId) -> Option<&FuncSig> {
+        self.signature(&self.ctx.call_symbol(call)?)
+    }
+
     /// A type the body writes, as the instance being lowered reads it: its
     /// own type parameters (and their `T.Out` projections) replaced by what
     /// they stand for. Every instance shares the body's written types, so this
@@ -3160,22 +3263,9 @@ impl<'a> MirLowerer<'a> {
                 let f = layout.fields.iter().find(|f| f.name == *field)?;
                 self.vec_elem_of_checker_type(&f.ty.clone())
             }
-            ExprKind::Call { func, .. } => match &func.kind {
-                ExprKind::Ident(callee) => {
-                    let key = self.ctx.call_symbol(expr.id).unwrap_or_else(|| callee.clone());
-                    self.func_sigs.get(&key).and_then(|s| s.ret_vec_elem.clone())
-                }
-                _ => None,
-            },
-            ExprKind::MethodCall { object, method, .. } => {
-                let prefix = match &object.kind {
-                    ExprKind::Ident(n) => self.meta(n).and_then(|m| m.type_prefix.clone()),
-                    _ => None,
-                }?;
-                let base = prefix.as_str().trim();
-                self.func_sigs
-                    .get(&format!("{}_{}", base, method))
-                    .and_then(|s| s.ret_vec_elem.clone())
+            // A call: what the function it runs declares it returns.
+            ExprKind::Call { .. } | ExprKind::MethodCall { .. } => {
+                self.callee_sig(expr.id).and_then(|s| s.ret_vec_elem.clone())
             }
             _ => None,
         }
@@ -3746,32 +3836,18 @@ impl<'a> MirLowerer<'a> {
                     }
                 }
             }
-            if let Some(callee) = func.name() {
-                self.consume_take_arguments(&callee, args);
-            }
+            self.consume_take_arguments(expr.id, args);
             return;
         }
-        if let ExprKind::MethodCall { object, method, args, .. } = &expr.kind {
-            if let Some(receiver_name) = object.name() {
-                if let Some(prefix) = self.meta(receiver_name).and_then(|m| m.type_prefix.clone()) {
-                    self.consume_take_arguments(&format!("{}_{}", prefix, method), args);
-                }
-            }
-            if let Some(receiver_name) = object.name() {
-                // Check if this receiver has a resource_id (registered by an ensure)
-                let resource_id = self.meta(receiver_name)
-                    .and_then(|m| m.resource_id);
-                let prefix = self.meta(receiver_name)
-                    .and_then(|m| m.type_prefix.clone());
-                if let Some(res_id) = resource_id {
-                    if let Some(ref prefix) = prefix {
-                        let qualified = format!("{}_{}", prefix, method);
-                        if self.take_self_methods.contains(&qualified) {
-                            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::ResourceConsume {
-                                resource_id: res_id,
-                            }));
-                        }
-                    }
+        if let ExprKind::MethodCall { object, args, .. } = &expr.kind {
+            self.consume_take_arguments(expr.id, args);
+            // A receiver an `ensure` registered, handed to a `take self` method.
+            let resource_id = object.name().and_then(|n| self.meta(n)).and_then(|m| m.resource_id);
+            if let Some(res_id) = resource_id {
+                if self.callee_sig(expr.id).is_some_and(|s| s.take_self) {
+                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::ResourceConsume {
+                        resource_id: res_id,
+                    }));
                 }
             }
         }
@@ -3782,9 +3858,9 @@ impl<'a> MirLowerer<'a> {
     /// Only the positions the callee declares `take`: a parameter without it is
     /// the caller's value on loan (mem.parameters/PM1), and cancelling there
     /// would leave nothing to close it.
-    fn consume_take_arguments(&mut self, callee: &str, args: &[rask_ast::expr::CallArg]) {
+    fn consume_take_arguments(&mut self, call: rask_ast::NodeId, args: &[rask_ast::expr::CallArg]) {
         use rask_ast::expr::ExprKind;
-        let Some(positions) = self.take_param_positions.get(callee).cloned() else {
+        let Some(positions) = self.callee_sig(call).map(|s| s.takes.clone()) else {
             return;
         };
         for i in positions {
@@ -4440,7 +4516,6 @@ impl<'a> MirLowerer<'a> {
         }
 
         let thunk_fn = thunk_builder.finish();
-        self.func_sigs.insert(thunk_name.clone(), FuncSig { ret_ty: MirType::Void, scalar_mutate_params: Vec::new(), aggregate_mutate_params: Vec::new(), ret_vec_elem: None, param_tys: Vec::new() });
         self.synthesized_functions.push(thunk_fn);
 
         Some((thunk_name, captures))
@@ -4733,158 +4808,9 @@ impl<'a> MirLowerer<'a> {
             None => ctx.fn_ret_ty(&fn_decl.name, fn_decl.ret_ty.as_ref()),
         };
 
-        // Build function signature table from all declarations
-        let mut func_sigs = HashMap::new();
-        for d in all_decls {
-            match &d.kind {
-                DeclKind::Fn(f) => {
-                    // A monomorphized function's declaration is named by its
-                    // instance's symbol.
-                    let sig = ctx.instance_sig(f, &f.name);
-                    let (sig_ret, ret_vec_elem) = match &sig {
-                        Some(s) => (ctx.type_to_mir(&s.ret), ctx.vec_elem_mir(&s.ret)),
-                        None => (ctx.fn_ret_ty(&f.name, f.ret_ty.as_ref()), vec_elem_of_type(f.ret_ty.as_ref(), ctx)),
-                    };
-                    func_sigs.insert(f.name.clone(), FuncSig {
-                        ret_ty: sig_ret,
-                        scalar_mutate_params: scalar_mutate_params(f, sig.as_ref(), ctx),
-                        aggregate_mutate_params: aggregate_mutate_params(&f.params, sig.as_ref(), ctx),
-                        ret_vec_elem,
-                        param_tys: sig_param_tys(&f.params, sig.as_ref()),
-                    });
-                }
-                DeclKind::Extern(ext) => {
-                    let sig_ret = ext
-                        .ret_ty
-                        .as_ref()
-                        .map(|t| ctx.resolve_type_expr(t))
-                        .unwrap_or(MirType::Void);
-                    func_sigs.insert(ext.name.clone(), FuncSig { ret_ty: sig_ret, scalar_mutate_params: Vec::new(), aggregate_mutate_params: Vec::new(), ret_vec_elem: None, param_tys: Vec::new() });
-                }
-                DeclKind::Impl(impl_decl) => {
-                    for m in &impl_decl.methods {
-                        let qualified = format!("{}_{}", impl_decl.target_ty.name().unwrap_or_default(), m.name);
-                        let sig = ctx.instance_sig(m, &qualified);
-                        let (sig_ret, ret_vec_elem) = match &sig {
-                            Some(s) => (ctx.type_to_mir(&s.ret), ctx.vec_elem_mir(&s.ret)),
-                            None => (
-                                m.ret_ty.as_ref().map(|t| ctx.resolve_type_expr(t)).unwrap_or(MirType::Void),
-                                vec_elem_of_type(m.ret_ty.as_ref(), ctx),
-                            ),
-                        };
-                        func_sigs.insert(qualified, FuncSig {
-                            ret_ty: sig_ret,
-                            scalar_mutate_params: scalar_mutate_params(m, sig.as_ref(), ctx),
-                            aggregate_mutate_params: aggregate_mutate_params(&m.params, sig.as_ref(), ctx),
-                            ret_vec_elem,
-                            param_tys: sig_param_tys(&m.params, sig.as_ref()),
-                        });
-                    }
-                }
-                _ => {}
-            }
-        }
-
-        // Inject signatures for stdlib methods so return types resolve.
-        // Derived from stub files via rask_stdlib::mir_metadata.
-        for meta in rask_stdlib::mir_metadata::method_metas() {
-            func_sigs.entry(meta.qualified_name.clone()).or_insert(FuncSig {
-                ret_ty: ctx.resolve_type_expr(&meta.ret_ty),
-                scalar_mutate_params: Vec::new(),
-                aggregate_mutate_params: Vec::new(),
-                ret_vec_elem: None,
-                param_tys: Vec::new(),
-            });
-        }
-
-        // C1/C2: collect qualified method names with `take self` for
-        // consumption cancellation. When such a method is called on an
-        // ensure receiver, the ensure is cancelled.
-        let mut take_self_methods = std::collections::HashSet::new();
-        // The stdlib's own `take self` methods, which are declarations in
-        // `stdlib/*.rk` rather than decls in this program. `Handle.join`
-        // consumes its handle exactly the way a user method does, and not
-        // knowing that let a registered `ensure h.detach()` run after it and
-        // detach a handle that was already gone (#1216).
-        let mut take_param_positions: std::collections::HashMap<String, Vec<usize>> =
-            std::collections::HashMap::new();
-        {
-            let reg = rask_stdlib::stubs::StubRegistry::load();
-            for ty in reg.type_names() {
-                for m in reg.methods(ty) {
-                    if m.take_self {
-                        take_self_methods.insert(format!("{}_{}", ty, m.name));
-                    }
-                    let takes: Vec<usize> = m
-                        .param_modes
-                        .iter()
-                        .enumerate()
-                        .filter(|(_, mode)| mode.is_take)
-                        .map(|(i, _)| i)
-                        .collect();
-                    if !takes.is_empty() {
-                        take_param_positions.insert(format!("{}_{}", ty, m.name), takes);
-                    }
-                }
-            }
-        }
-        // Methods that write through `self`. A receiver reached through a field
-        // has to be passed as that field's address for these, or the write lands
-        // in a copy — see `place_address` in lower/expr.rs (#702). Declared
-        // `mutate self` counts, and so does a private method that assigns into
-        // self, because type.gradual/GC9 infers the mode from the body there.
-        let mut mutate_self_methods = std::collections::HashSet::new();
-        for d in all_decls {
-            match &d.kind {
-                DeclKind::Impl(impl_decl) => {
-                    for m in &impl_decl.methods {
-                        // Filed under the target's name, which is what a call
-                        // site dispatches through: `extend Handle<T>` is
-                        // `Handle_join` (#1216).
-                        let qualified =
-                            format!("{}_{}", impl_decl.target_ty.name().unwrap_or_default(), m.name);
-                        if m.params.first().map_or(false, |p| p.name == "self" && p.is_take) {
-                            take_self_methods.insert(qualified.clone());
-                        }
-                        let takes = take_positions(&m.params);
-                        if !takes.is_empty() {
-                            take_param_positions.insert(qualified.clone(), takes);
-                        }
-                        if method_mutates_self(m, ctx) {
-                            mutate_self_methods.insert(qualified);
-                        }
-                    }
-                }
-                DeclKind::Fn(f) => {
-                    // After monomorphization, impl methods become standalone functions
-                    // named "Type_method" with a `take self` first parameter. An
-                    // instance is `Group_join_all$i64`, and a call site asks with
-                    // the receiver's type name — `Group_join_all` — so both go in,
-                    // or `join_all` wasn't known to consume a `Group<i64>` and its
-                    // `ensure g.detach()` ran after it.
-                    let names: Vec<&str> = match f.name.split_once('$') {
-                        Some((base, _)) => vec![f.name.as_str(), base],
-                        None => vec![f.name.as_str()],
-                    };
-                    let take_self =
-                        f.params.first().map_or(false, |p| p.name == "self" && p.is_take);
-                    let takes = take_positions(&f.params);
-                    let mutates = method_mutates_self(f, ctx);
-                    for name in names {
-                        if take_self {
-                            take_self_methods.insert(name.to_string());
-                        }
-                        if !takes.is_empty() {
-                            take_param_positions.insert(name.to_string(), takes.clone());
-                        }
-                        if mutates {
-                            mutate_self_methods.insert(name.to_string());
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
+        // Every callable's signature, by the symbol it is emitted under. Made
+        // once for the program: the first function lowered builds it.
+        ctx.signatures.get_or_init(|| program_signatures(all_decls, ctx));
 
         let func_name = qualified_name
             .map(|s| s.to_string())
@@ -4898,7 +4824,6 @@ impl<'a> MirLowerer<'a> {
             builder: BlockBuilder::new(func_name.clone(), ret_ty.clone()),
             locals: HashMap::new(),
             field_type_tests: HashMap::new(),
-            func_sigs,
             loop_stack: Vec::new(),
             ctx,
             synthesized_functions: Vec::new(),
@@ -4917,10 +4842,7 @@ impl<'a> MirLowerer<'a> {
             inline_return_taken: None,
             ensure_stack: Vec::new(),
             elem_writebacks: Vec::new(),
-            take_self_methods,
-            take_param_positions,
             in_ensure_thunk: false,
-            mutate_self_methods,
             ensure_receivers: HashMap::new(),
             pending_module_consts: HashMap::new(),
             const_facts: HashMap::new(),
@@ -5340,21 +5262,8 @@ impl<'a> MirLowerer<'a> {
         // declared `Vec<T>`. Needed wherever the checker's node types are out of
         // reach — inside a closure body, `for spec in seed_specs()` typed its
         // binding i64 and sent the wrong bytes down a channel (#463).
-        let callee = match &expr.kind {
-            ExprKind::Call { func, .. } => match &func.kind {
-                ExprKind::Ident(name) => Some(name.clone()),
-                _ => None,
-            },
-            ExprKind::MethodCall { object, method, .. } => match &object.kind {
-                ExprKind::Ident(recv) => Some(format!("{}_{}", recv, method)),
-                _ => None,
-            },
-            _ => None,
-        };
-        if let Some(name) = callee {
-            if let Some(elem) = self.func_sigs.get(&name).and_then(|s| s.ret_vec_elem.clone()) {
-                return Some(elem);
-            }
+        if let Some(elem) = self.callee_sig(expr.id).and_then(|s| s.ret_vec_elem.clone()) {
+            return Some(elem);
         }
 
         // Iterating a `Vec<T>` field — the struct declaration knows T even when
@@ -6866,7 +6775,7 @@ fn stdlib_return_mir_type_known(func_name: &str, ctx: Option<&MirContext>) -> Op
     // redundant and wasn't.
     //
     // Instrumented across the 362 suite files and every example, the block fired
-    // zero times — a user type's methods are in `func_sigs` from their own
+    // zero times — a user type's methods have signatures from their own
     // declarations, which is consulted first, and the stdlib's are in the stub
     // metadata above. Its only live effect was the wrong answer.
     //
@@ -8216,6 +8125,7 @@ mod tests {
             fn_sigs: &EMPTY_FN_SIGS,
             typed: None,
             instance_bindings: HashMap::new(),
+            signatures: std::cell::OnceCell::new(),
         };
 
         let decl = make_fn("f", vec![], None, vec![
@@ -8321,6 +8231,7 @@ mod tests {
             fn_sigs: &EMPTY_FN_SIGS,
             typed: None,
             instance_bindings: HashMap::new(),
+            signatures: std::cell::OnceCell::new(),
         };
 
         let decl = make_fn("f", vec![], None, vec![
@@ -8433,6 +8344,7 @@ mod tests {
             fn_sigs: &EMPTY_FN_SIGS,
             typed: None,
             instance_bindings: HashMap::new(),
+            signatures: std::cell::OnceCell::new(),
         };
 
         let decl = make_fn("f", vec![], None, vec![

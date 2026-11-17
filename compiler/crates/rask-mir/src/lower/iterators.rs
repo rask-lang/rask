@@ -2229,13 +2229,6 @@ impl<'a> MirLowerer<'a> {
         // comparator that could say "less" and "equal" but never "greater"
         // sorted 200 elements into 78 out-of-order pairs.
         let wb = std::mem::replace(&mut self.builder, saved);
-        self.func_sigs.insert(wrapper_name.clone(), super::FuncSig {
-            ret_ty: MirType::I64,
-            scalar_mutate_params: Vec::new(),
-            aggregate_mutate_params: Vec::new(),
-            ret_vec_elem: None,
-            param_tys: Vec::new(),
-        });
         self.synthesized_functions.push(wb.finish());
 
         let block = self.builder.alloc_temp(MirType::FuncPtr(crate::types::SignatureId(0)));
