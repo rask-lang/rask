@@ -2970,7 +2970,7 @@ impl<'a> MirLowerer<'a> {
                 let vec_local = self.builder.alloc_temp(vec_ty.clone());
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                     dst: Some(vec_local),
-                    func: FunctionRef::keeping("rask_vec_from_static", &[0]),
+                    func: FunctionRef::keeping("rask_vec_from_static", &[0]).handing_back("Vec_free"),
                     args: vec![
                         MirOperand::Local(data),
                         MirOperand::Constant(MirConst::Int(meta.elem_count as i64)),
@@ -8341,3 +8341,12 @@ mod tests {
     }
 }
 
+/// The call that builds one end of a channel (`channel_tx`, `channel_rx`) on
+/// demand. The end is the caller's, released as its declared type says: one
+/// sender or one receiver fewer, and the channel goes with the last of them.
+pub(crate) fn channel_half(extract: &'static str) -> FunctionRef {
+    let end = if extract == "channel_tx" { "Sender" } else { "Receiver" };
+    let release = rask_stdlib::handles::declared_release(end)
+        .unwrap_or_else(|| panic!("stdlib/async.rk declares no release for `{end}`"));
+    FunctionRef::reading(extract).handing_back(release)
+}

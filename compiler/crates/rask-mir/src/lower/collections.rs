@@ -105,7 +105,7 @@ impl<'a> MirLowerer<'a> {
         let vec_local = self.builder.alloc_temp(MirType::Ptr);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(vec_local),
-            func: FunctionRef::keeping("rask_vec_from_static", &[0]),
+            func: FunctionRef::keeping("rask_vec_from_static", &[0]).handing_back("Vec_free"),
             args: vec![
                 MirOperand::Local(arr_local),
                 MirOperand::Constant(MirConst::Int(elems.len() as i64)),

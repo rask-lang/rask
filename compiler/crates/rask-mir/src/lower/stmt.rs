@@ -2406,7 +2406,7 @@ impl<'a> MirLowerer<'a> {
                 let extract_fn = if i == 0 { "channel_tx" } else { "channel_rx" };
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                     dst: Some(local_id),
-                    func: FunctionRef::reading(extract_fn),
+                    func: super::channel_half(extract_fn),
                     args: vec![init_op.clone()],
                 }));
             } else if let (true, Some(&offset), Some(base)) =
@@ -2670,7 +2670,7 @@ impl<'a> MirLowerer<'a> {
             let args = self.map_entries_args(MirOperand::Local(map_tmp), &pair[0], &pair[1]);
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: Some(entries_vec),
-                func: FunctionRef::borrowing("Map_entries"),
+                func: FunctionRef::borrowing("Map_entries").handing_back("Vec_free"),
                 args,
             }));
             (MirOperand::Local(entries_vec), MirType::I64)

@@ -84,9 +84,5 @@ pub fn box_release_for(ty: &RaskType, names: &HashMap<TypeId, String>) -> &'stat
         },
         _ => None,
     };
-    match strategy {
-        Some("Local") => "rask_cell_free",
-        Some("Mutex") => "rask_mutex_drop",
-        _ => "rask_shared_drop_i64",
-    }
+    rask_stdlib::handles::shared_release(strategy)
 }

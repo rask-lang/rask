@@ -3086,7 +3086,7 @@ impl<'a> MirLowerer<'a> {
                 let dst = self.builder.alloc_temp(MirType::I64);
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                     dst: Some(dst),
-                    func: FunctionRef::reading(extract),
+                    func: super::channel_half(extract),
                     args: vec![obj_op],
                 }));
                 return Ok((MirOperand::Local(dst), MirType::I64));
@@ -5464,7 +5464,7 @@ impl<'a> MirLowerer<'a> {
         let vec_local = self.builder.alloc_temp(MirType::I64);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(vec_local),
-            func: FunctionRef::reading("rask_vec_view"),
+            func: FunctionRef::reading("rask_vec_view").handing_back("Vec_free_view"),
             args: vec![
                 obj_op.clone(),
                 MirOperand::Constant(MirConst::Int(*len as i64)),
@@ -6716,11 +6716,8 @@ impl<'a> MirLowerer<'a> {
             _ => self.shared_strategy(object),
         };
         if matches!(rest, "new" | "mutex" | "local") {
-            let shape = match strategy {
-                SharedStrategy::Local => declared_shape("Shared_local"),
-                SharedStrategy::Mutex => declared_shape("Shared_mutex"),
-                SharedStrategy::Readers => None,
-            };
+            // The new box is the caller's, freed by its strategy's release.
+            let shape = declared_shape(qualified).map(|s| s.handing_back(strategy.release()));
             return (format!("{}_new", strategy.prefix()), shape);
         }
         // Each strategy's spelling of a verb is the declared `Shared` verb: the
@@ -6737,9 +6734,9 @@ impl<'a> MirLowerer<'a> {
             (SharedStrategy::Local, "take") => ("Cell_take", same_as("take")),
             // Every strategy's clone hands back another handle on the same
             // cell, so the receiver is borrowed and the result is the caller's.
-            (SharedStrategy::Local, "clone") => ("Cell_clone", Some(CallShape::borrows_receiver())),
+            (SharedStrategy::Local, "clone") => ("Cell_clone", Some(CallShape::borrows_receiver().handing_back(strategy.release()))),
             (SharedStrategy::Mutex, "try_read" | "try_write") => ("Mutex_try_lock", same_as("read")),
-            (SharedStrategy::Mutex, "clone") => ("Mutex_clone", Some(CallShape::borrows_receiver())),
+            (SharedStrategy::Mutex, "clone") => ("Mutex_clone", Some(CallShape::borrows_receiver().handing_back(strategy.release()))),
             // `get`/`set`/`replace` exist under every strategy (CE6), not just
             // the one that needs no lock. Left unmapped, `Shared.new(5).get()`
             // type-checked and then failed to link on `Shared_get`.
@@ -6751,7 +6748,7 @@ impl<'a> MirLowerer<'a> {
             (SharedStrategy::Readers, "set") => ("Shared_set", None),
             (SharedStrategy::Readers, "replace") => ("Shared_replace", None),
             (SharedStrategy::Readers, "take") => ("Shared_take", None),
-            (SharedStrategy::Readers, "clone") => ("Shared_clone", Some(CallShape::borrows_receiver())),
+            (SharedStrategy::Readers, "clone") => ("Shared_clone", Some(CallShape::borrows_receiver().handing_back(strategy.release()))),
             _ => return (qualified.to_string(), None),
         };
         (name.to_string(), shape)
@@ -9430,7 +9427,7 @@ impl<'a> MirLowerer<'a> {
         let pairs = self.builder.alloc_temp(MirType::Ptr);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(pairs),
-            func: FunctionRef::keeping("rask_vec_from_static", &[0]),
+            func: FunctionRef::keeping("rask_vec_from_static", &[0]).handing_back("Vec_free"),
             args: vec![
                 MirOperand::Local(blob),
                 MirOperand::Constant(MirConst::Int(entries as i64)),
@@ -9576,7 +9573,7 @@ impl<'a> MirLowerer<'a> {
         let entries_args = self.map_entries_args(map_op.clone(), key_ty, val_ty);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(entries),
-            func: FunctionRef::borrowing("Map_entries"),
+            func: FunctionRef::borrowing("Map_entries").handing_back("Vec_free"),
             args: entries_args,
         }));
 
@@ -10249,7 +10246,7 @@ impl<'a> MirLowerer<'a> {
         let vec_local = self.builder.alloc_temp(MirType::I64);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(vec_local),
-            func: FunctionRef::keeping("rask_vec_from_static", &[0]),
+            func: FunctionRef::keeping("rask_vec_from_static", &[0]).handing_back("Vec_free"),
             args: vec![
                 MirOperand::Local(arr),
                 MirOperand::Constant(MirConst::Int(len as i64)),

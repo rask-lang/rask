@@ -473,9 +473,7 @@ extend string {
 // aggregate at function boundaries while call sites still pass the
 // handle, so `mutate b: StringBuilder` crashed natively.
 
-// No release: `build()` takes the builder away, so freeing one an owner
-// still names would free a block that's already gone.
-@handle
+@handle(release: "rask_string_builder_free")
 public struct StringBuilder { }
 
 extend StringBuilder {
