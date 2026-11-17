@@ -2234,6 +2234,10 @@ pub struct MirLowerer<'a> {
     /// While a `for` body over a sequence is lowered: the names of the loop's
     /// variables a `return` in it moved (`MirContext::return_moves`).
     pub(crate) seq_moved_names: Option<std::collections::HashSet<String>>,
+    /// Body locals of a sequence `for` that live in the enclosing frame
+    /// (`hoist_locals_kept_past_the_body`): their `let` is a write to that
+    /// frame's slot.
+    pub(crate) hoisted_lets: std::collections::HashSet<String>,
     /// Name of the function being lowered (for closure naming)
     parent_name: String,
     /// What the function's attributes say about raw-pointer checks
@@ -4747,6 +4751,7 @@ impl<'a> MirLowerer<'a> {
             c_callback: false,
             addressed_locals: std::collections::HashSet::new(),
             seq_moved_names: None,
+            hoisted_lets: std::collections::HashSet::new(),
             parent_name: func_name,
             pointer_checks: PointerChecks::of(&fn_decl.attrs),
             local_meta: HashMap::new(),

@@ -72,6 +72,47 @@ func run(h: func() -> i64, xs: Vec<func() -> i64>) -> i64 {
     return t + g()
 }
 
+// A closure kept past the body points at a body local, which has to outlive
+// the body's call (#2014).
+func last_first() -> i64 {
+    mut g: func() -> i64 = || 0
+    for v in vecs() {
+        let k = v[0]
+        g = || k
+    }
+    return g()
+}
+
+func pair_kept() -> i64 {
+    mut g: func() -> i64 = || 0
+    for v in vecs() {
+        let w = [v[0], v[1]]
+        g = || w[1]
+    }
+    return g()
+}
+
+func written_after() -> i64 {
+    mut g: func() -> i64 = || 0
+    for v in vecs() {
+        mut k = v[0]
+        g = || k
+        k += 100
+    }
+    return g()
+}
+
+func nested_local() -> i64 {
+    mut g: func() -> i64 = || 1
+    for v in vecs() {
+        for w in vecs() {
+            let k = w[1] + v[0]
+            g = || k
+        }
+    }
+    return g()
+}
+
 test "the closure the last iteration stored is the one returned" {
     let f = last_third()
     assert f() == 6
@@ -102,4 +143,11 @@ test "a parameter and a vector's closures stored in the variable" {
     mut fs: Vec<func() -> i64> = Vec.new()
     fs.push(|| 100)
     assert run(|| base + 2, fs) == 32 + 7 + 7 + 100 + 32
+}
+
+test "a closure kept past the loop body reads the body's local" {
+    assert last_first() == 4
+    assert pair_kept() == 5
+    assert written_after() == 104
+    assert nested_local() == 9
 }

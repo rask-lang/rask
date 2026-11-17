@@ -2040,6 +2040,15 @@ impl<'a> MirLowerer<'a> {
     /// `annotated` is the statement, when it writes the binding's type: the
     /// checker's type for the statement is that type.
     fn lower_binding(&mut self, name: &str, annotated: Option<rask_ast::NodeId>, init: &Expr) -> Result<(), LoweringError> {
+        // A sequence body's local that lives in the enclosing frame
+        // (`hoist_locals_kept_past_the_body`): this body reaches it by address.
+        if self.hoisted_lets.contains(name) {
+            if let Some((slot, _)) = self.locals.get(name).cloned().filter(|(id, _)| self.addressed_locals.contains(id)) {
+                let (init_op, _) = self.lower_expr(init)?;
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign { dst: slot, rvalue: MirRValue::Use(init_op) }));
+                return Ok(());
+            }
+        }
         let is_closure = matches!(&init.kind, ExprKind::Closure { .. });
         let (init_op, inferred_ty) = self.lower_expr(init)?;
 
