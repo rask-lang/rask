@@ -231,13 +231,23 @@ impl TypeChecker {
         self.ctx.constraints.extend(still_open);
     }
 
-    /// Whether `id` is a newtype whose wrapped type is `other`, so a
-    /// mismatch between them is fixed by wrapping or by `.value`.
-    fn wraps(&self, id: TypeId, other: &Type) -> bool {
-        match self.types.get_nominal_underlying(id) {
-            Some(underlying) => self.ctx.apply(underlying) == self.ctx.apply(other),
-            None => false,
-        }
+    /// Whether `id` is a newtype whose wrapped type would unify with `other`,
+    /// so a mismatch between them is fixed by wrapping or by `.value`.
+    ///
+    /// It has to be a trial unify, not `==`: `Vec.new()` into
+    /// `type Names = Vec<string>` is still `Vec<_>`, and a newtype declared
+    /// above the struct it wraps holds that struct by name. Whatever the trial
+    /// binds is thrown away, since the caller is reporting an error anyway.
+    fn wraps(&mut self, id: TypeId, other: &Type, span: Span) -> bool {
+        let Some(underlying) = self.types.get_nominal_underlying(id).cloned() else {
+            return false;
+        };
+        let substitutions = self.ctx.substitutions.clone();
+        let constraints = self.ctx.constraints.len();
+        let fits = matches!(self.unify(&underlying, other, span), Ok(_));
+        self.ctx.substitutions = substitutions;
+        self.ctx.constraints.truncate(constraints);
+        fits
     }
 
     /// A number literal where a type parameter is expected: `let y: T = 5`.
@@ -1483,6 +1493,19 @@ impl TypeChecker {
             // wrap only at return.
             let err_is_none = matches!(self.ctx.apply(err), Type::None);
             let allow_wrap = site.wraps_error_branch() || err_is_none;
+            // A newtype over this very `T?` or `T or E` (`type Opt = i64?`) is
+            // unwrapped with `.value`. Widening would compare it against the
+            // `T` inside and blame the wrong pair.
+            if let Type::Named(id) = resolved_ret {
+                if self.wraps(id, &resolved_expected, span) {
+                    return Err(TypeError::NominalMismatch {
+                        expected: resolved_expected.clone(),
+                        found: resolved_ret.clone(),
+                        nominal_name: self.types.get_nominal_name(id).unwrap(),
+                        span,
+                    });
+                }
+            }
             // OPT29/OPT31: widening adds an optional layer. A value already
             // typed as the target's *inner* optional fills the outer present
             // branch — `const x: T?? = y` where `y: T?` means "the inner one".
@@ -2242,7 +2265,7 @@ impl TypeChecker {
             // Anything else (`Money` against `Board`) is a plain mismatch, so
             // the hint never offers a `.value` that has the wrong type.
             (Type::Named(id), other) | (other, Type::Named(id))
-                if self.wraps(*id, other) =>
+                if self.wraps(*id, other, span) =>
             {
                 let nominal_name = self.types.get_nominal_name(*id).unwrap();
                 Err(TypeError::NominalMismatch {

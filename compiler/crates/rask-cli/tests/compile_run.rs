@@ -957,6 +957,9 @@ fn nominal_hint_only_for_wrapped_type() {
     assert!(!out.contains("wrap with `Wrapped(...)`"), "{out}");
     assert!(out.contains("use `.value` to extract the underlying `i64` from `Money`"), "{out}");
     assert!(out.contains("wrap with `Money(...)`"), "{out}");
+    assert!(out.contains("wrap with `Names(...)`"), "{out}");
+    assert!(out.contains("wrap with `Ahead(...)`"), "{out}");
+    assert!(out.contains("use `.value` to extract the underlying `i64?` from `Opt`"), "{out}");
 }
 
 /// `Payment.Cash(amount: i32)` is E0423 on the type, once per mistake, and the
