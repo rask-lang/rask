@@ -49,6 +49,27 @@ pub fn insert_rc_ops(
     // element copied out of a collection (`retain_copy_out_of_collection`).
     // Collected before this pass adds retains of its own, which cover one
     // hand-off each rather than the name's whole life.
+    //
+    // Not a closure's name for a variable it reaches through its environment
+    // (`load_capture_ref`, `load_capture_own`). The name is the variable's
+    // address, so a retain after a store through it is the variable's
+    // reference, and the variable's home releases it: the frame that built
+    // the closure, or the environment's drop glue. Counted here, the closure
+    // released it again when it returned, and `best = s` inside a loop over a
+    // sequence kept a `string?` with no reference left to its string (#2011).
+    let places: HashSet<LocalId> = func
+        .blocks
+        .iter()
+        .flat_map(|b| b.statements.iter())
+        .filter_map(|st| match &st.kind {
+            MirStmtKind::LoadCapture {
+                dst,
+                access: crate::CaptureAccess::Borrowed | crate::CaptureAccess::Owned,
+                ..
+            } => Some(*dst),
+            _ => None,
+        })
+        .collect();
     let owns_copy: HashSet<LocalId> = func
         .blocks
         .iter()
@@ -57,6 +78,7 @@ pub fn insert_rc_ops(
             MirStmtKind::RcIncContents { local, for_hand_off: false } => Some(*local),
             _ => None,
         })
+        .filter(|l| !places.contains(l))
         .collect();
 
     // The three string steps only have work when there is a string. The
