@@ -502,15 +502,15 @@ impl<'a> MirLowerer<'a> {
             // The tag read has to be emitted while the closure's own builder is
             // still installed, so it lands inside the closure body. An explicit
             // `return` in the body is converted by `terminate_return` instead.
-            // A closure whose type returns `T or E` with a body of type `T` (a
-            // consumer that can't fail, filling a fallible slot) hands back the
-            // success side, as a function declared that way does.
+            // A closure whose type returns `T or E` or `T?` with a body of
+            // type `T` (`|x| x * 2` in a `func(i64) -> i64?` slot) hands back
+            // the success side, as a function declared that way does. Lowering
+            // builds that wrapper; codegen no longer adds it.
             let body_result = self.lower_expr(body).map(|(op, ty)| {
                 if self.is_ordering_ty(&ty) && closure_ret == MirType::I64 {
                     let tag = self.emit_ordering_tag_i64(op);
                     (MirOperand::Local(tag), MirType::I64)
-                } else if matches!(closure_ret, MirType::Result { .. })
-                    && !matches!(ty, MirType::Result { .. })
+                } else if matches!(closure_ret, MirType::Result { .. } | MirType::Option(_))
                     && self.builder.current_block_unterminated()
                 {
                     let wrapped = self.coerce_into_wrapper(

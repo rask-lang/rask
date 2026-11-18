@@ -187,3 +187,43 @@ test "through a function value" {
     assert a_value_in_a_loop() == 6
     assert a_value_on_a_field() == 5
 }
+
+// `h` came in as a parameter and is stored into `g` through a function value.
+// The function keeps `h` exactly as a call of `set_to` by name does, so the
+// caller has to build it on the heap; read as a borrow, `main`'s `h` stayed
+// on its stack and releasing `g` freed a stack address.
+func value_once(h: func() -> i64) -> i64 {
+    mut g: func() -> i64 = || 1
+    let s = set_to
+    s(mutate g, h)
+    return g()
+}
+
+func keep_as_is(mutate g: func() -> i64, n: i64) {
+    let x = g() + n
+}
+
+func swap_in(mutate s: func(mutate func() -> i64, i64)) {
+    s = keep_as_is
+}
+
+// `swap_in` puts a different function in `s`. Taken as still holding
+// `setit`, the call was read as replacing `g`, `g` was built on the heap, and
+// nothing released it.
+func swapped_out() -> i64 {
+    mut g: func() -> i64 = || 1
+    mut s = setit
+    swap_in(mutate s)
+    s(mutate g, 3)
+    return g()
+}
+
+test "a parameter stored through a function value" {
+    let h: func() -> i64 = || 100
+    assert value_once(h) == 100
+    assert h() == 100
+}
+
+test "a function value replaced through a mutate parameter" {
+    assert swapped_out() == 1
+}

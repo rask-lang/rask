@@ -213,7 +213,8 @@ pub(crate) struct KeptThroughCalls {
 
 impl KeptThroughCalls {
     pub(crate) fn build(fns: &[MirFunction]) -> Self {
-        let routes = build_param_routes(fns);
+        let targets = crate::closure_targets::ClosureTargets::build_following_returns(fns);
+        let routes = build_param_routes(fns, &targets);
         let bodies: HashSet<&str> = fns
             .iter()
             .flat_map(|f| f.blocks.iter().flat_map(|b| b.statements.iter()))
@@ -229,7 +230,7 @@ impl KeptThroughCalls {
             })
         });
         Self {
-            targets: crate::closure_targets::ClosureTargets::build_following_returns(fns),
+            targets,
             plain_targets: crate::closure_targets::ClosureTargets::build(fns),
             routes,
             any_keeper,
@@ -675,8 +676,8 @@ fn decide_allocation(
 /// frame captures by value in all of them.
 pub(crate) fn closures_handed_on(fns: &[MirFunction]) -> HashSet<String> {
     let callee_escapes = build_callee_escape_map(fns, CaptureRule::HeapClosure);
-    let routes = build_param_routes(fns);
     let kept = KeptThroughCalls::build(fns);
+    let routes = &kept.routes;
     let mut names = HashSet::new();
 
     for func in fns {
@@ -685,7 +686,7 @@ pub(crate) fn closures_handed_on(fns: &[MirFunction]) -> HashSet<String> {
             continue;
         }
         let aliases = closure_aliases(func, &created);
-        let leaving = leaves_the_frame(func, &routes);
+        let leaving = leaves_the_frame(func, routes, &kept.targets);
         // Only a closure that actually borrows something has a borrow to
         // withdraw, so the map is built from those creates alone.
         let borrows: HashMap<LocalId, &str> = func
@@ -799,8 +800,12 @@ enum Route {
 }
 
 /// `Route` for every parameter of every function, as a fixed point — a
-/// parameter handed to another function goes wherever that one sends it.
-fn build_param_routes(fns: &[MirFunction]) -> HashMap<String, Vec<Route>> {
+/// parameter handed to another function goes wherever that one sends it,
+/// called by name or through a closure (`targets`).
+fn build_param_routes(
+    fns: &[MirFunction],
+    targets: &crate::closure_targets::ClosureTargets,
+) -> HashMap<String, Vec<Route>> {
     let mut routes: HashMap<String, Vec<Route>> = fns
         .iter()
         .map(|f| (f.name.clone(), vec![Route::Stays; f.params.len()]))
@@ -809,7 +814,7 @@ fn build_param_routes(fns: &[MirFunction]) -> HashMap<String, Vec<Route>> {
     loop {
         let mut changed = false;
         for func in fns {
-            let (into_result, away) = frame_routes(func, &routes);
+            let (into_result, away) = frame_routes(func, &routes, targets);
             for (i, p) in func.params.iter().enumerate() {
                 let r = if away.contains(&p.id) {
                     Route::Away
@@ -835,8 +840,12 @@ fn build_param_routes(fns: &[MirFunction]) -> HashMap<String, Vec<Route>> {
 
 /// The locals in `func` whose value may outlive it: returned, stored, or
 /// handed on to something that keeps it.
-fn leaves_the_frame(func: &MirFunction, routes: &HashMap<String, Vec<Route>>) -> HashSet<LocalId> {
-    let (into_result, away) = frame_routes(func, routes);
+fn leaves_the_frame(
+    func: &MirFunction,
+    routes: &HashMap<String, Vec<Route>>,
+    targets: &crate::closure_targets::ClosureTargets,
+) -> HashSet<LocalId> {
+    let (into_result, away) = frame_routes(func, routes, targets);
     into_result.union(&away).copied().collect()
 }
 
@@ -850,6 +859,7 @@ fn leaves_the_frame(func: &MirFunction, routes: &HashMap<String, Vec<Route>>) ->
 fn frame_routes(
     func: &MirFunction,
     routes: &HashMap<String, Vec<Route>>,
+    targets: &crate::closure_targets::ClosureTargets,
 ) -> (HashSet<LocalId>, HashSet<LocalId>) {
     let mut into_result: HashSet<LocalId> = HashSet::new();
     let mut away: HashSet<LocalId> = HashSet::new();
@@ -906,6 +916,32 @@ fn frame_routes(
                             }
                             None => Route::Away,
                         };
+                        match (route, dst) {
+                            (Route::Stays, _) => {}
+                            (Route::Away, _) => changed |= away.insert(id),
+                            (Route::IntoResult, Some(d)) => {
+                                changed |= follow(&mut into_result, &mut away, *d, id);
+                            }
+                            (Route::IntoResult, None) => {}
+                        }
+                    }
+                }
+                // Through a closure, argument `i` goes wherever parameter
+                // `i + 1` of each body it reaches sends it, after the
+                // environment. `let s = set_to; s(mutate g, h)` keeps `h` the
+                // way `set_to(mutate g, h)` does; read as staying, the caller
+                // built `h` on its stack and the frame that took it freed it.
+                // A call nobody can place is left as staying, the same answer
+                // `KeptThroughCalls::keeps` gives when no body keeps a closure.
+                MirStmtKind::ClosureCall { dst, closure, args } => {
+                    let Some(bodies) = targets.known(&func.name, *closure) else { continue };
+                    for (i, arg) in args.iter().enumerate() {
+                        let Some(id) = uses::operand_local(arg) else { continue };
+                        let route = bodies
+                            .iter()
+                            .map(|b| routes.get(b).map_or(Route::Away, |r| r.get(i + 1).copied().unwrap_or(Route::Away)))
+                            .max()
+                            .unwrap_or(Route::Stays);
                         match (route, dst) {
                             (Route::Stays, _) => {}
                             (Route::Away, _) => changed |= away.insert(id),
@@ -1478,6 +1514,7 @@ pub(crate) fn build_callee_escape_map(
         .map(|f| (f.name.clone(), vec![false; f.params.len()]))
         .collect();
     let lent = LentCells::build(fns, captures_holding_heap_closures(fns));
+    let targets = crate::closure_targets::ClosureTargets::build_following_returns(fns);
     loop {
         let mut changed = false;
         for func in fns {
@@ -1498,7 +1535,7 @@ pub(crate) fn build_callee_escape_map(
                 if map.get(&func.name).is_some_and(|e| e[i]) {
                     continue;
                 }
-                if param_escapes_from(func, p.id, rule, &leaving, &map, &lent.slots) {
+                if param_escapes_from(func, p.id, rule, &leaving, &map, &lent.slots, &targets) {
                     if let Some(e) = map.get_mut(&func.name) {
                         e[i] = true;
                         changed = true;
@@ -1514,8 +1551,9 @@ pub(crate) fn build_callee_escape_map(
 
 /// Check if a parameter escapes from its function.
 ///
-/// A parameter "escapes" if it appears in a Call arg, Store value, or Return.
-/// If it only appears in ClosureCall position, the function merely borrows it.
+/// A parameter "escapes" if it appears in a Call arg, Store value, or Return,
+/// or is an argument of a closure call that reaches a body keeping it. Called
+/// itself, the function merely borrows it.
 fn param_escapes_from(
     func: &MirFunction,
     param_id: LocalId,
@@ -1523,6 +1561,7 @@ fn param_escapes_from(
     leaving: &HashSet<LocalId>,
     known: &HashMap<String, Vec<bool>>,
     heap_slots: &HashSet<(String, u32)>,
+    targets: &crate::closure_targets::ClosureTargets,
 ) -> bool {
     // A task block takes a reference of its own to a closure parameter it
     // captures (`retain_borrowed_closures_handed_on`), so for who frees what
@@ -1600,6 +1639,24 @@ fn param_escapes_from(
                                 uses_up_callback(callee)
                             });
                         if !borrows {
+                            return true;
+                        }
+                    }
+                }
+                // Passed through a closure to bodies that are known: argument
+                // `i` is each body's parameter `i + 1`, after the environment,
+                // and escapes where that parameter does. `let s = set_to;
+                // s(mutate g, h)` keeps `h` as `set_to(mutate g, h)` does; read
+                // as a borrow, the caller built `h` on its stack and the frame
+                // that took it freed it. A call nobody can place stays a
+                // borrow, as before.
+                MirStmtKind::ClosureCall { closure, args, .. } => {
+                    let Some(bodies) = targets.known(&func.name, *closure) else { continue };
+                    for (i, arg) in args.iter().enumerate() {
+                        if !names.iter().any(|n| uses::operand_reads(arg, *n)) {
+                            continue;
+                        }
+                        if bodies.iter().any(|b| known.get(b).and_then(|e| e.get(i + 1)).copied().unwrap_or(true)) {
                             return true;
                         }
                     }

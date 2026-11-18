@@ -133,6 +133,16 @@ impl ClosureTargets {
                     locals.insert((func.name.clone(), dst), Flow::Unknown);
                 }
             }
+            // A closure variable whose address goes to a call can be written
+            // there (`swap(mutate s)` puts another function in `s`), and this
+            // walk doesn't follow a store through a parameter back into the
+            // caller. Read as still holding what it held, `s(mutate g, 3)`
+            // after the swap was taken for a call of the old function.
+            for (src, _) in addresses_handed_to_calls(func) {
+                if is_closure(func, src) {
+                    locals.insert((func.name.clone(), src), Flow::Unknown);
+                }
+            }
         }
 
         loop {
@@ -340,6 +350,28 @@ fn merge_into<K: std::hash::Hash + Eq>(
 /// The local a value was copied from, for the shapes that carry a closure
 /// through unchanged. A by-ref capture holds the slot's address, so the body
 /// reads it with a `LoadCapture` and then a `Deref`.
+/// Locals whose address (`&x`) is an argument of a call, by name or through
+/// a closure, with the name holding the address.
+fn addresses_handed_to_calls(func: &MirFunction) -> Vec<(LocalId, LocalId)> {
+    let stmts = || func.blocks.iter().flat_map(|b| b.statements.iter());
+    let refs: HashMap<LocalId, LocalId> = stmts()
+        .filter_map(|st| match &st.kind {
+            MirStmtKind::Assign { dst, rvalue: MirRValue::Ref(src) } => Some((*dst, *src)),
+            _ => None,
+        })
+        .collect();
+    stmts()
+        .flat_map(|st| match &st.kind {
+            MirStmtKind::Call { args, .. } | MirStmtKind::ClosureCall { args, .. } => args.as_slice(),
+            _ => &[],
+        })
+        .filter_map(|a| match a {
+            MirOperand::Local(a) => refs.get(a).map(|src| (*src, *a)),
+            _ => None,
+        })
+        .collect()
+}
+
 fn copied_from(rvalue: &MirRValue) -> Option<LocalId> {
     match rvalue {
         MirRValue::Use(MirOperand::Local(src)) | MirRValue::Deref(MirOperand::Local(src)) => {
