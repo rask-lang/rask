@@ -165,6 +165,7 @@ Neither is something a reader can see in `let g = f`.
 | **CV1: Function values move** | Every `func(…) -> R` value moves on assignment, on a `take` and on a store, whatever it captured. Each mention of a declared function's name is a fresh value, so `keep(add)` twice is fine; a value bound to a local (`let f = add`) moves like any other |
 | **CV2: `.clone()` copies the environment** | `f.clone()` builds a second closure with its own environment. A carried capture is cloned into it; a pointed-at capture is pointed at again, so the clone has the same limit (MC3). A closure with nothing to clone (a named function, a closure with no captures) clones for the cost of a pointer |
 | **CV3: The limit rides the environment** | A closure carried into another closure's environment brings its limit along (SL5 applied to environments). `b.on_click = \|\| p() + 1`, `register(\|\| p() + 1)` with `register(take f)`, or sending it on a channel, with `p` pointing at a local, is an error there (SL5), the same as doing it with `p` itself |
+| **CV4: A closure carries only what it can clone** | A carried capture must be Cloneable (`type.generics/CL1`), so every closure can be cloned and `f.clone()` never needs to know what `f` captured. Carrying something that isn't is an error at the capture: an `any Interface` with no clone, a `Handles`. Put it in a `Shared` and carry that, which clones as a reference. A pointed-at capture can be anything: the clone points at it again |
 
 Most code never moves a closure at all. `v.map(f)`, `for x in seq` and a callback that is
 only called all borrow it, and a borrow is free. The move shows up when one closure
@@ -435,6 +436,7 @@ FIX: Use Shared<T> for shared mutable state:
 | One closure to two keepers | Second use is a use-after-move (CV1); `.clone()` one of them (CV2) |
 | Borrowed closure parameter stored | Error (PM6): the parameter is the caller's. `take` on the declaration |
 | Carrying closure captures a pointing closure | The pointing closure's limit comes along (CV3) |
+| Carrying closure captures a non-Cloneable value | Error (CV4); carry a `Shared` of it |
 
 I had carrying closures allowed to consume a resource capture for a while: the
 closure owned it, so the `close()` looked legitimate. It wasn't — `store(||

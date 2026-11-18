@@ -223,7 +223,7 @@ func main() -> void or Error {
 
 | Rule | Description |
 |------|-------------|
-| **S4: serve** | `http.serve(addr, handler)` — one-line server for simple cases. Spawns a green task per request, each with its own `.clone()` of `handler` (`mem.closures/CV2`), so per-request state the handler carries isn't shared; state shared across requests is a `Shared<T>`. Requires `using Multitasking` |
+| **S4: serve** | `http.serve(addr, handler)` — one-line server for simple cases. Spawns a green task per request, each with its own `.clone()` of `handler` (`mem.closures/CV2`), so a handler that writes what it carried is an error at the call (`conc.async/B4`): state shared across requests is a `Shared<T>`. The clone copies what the handler carried, so large read-only state goes in a `Shared` too, which clones as a reference. Requires `using Multitasking` |
 
 <!-- surface -->
 ```rask
