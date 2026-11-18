@@ -491,6 +491,13 @@ impl<'a> MirLowerer<'a> {
             // A closure is its own frame with its own return, so a `try` in it
             // leaves the closure even when the closure sits in a `test` block.
             let saved_in_test = std::mem::replace(&mut self.in_test_body, false);
+            // So is a closure written inside a loop over a sequence, or inside
+            // an inlined callback: its `return` answers the closure, not the
+            // enclosing function, and what it moves stays its own. Kept, the
+            // redirect sent the closure's `return` to a block id of the loop
+            // body's function (#2010).
+            let saved_inline = self.inline_return_target.take();
+            let saved_moved = self.seq_moved_names.take();
 
             // The tag read has to be emitted while the closure's own builder is
             // still installed, so it lands inside the closure body. An explicit
@@ -524,6 +531,8 @@ impl<'a> MirLowerer<'a> {
             self.loop_stack = saved_loop_stack;
             self.ensure_stack = saved_ensure_stack;
             self.in_test_body = saved_in_test;
+            self.inline_return_target = saved_inline;
+            self.seq_moved_names = saved_moved;
             self.restore_names(outer_param_names);
 
             let (body_val, _body_ty) = body_result?;
