@@ -2626,7 +2626,7 @@ impl<'a> MirLowerer<'a> {
             // to register its name instead missed one form after another — a
             // `for` element, a `T?` payload, a `with` binding, a `Sequence`
             // element (#869, #1151, #1241, #1421).
-            if let Some((closure_local, ret_ty)) = self.callable_local(func) {
+            if let Some((closure_local, ret_ty)) = self.callable_local(func)? {
                 let result_local = self.builder.alloc_temp(ret_ty.clone());
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::ClosureCall {
                     dst: Some(result_local),

@@ -3019,15 +3019,22 @@ impl<'a> MirLowerer<'a> {
         }
     }
 
-    /// When `callee` names a local holding a function value: that local, and
-    /// what calling it answers. Read off the checker's type for the callee, so
-    /// every way of binding a function value is covered at once.
-    pub(crate) fn callable_local(&self, callee: &Expr) -> Option<(LocalId, MirType)> {
-        let ExprKind::Ident(name) = &callee.kind else { return None };
-        let (local, _) = self.locals.get(name)?;
-        let ty = self.ctx.lookup_raw_type(callee.id)?;
-        let ret = self.ctx.callable_ret_ty(&ty, self.ctx.type_names)?;
-        Some((*local, ret))
+    /// When `callee` names a local holding a function value: the local with
+    /// the closure, and what calling it answers. Read off the checker's type
+    /// for the callee, so every way of binding a function value is covered at
+    /// once. A `mutate` parameter's local is the caller's address, so the
+    /// closure is loaded through it, the way any read of the name is.
+    pub(crate) fn callable_local(&mut self, callee: &Expr) -> Result<Option<(LocalId, MirType)>, LoweringError> {
+        let ExprKind::Ident(name) = &callee.kind else { return Ok(None) };
+        let Some((local, _)) = self.locals.get(name).cloned() else { return Ok(None) };
+        let Some(ty) = self.ctx.lookup_raw_type(callee.id) else { return Ok(None) };
+        let Some(ret) = self.ctx.callable_ret_ty(&ty, self.ctx.type_names) else { return Ok(None) };
+        if self.meta(name).is_some_and(|m| m.scalar_through_ptr.is_some()) {
+            let (op, _) = self.lower_expr(callee)?;
+            let MirOperand::Local(loaded) = op else { return Ok(None) };
+            return Ok(Some((loaded, ret)));
+        }
+        Ok(Some((local, ret)))
     }
 
     /// Box a value on its way into a declared `Heap<T>` slot, unless it is a
