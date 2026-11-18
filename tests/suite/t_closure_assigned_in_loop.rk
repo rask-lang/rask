@@ -58,6 +58,21 @@ func nested() -> i64 {
     return g()
 }
 
+// Both bodies write the variable. The outer body hands the cell on to the
+// inner one, and took that for owning it: it freed the cell on its way out.
+func written_in_both_bodies() -> i64 {
+    mut g: func() -> i64 = || 1
+    mut t = 0
+    for v in vecs() {
+        for w in vecs() {
+            t += g()
+            g = || 2
+        }
+        g = || 3
+    }
+    return t * 10 + g()
+}
+
 func run(h: func() -> i64, xs: Vec<func() -> i64>) -> i64 {
     mut g: func() -> i64 = h
     mut t = 0
@@ -128,6 +143,10 @@ test "a closure variable assigned another captured closure" {
 
 test "nested loop bodies write the outer function's variable" {
     assert nested() == 40
+}
+
+test "inner and outer loop bodies both write the variable" {
+    assert written_in_both_bodies() == 83
 }
 
 test "a parameter and a vector's closures stored in the variable" {

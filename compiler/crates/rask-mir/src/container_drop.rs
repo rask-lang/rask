@@ -3353,6 +3353,15 @@ fn closure_cell_is_a_variable(
     if !matches!(ty, MirType::FuncPtr(_)) || handed_on.contains(&cell) || ensure_captured(func, cell) {
         return None;
     }
+    // A cell read out of the environment is the enclosing frame's variable,
+    // which that frame releases. A sequence body that handed it on to an inner
+    // body's closure took it for its own and freed it on the way out.
+    let from_env = func.blocks.iter().flat_map(|b| b.statements.iter()).any(|st| {
+        matches!(&st.kind, MirStmtKind::LoadCapture { dst, .. } if *dst == cell)
+    });
+    if from_env {
+        return None;
+    }
     let heap = heap_closures(func);
     let borrowed = borrowed_closures(func);
     if !values.iter().all(|(v, _)| matches!(v, MirOperand::Local(l) if heap.contains(l) || borrowed.contains(l))) {
