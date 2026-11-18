@@ -247,9 +247,16 @@ fn elide_local_only(func: &mut MirFunction, own: &HashSet<String>) -> usize {
     // result) and each element's copy in one phi, the group read as "out
     // of one container, into another" because the answer was pushed, and
     // the release of each replaced accumulator went (#1987).
+    //
+    // Escaping is decided per group too. `return if c { b } else { a }` on two
+    // borrowed parameters retains each arm's copy and returns the join; only
+    // the join escapes, and dropping the arms' retains handed the caller a
+    // reference nobody took, so the string was freed twice.
     let mut keep: HashSet<LocalId> = HashSet::new();
     for group in copy_groups(func, &string_locals) {
-        if group.iter().any(|l| views.contains(l) || owned.contains(l) || handed_over.contains(l)) {
+        if group.iter().any(|l| {
+            escaped.contains(l) || views.contains(l) || owned.contains(l) || handed_over.contains(l)
+        }) {
             keep.extend(group);
         }
     }
