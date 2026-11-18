@@ -4835,14 +4835,14 @@ impl<'a> OwnershipChecker<'a> {
             }
             ExprKind::GuardPattern { expr, pattern: _, else_branch } => {
                 self.check_expr(expr);
-                self.check_expr(else_branch);
+                self.check_fallback(else_branch);
             }
             ExprKind::IsPattern { expr, pattern: _ } => {
                 self.check_scrutinee(expr);
             }
             ExprKind::NullCoalesce { value, default } => {
                 self.check_expr(value);
-                self.check_expr(default);
+                self.check_fallback(default);
             }
             ExprKind::Cast { expr: inner, ty: _ } => {
                 self.check_expr(inner);
@@ -9891,6 +9891,19 @@ impl<'a> OwnershipChecker<'a> {
                 }
             }
             _ => false,
+        }
+    }
+
+    /// A branch that runs on one path only: a guard's `else`, the default
+    /// of `??`. One that leaves (`?? return out`) hands nothing on to the
+    /// code after it; one that falls through leaves its moves maybe-done,
+    /// as an `if` without an `else` does.
+    fn check_fallback(&mut self, branch: &Expr) {
+        let before = self.bindings.clone();
+        self.check_expr(branch);
+        let after = std::mem::replace(&mut self.bindings, before);
+        if !Self::is_terminal_expr(branch) {
+            self.merge_branch_bindings(&after);
         }
     }
 
