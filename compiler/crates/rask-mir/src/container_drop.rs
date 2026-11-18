@@ -1042,6 +1042,20 @@ fn param_is_kept_by(
         MirStmtKind::ZeroAggregate { local } if *local != param => {
             names.remove(local);
         }
+        // A parameter a closure captures by reference lives in a memory cell,
+        // and the body reads it back with `x = *param`. That read is the
+        // parameter's value until something new is written into the cell.
+        // Missed, `for v in s { let g = || v.len(); if c { keep = v } }`
+        // stored the item without the sequence knowing, so it freed it after
+        // the call (#2008).
+        MirStmtKind::Assign { dst, rvalue: MirRValue::Deref(MirOperand::Local(src)) }
+            if *src == param && names.contains(&param) && func.local_ty(*dst) == func.local_ty(param) =>
+        {
+            names.insert(*dst);
+        }
+        MirStmtKind::Store { addr, offset: 0, .. } if *addr == param => {
+            names.remove(&param);
+        }
         _ => {}
     };
     let mut entry: HashMap<BlockId, HashSet<LocalId>> = HashMap::new();
@@ -1891,10 +1905,10 @@ fn insert_for_function(
     // entry on (`transform::addr_taken`): its name is the slot's address, not
     // the container, so it is followed as a cell.
     let resident = crate::transform::addr_taken::analyze(func).owned;
-    let param_cells: Vec<(LocalId, &'static str)> =
+    let mut param_cells: Vec<(LocalId, &'static str)> =
         owned.iter().filter(|(id, _)| resident.contains(id)).copied().collect();
     owned.retain(|(id, _)| !resident.contains(id));
-    if made_here.is_empty() && owned.is_empty() {
+    if made_here.is_empty() && owned.is_empty() && param_cells.is_empty() {
         // A string cell needs no container of the frame's own: a function
         // that made none still releases the string an `ensure` body reads.
         let cells = cells_this_frame_frees(func, all, &HashMap::new(), &param_cells, keeps, &HashMap::new());
@@ -1916,7 +1930,10 @@ fn insert_for_function(
     let ensured = consumed_by_an_ensure(func, all, &fresh, keeps);
 
     let before_lent: HashSet<LocalId> = tracked.keys().copied().collect();
-    let lent = lent_slots(func, &mut tracked, kept);
+    let lent = lent_slots(func, &mut tracked, kept, &param_cells);
+    // A parameter cell followed as a slot is the plan's to free; the rest are
+    // freed whole by the cell rule.
+    param_cells.retain(|(p, _)| !lent.slots.contains_key(p));
     // Names for what a lent slot holds: loads from it and their copies. Not
     // the slot's addresses, nor the closures that borrow it, which
     // `lent_slots` tracks under the same free.
@@ -1931,7 +1948,8 @@ fn insert_for_function(
         })
         .map(|(id, free)| (*id, *free))
         .collect();
-    let owned: HashSet<LocalId> = owned.into_iter().map(|(id, _)| id).collect();
+    let owned: HashSet<LocalId> =
+        owned.into_iter().map(|(id, _)| id).chain(func.params.iter().map(|p| p.id).filter(|p| lent.slots.contains_key(p))).collect();
     let facts =
         container_facts(func, &tracked, &made_here, &ensured, &lent, keeps, &passed, &owned);
     let plan = crate::analysis::ownership::plan(
@@ -3305,6 +3323,7 @@ fn lent_slots(
     func: &MirFunction,
     tracked: &mut HashMap<LocalId, &'static str>,
     kept: &HashMap<String, Vec<bool>>,
+    param_cells: &[(LocalId, &'static str)],
 ) -> LentSlots {
     let mut out = LentSlots {
         slots: HashMap::new(),
@@ -3353,12 +3372,20 @@ fn lent_slots(
     candidates.sort_by_key(|l| l.0);
     candidates.dedup();
     for slot in candidates {
-        if not_lent.contains(&slot) || params.contains(&slot) || !is_container_shaped(func, slot) {
+        if not_lent.contains(&slot) || !is_container_shaped(func, slot) {
+            continue;
+        }
+        // An owned parameter in a cell is filled by the call, on entry, with
+        // the container the frame owns. Followed as a slot, it is freed on
+        // the paths that don't give it away: a loop body that captures its
+        // item and keeps it on one branch frees it on the other (#2008).
+        let entry_fill = param_cells.iter().find(|(p, _)| *p == slot).map(|(_, f)| *f);
+        if params.contains(&slot) && entry_fill.is_none() {
             continue;
         }
         // Every store fills the whole slot with a local, and at least one of
         // them is a container this frame made.
-        let mut free = None;
+        let mut free = entry_fill;
         let mut whole = true;
         for stmt in &stmts {
             if let MirStmtKind::Store { addr, offset, value, .. } = &stmt.kind {
