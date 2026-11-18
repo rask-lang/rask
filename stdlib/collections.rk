@@ -910,8 +910,10 @@ extend Vec<Vec<T>> {
 }
 
 extend Wide<T> {
-    /// Transform each lane. Lazy — records `f`, runs nothing.
-    public func map(self, f: func(T) -> U) -> Wide<U> {
+    /// Transform each lane. Lazy — records `f`, runs nothing. Takes the plan
+    /// it extends: the new one carries its `run` (mem.closures/CM2), and a
+    /// borrowed `self` would leave that the caller's (CM3).
+    public func map(take self, f: func(T) -> U) -> Wide<U> {
         let src = self.run
         return Wide(run: || {
             mut out: Vec<U> = Vec.new()
@@ -924,7 +926,7 @@ extend Wide<T> {
 
     /// Combine two plans lane by lane. Lazy. The lane counts have to match
     /// when the plan runs.
-    public func zip_with(self, other: Wide<U>, f: func(T, U) -> V) -> Wide<V> {
+    public func zip_with(take self, take other: Wide<U>, f: func(T, U) -> V) -> Wide<V> {
         let a = self.run
         let b = other.run
         return Wide(run: || {

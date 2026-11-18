@@ -437,8 +437,17 @@ extend Sequence<StringSlice> {
 // a `T` element and nothing to flatten.
 extend Sequence<Sequence<U>> {
     /// Flatten one level: yield every item of every inner sequence.
+    ///
+    /// Not `flat_map(|inner| inner)`: a yield lends its item (SEQ34), so the
+    /// callback would be handing back a sequence it only borrowed.
     public func flatten(take self) -> Sequence<U> {
-        return self.flat_map(|inner| inner)
+        return |yield| {
+            for inner in self {
+                for x in inner {
+                    if !yield(x) { return }
+                }
+            }
+        }
     }
 }
 

@@ -378,13 +378,14 @@ impl<'a> MirLowerer<'a> {
         }
         // What the environment owns: everything carried in by value (CM2), and
         // a task's copies (conc.async/S6). A lent parameter stays the caller's,
-        // except a string, whose slot holds a reference taken at the create
-        // (`rc_insert`) rather than the caller's own.
+        // except a copy: a string, or a Copy struct holding strings, whose slot
+        // holds references taken at the create (`rc_insert`) rather than the
+        // caller's own. `keeper(l: Line) -> || l` leaked its string otherwise.
         for (cap, (_, _, ty, _)) in captures.iter_mut().zip(free_vars.iter()) {
             if cap.by_ref {
                 continue;
             }
-            cap.owns = if !cap.lent {
+            cap.owns = if !cap.lent || cap.copy {
                 Some(ty.clone())
             } else if *ty == MirType::Buffer {
                 Some(MirType::Buffer)
