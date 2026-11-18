@@ -110,6 +110,23 @@ fn retain_handle_captures(func: &mut MirFunction) {
     if made.is_empty() {
         return;
     }
+    // A copy of a handle is the same handle. `let tx = tx0.clone()` with
+    // `tx0` unused after is a move, which clone elision leaves as a plain
+    // copy, so the task captured a name this pass didn't know and got no
+    // reference of its own: in a loop it was moved once per turn (#2005).
+    let mut grew = true;
+    while grew {
+        grew = false;
+        for stmt in func.blocks.iter().flat_map(|b| b.statements.iter()) {
+            if let MirStmtKind::Assign { dst, rvalue: MirRValue::Use(MirOperand::Local(src)) } = &stmt.kind {
+                if let Some(free) = made.get(src).copied() {
+                    if made.insert(*dst, free).is_none() {
+                        grew = true;
+                    }
+                }
+            }
+        }
+    }
     let mut next_id = func
         .locals
         .iter()
