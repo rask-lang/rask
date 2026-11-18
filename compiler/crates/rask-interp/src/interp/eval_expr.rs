@@ -2612,16 +2612,22 @@ impl Interpreter {
                 // of the split were once added together with only one wired
                 // here, and `own` aliased: `mut n = 0; let f = own || { print(n)
                 // }; n = 42; f()` printed 42 on the interpreter and 0 on native.
-                let captured = if self.escaping_closures.contains(&expr.id) {
-                    self.env.capture_snapshot()
+                let carried: Vec<String> = if self.escaping_closures.contains(&expr.id) {
+                    self.closure_captures.get(&expr.id).cloned().unwrap_or_default()
                 } else {
+                    Vec::new()
+                };
+                let captured = if carried.is_empty() {
                     self.env.capture_shared()
+                } else {
+                    self.env.capture_snapshot(&carried)
                 };
                 Ok(Value::Closure {
                     params: params.iter().map(|p| p.name.clone()).collect(),
                     body: (**body).clone(),
                     captured_env: captured,
                     lent: self.env.lent_names(),
+                    carried,
                     task_bound: self.closure_is_task_bound(expr.id),
                     generics: self.generic_frames.last().cloned().flatten(),
                     // A real error side: `T?` is a `Result` whose error is

@@ -637,6 +637,9 @@ pub struct TypedProgram {
     /// ownership pass and written back here, because lowering and the
     /// interpreter both have to agree with it.
     pub escaping_closures: std::collections::HashSet<NodeId>,
+    /// What each closure literal captures, by name. Worked out by the
+    /// ownership pass; the interpreter's carrying closure holds these.
+    pub closure_captures: HashMap<NodeId, Vec<String>>,
     /// Assignments whose new value is built out of the old one, so the slot's
     /// old value isn't released before the write (`rask_ownership`). Worked out
     /// by the ownership pass and written back here, like `escaping_closures`.

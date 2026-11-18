@@ -39,6 +39,5 @@ test "closures made by map" {
     let plain: Vec<i64> = [1, 2, 3]
     let fs = plain.map(|x| adder(x)).to_vec()
     assert fs.len() == 3
-    let f = fs[2]
-    assert f(10) == 13
+    assert fs[2](10) == 13
 }

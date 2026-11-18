@@ -70,6 +70,14 @@ pub enum OwnershipErrorKind {
         captured: String,
     },
 
+    /// mem.closures/CV4: a carrying closure holds a value that can't be
+    /// cloned, so the closure itself couldn't be.
+    #[error("a closure that carries its captures can't hold `{captured}`: `{ty}` isn't Cloneable")]
+    CarriesUncloneable {
+        captured: String,
+        ty: String,
+    },
+
     /// mem.borrowing/S5: `mut x = value.field` on a non-Copy field — a second,
     /// writable name for storage the source still holds.
     #[error("`{binding}` and `{path}` would be the same `{field_ty}`, both writable")]

@@ -28,7 +28,7 @@ func set_twice(mutate g: func() -> i64, n: i64) {
 }
 
 func set_to(mutate g: func() -> i64, h: func() -> i64) {
-    g = h
+    g = h.clone()
 }
 
 func bump(mutate g: func() -> i64) {

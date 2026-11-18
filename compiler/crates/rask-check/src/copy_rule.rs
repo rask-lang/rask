@@ -240,7 +240,7 @@ impl TypeTable {
             }
 
             // Function types are Copy (just a pointer)
-            Type::Fn { .. } => Copy,
+            Type::Fn { .. } => Move,
 
             // An inference variable that never settled.
             Type::Var(_) => Unknown,

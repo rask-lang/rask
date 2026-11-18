@@ -368,6 +368,7 @@ impl Interpreter {
             }
             Value::Struct(..) if method == "clone" => return Ok(receiver.deep_clone()),
             Value::Enum { .. } if method == "clone" => return Ok(receiver.deep_clone()),
+            Value::Closure { .. } if method == "clone" => return Ok(receiver.deep_clone()),
             // E9: `.discriminant()` is the variant's *discriminant value*, and
             // E15 says `Variant = N` assigns that value — so on an enum with
             // explicit values it's N, not the position. This answered the

@@ -212,6 +212,8 @@ pub struct Interpreter {
     /// ownership pass. Those snapshot their captures; the rest share the live
     /// slots so a write reaches the enclosing variable (MC4).
     pub(crate) escaping_closures: std::collections::HashSet<rask_ast::NodeId>,
+    /// What each closure literal captures (ownership's answer).
+    pub(crate) closure_captures: Arc<HashMap<rask_ast::NodeId, Vec<String>>>,
     /// Closures that captured a link or a `Local` box (#1356).
     pub(crate) task_bound_closures: std::collections::HashSet<rask_ast::NodeId>,
     /// Closures in a generic body, with each capture whose type mentions a
@@ -549,6 +551,7 @@ impl Interpreter {
             source_info: None,
             node_types: HashMap::new(),
             escaping_closures: std::collections::HashSet::new(),
+            closure_captures: Default::default(),
             task_bound_closures: std::collections::HashSet::new(),
             generic_closure_captures: Arc::new(HashMap::new()),
             types: Arc::new(rask_check::TypeTable::default()),
@@ -599,6 +602,7 @@ impl Interpreter {
             cli_args: args,
             node_types: HashMap::new(),
             escaping_closures: std::collections::HashSet::new(),
+            closure_captures: Default::default(),
             task_bound_closures: std::collections::HashSet::new(),
             generic_closure_captures: Arc::new(HashMap::new()),
             types: Arc::new(rask_check::TypeTable::default()),
@@ -655,6 +659,7 @@ impl Interpreter {
             source_info: None,
             node_types: HashMap::new(),
             escaping_closures: std::collections::HashSet::new(),
+            closure_captures: Default::default(),
             task_bound_closures: std::collections::HashSet::new(),
             generic_closure_captures: Arc::new(HashMap::new()),
             types: Arc::new(rask_check::TypeTable::default()),
@@ -789,6 +794,7 @@ impl Interpreter {
         self.literal_conversions = typed.literal_conversions.clone();
         self.conformance_calls = typed.conformance_calls.clone();
         self.escaping_closures = typed.escaping_closures.clone();
+        self.closure_captures = Arc::new(typed.closure_captures.clone());
         self.task_bound_closures = typed.task_bound_closures.clone();
         self.generic_closure_captures = Arc::new(typed.generic_closure_captures.clone());
         self.types = Arc::new(typed.types.clone());
@@ -1014,6 +1020,7 @@ impl Interpreter {
         child.methods = self.methods.clone();
         child.node_types = self.node_types.clone();
         child.escaping_closures = self.escaping_closures.clone();
+        child.closure_captures = Arc::clone(&self.closure_captures);
         child.task_bound_closures = self.task_bound_closures.clone();
         child.generic_closure_captures = self.generic_closure_captures.clone();
         child.types = self.types.clone();

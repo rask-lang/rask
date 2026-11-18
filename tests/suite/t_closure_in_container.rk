@@ -130,7 +130,7 @@ test "std.collections — a Map of closures" {
         return x * base
     })
     assert m.len() == 2
-    let f = m["add"]
+    let f = m["add"].clone()
     assert f(5) == 9
 }
 

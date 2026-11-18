@@ -216,7 +216,7 @@ impl Interpreter {
             "clone" | "to_vec" => {
                 let guard = v.lock().unwrap();
                 let cloned = crate::value::VecData {
-                    items: guard.items.iter().map(Value::clone_as_element).collect(),
+                    items: guard.items.iter().map(Value::deep_clone).collect(),
                     bound: guard.bound,
                     freed: false,
                     cursors: Default::default(),
@@ -951,7 +951,7 @@ impl Interpreter {
                 Ok(Value::vec(pairs))
             }
             // Deep, for the same reason as `Vec.clone`.
-            "clone" => Ok(Value::Map(Arc::clone(m)).clone_as_element()),
+            "clone" => Ok(Value::Map(Arc::clone(m)).deep_clone()),
             "modify_with_default" => {
                 let key = args.get(0).cloned().unwrap_or(Value::Unit);
                 let factory = args.get(1).ok_or(RuntimeError::ArityMismatch {

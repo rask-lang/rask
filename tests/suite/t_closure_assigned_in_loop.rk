@@ -39,14 +39,14 @@ func early() -> func() -> i64 {
 func gather() -> i64 {
     mut fs: Vec<func() -> i64> = Vec.new()
     let g: func() -> i64 = || 3
-    for v in vecs() { fs.push(g) }
+    for v in vecs() { fs.push(g.clone()) }
     return fs[0]() + fs[1]()
 }
 
 func swap() -> i64 {
     let h: func() -> i64 = || 5
     mut g: func() -> i64 = || 1
-    for v in vecs() { g = h }
+    for v in vecs() { g = h.clone() }
     return g() + h()
 }
 
@@ -74,16 +74,16 @@ func written_in_both_bodies() -> i64 {
 }
 
 func run(h: func() -> i64, xs: Vec<func() -> i64>) -> i64 {
-    mut g: func() -> i64 = h
+    mut g: func() -> i64 = h.clone()
     mut t = 0
     for v in vecs() {
         t += g()
         g = || 7
     }
     t += g()
-    for f in xs { g = f }
+    for f in xs { g = f.clone() }
     t += g()
-    g = h
+    g = h.clone()
     return t + g()
 }
 
