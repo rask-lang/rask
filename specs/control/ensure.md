@@ -253,6 +253,7 @@ If a value is consumed explicitly before scope exit, the ensure is cancelled.
 | **C3: Definite at every exit** | At every scope-exit point, the consumption state of an ensured value must be statically definite — consumed on all paths reaching that exit, or on none. Which cleanups run is decided at compile time, never by hidden runtime state |
 | **C4: Maybe-consumed is a compile error** | If any exit point is reachable with the value both consumed and unconsumed (consumed on one branch, then paths merge), compile error. Restructure: exit inside the consuming branch, or consume on every path |
 | **C5: All consumption is one analysis** | Sending on a channel, passing to a `take` parameter, and `take self` methods are the same consumption for C3 — no special channel rule |
+| **C6: Only the subject cancels** | Consumption means the value an ensure cleans up (its receiver, or the root of a field receiver such as `p.a`) is given away: a `take` argument, a `take self` call, a send, a task or closure capture, `return v`, `break v`. Consuming one field cancels that field's ensure only. Anything else the ensure reads must still be there when it runs, so giving it away while the ensure is owed is a compile error (`E0976`); a `let` that shadows a name is a different value and touches neither |
 
 <!-- test: skip -->
 ```rask
@@ -572,7 +573,7 @@ func process() {
 
 Send is consumption like any other (C5) — it cancels the ensure and falls under the same C3/C4 definiteness rules. (An earlier draft made send-with-active-ensure an outright error; C5 replaces that.)
 
-### Implementation status (C3–C5)
+### Implementation status (C3–C6)
 
 Static definiteness (C3/C4) is enforced for any value an ensure names, resource or not: at scope exit it must be *definitely* consumed (ensure cancelled) or *definitely* not (ensure runs), and a maybe-consumed merge is `E0821` (`rask-ownership`, `check_watch_definite` and `check_resource_consumption`). The ownership pass also records which expressions consume a value an ensure names (`OwnershipResult::ensure_cancels`). Both backends act on that record and nothing else: native sets the ensure's flag at those expressions (`ResourceConsume`), and the interpreter marks the ensure cancelled when it evaluates one. A spelling of consumption therefore can't be missed by one backend and seen by the other (#1978, #1989, #1992). Tracked:
 

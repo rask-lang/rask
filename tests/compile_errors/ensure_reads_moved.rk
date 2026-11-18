@@ -1,0 +1,41 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: a value an ensure reads, other than the one it closes, is
+// moved while the ensure is still owed (E0976, ctrl.ensure/C6).
+//
+// Giving away the resource an ensure closes cancels the ensure. Giving away
+// something else it reads can't cancel it, since the resource still needs
+// closing, so the ensure would run later on a value that is gone (natively,
+// a read of freed memory).
+
+@resource
+struct Conn {
+    id: i64
+}
+
+extend Conn {
+    func close(take self, why: string) {}
+}
+
+func sink(take v: Vec<string>) -> u64 {
+    return v.len()
+}
+
+func moved_while_owed() {
+    mut tag: Vec<string> = Vec.new()
+    tag.push("tag")
+    let c = Conn(id: 1)
+    ensure c.close("{tag.len()}")
+    // ERROR: `tag` is read by the ensure above and moved here
+    sink(tag)
+}
+
+// Reading it is fine; so is consuming the resource itself.
+func read_only() {
+    mut tag: Vec<string> = Vec.new()
+    tag.push("tag")
+    let c = Conn(id: 2)
+    ensure c.close("{tag.len()}")
+    println("{tag.len()}")
+}
+
+func main() {}

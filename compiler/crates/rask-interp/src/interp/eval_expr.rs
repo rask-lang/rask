@@ -857,10 +857,21 @@ impl Interpreter {
     pub(crate) fn eval_expr(&mut self, expr: &Expr) -> Result<Value, RuntimeDiagnostic> {
         let result = self.eval_expr_steps(expr);
         // ctrl.ensure/C1: this expression consumed what an ensure names, so
-        // that ensure doesn't run. The consumption happened whether the
-        // expression went on to succeed or not.
-        if let Some(ensures) = self.ensure_cancels.get(&expr.id) {
-            self.cancelled_ensures.extend(ensures.iter().copied());
+        // that ensure doesn't run. A panic still counts: the value was handed
+        // over before it unwound. A `try`, `return` or `break` that left
+        // from inside, an argument's say, left before the hand-over.
+        let left_early = matches!(
+            &result,
+            Err(d) if matches!(
+                d.error,
+                RuntimeError::TryError(_) | RuntimeError::Return(_)
+                    | RuntimeError::Break(..) | RuntimeError::Continue(_)
+            )
+        );
+        if !left_early {
+            if let Some(ensures) = self.ensure_cancels.get(&expr.id) {
+                self.cancelled_ensures.extend(ensures.iter().copied());
+            }
         }
         result
     }

@@ -1400,6 +1400,19 @@ impl ToDiagnostic for crate::OwnershipError {
                 )
             }
 
+            EnsureReadsMoved { name, ensure_at } => {
+                Diagnostic::error(format!("`{}` is given away while an `ensure` still reads it", name))
+                    .with_code("E0976")
+                    .with_primary(self.span, format!("`{}` is given away here", name))
+                    .with_secondary(*ensure_at, format!("this cleanup still runs at scope exit and reads `{}`", name))
+                    .with_help(format!(
+                        "pass `{}.clone()`, or compute what the cleanup needs from `{}` before the `ensure`",
+                        name, name
+                    ))
+                    .with_why("an `ensure` is cancelled only by consuming what it cleans up (ctrl.ensure/C6); \
+                               anything else it reads has to still be there when it runs")
+            }
+
             EnsureMaybeConsumed { name, ensure_at, consumed_at } => {
                 Diagnostic::error(format!(
                     "consumption of `{}` depends on which path ran",

@@ -644,6 +644,14 @@ pub enum OwnershipErrorKind {
         closure_at: Span,
     },
 
+    /// A value an `ensure` reads, but doesn't clean up, was given away while
+    /// the ensure was still scheduled to run (ctrl.ensure/C1).
+    #[error("`{name}` is given away while an `ensure` still reads it")]
+    EnsureReadsMoved {
+        name: String,
+        ensure_at: Span,
+    },
+
     /// C4: an ensured resource is consumed on some paths but not all, and the
     /// paths merge before scope exit. Which cleanup runs would depend on hidden
     /// runtime state, so it's a compile error (ctrl.ensure/C3–C4).

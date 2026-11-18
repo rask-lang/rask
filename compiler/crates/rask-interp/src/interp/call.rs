@@ -361,12 +361,23 @@ impl Interpreter {
         }
     }
 
-    /// Note that `stmt`'s ensure is scheduled. Returns it with whether an
-    /// earlier activation of the same ensure (a recursive call, an outer
-    /// iteration still unwinding) had it cancelled, which `run_ensures` puts
-    /// back once this activation is done.
+    /// Note that `stmt`'s ensure is scheduled. Keeps the storage of each name
+    /// it reads as bound here: a later `let` of the same name shadows it for
+    /// the code that follows, not for the ensure (#2026).
     pub(super) fn schedule_ensure<'s>(&mut self, stmt: &'s Stmt) -> Scheduled<'s> {
-        (stmt, self.cancelled_ensures.remove(&stmt.id))
+        let mut names: Vec<&str> = Vec::new();
+        rask_ast::visit::walk_stmt(stmt, &mut |e| {
+            if let rask_ast::expr::ExprKind::Ident(name) = &e.kind {
+                if !names.contains(&name.as_str()) {
+                    names.push(name);
+                }
+            }
+        });
+        let reads = names
+            .into_iter()
+            .filter_map(|n| self.env.binding(n).map(|(slot, lent)| (n.to_string(), slot, lent)))
+            .collect();
+        Scheduled { stmt, was_cancelled: self.cancelled_ensures.remove(&stmt.id), reads }
     }
 
     /// Runs ensures in LIFO order. Every scheduled ensure runs even if an earlier
@@ -377,11 +388,11 @@ impl Interpreter {
     /// they were scheduled (C1); the ownership pass says which expressions do.
     pub(super) fn run_ensures(&mut self, ensures: &[Scheduled], unwinding: bool) -> Option<RuntimeDiagnostic> {
         let outcome = self.run_scheduled(ensures, unwinding);
-        for (stmt, was_cancelled) in ensures {
-            if *was_cancelled {
-                self.cancelled_ensures.insert(stmt.id);
+        for e in ensures {
+            if e.was_cancelled {
+                self.cancelled_ensures.insert(e.stmt.id);
             } else {
-                self.cancelled_ensures.remove(&stmt.id);
+                self.cancelled_ensures.remove(&e.stmt.id);
             }
         }
         outcome
@@ -389,13 +400,23 @@ impl Interpreter {
 
     fn run_scheduled(&mut self, ensures: &[Scheduled], unwinding: bool) -> Option<RuntimeDiagnostic> {
         let mut first_panic: Option<RuntimeDiagnostic> = None;
-        for (ensure_stmt, _) in ensures.iter().rev() {
+        for scheduled in ensures.iter().rev() {
+            let ensure_stmt = scheduled.stmt;
             if let StmtKind::Ensure { body, else_handler } = &ensure_stmt.kind {
                 if self.cancelled_ensures.contains(&ensure_stmt.id) {
                     continue;
                 }
 
+                self.env.push_scope();
+                for (name, slot, lent) in &scheduled.reads {
+                    if *lent {
+                        self.env.define_lent(name.clone(), slot.clone());
+                    } else {
+                        self.env.define_slot(name.clone(), slot.clone());
+                    }
+                }
                 let result = self.exec_ensure_body(body);
+                self.env.pop_scope();
 
                 match result {
                     Ok(value) => {
@@ -580,5 +601,14 @@ impl Interpreter {
     }
 }
 
-/// A scheduled `ensure`, and whether it was cancelled before this activation.
-pub(super) type Scheduled<'s> = (&'s Stmt, bool);
+/// A scheduled `ensure`.
+pub(super) struct Scheduled<'s> {
+    stmt: &'s Stmt,
+    /// An earlier activation of the same ensure (a recursive call, an outer
+    /// iteration still unwinding) had it cancelled; `run_ensures` puts that
+    /// back once this activation is done.
+    was_cancelled: bool,
+    /// The names the body reads, bound to the storage they named where the
+    /// ensure was written, and whether that storage was lent.
+    reads: Vec<(String, crate::env::Slot, bool)>,
+}

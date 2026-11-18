@@ -103,8 +103,26 @@ pub type EnsureCancels = HashMap<rask_ast::NodeId, Vec<rask_ast::NodeId>>;
 #[derive(Debug, Clone)]
 struct EnsureWatch {
     name: String,
+    /// The declaration `name` resolved to in the ensure body. A later `let`
+    /// of the same name is a different binding, and moving it cancels
+    /// nothing.
+    symbol: Option<u32>,
+    /// The field path under `name` the cleanup acts on: `["a"]` for
+    /// `ensure p.a.close()`. Empty for the whole binding.
+    path: Vec<String>,
+    /// The ensure acts on something else and only reads this binding:
+    /// `tag` in `ensure c.close(tag.len())`. Moving it can't cancel the
+    /// cleanup, which still runs and would read it.
+    pinned: bool,
     ensure: rask_ast::NodeId,
     ensure_span: Span,
+}
+
+/// What the watched bindings looked like before a walk.
+struct WatchSnapshot {
+    epoch: u64,
+    given_away: Vec<bool>,
+    fields_consumed: usize,
 }
 
 /// The bindings each `return` hands to the caller, keyed by the returned
@@ -289,7 +307,11 @@ pub struct OwnershipChecker<'a> {
     /// Bumped at each consumption recorded in `ensure_cancels`, so an
     /// enclosing expression doesn't record the one its operand already did.
     watch_epoch: u64,
-    watch_recorded: HashMap<String, u64>,
+    watch_recorded: HashMap<(rask_ast::NodeId, String), u64>,
+    /// Every field place given away so far, as (root, path, root's
+    /// declaration). A field move leaves its root bound, so this is how an
+    /// `ensure p.a.close()` learns `eat(p.a)` happened.
+    fields_consumed: Vec<(String, Vec<String>, Option<u32>)>,
     ensure_cancels: EnsureCancels,
     /// Active `with` block bindings for W2 checking.
     active_with_bindings: Vec<WithBindingInfo>,
@@ -706,6 +728,7 @@ impl<'a> OwnershipChecker<'a> {
             ensure_watch: Vec::new(),
             watch_epoch: 0,
             watch_recorded: HashMap::new(),
+            fields_consumed: Vec::new(),
             ensure_cancels: HashMap::new(),
             active_with_bindings: Vec::new(),
             active_for_mutates: Vec::new(),
@@ -1648,6 +1671,7 @@ impl<'a> OwnershipChecker<'a> {
         self.ensure_at = None;
         self.ensure_watch.clear();
         self.watch_recorded.clear();
+        self.fields_consumed.clear();
         self.active_with_bindings.clear();
         self.active_for_mutates.clear();
         self.scope_limited_closures.clear();
@@ -3360,8 +3384,7 @@ impl<'a> OwnershipChecker<'a> {
                     self.check_expr(expr);
                     // What the value took on the way (a constructor's fields),
                     // and the variable itself when the value *is* one: the
-                    // move `handle_assignment` makes for `let y = x`, which a
-                    // return doesn't record because the function ends there.
+                    // move `handle_assignment` makes for `let y = x`.
                     let whole = self.moved_whole(expr);
                     let mut moved: Vec<String> = held
                         .into_iter()
@@ -3376,6 +3399,14 @@ impl<'a> OwnershipChecker<'a> {
                     }
                     self.consume_returned_resources(expr);
                     self.give_away_if_lent(expr, "return");
+                    // The value leaves with the return, before the scope's
+                    // ensures run: one that reads it is cancelled (C1), as
+                    // after any other move.
+                    if let Some(name) = whole {
+                        if matches!(self.bindings.get(&name), Some(BindingState::Owned)) {
+                            self.bindings.insert(name, BindingState::Moved { at: expr.span });
+                        }
+                    }
                     self.check_flow(expr, Sink::Return, stmt.span);
                     // Control leaves here, so this is an exit like any other. The
                     // end-of-body check alone misses an early return that skips a
@@ -3535,6 +3566,18 @@ impl<'a> OwnershipChecker<'a> {
             StmtKind::Break { label, value } => {
                 if let Some(v) = value {
                     self.check_expr(v);
+                    // `break c` carries `c` out as the loop's value: a move,
+                    // as `let d = c` is. Left owned, an `ensure` on `c` ran
+                    // and closed what the loop handed out.
+                    if let Some(name) = self.moved_whole(v) {
+                        if self.bindings.get(&name).is_some_and(Self::is_available) {
+                            self.give_away_if_lent(v, "break");
+                            self.consume_returned_resources(v);
+                            self.bindings.insert(name, BindingState::Moved { at: v.span });
+                        }
+                    } else {
+                        self.consume_returned_resources(v);
+                    }
                 }
                 self.check_loop_exit_obligations(stmt.span);
                 self.record_loop_exit(label.as_ref());
@@ -3583,7 +3626,7 @@ impl<'a> OwnershipChecker<'a> {
     fn check_expr(&mut self, expr: &Expr) {
         let before = self.watch_snapshot();
         self.check_expr_inner(expr);
-        self.watch_record(before, expr.id);
+        self.watch_record(before, expr);
     }
 
     fn check_expr_inner(&mut self, expr: &Expr) {
@@ -4000,6 +4043,7 @@ impl<'a> OwnershipChecker<'a> {
                         // discharging the whole holder is how `p.a.close()` came
                         // to silently cover `p.b` (#828).
                         ExprKind::Field { .. } => {
+                            self.note_field_consumed(object);
                             let (root, path) = Self::extract_root_and_fields(object);
                             // A field of a borrowed parameter isn't the body's
                             // to consume: `o.bag.finish()` on a plain `o`
@@ -9834,88 +9878,190 @@ impl<'a> OwnershipChecker<'a> {
         }
     }
 
-    /// ctrl.ensure/C1: the bindings this `ensure`'s body names, from here to
-    /// the end of its block. Consuming one before then cancels the `ensure`:
-    /// `ensure println(v.len())` then `sink(v)` would otherwise read what
-    /// `sink` freed, and `ensure w.take().close()` then `w.take()` would
-    /// close the inner handle twice (#1978, #1992). A binding that only ever
-    /// copies (an `i64`, a `string`) never moves, so it never cancels.
+    /// ctrl.ensure/C1: what this `ensure` acts on, watched from here to the
+    /// end of its block. Consuming it before then cancels the `ensure`.
+    ///
+    /// When the body is a cleanup call on a place (`c.close()`,
+    /// `w.take().close()`, `p.a.close()`, `drop(h)`), that place is what it
+    /// acts on: `ensure w.take().close()` then `w.take()` would otherwise
+    /// close the inner handle twice (#1992). Any other binding the body reads
+    /// is pinned: the cleanup still runs and reads it, so moving it is an
+    /// error. A body that isn't a cleanup call (`ensure println(v.len())`,
+    /// a block) acts on every binding it names, so `sink(v)` cancels it
+    /// rather than leaving it to read what `sink` freed (#1978).
+    ///
+    /// A binding that only ever copies (an `i64`, a `string`) never moves,
+    /// so it never cancels.
     fn watch_ensure(&mut self, stmt: &Stmt) {
-        let mut names: Vec<String> = Self::names_in(stmt)
-            .into_iter()
-            .filter(|n| {
-                matches!(
-                    self.bindings.get(n),
-                    Some(s) if !matches!(
-                        s,
-                        BindingState::Moved { .. } | BindingState::MaybeMoved { .. } | BindingState::Discarded { .. }
-                    )
+        let StmtKind::Ensure { body, .. } = &stmt.kind else { return };
+        let subject = Self::ensure_subject(body).map(|(root, path)| {
+            let symbol = self.program.resolutions.get(&root.id).map(|s| s.0);
+            let ExprKind::Ident(name) = &root.kind else { unreachable!() };
+            (name.clone(), symbol, path)
+        });
+        // A cleanup on something that isn't a local (`COUNT.fetch_add(v.len())`
+        // on a module constant) has no subject here: what it reads is.
+        let subject = subject.filter(|(root, _, _)| self.bindings.contains_key(root));
+        let mut seen: Vec<(String, Option<u32>)> = Vec::new();
+        rask_ast::visit::walk_stmt(stmt, &mut |e| {
+            if let ExprKind::Ident(name) = &e.kind {
+                let symbol = self.program.resolutions.get(&e.id).map(|s| s.0);
+                if !seen.contains(&(name.clone(), symbol)) {
+                    seen.push((name.clone(), symbol));
+                }
+            }
+        });
+        seen.sort();
+        for (name, symbol) in seen {
+            let live = matches!(
+                self.bindings.get(&name),
+                Some(s) if !matches!(
+                    s,
+                    BindingState::Moved { .. } | BindingState::MaybeMoved { .. } | BindingState::Discarded { .. }
                 )
-            })
-            .collect();
-        names.sort();
-        for name in names {
-            self.ensure_watch.push(EnsureWatch { name, ensure: stmt.id, ensure_span: stmt.span });
+            );
+            if !live {
+                continue;
+            }
+            let (path, pinned) = match &subject {
+                Some((root, root_sym, path)) if *root == name && Self::same_root(*root_sym, symbol) => {
+                    (path.clone(), false)
+                }
+                Some(_) => (Vec::new(), true),
+                None => (Vec::new(), false),
+            };
+            self.ensure_watch.push(EnsureWatch { name, symbol, path, pinned, ensure: stmt.id, ensure_span: stmt.span });
         }
+    }
+
+    /// The place an ensure body's cleanup call acts on: the root name and
+    /// the field path under it.
+    fn ensure_subject(body: &[Stmt]) -> Option<(&Expr, Vec<String>)> {
+        let StmtKind::Expr(expr) = &body.first()?.kind else { return None };
+        if body.len() != 1 {
+            return None;
+        }
+        let mut place = match &expr.kind {
+            ExprKind::MethodCall { object, .. } => object.as_ref(),
+            ExprKind::Call { func, args, .. } if matches!(&func.kind, ExprKind::Ident(n) if n == "drop") => {
+                &args.first()?.expr
+            }
+            _ => return None,
+        };
+        while let ExprKind::MethodCall { object, .. } = &place.kind {
+            place = object;
+        }
+        let mut path = Vec::new();
+        while let ExprKind::Field { object, field } = &place.kind {
+            path.push(field.clone());
+            place = object;
+        }
+        path.reverse();
+        matches!(place.kind, ExprKind::Ident(_)).then_some((place, path))
     }
 
     fn is_given_away(&self, name: &str) -> bool {
         matches!(self.bindings.get(name), Some(BindingState::Moved { .. } | BindingState::MaybeMoved { .. }))
     }
 
+    /// Note a field place given away, for an `ensure` on it.
+    fn note_field_consumed(&mut self, expr: &Expr) {
+        let place = match &expr.kind {
+            ExprKind::Take { place } => place.as_ref(),
+            _ => expr,
+        };
+        if !matches!(place.kind, ExprKind::Field { .. }) || self.ensure_at.is_some() {
+            return;
+        }
+        if let (Some(root), Some(path)) = Self::extract_root_and_fields(place) {
+            let symbol = self.root_symbol(place);
+            self.fields_consumed.push((root, path, symbol));
+        }
+    }
+
     /// Which watched bindings were still ours before a walk.
-    fn watch_snapshot(&self) -> Option<(u64, Vec<(String, bool)>)> {
+    fn watch_snapshot(&self) -> Option<WatchSnapshot> {
         if self.ensure_watch.is_empty() {
             return None;
         }
-        let names: Vec<(String, bool)> =
-            self.ensure_watch.iter().map(|w| (w.name.clone(), self.is_given_away(&w.name))).collect();
-        Some((self.watch_epoch, names))
+        Some(WatchSnapshot {
+            epoch: self.watch_epoch,
+            given_away: self.ensure_watch.iter().map(|w| self.is_given_away(&w.name)).collect(),
+            fields_consumed: self.fields_consumed.len(),
+        })
     }
 
-    /// After a walk: a watched binding it moved is consumed by `at`, unless
-    /// an operand inside it already said so.
-    fn watch_record(&mut self, before: Option<(u64, Vec<(String, bool)>)>, at: rask_ast::NodeId) {
-        let Some((epoch, names)) = before else { return };
-        let mut moved: Vec<String> = Vec::new();
-        for (name, was) in names {
-            if was || !self.is_given_away(&name) || moved.contains(&name) {
+    /// Does `expr` name the binding `name` resolved to `symbol`?
+    fn names_binding(&self, expr: &Expr, name: &str, symbol: Option<u32>) -> bool {
+        let mut found = false;
+        rask_ast::visit::walk_expr(expr, &mut |e| {
+            if let ExprKind::Ident(n) = &e.kind {
+                if n == name && Self::same_root(symbol, self.program.resolutions.get(&e.id).map(|s| s.0)) {
+                    found = true;
+                }
+            }
+        });
+        found
+    }
+
+    /// After walking `at`: a watched binding it gave away is consumed by
+    /// `at`, unless an operand inside it already said so.
+    fn watch_record(&mut self, before: Option<WatchSnapshot>, at: &Expr) {
+        let Some(before) = before else { return };
+        let watched = before.given_away.len().min(self.ensure_watch.len());
+        let fields: Vec<(String, Vec<String>, Option<u32>)> =
+            self.fields_consumed[before.fields_consumed.min(self.fields_consumed.len())..].to_vec();
+        let mut hits: Vec<usize> = Vec::new();
+        for i in 0..watched {
+            let w = &self.ensure_watch[i];
+            if self.watch_recorded.get(&(w.ensure, w.name.clone())).is_some_and(|e| *e > before.epoch) {
                 continue;
             }
-            if self.watch_recorded.get(&name).is_some_and(|e| *e > epoch) {
-                continue;
+            let whole = !before.given_away[i]
+                && self.is_given_away(&w.name)
+                && self.names_binding(at, &w.name, w.symbol);
+            // Giving away `p.a` consumes what an ensure on `p.a` or under it
+            // acts on.
+            let field = fields.iter().any(|(root, path, symbol)| {
+                *root == w.name && Self::same_root(*symbol, w.symbol) && !w.pinned && w.path.starts_with(path)
+            });
+            if whole || field {
+                hits.push(i);
             }
-            moved.push(name);
         }
-        if moved.is_empty() {
+        if hits.is_empty() {
             return;
         }
         self.watch_epoch += 1;
-        for name in moved {
-            self.watch_recorded.insert(name.clone(), self.watch_epoch);
-            let ensures: Vec<rask_ast::NodeId> =
-                self.ensure_watch.iter().filter(|w| w.name == name).map(|w| w.ensure).collect();
-            let entry = self.ensure_cancels.entry(at).or_default();
-            for e in ensures {
-                if !entry.contains(&e) {
-                    entry.push(e);
-                }
+        for i in hits {
+            let w = self.ensure_watch[i].clone();
+            self.watch_recorded.insert((w.ensure, w.name.clone()), self.watch_epoch);
+            if w.pinned {
+                self.errors.push(OwnershipError {
+                    kind: OwnershipErrorKind::EnsureReadsMoved { name: w.name.clone(), ensure_at: w.ensure_span },
+                    span: at.span,
+                });
+                continue;
+            }
+            let entry = self.ensure_cancels.entry(at.id).or_default();
+            if !entry.contains(&w.ensure) {
+                entry.push(w.ensure);
             }
         }
     }
 
     /// The expression a statement hands its value from, where a move the
     /// statement itself makes (`return v`, `let (a, b) = t`) is recorded.
-    fn moving_operand(stmt: &Stmt) -> Option<rask_ast::NodeId> {
+    fn moving_operand(stmt: &Stmt) -> Option<&Expr> {
         match &stmt.kind {
             StmtKind::Let { init, .. }
             | StmtKind::Mut { init, .. }
             | StmtKind::LetTuple { init, .. }
             | StmtKind::MutTuple { init, .. }
-            | StmtKind::LetStruct { init, .. } => Some(init.id),
-            StmtKind::Return(Some(e)) | StmtKind::Expr(e) => Some(e.id),
-            StmtKind::Assign { value, .. } => Some(value.id),
-            StmtKind::Break { value: Some(e), .. } => Some(e.id),
+            | StmtKind::LetStruct { init, .. } => Some(init),
+            StmtKind::Return(Some(e)) | StmtKind::Expr(e) => Some(e),
+            StmtKind::Assign { value, .. } => Some(value),
+            StmtKind::Break { value: Some(e), .. } => Some(e),
             _ => None,
         }
     }
@@ -9926,7 +10072,8 @@ impl<'a> OwnershipChecker<'a> {
     fn check_watch_definite(&mut self, from: usize, span: Span) {
         let watched: Vec<EnsureWatch> = self.ensure_watch[from.min(self.ensure_watch.len())..].to_vec();
         for w in watched {
-            if self.ensure_registered.contains(&w.name) {
+            // A field's cleanup is judged with its holder's debts.
+            if w.pinned || !w.path.is_empty() || self.ensure_registered.contains(&w.name) {
                 continue;
             }
             let Some(BindingState::MaybeMoved { at }) = self.bindings.get(&w.name) else { continue };
@@ -10427,6 +10574,7 @@ impl<'a> OwnershipChecker<'a> {
         if let ExprKind::Take { place } = &expr.kind {
             return self.pay_moved_field(place);
         }
+        self.note_field_consumed(expr);
         if !matches!(expr.kind, ExprKind::Field { .. }) {
             return false;
         }

@@ -979,6 +979,9 @@ impl<'a> MirLowerer<'a> {
         let (task, _) = self.lower_closure_expecting(
             params, ret_ty.as_ref(), block, !borrows, &[], Some(body.id), role,
         )?;
+        // The checker records a task's captures against the block, which
+        // lowering never routes through `lower_expr`.
+        self.mark_consumed_by(body);
         let boxes_result = self.spawn_result_boxed;
         let entry = match target {
             rask_ast::expr::SpawnTarget::Green => crate::TASK_ENTRIES[0],
