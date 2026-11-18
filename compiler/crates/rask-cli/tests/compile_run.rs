@@ -945,6 +945,20 @@ fn compile_error_output(name: &str) -> (bool, String) {
     (!out.status.success(), combined)
 }
 
+/// A newtype's wrap and unwrap hints name its own wrapped type, and only show
+/// up when the other side is that type. `Money` (over `i64`) against `Board`
+/// used to suggest `.value`, which gives an `i64`, not a `Board`.
+#[test]
+fn nominal_hint_only_for_wrapped_type() {
+    let (failed, out) = compile_error_output("nominal_hint_only_for_wrapped_type.rk");
+    assert!(failed, "{out}");
+    assert!(!out.contains("underlying `Board`"), "{out}");
+    assert!(!out.contains("wrap with `Meters(...)`"), "{out}");
+    assert!(!out.contains("wrap with `Wrapped(...)`"), "{out}");
+    assert!(out.contains("use `.value` to extract the underlying `i64` from `Money`"), "{out}");
+    assert!(out.contains("wrap with `Money(...)`"), "{out}");
+}
+
 /// `Payment.Cash(amount: i32)` is E0423 on the type, once per mistake, and the
 /// arm body still sees `amount`.
 ///

@@ -11,7 +11,7 @@ use super::check_expr::ContainerElem;
 use super::TypeChecker;
 use rask_types::TypeDef;
 
-use rask_types::{FnParam, GenericArg, Type};
+use rask_types::{FnParam, GenericArg, Type, TypeId};
 use rask_ast::ty::ParamMode;
 
 /// Can a bare literal of this kind stand in for `ty`? An integer literal takes
@@ -231,24 +231,15 @@ impl TypeChecker {
         self.ctx.constraints.extend(still_open);
     }
 
-    /// A primitive on one side and a stdlib container on the other.
-    ///
-    /// `unify` defers instead of deciding whenever either side is an unresolved
-    /// generic, because the name may still resolve — and every deferred `Equal`
-    /// that never resolved was dropped here in silence. So this type-checked:
-    ///
-    /// ```text
-    /// let m = Mutex.new(0)
-    /// let probe: string = m
-    /// ```
-    ///
-    /// This is deliberately the narrowest pair that can't be anything else. A
-    /// primitive and a `Mutex`/`Sender`/`Vec` have no coercion between them in
-    /// either direction, so the constraint is a mismatch rather than something
-    /// still settling. Two *named* types are left alone — union members, enum
-    /// variants, interface objects and nominal aliases all legitimately unify across
-    /// names, and judging those from here reported the stdlib's own source as
-    /// broken (#730).
+    /// Whether `id` is a newtype whose wrapped type is `other`, so a
+    /// mismatch between them is fixed by wrapping or by `.value`.
+    fn wraps(&self, id: TypeId, other: &Type) -> bool {
+        match self.types.get_nominal_underlying(id) {
+            Some(underlying) => self.ctx.apply(underlying) == self.ctx.apply(other),
+            None => false,
+        }
+    }
+
     /// A number literal where a type parameter is expected: `let y: T = 5`.
     /// Only a numeric bound gives the literal a way to become a `T`
     /// (type.generics, numeric literals): `Integer`, `Float` or `Numeric` for
@@ -298,6 +289,24 @@ impl TypeChecker {
         }
     }
 
+    /// A primitive on one side and a stdlib container on the other.
+    ///
+    /// `unify` defers instead of deciding whenever either side is an unresolved
+    /// generic, because the name may still resolve — and every deferred `Equal`
+    /// that never resolved was dropped here in silence. So this type-checked:
+    ///
+    /// ```text
+    /// let m = Mutex.new(0)
+    /// let probe: string = m
+    /// ```
+    ///
+    /// This is deliberately the narrowest pair that can't be anything else. A
+    /// primitive and a `Mutex`/`Sender`/`Vec` have no coercion between them in
+    /// either direction, so the constraint is a mismatch rather than something
+    /// still settling. Two *named* types are left alone — union members, enum
+    /// variants, interface objects and nominal aliases all legitimately unify across
+    /// names, and judging those from here reported the stdlib's own source as
+    /// broken (#730).
     fn primitive_against_container(&self, a: &Type, b: &Type) -> bool {
         let is_primitive = |t: &Type| matches!(
             t,
@@ -1810,9 +1819,12 @@ impl TypeChecker {
                         self.ctx.substitutions.insert(*id, other.clone());
                         return Ok(true);
                     }
-                    // Literal vars cannot implicitly coerce to nominal types
+                    // A literal the wrapped type takes still needs wrapping
+                    // to become the newtype.
                     if let Type::Named(type_id) = other {
-                        if let Some(name) = self.types.get_nominal_name(*type_id) {
+                        let fits_wrapped = self.types.get_nominal_underlying(*type_id)
+                            .is_some_and(|u| literal_fits(kind, u));
+                        if let Some(name) = self.types.get_nominal_name(*type_id).filter(|_| fits_wrapped) {
                             return Err(TypeError::NominalMismatch {
                                 expected: other.clone(),
                                 found: t1,
@@ -1849,9 +1861,12 @@ impl TypeChecker {
                         self.ctx.substitutions.insert(*id, other.clone());
                         return Ok(true);
                     }
-                    // Literal vars cannot implicitly coerce to nominal types
+                    // A literal the wrapped type takes still needs wrapping
+                    // to become the newtype.
                     if let Type::Named(type_id) = other {
-                        if let Some(name) = self.types.get_nominal_name(*type_id) {
+                        let fits_wrapped = self.types.get_nominal_underlying(*type_id)
+                            .is_some_and(|u| literal_fits(kind, u));
+                        if let Some(name) = self.types.get_nominal_name(*type_id).filter(|_| fits_wrapped) {
                             return Err(TypeError::NominalMismatch {
                                 expected: other.clone(),
                                 found: t2,
@@ -2223,22 +2238,17 @@ impl TypeChecker {
                 }
             }
 
-            // Nominal type vs non-nominal: produce specific error
-            (Type::Named(id), _) if self.types.get_nominal_name(*id).is_some() => {
-                let name = self.types.get_nominal_name(*id).unwrap();
+            // A newtype met its own wrapped type: say how to wrap or unwrap.
+            // Anything else (`Money` against `Board`) is a plain mismatch, so
+            // the hint never offers a `.value` that has the wrong type.
+            (Type::Named(id), other) | (other, Type::Named(id))
+                if self.wraps(*id, other) =>
+            {
+                let nominal_name = self.types.get_nominal_name(*id).unwrap();
                 Err(TypeError::NominalMismatch {
                     expected: t1,
                     found: t2,
-                    nominal_name: name,
-                    span,
-                })
-            }
-            (_, Type::Named(id)) if self.types.get_nominal_name(*id).is_some() => {
-                let name = self.types.get_nominal_name(*id).unwrap();
-                Err(TypeError::NominalMismatch {
-                    expected: t1,
-                    found: t2,
-                    nominal_name: name,
+                    nominal_name,
                     span,
                 })
             }
