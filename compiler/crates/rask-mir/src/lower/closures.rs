@@ -495,6 +495,7 @@ impl<'a> MirLowerer<'a> {
             // would drain it here, branching to block ids this function does
             // not have — Cranelift reports it as `invalid block reference`.
             let saved_ensure_stack = std::mem::take(&mut self.ensure_stack);
+            let saved_ensure_flags = std::mem::take(&mut self.ensure_flags);
             // A closure is its own frame with its own return, so a `try` in it
             // leaves the closure even when the closure sits in a `test` block.
             let saved_in_test = std::mem::replace(&mut self.in_test_body, false);
@@ -530,6 +531,7 @@ impl<'a> MirLowerer<'a> {
             self.addressed_locals = saved_captures;
             self.loop_stack = saved_loop_stack;
             self.ensure_stack = saved_ensure_stack;
+            self.ensure_flags = saved_ensure_flags;
             self.in_test_body = saved_in_test;
             self.restore_names(outer_param_names);
 
@@ -777,6 +779,7 @@ impl<'a> MirLowerer<'a> {
             // would drain it here, branching to block ids this function does
             // not have — Cranelift reports it as `invalid block reference`.
             let saved_ensure_stack = std::mem::take(&mut self.ensure_stack);
+            let saved_ensure_flags = std::mem::take(&mut self.ensure_flags);
             let saved_inline = self.inline_return_target.take();
 
             // `break` and `continue` in the body are this loop's, and this loop
@@ -826,6 +829,7 @@ impl<'a> MirLowerer<'a> {
 
             self.loop_stack = saved_loops;
             self.ensure_stack = saved_ensure_stack;
+            self.ensure_flags = saved_ensure_flags;
             self.inline_return_target = saved_inline;
             yb = std::mem::replace(&mut self.builder, saved_builder);
             self.locals = saved_locals;

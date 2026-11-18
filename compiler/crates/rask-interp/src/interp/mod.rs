@@ -212,6 +212,11 @@ pub struct Interpreter {
     /// ownership pass. Those snapshot their captures; the rest share the live
     /// slots so a write reaches the enclosing variable (MC4).
     pub(crate) escaping_closures: std::collections::HashSet<rask_ast::NodeId>,
+    /// ctrl.ensure/C1: the ensures each expression cancels by consuming what
+    /// they name, from the ownership pass.
+    pub(crate) ensure_cancels: Arc<HashMap<rask_ast::NodeId, Vec<rask_ast::NodeId>>>,
+    /// Ensures cancelled since they were last scheduled.
+    pub(crate) cancelled_ensures: std::collections::HashSet<rask_ast::NodeId>,
     /// Closures that captured a link or a `Local` box (#1356).
     pub(crate) task_bound_closures: std::collections::HashSet<rask_ast::NodeId>,
     /// Closures in a generic body, with each capture whose type mentions a
@@ -549,6 +554,8 @@ impl Interpreter {
             source_info: None,
             node_types: HashMap::new(),
             escaping_closures: std::collections::HashSet::new(),
+            ensure_cancels: Arc::new(HashMap::new()),
+            cancelled_ensures: std::collections::HashSet::new(),
             task_bound_closures: std::collections::HashSet::new(),
             generic_closure_captures: Arc::new(HashMap::new()),
             types: Arc::new(rask_check::TypeTable::default()),
@@ -599,6 +606,8 @@ impl Interpreter {
             cli_args: args,
             node_types: HashMap::new(),
             escaping_closures: std::collections::HashSet::new(),
+            ensure_cancels: Arc::new(HashMap::new()),
+            cancelled_ensures: std::collections::HashSet::new(),
             task_bound_closures: std::collections::HashSet::new(),
             generic_closure_captures: Arc::new(HashMap::new()),
             types: Arc::new(rask_check::TypeTable::default()),
@@ -655,6 +664,8 @@ impl Interpreter {
             source_info: None,
             node_types: HashMap::new(),
             escaping_closures: std::collections::HashSet::new(),
+            ensure_cancels: Arc::new(HashMap::new()),
+            cancelled_ensures: std::collections::HashSet::new(),
             task_bound_closures: std::collections::HashSet::new(),
             generic_closure_captures: Arc::new(HashMap::new()),
             types: Arc::new(rask_check::TypeTable::default()),
@@ -789,6 +800,7 @@ impl Interpreter {
         self.literal_conversions = typed.literal_conversions.clone();
         self.conformance_calls = typed.conformance_calls.clone();
         self.escaping_closures = typed.escaping_closures.clone();
+        self.ensure_cancels = Arc::new(typed.ensure_cancels.clone());
         self.task_bound_closures = typed.task_bound_closures.clone();
         self.generic_closure_captures = Arc::new(typed.generic_closure_captures.clone());
         self.types = Arc::new(typed.types.clone());
@@ -991,6 +1003,7 @@ impl Interpreter {
         child.methods = self.methods.clone();
         child.node_types = self.node_types.clone();
         child.escaping_closures = self.escaping_closures.clone();
+        child.ensure_cancels = self.ensure_cancels.clone();
         child.task_bound_closures = self.task_bound_closures.clone();
         child.generic_closure_captures = self.generic_closure_captures.clone();
         child.types = self.types.clone();
@@ -1087,9 +1100,33 @@ impl Interpreter {
     }
 
     /// Run a task's body on this thread, now, and hand back a handle whose
-    /// join gives what it ended with: a task that borrows its frame, or a
-    /// `requires_pool: false` spawn with no pool.
+    /// join gives what it ended with: a `requires_pool: false` spawn with no
+    /// pool.
     pub(crate) fn run_task_in_place(&mut self, closure: Value) -> Result<Value, RuntimeError> {
+        let (child, body, wraps_ok) = self.borrowing_task(closure)?;
+        let ended = run_task_body(child, body, wraps_ok);
+        let cancel = Arc::new(crate::value::CancelToken::default());
+        let join_handle = crate::spawn_interp_thread(move || ended)?;
+        Ok(self.hand_out_handle(join_handle, cancel))
+    }
+
+    /// Start a task that borrows its frame (conc.async/S5) on a thread of its
+    /// own. It shares the frame's slots, which the checker keeps it the only
+    /// writer of until the join, and it may capture task-bound closures: it
+    /// ends before the frame does.
+    pub(crate) fn spawn_borrowing_task(&mut self, closure: Value) -> Result<Value, RuntimeError> {
+        let (child, body, wraps_ok) = self.borrowing_task(closure)?;
+        let cancel = Arc::new(crate::value::CancelToken::default());
+        let flag = cancel.clone();
+        let join_handle = crate::spawn_interp_thread(move || {
+            crate::with_task_slot(move || {
+                crate::value::with_cancel_flag(flag, move || run_task_body(child, body, wraps_ok))
+            })
+        })?;
+        Ok(self.hand_out_handle(join_handle, cancel))
+    }
+
+    fn borrowing_task(&mut self, closure: Value) -> Result<(Interpreter, rask_ast::expr::Expr, bool), RuntimeError> {
         let Value::Closure { body, captured_env, generics, wraps_ok, .. } = closure else {
             return Err(RuntimeError::TypeError(format!(
                 "a task block evaluated to {}",
@@ -1103,10 +1140,7 @@ impl Interpreter {
             }
         });
         let child = self.spawn_child(captured_env, &generics, &named);
-        let ended = run_task_body(child, body, wraps_ok);
-        let cancel = Arc::new(crate::value::CancelToken::default());
-        let join_handle = crate::spawn_interp_thread(move || ended)?;
-        Ok(self.hand_out_handle(join_handle, cancel))
+        Ok((child, body, wraps_ok))
     }
 
     /// Inside a `using ThreadPool` block.

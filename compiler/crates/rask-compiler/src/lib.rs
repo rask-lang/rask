@@ -656,6 +656,7 @@ fn check_loaded_scoped(
     // lowering and the interpreter both need the same answer.
     typed.escaping_closures = ownership_result.escaping_closures.clone();
     typed.return_moves = ownership_result.return_moves.clone();
+    typed.ensure_cancels = ownership_result.ensure_cancels.clone();
     // Which closures may not reach another task: ownership's answer, read
     // by lowering, mono and the interpreter.
     typed.task_bound_closures = ownership_result.task_bound_closures.clone();
@@ -1184,6 +1185,7 @@ fn check_package_scoped(
         rounds.copies_of.iter().map(|(copy, of)| (*copy, (of.template, of.type_args.clone()))).collect();
     typed.escaping_closures = ownership_result.escaping_closures.clone();
     typed.return_moves = ownership_result.return_moves.clone();
+    typed.ensure_cancels = ownership_result.ensure_cancels.clone();
     // Which closures may not reach another task: ownership's answer, read
     // by lowering, mono and the interpreter.
     typed.task_bound_closures = ownership_result.task_bound_closures.clone();

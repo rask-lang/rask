@@ -1,0 +1,121 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// ctrl.ensure/C1: a value consumed before scope exit cancels the ensure that
+// names it. The ownership pass is what knows a value was consumed, so it
+// records which expressions cancel which ensures and both backends act on
+// that record. Before, each backend guessed again from the shape of the code
+// and missed a spelling at a time: a call through a function value (#1989),
+// an ensure on a chain like `w.take().close()` (#1992), and a plain
+// non-resource value moved into a `take` parameter or returned (#1978).
+
+import sync.Atomic
+
+const CLOSES: Atomic<i64> = Atomic<i64>.new(0)
+const ENSURES: Atomic<i64> = Atomic<i64>.new(0)
+
+@resource
+struct Conn {
+    id: i64
+}
+
+extend Conn {
+    func close(take self) -> i64 {
+        CLOSES.fetch_add(1)
+        return self.id
+    }
+}
+
+@resource
+struct Wrapper {
+    inner: Conn
+}
+
+extend Wrapper {
+    func take(take self) -> Conn {
+        return self.inner
+    }
+}
+
+func eat(take c: Conn) -> i64 {
+    return c.close()
+}
+
+// #1989: the call goes through a function value.
+func via_value() -> i64 {
+    let f = eat
+    let c = Conn(id: 1)
+    ensure c.close()
+    return f(c)
+}
+
+func via_closure() -> i64 {
+    let f = |take c: Conn| c.close()
+    let c = Conn(id: 2)
+    ensure c.close()
+    return f(c)
+}
+
+func via_param(g: func(take Conn) -> i64) -> i64 {
+    let c = Conn(id: 3)
+    ensure c.close()
+    return g(c)
+}
+
+// #1992: the ensure's receiver is a chain whose root is `w`.
+func chained() -> i64 {
+    let w = Wrapper(inner: Conn(id: 4))
+    ensure w.take().close()
+    let c = w.take()
+    return c.close()
+}
+
+func sink(take v: Vec<string>) -> i64 {
+    return v.len().to<i64>()!
+}
+
+// #1978: an ordinary value moved into a `take` parameter. The ensure must not
+// read it afterwards.
+func moved_into_take() -> i64 {
+    mut v: Vec<string> = Vec.new()
+    v.push("a heap string long enough to allocate here 1")
+    ensure ENSURES.fetch_add(v.len().to<i64>()!)
+    return sink(v)
+}
+
+// #1978: returning it is the same consumption.
+func hooked(n: i64) -> Vec<string> {
+    mut v: Vec<string> = Vec.new()
+    v.push("first {n} heap string long enough to allocate")
+    ensure {
+        v = Vec.new()
+    }
+    return v
+}
+
+test "ctrl.ensure/C1 — a take argument through a function value cancels the ensure" {
+    CLOSES.store(0)
+    assert via_value() == 1
+    assert CLOSES.load() == 1
+    CLOSES.store(0)
+    assert via_closure() == 2
+    assert CLOSES.load() == 1
+    CLOSES.store(0)
+    assert via_param(eat) == 3
+    assert CLOSES.load() == 1
+}
+
+test "ctrl.ensure/C1 — consuming the root of an ensure's chain cancels it" {
+    CLOSES.store(0)
+    assert chained() == 4
+    assert CLOSES.load() == 1
+}
+
+test "ctrl.ensure/C1 — moving a plain value cancels the ensure that reads it" {
+    ENSURES.store(0)
+    assert moved_into_take() == 1
+    assert ENSURES.load() == 0
+    let v = hooked(7)
+    assert v.len() == 1
+    assert v[0] == "first 7 heap string long enough to allocate"
+}
+
+func main() {}

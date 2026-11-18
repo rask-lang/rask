@@ -1144,50 +1144,76 @@ fn solve(
 /// there on it can't be released at all: no name certainly holds it. So a
 /// value dead on one path waits until it is dead on every path that meets
 /// it, and goes once, after the join.
+///
+/// Needed is judged per way in, by what the names hold along that edge. A
+/// name that holds the value on one way in and something untracked on the
+/// other doesn't need it on the other: `fs.read_dir(p) catch _ => Vec.new()`
+/// joins the result's payload with a fresh vector into one name. Waiting
+/// past that join for the error left the name only maybe holding the result,
+/// and freeing the name counted as giving the result away on both paths, so
+/// the error was never released (#2003). Released on its own path instead,
+/// the result is ours past the join exactly when the name holds it, under a
+/// flag.
 struct NeededLater {
     succs: Vec<Vec<usize>>,
-    /// Per value, the join blocks that still need it on the way in.
-    needing: std::collections::BTreeMap<Value, HashSet<usize>>,
+    /// Per value, the edges `(from, join)` that still need it on the way in.
+    needing: std::collections::BTreeMap<Value, HashSet<(usize, usize)>>,
 }
 
 impl NeededLater {
-    fn new(func: &MirFunction, sh: &Shape, live: &Live, entries: &[Option<State>]) -> Self {
-        let mut needing: std::collections::BTreeMap<Value, HashSet<usize>> = Default::default();
+    fn new(
+        func: &MirFunction,
+        sh: &Shape,
+        live: &Live,
+        exits: &[Option<State>],
+        kills: &Kills,
+    ) -> Self {
+        let mut needing: std::collections::BTreeMap<Value, HashSet<(usize, usize)>> = Default::default();
         for b in 0..func.blocks.len() {
             if sh.preds[b].len() < 2 {
                 continue;
             }
-            let Some(e) = &entries[b] else { continue };
             let first = func.blocks[b]
                 .statements
                 .iter()
                 .take_while(|s| matches!(s.kind, MirStmtKind::Phi { .. }))
                 .count();
-            for v in e.own.keys() {
-                if e.needed(*v, &live.at[b][first]) {
-                    needing.entry(*v).or_default().insert(b);
+            for &p in &sh.preds[b] {
+                let Some(px) = &exits[p] else { continue };
+                let seen = edge_view(b, p, sh, px, kills);
+                for v in seen.own.keys() {
+                    if seen.needed(*v, &live.at[b][first]) {
+                        needing.entry(*v).or_default().insert((p, b));
+                    }
                 }
             }
         }
         NeededLater { succs: sh.succs.clone(), needing }
     }
 
-    /// Some join reachable from `b`, `b` included, still needs `v`. Not
-    /// through the block that makes `v`: past it, it is the next turn's.
-    fn from(&self, b: usize, v: Value) -> bool {
-        let Some(joins) = self.needing.get(&v) else { return false };
+    /// Some join reachable over the edge from `p` into `b` still needs `v`
+    /// on its way in. Not through the block that makes `v`: past it, it is
+    /// the next turn's.
+    fn from(&self, p: usize, b: usize, v: Value) -> bool {
+        let Some(edges) = self.needing.get(&v) else { return false };
         let made = v.block as usize;
         if b == made {
             return false;
         }
+        if edges.contains(&(p, b)) {
+            return true;
+        }
         let mut seen: HashSet<usize> = HashSet::from([b]);
         let mut frontier = vec![b];
         while let Some(x) = frontier.pop() {
-            if joins.contains(&x) {
-                return true;
-            }
             for &s in &self.succs[x] {
-                if s != made && seen.insert(s) {
+                if s == made {
+                    continue;
+                }
+                if edges.contains(&(x, s)) {
+                    return true;
+                }
+                if seen.insert(s) {
                     frontier.push(s);
                 }
             }
@@ -1297,7 +1323,7 @@ pub fn plan_carrying(
     let edges: usize = sh.succs.iter().map(|s| s.len()).sum();
     for _ in 0..(4 * edges + 64) {
         let (entries, exits, _) = solve(func, facts, &sh, &live, &kills, &mut HashSet::new());
-        let later = NeededLater::new(func, &sh, &live, &entries);
+        let later = NeededLater::new(func, &sh, &live, &exits, &kills);
         if placement == Placement::LastUse {
             let mut found = after_last_use(func, facts, &sh, &live, &entries, &kills, &later);
             // One release per value per solve, the earliest in program order.
@@ -1520,7 +1546,7 @@ fn after_last_use(
                 let alive_before = (before.owned(v) && before.needed(v, &live.at[bi][si]))
                     || made_here
                     || touched.iter().any(|n| before.mentions(*n, v) || st.mentions(*n, v));
-                if !alive_before || sh.succs[bi].iter().any(|&c| later.from(c, v)) {
+                if !alive_before || sh.succs[bi].iter().any(|&c| later.from(bi, c, v)) {
                     continue;
                 }
                 if let Some(name) = pick(&st, v, &touched) {
@@ -1576,7 +1602,7 @@ fn on_edges(
                 let site = match placement {
                     // Needed on the way out because another successor reads
                     // it; dead on the way in here.
-                    Placement::LastUse => px.needed(v, &p_out) && !later.from(bi, v),
+                    Placement::LastUse => px.needed(v, &p_out) && !later.from(pi, bi, v),
                     // The last chance: past this edge the value isn't
                     // certainly ours any more, because another way in
                     // doesn't bring it — a back edge, the edge out of the arm
