@@ -1144,12 +1144,21 @@ fn solve(
 /// there on it can't be released at all: no name certainly holds it. So a
 /// value dead on one path waits until it is dead on every path that meets
 /// it, and goes once, after the join.
+///
+/// It also keeps the releases placed so far. They are placed a round at a
+/// time against the states of that round, so one placed after a join stays
+/// there, unguarded, when a later round finds the value dead on one edge into
+/// the join. A release on that edge would free it a second time further on.
 struct NeededLater {
     succs: Vec<Vec<usize>>,
     /// Per value, the edges `(from, join)` into a join that still need it
     /// there.
     needing: std::collections::BTreeMap<Value, HashSet<(usize, usize)>>,
     joins: HashSet<usize>,
+    /// Per value, where it is already released: `(block, statement)` and
+    /// edges `(from, to)`.
+    released_at: std::collections::BTreeMap<Value, Vec<(usize, usize)>>,
+    released_on: std::collections::BTreeMap<Value, HashSet<(usize, usize)>>,
 }
 
 impl NeededLater {
@@ -1191,7 +1200,47 @@ impl NeededLater {
             }
         }
         let joins = (0..func.blocks.len()).filter(|b| sh.preds[*b].len() >= 2).collect();
-        NeededLater { succs: sh.succs.clone(), needing, joins }
+        let mut released_at: std::collections::BTreeMap<Value, Vec<(usize, usize)>> = Default::default();
+        for (b, si, v) in &kills.at {
+            released_at.entry(*v).or_default().push((*b, *si));
+        }
+        let mut released_on: std::collections::BTreeMap<Value, HashSet<(usize, usize)>> = Default::default();
+        for (from, to, v) in &kills.edges {
+            released_on.entry(*v).or_default().insert((*from, *to));
+        }
+        NeededLater { succs: sh.succs.clone(), needing, joins, released_at, released_on }
+    }
+
+    /// `v` is already released somewhere past statement `si` of `bi`.
+    fn released_after(&self, bi: usize, si: usize, v: Value) -> bool {
+        self.released_at.get(&v).is_some_and(|at| at.iter().any(|&(b, s)| b == bi && s > si))
+            || self.succs[bi].iter().any(|&c| self.released_past(bi, c, v))
+    }
+
+    /// `v` is already released on the edge `from` → `b` or somewhere a path
+    /// over it reaches, short of the block that makes `v` again.
+    fn released_past(&self, from: usize, b: usize, v: Value) -> bool {
+        let at = self.released_at.get(&v);
+        let on = self.released_on.get(&v);
+        if at.is_none() && on.is_none() {
+            return false;
+        }
+        let made = v.block as usize;
+        let mut seen: HashSet<usize> = HashSet::new();
+        let mut frontier = vec![(from, b)];
+        while let Some((x, s)) = frontier.pop() {
+            if on.is_some_and(|on| on.contains(&(x, s))) {
+                return true;
+            }
+            if s == made || !seen.insert(s) {
+                continue;
+            }
+            if at.is_some_and(|at| at.iter().any(|&(b, _)| b == s)) {
+                return true;
+            }
+            frontier.extend(self.succs[s].iter().map(|&t| (s, t)));
+        }
+        false
     }
 
     /// Some join reachable over the edge `from` → `b` still needs `v` on the
@@ -1545,7 +1594,10 @@ fn after_last_use(
                 let alive_before = (before.owned(v) && before.needed(v, &live.at[bi][si]))
                     || made_here
                     || touched.iter().any(|n| before.mentions(*n, v) || st.mentions(*n, v));
-                if !alive_before || sh.succs[bi].iter().any(|&c| later.from(bi, c, v)) {
+                if !alive_before
+                    || sh.succs[bi].iter().any(|&c| later.from(bi, c, v))
+                    || later.released_after(bi, si, v)
+                {
                     continue;
                 }
                 if let Some(name) = pick(&st, v, &touched) {
@@ -1601,7 +1653,9 @@ fn on_edges(
                 let site = match placement {
                     // Needed on the way out because another successor reads
                     // it; dead on the way in here.
-                    Placement::LastUse => px.needed(v, &p_out) && !later.from(pi, bi, v),
+                    Placement::LastUse => {
+                        px.needed(v, &p_out) && !later.from(pi, bi, v) && !later.released_past(pi, bi, v)
+                    }
                     // The last chance: past this edge the value isn't
                     // certainly ours any more, because another way in
                     // doesn't bring it — a back edge, the edge out of the arm
