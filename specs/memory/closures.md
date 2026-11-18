@@ -109,7 +109,7 @@ pointing at both places.
 | Rule | Description |
 |------|-------------|
 | **SL3: A local travels, a lent parameter is borrowed** | A closure leaving the function takes its locals and `take` parameters with it — they are the frame's to give, and the frame is going away. A *lent* parameter — `param: T`, `mutate param: T`, `self` — is the caller's, so the closure borrows it and SL4 decides how long that lasts |
-| **SL4: The limit rides the return** | A call that answers a closure hands back whatever limits its borrowed arguments had. `make_filter(tags)` gives a closure that lives as long as `tags` does. A `take` argument contributes no limit — it was given away |
+| **SL4: The limit rides the return** | A call that answers a closure hands back whatever limits its borrowed arguments had. `make_filter(tags)` gives a closure that lives as long as `tags` does. A borrowed closure literal (`v.filter(\|x\| x > lo)`) is kept alive as long as the result, so its limit is what it points at, and one that captures nothing has none. A `take` argument was given away, so it adds no limit of its own, but a limited one brings the limit it already had: `v.filter(p).take(2)` is still limited to `v` |
 | **SL5: The limit rides what holds it** | A limited closure may sit in a tuple, a struct, a variant or an optional, and the limit goes with the value: to the name it's bound to, to whatever a pattern or a destructuring `let` takes out of it, and to a field read off it whose type can hold a closure. It's checked where the value would outlive the limit (a return, a store into a field or an index, a hand-off to a `take` parameter, a channel send, a task that leaves its block), whatever shape carries it there. A part that can't hold a closure, such as `pair.1: i32`, carries nothing |
 
 SL3 is the difference between these two:
@@ -130,7 +130,7 @@ and the borrow half is what the whole sequence protocol rests on —
 closure over a borrowed receiver. Moving the receiver in would cost every adapter
 chain a `take self`. The adapters after the head do take theirs
 (`type.sequence/SEQ12`): each one's source is the sequence before it, which
-nobody else holds.
+nobody else holds. Their callbacks stay borrowed.
 
 SL4 is why nobody writes a lifetime. The signature already says it: the return type is a
 closure and the parameters say `take` or not, so the caller works out what the result is

@@ -379,7 +379,7 @@ Each stage is independently shippable and testable.
 - Each adapter is closure-returning — example:
   ```rask
   extend Sequence<T> {
-      public func filter(take self, take pred: |T| -> bool) -> Sequence<T> {
+      public func filter(take self, pred: |T| -> bool) -> Sequence<T> {
           return |yield| {
               self(|item| {
                   if pred(item): return yield(item)
