@@ -7,7 +7,6 @@
 import sync.Atomic
 
 const BY_ENSURE: Atomic<i64> = Atomic<i64>.new(0)
-const ENSURE_READS: Atomic<i64> = Atomic<i64>.new(0)
 
 @resource
 struct Conn {
@@ -27,24 +26,20 @@ func eat(take c: Conn) -> i64 {
     return c.close(false)
 }
 
-func sink(take v: Vec<string>) -> i64 {
-    return v.len().to<i64>()!
-}
-
 func filled(s: string) -> Vec<string> {
     mut v: Vec<string> = Vec.new()
     v.push("{s} heap string long enough to allocate somewhere")
     return v
 }
 
-// A `let` that shadows the name is a different binding: moving it leaves
-// the outer one, and the outer ensure, alone.
+// A `let` that shadows the name is a different binding: giving it away
+// leaves the outer one, and the outer ensure, alone.
 func shadowed_in_block() -> i64 {
-    let v = filled("outer")
-    ensure ENSURE_READS.fetch_add(v.len().to<i64>()!)
+    let c = Conn(id: 1)
+    ensure c.close(true)
     {
-        let v = filled("inner")
-        sink(v)
+        let c = Conn(id: 8)
+        eat(c)
     }
     return 0
 }
@@ -106,37 +101,64 @@ func maybe(fail: bool) -> i64 or Oops {
     return 5
 }
 
-func sink_plus(take v: Vec<string>, n: i64) -> i64 {
-    return v.len().to<i64>()! + n
+func eat_plus(take c: Conn, n: i64) -> i64 {
+    return c.close(false) + n
 }
 
 func try_in_argument(fail: bool) -> i64 or Oops {
-    let v = filled("try")
-    ensure ENSURE_READS.fetch_add(v.len().to<i64>()!)
-    return sink_plus(v, try maybe(fail))
+    let c = Conn(id: 9)
+    ensure c.close(true)
+    return eat_plus(c, try maybe(fail))
 }
 
-// A task that captures `v` takes it.
+// A task that captures `c` takes it.
 func captured_by_task() -> i64 {
-    let v = filled("task")
-    ensure ENSURE_READS.fetch_add(v.len().to<i64>()!)
+    let c = Conn(id: 10)
+    ensure c.close(true)
     let h = spawn {
-        return sink(v)
+        return eat(c)
     }
     return h.join()!
 }
 
 // So does returning it.
-func returned() -> Vec<string> {
-    let v = filled("returned")
-    ensure ENSURE_READS.fetch_add(v.len().to<i64>()!)
-    return v
+func returned() -> Conn {
+    let c = Conn(id: 11)
+    ensure c.close(true)
+    return c
+}
+
+// The cleanup is what it consumes, not the call's receiver: giving away
+// `latch` cancels `ensure log.record(latch.close(true))`.
+struct Log {
+    seen: Vec<i64>,
+}
+
+extend Log {
+    func record(mutate self, id: i64) {
+        self.seen.push(id)
+    }
+}
+
+func consumed_not_receiver() -> i64 {
+    mut log = Log(seen: Vec.new())
+    let latch = Conn(id: 12)
+    ensure log.record(latch.close(true))
+    return eat(latch)
+}
+
+// A value the cleanup only reads stays put; reading it is fine.
+func read_by_cleanup() -> i64 {
+    let v = filled("read")
+    let c = Conn(id: 13)
+    ensure c.close(v.len() == 1)
+    return v.len().to<i64>()!
 }
 
 test "ctrl.ensure/C1 — consuming a shadowing binding leaves the outer ensure owed" {
-    ENSURE_READS.store(0)
+    BY_ENSURE.store(0)
     shadowed_in_block()
-    assert ENSURE_READS.load() == 1
+    assert BY_ENSURE.load() == 1
     BY_ENSURE.store(0)
     assert shadowed_in_scope() == 2
     assert BY_ENSURE.load() == 1
@@ -158,22 +180,29 @@ test "ctrl.ensure/C1 — consuming a field cancels only that field's ensure" {
 }
 
 test "ctrl.ensure/C1 — a try that leaves before the call leaves the ensure owed" {
-    ENSURE_READS.store(0)
+    BY_ENSURE.store(0)
     assert (try_in_argument(true) is Oops)
-    assert ENSURE_READS.load() == 1
-    ENSURE_READS.store(0)
-    assert try_in_argument(false)! == 6
-    assert ENSURE_READS.load() == 0
+    assert BY_ENSURE.load() == 1
+    BY_ENSURE.store(0)
+    assert try_in_argument(false)! == 14
+    assert BY_ENSURE.load() == 0
 }
 
 test "ctrl.ensure/C1 — a task capture and a return both consume" {
-    ENSURE_READS.store(0)
+    BY_ENSURE.store(0)
     using Multitasking {
-        assert captured_by_task() == 1
+        assert captured_by_task() == 10
     }
-    let v = returned()
-    assert v.len() == 1
-    assert ENSURE_READS.load() == 0
+    assert returned().close(false) == 11
+    assert BY_ENSURE.load() == 0
+}
+
+test "ctrl.ensure/C6 — what the cleanup consumes cancels it, what it reads stays" {
+    BY_ENSURE.store(0)
+    assert consumed_not_receiver() == 12
+    assert BY_ENSURE.load() == 0
+    assert read_by_cleanup() == 1
+    assert BY_ENSURE.load() == 1
 }
 
 func main() {}

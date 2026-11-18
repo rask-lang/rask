@@ -48,6 +48,7 @@ fn link_deleted_diagnostic(
 impl ToDiagnostic for crate::OwnershipError {
     fn to_diagnostic(&self) -> Diagnostic {
         use crate::OwnershipErrorKind::*;
+        use crate::EnsureHold;
 
         match &self.kind {
             CCallbackCaptures { captured } => Diagnostic::error(format!(
@@ -1400,17 +1401,35 @@ impl ToDiagnostic for crate::OwnershipError {
                 )
             }
 
-            EnsureReadsMoved { name, ensure_at } => {
-                Diagnostic::error(format!("`{}` is given away while an `ensure` still reads it", name))
+            EnsureReadsMoved { name, why, ensure_at } => {
+                let (title, label, help) = match why {
+                    EnsureHold::Reads => (
+                        format!("`{}` is given away while an `ensure` still reads it", name),
+                        format!("this cleanup still runs at scope exit and reads `{}`", name),
+                        format!(
+                            "give the cleanup what it reads before it runs: move the `ensure` below its last use, \
+                             or pass `{}.clone()` here",
+                            name
+                        ),
+                    ),
+                    EnsureHold::PartOf(whole) => (
+                        format!("`{}` is given away while an `ensure` still cleans up `{}`", name, whole),
+                        format!("this cleanup consumes `{}` at scope exit, `{}` included", whole, name),
+                        format!("give away all of `{}`, which cancels the cleanup, or ensure the parts one by one", whole),
+                    ),
+                    EnsureHold::AlsoCleans(other) => (
+                        format!("`{}` is given away while an `ensure` also cleans up `{}`", name, other),
+                        format!("cancelling this cleanup would leave `{}` with nothing to clean it up", other),
+                        format!("give `{}` and `{}` their own `ensure`", name, other),
+                    ),
+                };
+                Diagnostic::error(title)
                     .with_code("E0976")
                     .with_primary(self.span, format!("`{}` is given away here", name))
-                    .with_secondary(*ensure_at, format!("this cleanup still runs at scope exit and reads `{}`", name))
-                    .with_help(format!(
-                        "pass `{}.clone()`, or compute what the cleanup needs from `{}` before the `ensure`",
-                        name, name
-                    ))
-                    .with_why("an `ensure` is cancelled only by consuming what it cleans up (ctrl.ensure/C6); \
-                               anything else it reads has to still be there when it runs")
+                    .with_secondary(*ensure_at, label)
+                    .with_help(help)
+                    .with_why("an `ensure` is cancelled by giving away what it cleans up (ctrl.ensure/C6); \
+                               anything else it needs has to still be there when it runs")
             }
 
             EnsureMaybeConsumed { name, ensure_at, consumed_at } => {

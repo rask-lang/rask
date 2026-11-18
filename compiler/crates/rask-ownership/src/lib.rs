@@ -21,7 +21,7 @@ pub use field_reuse::field_reuses;
 
 pub use state::{BindingState, BorrowMode, BorrowScope, ActiveBorrow};
 pub use error::{
-    AccessKind, LinearDiscardPosition, LinkEscape, MoveReason, OwnershipError, OwnershipErrorKind,
+    AccessKind, EnsureHold, LinearDiscardPosition, LinkEscape, MoveReason, OwnershipError, OwnershipErrorKind,
     PointerLoss, PointerSink, Sink,
 };
 
@@ -107,15 +107,26 @@ struct EnsureWatch {
     /// of the same name is a different binding, and moving it cancels
     /// nothing.
     symbol: Option<u32>,
-    /// The field path under `name` the cleanup acts on: `["a"]` for
-    /// `ensure p.a.close()`. Empty for the whole binding.
-    path: Vec<String>,
-    /// The ensure acts on something else and only reads this binding:
-    /// `tag` in `ensure c.close(tag.len())`. Moving it can't cancel the
-    /// cleanup, which still runs and would read it.
-    pinned: bool,
+    /// The part of `name` the body consumes, when it consumes some:
+    /// `["a"]` for `ensure p.a.close()`, empty for the whole binding.
+    /// `None` when the body only reads `name` (`tag` in
+    /// `ensure c.close(tag.len())`): giving it away can't cancel the
+    /// cleanup, which still runs and reads it.
+    subject: Option<Vec<String>>,
+    /// The places under `name` the body reads, as field paths (empty for
+    /// the whole binding).
+    reads: Vec<Vec<String>>,
+    /// The other bindings the body consumes. Giving away one of several
+    /// can't cancel the cleanup without skipping the rest.
+    also_cleans: Vec<String>,
     ensure: rask_ast::NodeId,
     ensure_span: Span,
+}
+
+/// What giving a watched place away does to its ensure.
+enum WatchVerdict {
+    Cancels,
+    Refused(EnsureHold),
 }
 
 /// What the watched bindings looked like before a walk.
@@ -301,6 +312,8 @@ pub struct OwnershipChecker<'a> {
     /// The `ensure` statement whose body is being walked. A consume in there
     /// runs at scope exit, so it commits the value instead of moving it.
     ensure_at: Option<Span>,
+    /// The places the `ensure` body being walked consumes, as (root, path).
+    ensure_consumes: Vec<(String, Vec<String>)>,
     /// The `ensure`s in scope and the bindings their bodies name, innermost
     /// last. Consuming one of those bindings cancels the `ensure` (C1).
     ensure_watch: Vec<EnsureWatch>,
@@ -726,6 +739,7 @@ impl<'a> OwnershipChecker<'a> {
             ensure_spans: HashMap::new(),
             ensure_at: None,
             ensure_watch: Vec::new(),
+            ensure_consumes: Vec::new(),
             watch_epoch: 0,
             watch_recorded: HashMap::new(),
             fields_consumed: Vec::new(),
@@ -3592,12 +3606,14 @@ impl<'a> OwnershipChecker<'a> {
                 // body instead saw `ensure latch.release()` but not
                 // `ensure log.set(latch.release())` (#1301).
                 let prev = self.ensure_at.replace(stmt.span);
+                let outer = std::mem::take(&mut self.ensure_consumes);
                 self.check_block(body);
+                let consumed = std::mem::replace(&mut self.ensure_consumes, outer);
                 self.ensure_at = prev;
                 if let Some((_name, handler)) = else_handler {
                     self.check_block(handler);
                 }
-                self.watch_ensure(stmt);
+                self.watch_ensure(stmt, consumed);
             }
             StmtKind::Comptime(body) => {
                 self.check_block(body);
@@ -9878,41 +9894,75 @@ impl<'a> OwnershipChecker<'a> {
         }
     }
 
-    /// ctrl.ensure/C1: what this `ensure` acts on, watched from here to the
-    /// end of its block. Consuming it before then cancels the `ensure`.
+    /// ctrl.ensure/C6: what this `ensure` cleans up and what it reads,
+    /// watched from here to the end of its block.
     ///
-    /// When the body is a cleanup call on a place (`c.close()`,
-    /// `w.take().close()`, `p.a.close()`, `drop(h)`), that place is what it
-    /// acts on: `ensure w.take().close()` then `w.take()` would otherwise
-    /// close the inner handle twice (#1992). Any other binding the body reads
-    /// is pinned: the cleanup still runs and reads it, so moving it is an
-    /// error. A body that isn't a cleanup call (`ensure println(v.len())`,
-    /// a block) acts on every binding it names, so `sink(v)` cancels it
-    /// rather than leaving it to read what `sink` freed (#1978).
+    /// What the body consumes is what it cleans up (mem.linear/L4), found by
+    /// the walk that just checked it: `latch` in
+    /// `ensure log.record(latch.release())`, `w` in `ensure w.take().close()`
+    /// (#1992), `c` in `ensure close_with(c, why)`. Giving that away before
+    /// the exit cancels the ensure. Anything else the body reads still has to
+    /// be there when it runs, so giving it away is an error, and a body that
+    /// consumes nothing (`ensure println(v.len())`) has nothing that cancels
+    /// it (#1978).
     ///
     /// A binding that only ever copies (an `i64`, a `string`) never moves,
     /// so it never cancels.
-    fn watch_ensure(&mut self, stmt: &Stmt) {
-        let StmtKind::Ensure { body, .. } = &stmt.kind else { return };
-        let subject = Self::ensure_subject(body).map(|(root, path)| {
-            let symbol = self.program.resolutions.get(&root.id).map(|s| s.0);
-            let ExprKind::Ident(name) = &root.kind else { unreachable!() };
-            (name.clone(), symbol, path)
+    fn watch_ensure(&mut self, stmt: &Stmt, consumed: Vec<(String, Vec<String>)>) {
+        // A cleanup on something that isn't a local (a module constant) has
+        // no binding to watch.
+        let mut subjects: Vec<(String, Vec<String>)> = Vec::new();
+        for (root, path) in consumed {
+            if !self.bindings.contains_key(&root) {
+                continue;
+            }
+            // Two parts of one binding: the ensure cleans up what holds both.
+            match subjects.iter_mut().find(|(r, _)| *r == root) {
+                Some((_, p)) => {
+                    let common = p.iter().zip(&path).take_while(|(a, b)| a == b).count();
+                    p.truncate(common);
+                }
+                None => subjects.push((root, path)),
+            }
+        }
+        // Every place the body reads, keyed by the name at its root: the
+        // longest field chain off each identifier, `[]` for a bare one.
+        let mut chains: HashMap<rask_ast::NodeId, Vec<String>> = HashMap::new();
+        rask_ast::visit::walk_stmt(stmt, &mut |e| {
+            if !matches!(e.kind, ExprKind::Field { .. }) {
+                return;
+            }
+            let mut path = Vec::new();
+            let mut place = e;
+            while let ExprKind::Field { object, field } = &place.kind {
+                path.push(field.clone());
+                place = object;
+            }
+            if matches!(place.kind, ExprKind::Ident(_)) {
+                path.reverse();
+                let slot = chains.entry(place.id).or_default();
+                if path.len() > slot.len() {
+                    *slot = path;
+                }
+            }
         });
-        // A cleanup on something that isn't a local (`COUNT.fetch_add(v.len())`
-        // on a module constant) has no subject here: what it reads is.
-        let subject = subject.filter(|(root, _, _)| self.bindings.contains_key(root));
-        let mut seen: Vec<(String, Option<u32>)> = Vec::new();
+        let mut seen: Vec<(String, Option<u32>, Vec<Vec<String>>)> = Vec::new();
         rask_ast::visit::walk_stmt(stmt, &mut |e| {
             if let ExprKind::Ident(name) = &e.kind {
                 let symbol = self.program.resolutions.get(&e.id).map(|s| s.0);
-                if !seen.contains(&(name.clone(), symbol)) {
-                    seen.push((name.clone(), symbol));
+                let read = chains.get(&e.id).cloned().unwrap_or_default();
+                match seen.iter_mut().find(|(n, s, _)| n == name && *s == symbol) {
+                    Some((_, _, reads)) => {
+                        if !reads.contains(&read) {
+                            reads.push(read);
+                        }
+                    }
+                    None => seen.push((name.clone(), symbol, vec![read])),
                 }
             }
         });
         seen.sort();
-        for (name, symbol) in seen {
+        for (name, symbol, reads) in seen {
             let live = matches!(
                 self.bindings.get(&name),
                 Some(s) if !matches!(
@@ -9923,41 +9973,21 @@ impl<'a> OwnershipChecker<'a> {
             if !live {
                 continue;
             }
-            let (path, pinned) = match &subject {
-                Some((root, root_sym, path)) if *root == name && Self::same_root(*root_sym, symbol) => {
-                    (path.clone(), false)
-                }
-                Some(_) => (Vec::new(), true),
-                None => (Vec::new(), false),
+            let subject = subjects.iter().find(|(r, _)| *r == name).map(|(_, p)| p.clone());
+            let also_cleans = match subject {
+                Some(_) => subjects.iter().filter(|(r, _)| *r != name).map(|(r, _)| r.clone()).collect(),
+                None => Vec::new(),
             };
-            self.ensure_watch.push(EnsureWatch { name, symbol, path, pinned, ensure: stmt.id, ensure_span: stmt.span });
+            self.ensure_watch.push(EnsureWatch {
+                name,
+                symbol,
+                subject,
+                reads,
+                also_cleans,
+                ensure: stmt.id,
+                ensure_span: stmt.span,
+            });
         }
-    }
-
-    /// The place an ensure body's cleanup call acts on: the root name and
-    /// the field path under it.
-    fn ensure_subject(body: &[Stmt]) -> Option<(&Expr, Vec<String>)> {
-        let StmtKind::Expr(expr) = &body.first()?.kind else { return None };
-        if body.len() != 1 {
-            return None;
-        }
-        let mut place = match &expr.kind {
-            ExprKind::MethodCall { object, .. } => object.as_ref(),
-            ExprKind::Call { func, args, .. } if matches!(&func.kind, ExprKind::Ident(n) if n == "drop") => {
-                &args.first()?.expr
-            }
-            _ => return None,
-        };
-        while let ExprKind::MethodCall { object, .. } = &place.kind {
-            place = object;
-        }
-        let mut path = Vec::new();
-        while let ExprKind::Field { object, field } = &place.kind {
-            path.push(field.clone());
-            place = object;
-        }
-        path.reverse();
-        matches!(place.kind, ExprKind::Ident(_)).then_some((place, path))
     }
 
     fn is_given_away(&self, name: &str) -> bool {
@@ -10011,7 +10041,7 @@ impl<'a> OwnershipChecker<'a> {
         let watched = before.given_away.len().min(self.ensure_watch.len());
         let fields: Vec<(String, Vec<String>, Option<u32>)> =
             self.fields_consumed[before.fields_consumed.min(self.fields_consumed.len())..].to_vec();
-        let mut hits: Vec<usize> = Vec::new();
+        let mut hits: Vec<(usize, String, WatchVerdict)> = Vec::new();
         for i in 0..watched {
             let w = &self.ensure_watch[i];
             if self.watch_recorded.get(&(w.ensure, w.name.clone())).is_some_and(|e| *e > before.epoch) {
@@ -10020,33 +10050,63 @@ impl<'a> OwnershipChecker<'a> {
             let whole = !before.given_away[i]
                 && self.is_given_away(&w.name)
                 && self.names_binding(at, &w.name, w.symbol);
-            // Giving away `p.a` consumes what an ensure on `p.a` or under it
-            // acts on.
-            let field = fields.iter().any(|(root, path, symbol)| {
-                *root == w.name && Self::same_root(*symbol, w.symbol) && !w.pinned && w.path.starts_with(path)
+            if whole {
+                if let Some(verdict) = Self::watch_verdict(w, None) {
+                    hits.push((i, w.name.clone(), verdict));
+                }
+                continue;
+            }
+            // A field given away: what the ensure cleans up goes with it when
+            // the field holds it, and a part it still needs or reads is gone.
+            let field = fields.iter().find_map(|(root, path, symbol)| {
+                if *root != w.name || !Self::same_root(*symbol, w.symbol) {
+                    return None;
+                }
+                let verdict = Self::watch_verdict(w, Some(path))?;
+                Some((format!("{}.{}", root, path.join(".")), verdict))
             });
-            if whole || field {
-                hits.push(i);
+            if let Some((place, verdict)) = field {
+                hits.push((i, place, verdict));
             }
         }
         if hits.is_empty() {
             return;
         }
         self.watch_epoch += 1;
-        for i in hits {
+        for (i, place, verdict) in hits {
             let w = self.ensure_watch[i].clone();
             self.watch_recorded.insert((w.ensure, w.name.clone()), self.watch_epoch);
-            if w.pinned {
-                self.errors.push(OwnershipError {
-                    kind: OwnershipErrorKind::EnsureReadsMoved { name: w.name.clone(), ensure_at: w.ensure_span },
+            match verdict {
+                WatchVerdict::Cancels => {
+                    let entry = self.ensure_cancels.entry(at.id).or_default();
+                    if !entry.contains(&w.ensure) {
+                        entry.push(w.ensure);
+                    }
+                }
+                WatchVerdict::Refused(why) => self.errors.push(OwnershipError {
+                    kind: OwnershipErrorKind::EnsureReadsMoved { name: place, why, ensure_at: w.ensure_span },
                     span: at.span,
-                });
-                continue;
+                }),
             }
-            let entry = self.ensure_cancels.entry(at.id).or_default();
-            if !entry.contains(&w.ensure) {
-                entry.push(w.ensure);
+        }
+    }
+
+    /// What giving away `w`'s binding (`moved` is `None`) or the field at
+    /// `moved` does to its ensure. `None`: nothing the ensure touches.
+    fn watch_verdict(w: &EnsureWatch, moved: Option<&Vec<String>>) -> Option<WatchVerdict> {
+        let overlaps = |a: &Vec<String>, b: &Vec<String>| a.starts_with(b) || b.starts_with(a);
+        let whole: Vec<String> = Vec::new();
+        let moved = moved.unwrap_or(&whole);
+        match &w.subject {
+            Some(path) if path.starts_with(moved) => Some(match w.also_cleans.first() {
+                None => WatchVerdict::Cancels,
+                Some(other) => WatchVerdict::Refused(EnsureHold::AlsoCleans(other.clone())),
+            }),
+            Some(path) if moved.starts_with(path) => {
+                let subject = std::iter::once(w.name.clone()).chain(path.iter().cloned()).collect::<Vec<_>>().join(".");
+                Some(WatchVerdict::Refused(EnsureHold::PartOf(subject)))
             }
+            _ => w.reads.iter().any(|r| overlaps(r, moved)).then_some(WatchVerdict::Refused(EnsureHold::Reads)),
         }
     }
 
@@ -10073,7 +10133,7 @@ impl<'a> OwnershipChecker<'a> {
         let watched: Vec<EnsureWatch> = self.ensure_watch[from.min(self.ensure_watch.len())..].to_vec();
         for w in watched {
             // A field's cleanup is judged with its holder's debts.
-            if w.pinned || !w.path.is_empty() || self.ensure_registered.contains(&w.name) {
+            if w.subject.as_ref().is_none_or(|p| !p.is_empty()) || self.ensure_registered.contains(&w.name) {
                 continue;
             }
             let Some(BindingState::MaybeMoved { at }) = self.bindings.get(&w.name) else { continue };
@@ -10171,6 +10231,9 @@ impl<'a> OwnershipChecker<'a> {
     /// A consume inside an `ensure` body. The call runs at scope exit, so the
     /// value stays the frame's until then and is committed now (mem.linear/L4).
     fn commit_in_ensure(&mut self, consumed: &Expr, ensure_at: Span) {
+        if let (Some(root), path) = Self::extract_root_and_fields(consumed) {
+            self.ensure_consumes.push((root, path.unwrap_or_default()));
+        }
         match &consumed.kind {
             ExprKind::Ident(name) => {
                 // An `ensure` gives the value away as surely as the call does,

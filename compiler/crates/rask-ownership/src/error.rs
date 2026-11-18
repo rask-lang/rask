@@ -644,11 +644,12 @@ pub enum OwnershipErrorKind {
         closure_at: Span,
     },
 
-    /// A value an `ensure` reads, but doesn't clean up, was given away while
-    /// the ensure was still scheduled to run (ctrl.ensure/C1).
-    #[error("`{name}` is given away while an `ensure` still reads it")]
+    /// A place an `ensure` still needs was given away while the ensure was
+    /// scheduled to run (ctrl.ensure/C6).
+    #[error("`{name}` is given away while an `ensure` still needs it")]
     EnsureReadsMoved {
         name: String,
+        why: EnsureHold,
         ensure_at: Span,
     },
 
@@ -969,3 +970,15 @@ impl std::fmt::Display for OwnershipError {
 }
 
 impl std::error::Error for OwnershipError {}
+
+/// Why a place an `ensure` holds on to can't be given away (ctrl.ensure/C6).
+#[derive(Debug, Clone, PartialEq)]
+pub enum EnsureHold {
+    /// The cleanup reads it.
+    Reads,
+    /// It is part of what the cleanup consumes, named here.
+    PartOf(String),
+    /// The cleanup also consumes this other binding, which cancelling would
+    /// leave alone.
+    AlsoCleans(String),
+}

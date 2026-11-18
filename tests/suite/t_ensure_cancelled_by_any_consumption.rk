@@ -4,13 +4,13 @@
 // records which expressions cancel which ensures and both backends act on
 // that record. Before, each backend guessed again from the shape of the code
 // and missed a spelling at a time: a call through a function value (#1989),
-// an ensure on a chain like `w.take().close()` (#1992), and a plain
-// non-resource value moved into a `take` parameter or returned (#1978).
+// and an ensure on a chain like `w.take().close()` (#1992). A value the
+// ensure only reads can't be given away at all (#1978); that is
+// tests/compile_errors/ensure_reads_moved.rk.
 
 import sync.Atomic
 
 const CLOSES: Atomic<i64> = Atomic<i64>.new(0)
-const ENSURES: Atomic<i64> = Atomic<i64>.new(0)
 
 @resource
 struct Conn {
@@ -68,29 +68,6 @@ func chained() -> i64 {
     return c.close()
 }
 
-func sink(take v: Vec<string>) -> i64 {
-    return v.len().to<i64>()!
-}
-
-// #1978: an ordinary value moved into a `take` parameter. The ensure must not
-// read it afterwards.
-func moved_into_take() -> i64 {
-    mut v: Vec<string> = Vec.new()
-    v.push("a heap string long enough to allocate here 1")
-    ensure ENSURES.fetch_add(v.len().to<i64>()!)
-    return sink(v)
-}
-
-// #1978: returning it is the same consumption.
-func hooked(n: i64) -> Vec<string> {
-    mut v: Vec<string> = Vec.new()
-    v.push("first {n} heap string long enough to allocate")
-    ensure {
-        v = Vec.new()
-    }
-    return v
-}
-
 test "ctrl.ensure/C1 — a take argument through a function value cancels the ensure" {
     CLOSES.store(0)
     assert via_value() == 1
@@ -107,15 +84,6 @@ test "ctrl.ensure/C1 — consuming the root of an ensure's chain cancels it" {
     CLOSES.store(0)
     assert chained() == 4
     assert CLOSES.load() == 1
-}
-
-test "ctrl.ensure/C1 — moving a plain value cancels the ensure that reads it" {
-    ENSURES.store(0)
-    assert moved_into_take() == 1
-    assert ENSURES.load() == 0
-    let v = hooked(7)
-    assert v.len() == 1
-    assert v[0] == "first 7 heap string long enough to allocate"
 }
 
 func main() {}
