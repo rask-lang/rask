@@ -5,7 +5,9 @@
 // release pass took returning it for returning the vector, and nothing ever
 // released the optional. For a number that was simply wrong: the element is
 // copied out. For a string the return takes its own reference first, so the
-// optional is still the frame's to release after that.
+// optional is still the frame's to release after that. The same holds when
+// the reference was taken earlier, at a `let`, or when the element is a struct
+// or an optional that gets its references the same way.
 
 import sequence.Sequence
 
@@ -65,6 +67,56 @@ func first_name() -> string {
     return "none"
 }
 
+struct One {
+    s: string
+}
+
+func bound_then_returned(n: i64) -> string {
+    // Recursive, so it stays a call of its own: inlined, the caller's
+    // releases covered the leak.
+    if n > 100 {
+        return bound_then_returned(n - 1)
+    }
+    mut best: Vec<string>? = none
+    best = Vec.from([long(n)])
+    if best? as b {
+        let s = b[0]
+        if n > 0 {
+            return s
+        }
+    }
+    return "none"
+}
+
+func struct_element(n: i64) -> One {
+    // Recursive, so it stays a call of its own: inlined, the caller's
+    // releases covered the leak.
+    if n > 100 {
+        return struct_element(n - 1)
+    }
+    mut best: Vec<One>? = none
+    best = Vec.from([One(s: long(n))])
+    if best? as b {
+        return b[0]
+    }
+    return One(s: "none")
+}
+
+func optional_element(n: i64) -> string? {
+    // Recursive, so it stays a call of its own: inlined, the caller's
+    // releases covered the leak.
+    if n > 100 {
+        return optional_element(n - 1)
+    }
+    mut best: Vec<string?>? = none
+    best = Vec.new()
+    best!.push(long(n))
+    if best? as b {
+        return b[0]
+    }
+    return none
+}
+
 test "a number returned out of an optional vector" {
     assert first_number() == 2
     assert set_by_closure(4) == 5
@@ -72,4 +124,14 @@ test "a number returned out of an optional vector" {
 
 test "a string returned out of an optional vector" {
     assert first_name() == long(1)
+}
+
+test "an element retained before the block that returns it" {
+    assert bound_then_returned(3) == long(3)
+    assert bound_then_returned(0) == "none"
+}
+
+test "a struct or optional element returned out of an optional vector" {
+    assert struct_element(4).s == long(4)
+    assert optional_element(5) ?? "x" == long(5)
 }

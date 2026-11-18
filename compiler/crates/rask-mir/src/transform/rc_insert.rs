@@ -1128,6 +1128,8 @@ fn insert_aggregate_release(
             }
         }
     }
+    let holds_own_reference = own_reference_points(func);
+    let dom = crate::analysis::dominators::DominatorTree::build(func);
     let mut facts = ownership::Facts {
         moved_parts: slot_parts.keys().copied().collect(),
         names: tracked.iter().copied().collect(),
@@ -1647,7 +1649,12 @@ fn insert_aggregate_release(
                 retained.retain(|id| !uses::stmt_reads(stmt, *id));
             }
 
-            // Reads and writes, for liveness.
+            // Reads and writes, for liveness. A store through a pointer value
+            // (`Cell_data(c)`, an address into another value's storage) uses
+            // the pointer and keeps what it points into alive. Taken for a
+            // scratch slot's write, `*(Cell_data(c)) = n` as the last use of
+            // a buffer released the buffer first and wrote into freed memory.
+            let through_pointer = |addr: LocalId| matches!(ty_of.get(&addr), Some(MirType::Ptr));
             let store_into = match &stmt.kind {
                 MirStmtKind::Store { addr, offset, value, .. } => Some((*addr, *offset, value)),
                 _ => None,
@@ -1663,7 +1670,7 @@ fn insert_aggregate_release(
                         // release between the slot's release and the store,
                         // freeing the old string twice and leaking `t`.
                         Some((addr, _, value)) if addr == *name => {
-                            uses::operand_local(value) == Some(*name) || replaces
+                            uses::operand_local(value) == Some(*name) || replaces || through_pointer(addr)
                         }
                         _ => uses::stmt_reads(stmt, *name),
                     } || copy_reads.get(&si) == Some(name)
@@ -1677,7 +1684,9 @@ fn insert_aggregate_release(
                     // aggregate is a `Fill`, which the analysis decides.
                     let writes = match (&stmt.kind, store_into) {
                         (MirStmtKind::ZeroAggregate { local }, _) => local == name,
-                        (_, Some((addr, _, _))) => addr == *name && !aggregates.contains(name),
+                        (_, Some((addr, _, _))) => {
+                            addr == *name && !aggregates.contains(name) && !through_pointer(addr)
+                        }
                         (_, None) => uses::stmt_def(stmt) == Some(*name),
                     };
                     if writes {
@@ -1692,22 +1701,23 @@ fn insert_aggregate_release(
         facts.events.push(events);
         facts.reads.push(reads);
         facts.kills.push(kills);
-        // A string the frame took its own reference to on the way out is that
-        // reference being returned, not a view still reading its base:
-        // `return b[0]` out of a `Vec<string>?` retains the element, so the
-        // option is the frame's to release before the return (#2008).
+        // An element the frame took its own reference to before returning it
+        // is that reference being returned, not a view still reading its
+        // base: `return b[0]` out of a `Vec<string>?` retains the element, so
+        // the option is the frame's to release before the return (#2008).
         let returned = match &block.terminator.kind {
             MirTerminatorKind::Return { value: Some(MirOperand::Local(id)) }
             | MirTerminatorKind::CleanupReturn { value: Some(MirOperand::Local(id)), .. } => Some(*id),
             _ => None,
         };
         let own_reference_returned = returned.filter(|id| {
-            block
-                .statements
-                .iter()
-                .rev()
-                .take_while(|st| uses::stmt_def(st) != Some(*id))
-                .any(|st| matches!(st.kind, MirStmtKind::RcInc { local } if local == *id))
+            holds_own_reference.get(id).is_some_and(|&(rb, ri)| {
+                if rb == block.id {
+                    ri < block.statements.len()
+                } else {
+                    dom.dominates(rb, block.id)
+                }
+            })
         });
         let mut term_ev = Vec::new();
         if let Some(id) = returned.filter(|id| tracked.contains(id) && own_reference_returned.is_none()) {
@@ -2206,6 +2216,37 @@ fn retain_returned_params(func: &mut MirFunction, string_locals: &[LocalId], own
         let span = block.terminator.span;
         block.statements.push(MirStmt::new(MirStmtKind::RcInc { local: returned }, span));
     }
+}
+
+/// Names given their own reference after their one definition: `rc_inc` of a
+/// string, `rc_inc_contents` of an aggregate. Each maps to where the retain
+/// is, block and statement. With a single definition before it, every path
+/// through the retain has the retained value from there on.
+fn own_reference_points(func: &MirFunction) -> HashMap<LocalId, (BlockId, usize)> {
+    let mut defs: HashMap<LocalId, (u32, BlockId, usize)> = HashMap::new();
+    for block in &func.blocks {
+        for (si, st) in block.statements.iter().enumerate() {
+            if let Some(d) = uses::stmt_def(st) {
+                let e = defs.entry(d).or_insert((0, block.id, si));
+                e.0 += 1;
+            }
+        }
+    }
+    let mut out = HashMap::new();
+    for block in &func.blocks {
+        for (si, st) in block.statements.iter().enumerate() {
+            let local = match st.kind {
+                MirStmtKind::RcInc { local } | MirStmtKind::RcIncContents { local, .. } => local,
+                _ => continue,
+            };
+            let Some(&(1, db, di)) = defs.get(&local) else { continue };
+            if db == block.id && di > si {
+                continue;
+            }
+            out.entry(local).or_insert((block.id, si));
+        }
+    }
+    out
 }
 
 /// String locals that point into storage a receiver keeps: the result of a
