@@ -878,6 +878,29 @@ impl Interpreter {
         Some(rask_ast::expr::Expr { id: object.id, span: object.span, kind })
     }
 
+    /// `Money.zero()` on `type Money = i64 implements Numeric`: a static
+    /// method the newtype inherits rather than defines is the underlying
+    /// type's, so the receiver is rewritten to `i64` (type.aliases/T12). The
+    /// result is wrapped back by `rewrap_newtype_result`.
+    pub(crate) fn newtype_static_receiver(
+        &self,
+        object: &rask_ast::expr::Expr,
+        method: &str,
+    ) -> Option<rask_ast::expr::Expr> {
+        let rask_ast::expr::ExprKind::Ident(name) = &object.kind else { return None };
+        let target = self.nominal_targets.get(name)?;
+        if self.methods.get(name).is_some_and(|m| m.contains_key(method)) {
+            return None;
+        }
+        let base = target.last_segment()?.to_string();
+        let kind = if target.args().is_empty() {
+            rask_ast::expr::ExprKind::Ident(base)
+        } else {
+            rask_ast::expr::ExprKind::GenericName { name: base, type_args: target.args().to_vec() }
+        };
+        Some(rask_ast::expr::Expr { id: object.id, span: object.span, kind })
+    }
+
     pub(crate) fn resolve_type_param(&self, ty: &TypeExpr) -> TypeExpr {
         let frame = self.generic_frames.last().and_then(|f| f.as_deref());
         ty.substitute(&|name| {

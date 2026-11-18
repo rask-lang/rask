@@ -865,7 +865,22 @@ impl Interpreter {
                 return self.apply_try(try_id, expr.span, val);
             }
         }
-        self.eval_expr_inner(expr)
+        let val = self.eval_expr_inner(expr)?;
+        Ok(self.rewrap_newtype_result(expr, val))
+    }
+
+    /// A method a nominal newtype inherits runs on the value underneath
+    /// (type.aliases/T12), so what comes back is that value's type: `a.add(b)`
+    /// on two `Money`s answered a bare `i64`, and `.value` on it failed. The
+    /// checker typed the call as `Money`, so it is wrapped back here. A method
+    /// whose answer isn't the newtype (`hash`, `eq`) is left alone.
+    fn rewrap_newtype_result(&self, expr: &Expr, val: Value) -> Value {
+        if !matches!(expr.kind, ExprKind::MethodCall { .. }) || matches!(val, Value::Nominal { .. }) {
+            return val;
+        }
+        let Some(rask_types::Type::Named(id)) = self.node_types.get(&expr.id) else { return val };
+        let Some(rask_types::TypeDef::NominalAlias { name, .. }) = self.types.get(*id) else { return val };
+        Value::Nominal { type_name: name.clone(), inner: Box::new(val) }
     }
 
     /// ER16/ER16a: hand back the payload, or leave through the other branch.
@@ -1248,7 +1263,13 @@ impl Interpreter {
                         instantiated = concrete;
                         &instantiated
                     }
-                    None => object,
+                    None => match self.newtype_static_receiver(object, method) {
+                        Some(underlying) => {
+                            instantiated = underlying;
+                            &instantiated
+                        }
+                        None => object,
+                    },
                 };
                 if let Some(ident) = object.name() {
                     // A transparent `type alias` is the same type under another

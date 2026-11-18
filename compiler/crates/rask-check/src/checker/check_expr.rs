@@ -5637,6 +5637,18 @@ impl TypeChecker {
                         return Type::Named(type_id);
                     }
                 }
+                // A nominal newtype names its own type, as a struct does: the
+                // receiver of `Money.zero()`. Left a fresh variable, the call
+                // had no type to look `zero` up on, and its result took
+                // whatever the context wanted (#2004). `Money(5)` is a
+                // constructor call and never asks for this.
+                SymbolKind::TypeAlias { .. } => {
+                    if let Some(type_id) = self.types.get_type_id(&sym.name) {
+                        if matches!(self.types.get(type_id), Some(TypeDef::NominalAlias { .. })) {
+                            return Type::Named(type_id);
+                        }
+                    }
+                }
                 SymbolKind::EnumVariant { enum_id } => {
                     if let Some(enum_sym) = self.resolved.symbols.get(*enum_id) {
                         let type_id = if enum_sym.span == Span::new(0, 0) {
