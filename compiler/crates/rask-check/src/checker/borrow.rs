@@ -281,10 +281,13 @@ impl TypeChecker {
                     });
                 }
             }
-            ExprKind::MethodCall { object, method: _, args, .. } => {
+            ExprKind::MethodCall { object, method, args, .. } => {
                 if let Some(name) = object.name() {
                     if !skip.contains(name) {
-                        if let Some(borrow) = self.check_borrow_conflict(name, BorrowMode::Exclusive) {
+                        // `x + 1` is `x.add(1)`, a read; only a method that
+                        // changes or consumes `x` collides with a read loan.
+                        let access = self.method_borrow_mode(name, method);
+                        if let Some(borrow) = self.check_borrow_conflict(name, access) {
                             self.errors.push(TypeError::AliasingViolation {
                                 var: name.to_string(),
                                 borrow_span: borrow.span,
@@ -343,6 +346,15 @@ impl TypeChecker {
     /// check in `validate_pending_self_mutations` can re-ask it once the
     /// receiver has actually been solved (#928).
     pub(super) fn method_mutates_self_ty(&self, ty: &Type, method_name: &str) -> bool {
+        match self.receiver_self_param(ty, method_name) {
+            Some(mode) => matches!(mode, SelfParam::Mutate),
+            None => Self::unresolved_receiver_mutates(method_name),
+        }
+    }
+
+    /// How a method takes its receiver, or `None` while the receiver's type is
+    /// still open.
+    fn receiver_self_param(&self, ty: &Type, method_name: &str) -> Option<SelfParam> {
         let resolved = self.resolve_named(&self.ctx.apply(ty));
 
         // A box mutates through its heap slot, not through the binding
@@ -355,20 +367,29 @@ impl TypeChecker {
             && matches!(method_name,
                 "read" | "write" | "try_read" | "try_write" | "get" | "set" | "replace")
         {
-            return false;
+            return Some(SelfParam::Value);
         }
 
-        // `any Interface` values: the interface's own declared self mode is known —
-        // no need for the unresolved-type name heuristic below, which would
-        // flag every interface's `write`/`read` as mutating regardless of how it
-        // was actually declared.
+        // `any Interface` values: the interface's own declared self mode is known.
         if let Type::InterfaceObject { interface_name, decl } = &resolved {
             let methods = crate::interfaces::InterfaceChecker::new(&self.types).interface_object_methods(interface_name, *decl);
-            if let Some(sig) = methods.iter().find(|m| m.name == method_name) {
-                return matches!(sig.self_param, SelfParam::Mutate);
-            }
-            return false;
+            return Some(
+                methods
+                    .iter()
+                    .find(|m| m.name == method_name)
+                    .map_or(SelfParam::Value, |sig| sig.self_param),
+            );
         }
+
+        let stub_mode = |stub: &rask_stdlib::MethodStub| {
+            if stub.mutate_self {
+                SelfParam::Mutate
+            } else if stub.take_self {
+                SelfParam::Take
+            } else {
+                SelfParam::Value
+            }
+        };
 
         let type_id = match &resolved {
             Type::Named(id) => Some(*id),
@@ -385,50 +406,47 @@ impl TypeChecker {
             };
             if let Some(methods) = methods {
                 if let Some(sig) = methods.iter().find(|m| m.name == method_name) {
-                    return matches!(sig.self_param, SelfParam::Mutate);
+                    return Some(sig.self_param);
                 }
             }
 
             // Builtin types (Vec, Map, string, ...): check the stdlib stubs.
             let type_name = self.types.type_name(id);
-            if let Some(stub) = rask_stdlib::lookup_method(&type_name, method_name) {
-                return stub.mutate_self;
-            }
-
-            return false;
+            return Some(
+                rask_stdlib::lookup_method(&type_name, method_name).map_or(SelfParam::Value, stub_mode),
+            );
         }
 
         // A primitive receiver is `Type::String` / `Type::I64` / … rather than
-        // a `Named`, so the stub lookup above never ran for one and it fell
-        // through to the name union below. `Vec.reverse` is `mutate self`, so
-        // `let s = "abc"` then `s.reverse()` — which takes `self` by value and
-        // returns a new string — was rejected as mutating a `let` (#839).
+        // a `Named`, so the stub lookup above never ran for one. `Vec.reverse`
+        // is `mutate self`, so `let s = "abc"` then `s.reverse()` — which takes
+        // `self` by value and returns a new string — was rejected as mutating
+        // a `let` (#839).
         if let Some(name) = super::type_defs::receiver_name(&resolved, &self.types) {
             if let Some(stub) = rask_stdlib::lookup_method(&name, method_name) {
-                return stub.mutate_self;
+                return Some(stub_mode(stub));
             }
-            // A primitive with no such stub has no mutating methods at all;
-            // only a still-open receiver falls through to the name union.
+            // A primitive with no such stub has no mutating methods at all.
             if !matches!(resolved, Type::Var(_)) {
-                return false;
+                return Some(SelfParam::Value);
             }
         }
+        None
+    }
 
-        // Receiver type unresolved: fall back to the set of method names that
-        // are `mutate self` across all stdlib stubs. `add`/`mul`/`eq` aren't
-        // in the set, so desugared arithmetic/comparison don't false-positive.
-        //
-        // `read` and `write` are held out. They are the sync box's two verbs
-        // (conc.sync/SH5) and a box mutates through its slot, not its binding —
-        // but `Writer.write` is `mutate self`, so the union claims the name and
-        // `let c = Shared.mutex(0)` then `with c.write() as v` was rejected for
-        // mutating a `let`. Holding them out only affects an *unresolved*
-        // receiver: a real `Writer` answers from its stub above, and the one
-        // stdlib `write` that mutates takes an argument, which no box verb does.
-        if matches!(method_name, "read" | "write") {
-            return false;
-        }
-        rask_stdlib::any_builtin_method_mutates(method_name)
+    /// Receiver type unresolved: the set of method names that are `mutate
+    /// self` across all stdlib stubs. `add`/`mul`/`eq` aren't in the set, so
+    /// desugared arithmetic/comparison don't false-positive.
+    ///
+    /// `read` and `write` are held out. They are the sync box's two verbs
+    /// (conc.sync/SH5) and a box mutates through its slot, not its binding —
+    /// but `Writer.write` is `mutate self`, so the union claims the name and
+    /// `let c = Shared.mutex(0)` then `with c.write() as v` was rejected for
+    /// mutating a `let`. Holding them out only affects an *unresolved*
+    /// receiver: a real `Writer` answers from its stub, and the one stdlib
+    /// `write` that mutates takes an argument, which no box verb does.
+    fn unresolved_receiver_mutates(method_name: &str) -> bool {
+        !matches!(method_name, "read" | "write") && rask_stdlib::any_builtin_method_mutates(method_name)
     }
 
     /// Is this the `Shared<T, S>` box, however the checker spells it?
@@ -440,55 +458,19 @@ impl TypeChecker {
         }
     }
 
-    /// Determine borrow mode for a method call by looking up the method signature.
-    /// Falls back to a name-based heuristic for unresolved types.
+    /// The borrow a method call holds on its receiver: exclusive when the
+    /// method changes or consumes it, shared when it reads it. Asked of the
+    /// same signature the const-mutation check reads; guessing from the
+    /// method's name made `p > 0` on an `i64` (`p.gt(0)`) an exclusive borrow,
+    /// and a closure reading `p` in the `if` body a conflict.
     pub(super) fn method_borrow_mode(&self, var_name: &str, method_name: &str) -> BorrowMode {
-        // Try to look up the actual method signature from the variable's type
-        if let Some(ty) = self.lookup_local(var_name) {
-            let resolved = self.resolve_named(&self.ctx.apply(&ty));
-
-            if let Type::InterfaceObject { interface_name, decl } = &resolved {
-                let methods = crate::interfaces::InterfaceChecker::new(&self.types).interface_object_methods(interface_name, *decl);
-                if let Some(sig) = methods.iter().find(|m| m.name == method_name) {
-                    return match sig.self_param {
-                        SelfParam::Mutate | SelfParam::Take => BorrowMode::Exclusive,
-                        SelfParam::Value | SelfParam::None => BorrowMode::Shared,
-                    };
-                }
-            }
-
-            let type_id = match &resolved {
-                Type::Named(id) => Some(*id),
-                Type::Generic { base, .. } => Some(*base),
-                _ => None,
-            };
-            if let Some(id) = type_id {
-                let methods = match self.types.get(id) {
-                    Some(TypeDef::Struct { methods, .. }) |
-                    Some(TypeDef::Enum { methods, .. }) => Some(methods),
-                    _ => None,
-                };
-                if let Some(methods) = methods {
-                    if let Some(sig) = methods.iter().find(|m| m.name == method_name) {
-                        return match sig.self_param {
-                            SelfParam::Mutate | SelfParam::Take => BorrowMode::Exclusive,
-                            SelfParam::Value | SelfParam::None => BorrowMode::Shared,
-                        };
-                    }
-                }
-            }
-        }
-        // Fallback: name-based heuristic for unknown/builtin types
-        if method_name.starts_with("get") || matches!(method_name,
-            "read" | "len" | "is_empty" | "contains" | "find"
-            | "iter" | "values" | "keys" | "handles"
-            | "starts_with" | "ends_with" | "to_string" | "to_owned" | "clone"
-            | "trim" | "trim_start" | "trim_end"
-            | "split" | "split_whitespace" | "lines" | "chars"
-        ) {
-            BorrowMode::Shared
-        } else {
-            BorrowMode::Exclusive
-        }
+        let mode = self
+            .lookup_local(var_name)
+            .and_then(|ty| self.receiver_self_param(&ty, method_name));
+        let exclusive = match mode {
+            Some(m) => matches!(m, SelfParam::Mutate | SelfParam::Take),
+            None => Self::unresolved_receiver_mutates(method_name),
+        };
+        if exclusive { BorrowMode::Exclusive } else { BorrowMode::Shared }
     }
 }
