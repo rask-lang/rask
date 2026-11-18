@@ -1059,6 +1059,14 @@ fn retain_loads_handed_on(func: &mut MirFunction, callee_escapes: &HashMap<Strin
             handed.insert(*id);
         }
     }
+    // A read kept in a variable (`let r = g`) may be used after the cell is
+    // written, which releases the cell's reference, so it takes its own too.
+    // A read used only to call it right away needs none.
+    for stmt in func.blocks.iter().flat_map(|b| b.statements.iter()) {
+        if let MirStmtKind::Assign { rvalue: crate::MirRValue::Use(MirOperand::Local(src)), .. } = &stmt.kind {
+            handed.insert(*src);
+        }
+    }
     loop {
         let before = handed.len();
         for stmt in func.blocks.iter().flat_map(|b| b.statements.iter()) {
@@ -1072,6 +1080,20 @@ fn retain_loads_handed_on(func: &mut MirFunction, callee_escapes: &HashMap<Strin
             break;
         }
     }
+    // Only a variable's cell: one this function writes, or a loop body's
+    // view of the enclosing frame's. The slot a body's `return` fills is read
+    // once by the frame and handed over, so a read of it takes nothing; a
+    // reference taken there was one nobody released.
+    let variables: HashSet<LocalId> = func
+        .blocks
+        .iter()
+        .flat_map(|b| b.statements.iter())
+        .filter_map(|st| match &st.kind {
+            MirStmtKind::Store { addr, offset: 0, .. } => Some(*addr),
+            MirStmtKind::LoadCapture { dst, .. } => Some(*dst),
+            _ => None,
+        })
+        .collect();
     let mut retained = HashSet::new();
     for bi in 0..func.blocks.len() {
         let mut si = 0;
@@ -1080,7 +1102,7 @@ fn retain_loads_handed_on(func: &mut MirFunction, callee_escapes: &HashMap<Strin
                 &func.blocks[bi].statements[si].kind
             {
                 let dst = *dst;
-                if handed.contains(&dst) && is_closure(func, &dst) && is_closure(func, cell) {
+                if handed.contains(&dst) && is_closure(func, &dst) && is_closure(func, cell) && variables.contains(cell) {
                     func.blocks[bi]
                         .statements
                         .insert(si + 1, MirStmt::dummy(MirStmtKind::ClosureRetain { closure: dst, made: None }));

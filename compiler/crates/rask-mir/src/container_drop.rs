@@ -3269,19 +3269,24 @@ fn cells_this_frame_frees(
             MirOperand::Local(v) => func.local_ty(*v) == Some(&MirType::Buffer),
             _ => false,
         };
+        // The store every other one follows fills the cell; the rest replace
+        // what it holds. Block numbers don't say which.
+        let leader = values
+            .iter()
+            .map(|(_, b)| *b)
+            .find(|first| values.iter().all(|(_, b)| dom.dominates(*first, *b)));
         if let Some(ty) = closure_cell_is_a_variable(func, all, *cell, values, &handed_on, &dom, &mut Vec::new()) {
-            out.push((*cell, InCell::Slot(ty), values[0].1));
+            out.push((*cell, InCell::Slot(ty), leader.expect("a closure variable has a leading store")));
             continue;
         }
         if values.iter().any(|(v, _)| is_string(v)) {
-            // The first store fills the cell; the rest overwrite it, and
-            // `insert_cell_drops` releases what each one covers. The first has
-            // to be the one every other store follows, or there is no telling
-            // which write makes the value and which replaces it.
-            let (_, store_block) = &values[0];
-            let first_leads = values.iter().all(|(_, b)| dom.dominates(*store_block, *b));
-            if first_leads && ensure_captured(func, *cell) && !kept_by_a_call.contains(cell) {
-                out.push((*cell, InCell::Slot(MirType::Buffer), *store_block));
+            // `insert_cell_drops` releases what each later store covers. With
+            // no leading store there is no telling which write makes the value
+            // and which replaces it.
+            if let Some(store_block) = leader {
+                if ensure_captured(func, *cell) && !kept_by_a_call.contains(cell) {
+                    out.push((*cell, InCell::Slot(MirType::Buffer), store_block));
+                }
             }
             continue;
         }
@@ -3353,8 +3358,10 @@ fn closure_cell_is_a_variable(
     if !values.iter().all(|(v, _)| matches!(v, MirOperand::Local(l) if heap.contains(l) || borrowed.contains(l))) {
         return None;
     }
-    let first = values[0].1;
-    if !values.iter().all(|(_, b)| dom.dominates(first, *b)) {
+    // Some store has to come before all the others. Block numbers don't say
+    // which: an `if` that writes the variable can sit in a lower-numbered
+    // block than the declaration's.
+    if !values.iter().any(|(_, first)| values.iter().all(|(_, b)| dom.dominates(*first, *b))) {
         return None;
     }
     let mut addrs = HashSet::from([cell]);

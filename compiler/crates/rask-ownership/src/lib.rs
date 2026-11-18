@@ -384,6 +384,11 @@ pub struct OwnershipChecker<'a> {
     /// a Vec was enough to reject the whole thing (#869). Keyed by node, a
     /// binding asks about its own initializer and the body can't answer for it.
     closure_scope_limits: HashMap<rask_ast::NodeId, u32>,
+    /// The capture that set a closure literal's limit, when it is a local the
+    /// closure points at, and the same for a name holding such a closure. The
+    /// error names it: the closure outlives that variable.
+    closure_points_at: HashMap<rask_ast::NodeId, String>,
+    limited_points_at: HashMap<String, (String, Span)>,
     /// Closure literals bound to a name, so a task block that calls one —
     /// `let f = || { … }` then `spawn { f() }` — is checked for the writes the
     /// closure makes as well as its own. Only the literal case is in here — a
@@ -709,6 +714,8 @@ impl<'a> OwnershipChecker<'a> {
             scope_limited_closures: HashMap::new(),
             module_consts: std::collections::HashSet::new(),
             closure_scope_limits: HashMap::new(),
+            closure_points_at: HashMap::new(),
+            limited_points_at: HashMap::new(),
             task_bodies: HashSet::new(),
             borrowing_spawns: HashSet::new(),
             borrowing_bodies: HashMap::new(),
@@ -1621,6 +1628,8 @@ impl<'a> OwnershipChecker<'a> {
         self.active_for_mutates.clear();
         self.scope_limited_closures.clear();
         self.closure_scope_limits.clear();
+        self.closure_points_at.clear();
+        self.limited_points_at.clear();
         // Keyed by name too, so an `f` in one body would otherwise answer for
         // the next body's `f`.
         self.closure_literals.clear();
@@ -1936,11 +1945,18 @@ impl<'a> OwnershipChecker<'a> {
             .collect();
         for name in &escaping {
             if matches!(self.bindings.get(name), Some(BindingState::Owned)) {
+                // Where the closure that points at a local was put in `name`,
+                // when that is the limit; the block's end otherwise.
+                let at = self.limited_points_at.get(name).cloned();
                 self.errors.push(OwnershipError {
+                    span: at
+                        .as_ref()
+                        .map(|(_, sp)| *sp)
+                        .unwrap_or_else(|| stmts.last().map(|s| s.span).unwrap_or(Span::new(0, 0))),
                     kind: OwnershipErrorKind::ScopeLimitedClosureEscapes {
                         name: name.clone(),
+                        points_at: at.map(|(t, _)| t),
                     },
-                    span: stmts.last().map(|s| s.span).unwrap_or(Span::new(0, 0)),
                 });
             }
             self.scope_limited_closures.remove(name);
@@ -2260,11 +2276,11 @@ impl<'a> OwnershipChecker<'a> {
             Sink::Place { place, root } if place != root => {}
             _ => return false,
         }
-        let Some((_, name)) = self.frame_limit_of(expr) else { return false };
+        let Some((_, name, points_at)) = self.frame_limit_and_target(expr) else { return false };
         // Reported here, so the block exit doesn't report it again.
         self.scope_limited_closures.remove(&name);
         self.errors.push(OwnershipError {
-            kind: OwnershipErrorKind::ScopeLimitedClosureEscapes { name },
+            kind: OwnershipErrorKind::ScopeLimitedClosureEscapes { name, points_at },
             span: expr.span,
         });
         true
@@ -2275,31 +2291,40 @@ impl<'a> OwnershipChecker<'a> {
     /// of a tracked name (`pair.0`, `h.callback`) whose type can hold one.
     /// Looks through branches and through the aggregates built here.
     fn frame_limit_of(&self, expr: &Expr) -> Option<(u32, String)> {
+        self.frame_limit_and_target(expr).map(|(limit, name, _)| (limit, name))
+    }
+
+    /// `frame_limit_of`, plus the local the limiting closure points at when
+    /// that is what limits it (`closure_points_at`).
+    fn frame_limit_and_target(&self, expr: &Expr) -> Option<(u32, String, Option<String>)> {
         let mut values = Vec::new();
         self.values_reaching(expr, true, &mut values);
-        let mut found: Option<(u32, String)> = None;
+        let mut found: Option<(u32, String, Option<String>)> = None;
         for value in values {
             let hit = match &value.kind {
                 ExprKind::Ident(name) => self
                     .scope_limited_closures
                     .get(name)
-                    .map(|&(limit, _)| (limit, name.clone())),
+                    .map(|&(limit, _)| (limit, name.clone(), self.limited_points_at.get(name).map(|(t, _)| t.clone()))),
                 _ => None,
             }
             .or_else(|| {
-                self.closure_scope_limits.get(&value.id).map(|&limit| (limit, "<closure>".to_string()))
+                self.closure_scope_limits.get(&value.id).map(|&limit| {
+                    (limit, "<closure>".to_string(), self.closure_points_at.get(&value.id).cloned())
+                })
             })
             .or_else(|| {
                 let root = Self::projection_root(value)?;
                 let &(limit, _) = self.scope_limited_closures.get(root)?;
                 let ty = self.node_ty(&value.id)?;
                 let shown = Self::render_place(value).unwrap_or_else(|| root.to_string());
-                self.type_holds_callable(ty, &mut Vec::new()).then_some((limit, shown))
+                self.type_holds_callable(ty, &mut Vec::new())
+                    .then(|| (limit, shown, self.limited_points_at.get(root).map(|(t, _)| t.clone())))
             });
-            if let Some((limit, name)) = hit {
+            if let Some(hit) = hit {
                 found = Some(match found {
-                    Some((l, n)) if l >= limit => (l, n),
-                    _ => (limit, name),
+                    Some(f) if f.0 >= hit.0 => f,
+                    _ => hit,
                 });
             }
         }
@@ -2384,7 +2409,7 @@ impl<'a> OwnershipChecker<'a> {
     fn inherit_frame_limit(&mut self, names: &[String], from: &Expr, binding_block: u32) {
         // PT1: and the pointers it holds, by the same route.
         self.inherit_pointer_sources(names, from);
-        let Some((limit, _)) = self.frame_limit_of(from) else { return };
+        let Some((limit, _, target)) = self.frame_limit_and_target(from) else { return };
         for name in names {
             let holds = self
                 .binding_types
@@ -2393,6 +2418,10 @@ impl<'a> OwnershipChecker<'a> {
                 .is_some_and(|ty| self.type_holds_callable(&ty, &mut Vec::new()));
             if holds {
                 self.scope_limited_closures.insert(name.clone(), (limit, binding_block));
+                match &target {
+                    Some(t) => self.limited_points_at.insert(name.clone(), (t.clone(), from.span)),
+                    None => self.limited_points_at.remove(name),
+                };
             }
         }
     }
@@ -4202,26 +4231,27 @@ impl<'a> OwnershipChecker<'a> {
                         }
                     }
                 } else {
-                    // A closure that stays in its frame borrows its captures.
-                    // Any such closure with non-resource captures is
-                    // scope-limited to its creation block —
-                    // returning or storing it past that scope would dangle the borrow.
-                    // A Copy capture is copied into the closure env (MIR captures
-                    // by value), so it can't dangle — only a non-Copy borrow can
-                    // outlive its scope. This mirrors the carrying-closure path above,
-                    // which already leaves Copy captures in place. Without this a
-                    // closure capturing an f64/i64 local was wrongly scope-limited,
-                    // so `v.iter().filter(|x| x >= budget).count()` failed SL2 even
-                    // though the closure never escapes the expression.
+                    // A closure that stays in its frame points at its captures
+                    // (mem.closures: the slot holds the variable's address), so
+                    // it can't outlive the shortest-lived of them (MC3). A Copy
+                    // value is no exception: the closure holds its address, not
+                    // a copy, and a closure kept in an outer variable past the
+                    // block of a `let k` it read pointed at a dead slot (#2014).
+                    // A parameter outlives the whole body, so it sets no limit,
+                    // which is what keeps `v.iter().filter(|x| x >= budget)` fine.
                     let mut scope_limit: Option<u32> = None;
-                    let has_escaping_captures = captures.iter().any(|name| {
-                        !resource_captures.contains(name)
-                            && !self.outlives_this_call(name)
-                            && self.bindings.contains_key(name)
-                            && !self.capture_is_copy(name)
-                    });
-                    if has_escaping_captures {
-                        scope_limit = Some(self.current_block);
+                    for name in &captures {
+                        if resource_captures.contains(name)
+                            || self.outlives_this_call(name)
+                            || !self.bindings.contains_key(name)
+                        {
+                            continue;
+                        }
+                        let block = self.binding_decl_blocks.get(name).copied().unwrap_or(self.current_block);
+                        if scope_limit.map_or(true, |l| block > l) {
+                            scope_limit = Some(block);
+                            self.closure_points_at.insert(expr.id, name.clone());
+                        }
                     }
                     // Tighten further if any capture is itself scope-limited (borrow binding
                     // or persistent borrow): the closure inherits the inner constraint.
@@ -9103,7 +9133,15 @@ impl<'a> OwnershipChecker<'a> {
                 || self.is_borrowing_closure(arg)
             {
                 self.errors.push(OwnershipError {
-                    kind: OwnershipErrorKind::ScopeLimitedClosureEscapes { name: name.clone() },
+                    kind: OwnershipErrorKind::ScopeLimitedClosureEscapes {
+                        name: name.clone(),
+                        points_at: self
+                            .limited_points_at
+                            .get(&name)
+                            .map(|(t, _)| t)
+                            .or_else(|| self.closure_points_at.get(&arg.id))
+                            .cloned(),
+                    },
                     span: arg.span,
                 });
                 self.scope_limited_closures.remove(&name);

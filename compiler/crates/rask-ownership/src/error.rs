@@ -754,10 +754,13 @@ pub enum OwnershipErrorKind {
         name: String,
     },
 
-    /// SL2: scope-limited closure escapes its scope
-    #[error("closure `{name}` captures scoped borrow and cannot escape")]
+    /// SL2 / MC3: a closure that points at what it captured outlives one of
+    /// those. `points_at` is the local it points at, when a local's block is
+    /// what limits it; otherwise the limit is a borrow it captured.
+    #[error("closure `{name}` outlives what it points at")]
     ScopeLimitedClosureEscapes {
         name: String,
+        points_at: Option<String>,
     },
 
     /// A spawned task writes a capture nothing reads back. The task works on a

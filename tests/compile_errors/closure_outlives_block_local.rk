@@ -1,0 +1,67 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A closure kept past the block of a local it points at (E0862, MC3, #2014).
+//
+// A closure that stays in its frame reads its captures where they live, so it
+// can't outlive any of them. A Copy value is no exception. Natively the closure
+// in `g` read the body's dead slot after the loop. For a sequence loop, whose
+// body is a function of its own, that slot was in a frame already popped.
+import sequence.Sequence
+
+func vecs() -> Sequence<Vec<i64>> {
+    return |yield| {
+        if !yield([1, 2, 3]) { return }
+        if !yield([4, 5, 6]) { return }
+    }
+}
+
+func over_a_sequence() -> i64 {
+    mut g: func() -> i64 = || 0
+    for v in vecs() {
+        let k = v[0]
+        // ERROR: E0862 — `k` ends with the body, `g` is called after it
+        g = || k
+    }
+    return g()
+}
+
+func over_a_range() -> i64 {
+    mut g: func() -> i64 = || 0
+    for i in 0..3 {
+        let k = i * 2
+        // ERROR: E0862 — the same in a range loop's body
+        g = || k
+    }
+    return g()
+}
+
+func in_a_block(c: bool) -> string {
+    mut g: func() -> string = || "none"
+    if c {
+        let s = "inner"
+        // ERROR: E0862 — a string local, same rule
+        g = || s
+    }
+    return g()
+}
+
+// These compile: the closure dies with `k`, or what it reads lives as long as it.
+func stays_inside() -> i64 {
+    mut t = 0
+    for v in vecs() {
+        let k = v[0]
+        let f = || k
+        t += f()
+    }
+    return t
+}
+
+func outer_local() -> i64 {
+    let k = 5
+    mut g: func() -> i64 = || 0
+    for v in vecs() { g = || k + 1 }
+    return g()
+}
+
+func main() {
+    println("{over_a_sequence()} {over_a_range()} {in_a_block(true)} {stays_inside()} {outer_local()}")
+}

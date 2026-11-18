@@ -72,45 +72,37 @@ func run(h: func() -> i64, xs: Vec<func() -> i64>) -> i64 {
     return t + g()
 }
 
-// A closure kept past the body points at a body local, which has to outlive
-// the body's call (#2014).
-func last_first() -> i64 {
-    mut g: func() -> i64 = || 0
-    for v in vecs() {
-        let k = v[0]
-        g = || k
-    }
-    return g()
-}
-
-func pair_kept() -> i64 {
-    mut g: func() -> i64 = || 0
-    for v in vecs() {
-        let w = [v[0], v[1]]
-        g = || w[1]
-    }
-    return g()
-}
-
-func written_after() -> i64 {
-    mut g: func() -> i64 = || 0
-    for v in vecs() {
-        mut k = v[0]
-        g = || k
-        k += 100
-    }
-    return g()
-}
-
-func nested_local() -> i64 {
+// A closure read into a local before the variable is overwritten.
+func read_then_overwrite() -> i64 {
     mut g: func() -> i64 = || 1
     for v in vecs() {
-        for w in vecs() {
-            let k = w[1] + v[0]
-            g = || k
-        }
+        let r = g
+        g = || 4
+        if r() != 1 && r() != 4 { return -1 }
+    }
+    let r = g
+    g = || 3
+    return r() * 10 + g()
+}
+
+// The variable's first write isn't in its lowest-numbered block.
+func written_under_an_if(n: i64) -> i64 {
+    mut g: func() -> i64 = || 1
+    if n > 3 { g = || 11 }
+    for v in vecs() {
+        if v[0] == 4 { g = || 12 }
     }
     return g()
+}
+
+// A body's `return` hands back a closure while the variable holds another.
+func returned_from_the_body(n: i64) -> func() -> i64 {
+    mut g: func() -> i64 = || 1
+    for v in vecs() {
+        g = || 9
+        if n == 1 { return || 2 }
+    }
+    return g
 }
 
 test "the closure the last iteration stored is the one returned" {
@@ -145,9 +137,16 @@ test "a parameter and a vector's closures stored in the variable" {
     assert run(|| base + 2, fs) == 32 + 7 + 7 + 100 + 32
 }
 
-test "a closure kept past the loop body reads the body's local" {
-    assert last_first() == 4
-    assert pair_kept() == 5
-    assert written_after() == 104
-    assert nested_local() == 9
+test "a closure read into a local survives the variable's next write" {
+    assert read_then_overwrite() == 43
+}
+
+test "a variable first written before an if that writes it again" {
+    assert written_under_an_if(5) == 12
+    assert written_under_an_if(1) == 12
+}
+
+test "a closure returned from inside the body, and the variable's after" {
+    assert returned_from_the_body(1)() == 2
+    assert returned_from_the_body(0)() == 9
 }

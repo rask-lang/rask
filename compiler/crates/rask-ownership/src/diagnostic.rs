@@ -1466,7 +1466,16 @@ impl ToDiagnostic for crate::OwnershipError {
                 .with_why("resource types must be consumed properly — `discard` would silently leak the resource")
             }
 
-            ScopeLimitedClosureEscapes { name } => {
+            ScopeLimitedClosureEscapes { name, points_at: Some(local) } => {
+                let shown = if name == "<closure>" { "this closure".to_string() } else { format!("the closure in `{name}`") };
+                Diagnostic::error(format!("{shown} outlives `{local}`, which it points at"))
+                    .with_code("E0862")
+                    .with_primary(self.span, format!("`{local}` ends with its block; the closure is still held after"))
+                    .with_fix(format!("declare `{local}` in the block that holds the closure, or keep the closure only inside `{local}`'s block"))
+                    .with_why("a closure that stays in its frame reads its captures where they live rather than copying them, so it can't outlive any of them (MC3). A Copy value is no exception")
+            }
+
+            ScopeLimitedClosureEscapes { name, points_at: None } => {
                 Diagnostic::error(format!(
                     "closure `{}` captures scoped borrow and cannot escape",
                     name

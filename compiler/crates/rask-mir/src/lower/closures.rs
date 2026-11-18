@@ -491,8 +491,6 @@ impl<'a> MirLowerer<'a> {
             // A closure is its own frame with its own return, so a `try` in it
             // leaves the closure even when the closure sits in a `test` block.
             let saved_in_test = std::mem::replace(&mut self.in_test_body, false);
-            // A `let` in the closure is the closure's own.
-            let saved_hoisted = std::mem::take(&mut self.hoisted_lets);
 
             // The tag read has to be emitted while the closure's own builder is
             // still installed, so it lands inside the closure body. An explicit
@@ -526,7 +524,6 @@ impl<'a> MirLowerer<'a> {
             self.loop_stack = saved_loop_stack;
             self.ensure_stack = saved_ensure_stack;
             self.in_test_body = saved_in_test;
-            self.hoisted_lets = saved_hoisted;
             self.restore_names(outer_param_names);
 
             let (body_val, _body_ty) = body_result?;
@@ -701,9 +698,6 @@ impl<'a> MirLowerer<'a> {
             .into_iter()
             .filter(|(name, _, _, _)| !names.contains(name))
             .collect();
-        // Body locals a closure kept past the body points at live out here.
-        let hoisted = self.hoist_locals_kept_past_the_body(body);
-        free_vars.extend(hoisted.iter().cloned());
         // The two the loop just made are captured like any other local, so a
         // `return` in the body writes the enclosing frame's storage.
         free_vars.push((format!("__flag_{closure_name}"), ret_flag, MirType::I64, true));
@@ -845,9 +839,6 @@ impl<'a> MirLowerer<'a> {
             self.locals = saved_locals;
             self.addressed_locals = saved_captures;
             let moved = std::mem::replace(&mut self.seq_moved_names, saved_moved).unwrap_or_default();
-            for (name, ..) in &hoisted {
-                self.hoisted_lets.remove(name);
-            }
             // A `return` in a loop nested in another loop's body leaves that
             // body too, so what it moved is moved there as well.
             if let Some(outer) = self.seq_moved_names.as_mut() {
@@ -1077,99 +1068,6 @@ impl<'a> MirLowerer<'a> {
 
         self.synthesized_functions.push(b.finish());
         thunk_name
-    }
-
-    /// The body locals of a sequence `for` that have to live in the enclosing
-    /// frame, allocated there, with the ones an enclosing loop already put
-    /// there: what the body captures them as.
-    ///
-    /// A sequence body is a function of its own, so its locals die each time
-    /// it returns. A closure that points at one and is stored in a variable
-    /// declared outside the loop outlives that:
-    ///
-    /// ```text
-    /// mut g = || 0
-    /// for v in vecs() { let k = v[0]  g = || k }
-    /// g()
-    /// ```
-    ///
-    /// read a dead frame. The same loop over a range keeps `k` in the
-    /// function's frame, where the closure finds it after the loop, and the
-    /// interpreter keeps it alive with the closure. Living in the enclosing
-    /// frame, `k` is the same slot for every iteration, as in the range loop.
-    ///
-    /// Only Copy values, whose `let` is a plain write to the slot with nothing
-    /// to release. A closure is Copy and counted, so not those.
-    pub(super) fn hoist_locals_kept_past_the_body(
-        &mut self,
-        body: &[Stmt],
-    ) -> Vec<(String, LocalId, MirType, bool)> {
-        use rask_ast::expr::ExprKind;
-        use rask_ast::stmt::StmtKind;
-        struct Scan<'a> {
-            lets: std::collections::HashSet<&'a str>,
-            kept: Vec<(&'a str, &'a rask_ast::expr::Expr)>,
-        }
-        impl<'a> rask_ast::visit::Visit<'a> for Scan<'a> {
-            fn expr(&mut self, _: &'a rask_ast::expr::Expr) -> bool {
-                true
-            }
-            fn stmt(&mut self, stmt: &'a Stmt) -> bool {
-                match &stmt.kind {
-                    StmtKind::Let { name, .. } | StmtKind::Mut { name, .. } => {
-                        self.lets.insert(name.as_str());
-                    }
-                    StmtKind::Assign { target, value, .. } => {
-                        if let (ExprKind::Ident(t), ExprKind::Closure { .. }) = (&target.kind, &value.kind) {
-                            self.kept.push((t.as_str(), value));
-                        }
-                    }
-                    _ => {}
-                }
-                true
-            }
-        }
-        let mut scan = Scan { lets: Default::default(), kept: Vec::new() };
-        for stmt in body {
-            rask_ast::visit::visit_stmt(stmt, &mut scan);
-        }
-        let mut out: Vec<(String, LocalId, MirType, bool)> = Vec::new();
-        // An enclosing loop's: the `let` is in this body, the slot out there.
-        for name in &self.hoisted_lets {
-            if scan.lets.contains(name.as_str()) {
-                if let Some((id, ty)) = self.locals.get(name) {
-                    out.push((name.clone(), *id, ty.clone(), true));
-                }
-            }
-        }
-        for (target, closure) in &scan.kept {
-            if scan.lets.contains(target) {
-                continue;
-            }
-            let mut named: Vec<(&str, rask_ast::NodeId)> = Vec::new();
-            rask_ast::visit::walk_expr(closure, &mut |e| {
-                if let ExprKind::Ident(n) = &e.kind {
-                    named.push((n.as_str(), e.id));
-                }
-            });
-            for (name, id) in named {
-                if !scan.lets.contains(name) || out.iter().any(|(n, ..)| n == name) {
-                    continue;
-                }
-                let Some(t) = self.ctx.lookup_raw_type(id).map(std::borrow::Cow::into_owned) else { continue };
-                if !self.ctx.type_defs.is_copy(&t) {
-                    continue;
-                }
-                let ty = self.ctx.type_to_mir(&t);
-                if matches!(ty, MirType::FuncPtr(_)) {
-                    continue;
-                }
-                let local = self.builder.alloc_local(name.to_string(), ty.clone());
-                self.hoisted_lets.insert(name.to_string());
-                out.push((name.to_string(), local, ty, true));
-            }
-        }
-        out
     }
 
     /// Collect free variables from a block of statements (no params to bind).

@@ -198,7 +198,7 @@ inferred from the body, exactly as a read capture already is.
 |------|-------------|
 | **MC1: Inferred from use** | A closure's captures are inferred: read the variable and it's borrowed, write it and it's borrowed mutably. There is no capture list and no `mutate` annotation on a capture |
 | **MC2: Exclusive access** | While a mutable capture exists, no other access to the variable |
-| **MC3: Scope-limited** | Closure can't outlive the captured variable |
+| **MC3: Scope-limited** | A closure that points can't outlive any variable it captured, read or written, Copy or not. A variable ends with its block, so a closure kept in an outer variable past a loop body can't point at the body's `let` (E0862) |
 | **MC4: See mutations** | Caller sees mutations after closure completes |
 <!-- test: run | 8 -->
 ```rask
