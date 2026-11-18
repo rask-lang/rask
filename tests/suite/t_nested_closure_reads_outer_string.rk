@@ -1,0 +1,25 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A closure that builds another closure reading the same outer string. The
+// outer closure reaches `best` through its environment, and the inner one
+// borrows that name. The borrow made the name look like the outer closure's
+// own variable, so each call released `best`, and natively the next string
+// allocated took its buffer.
+
+func long(i: i64) -> string {
+    return "heap-{i}-padding-padding-padding-padding"
+}
+
+test "an inner closure only reads the outer string" {
+    let best = long(7)
+    let outer = || {
+        let inner = || best.len()
+        let n = inner()
+        return "{n} {best}"
+    }
+    assert outer() == "38 heap-7-padding-padding-padding-padding"
+    let junk = long(1)
+    assert outer() == "38 heap-7-padding-padding-padding-padding"
+    assert best == "heap-7-padding-padding-padding-padding"
+    assert junk == "heap-1-padding-padding-padding-padding"
+}

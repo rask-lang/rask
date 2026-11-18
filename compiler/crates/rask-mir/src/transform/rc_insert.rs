@@ -2369,10 +2369,30 @@ fn insert_rc_dec(func: &mut MirFunction, string_locals: &[LocalId], own: &HashSe
         .copied()
         .filter(|l| !params.contains(l) && !views.contains(l) && !ensured.contains(l) && !unfilled(l))
         .collect();
+    // A closure's name for a variable it reaches through its environment
+    // holds what the variable holds, and the variable's home releases that:
+    // the frame that built the closure, or the environment's drop glue. The
+    // name's last use isn't the value's. Only a task block's capture is its
+    // own (`Taken`). A value the body writes over is still released where
+    // it is overwritten (`overwritten_places`), since the home never sees it.
+    //
+    // A closure built inside the body that borrows such a name made it look
+    // like a variable of this frame, and `|| { let inner = || best.len() … }`
+    // released the outer frame's `best` each time it ran.
+    let env_names: HashSet<LocalId> = func
+        .blocks
+        .iter()
+        .flat_map(|b| b.statements.iter())
+        .filter_map(|st| match &st.kind {
+            MirStmtKind::LoadCapture { dst, access, .. } if *access != crate::CaptureAccess::Taken => Some(*dst),
+            _ => None,
+        })
+        .collect();
+    let dying: Vec<LocalId> = locals.iter().copied().filter(|l| !env_names.contains(l)).collect();
 
     let mut in_block: Vec<(usize, usize, LocalId)> = Vec::new();
     for (bi, block) in view.blocks.iter().enumerate() {
-        for &local in &locals {
+        for &local in &dying {
             if let Some(at) =
                 dies_in_block(block, local, live.live_at_exit(block.id, local), &aliases, own)
             {
@@ -2384,7 +2404,7 @@ fn insert_rc_dec(func: &mut MirFunction, string_locals: &[LocalId], own: &HashSe
     let overwritten: Vec<LocalId> = locals.iter().copied().filter(|l| places.contains(l)).collect();
     in_block.extend(overwritten_places(&view, &overwritten, &aliases, own));
 
-    let edges = edge_deaths(&view, &live, &locals);
+    let edges = edge_deaths(&view, &live, &dying);
 
     // Positions descending within a block, so an insertion doesn't move the
     // next one's index.
