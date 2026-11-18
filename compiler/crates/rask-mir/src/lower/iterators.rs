@@ -487,7 +487,7 @@ impl<'a> MirLowerer<'a> {
         let returned_ty = self.inline_return_taken.take();
         self.inline_return_target = saved_return_target;
         self.inline_return_taken = saved_return_taken;
-        if returned_ty.is_none() {
+        if self.builder.current_block_unterminated() {
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                 dst: result_local,
                 rvalue: MirRValue::Use(body_op),
@@ -777,10 +777,13 @@ impl<'a> MirLowerer<'a> {
                 self.inline_return_target = saved_return_target;
                 self.inline_return_taken = saved_return_taken;
 
-                // A body that fell off its end never used the target; keep its
-                // value and route it through the same local so both shapes
-                // leave the caller in the continuation block.
-                if returned_ty.is_none() {
+                // A body that falls off its end leaves its block open: route
+                // that value through the same local, so every path leaves the
+                // caller in the continuation block. A body may do both — `if
+                // x == 1 { return x }` then `x + 10` — and asking only whether
+                // something returned dropped the fall-off value: `map` answered
+                // `1 1 1` for `1 12 13`.
+                if self.builder.current_block_unterminated() {
                     let body_op = match &declared_ret {
                         Some(ret) => self.coerce_into_wrapper(
                             rask_ast::coercion::CoercionSite::Return,
@@ -1501,15 +1504,17 @@ impl<'a> MirLowerer<'a> {
 
                 let (result_op, _) = self.lower_expr(body)?;
 
-                let returned = self.inline_return_taken.take().is_some();
+                self.inline_return_taken.take();
                 self.inline_return_target = saved_return_target;
                 self.inline_return_taken = saved_return_taken;
 
                 // `|acc, x| { return acc + x }` already stored the result and
                 // jumped; the body has no fall-off value to take. Assigning one
                 // anyway overwrote the accumulator with a placeholder on every
-                // iteration, so the fold produced its init value (#462).
-                if !returned {
+                // iteration, so the fold produced its init value (#462). A body
+                // that returns on one path and falls off on another leaves its
+                // last block open, and that path's value is the result.
+                if self.builder.current_block_unterminated() {
                     self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                         dst: acc,
                         rvalue: MirRValue::Use(result_op),
@@ -1958,10 +1963,10 @@ impl<'a> MirLowerer<'a> {
         let saved_return_taken = self.inline_return_taken.take();
         self.inline_return_target = Some((next, store_block, None));
         let (result_op, _) = self.lower_expr(body)?;
-        let returned = self.inline_return_taken.take().is_some();
+        self.inline_return_taken.take();
         self.inline_return_target = saved_return_target;
         self.inline_return_taken = saved_return_taken;
-        if !returned {
+        if self.builder.current_block_unterminated() {
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                 dst: next,
                 rvalue: MirRValue::Use(result_op),
