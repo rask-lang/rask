@@ -223,14 +223,14 @@ func main() -> void or Error {
 
 | Rule | Description |
 |------|-------------|
-| **S4: serve** | `http.serve(addr, handler)` — one-line server for simple cases. Spawns a green task per request. Requires `using Multitasking` |
+| **S4: serve** | `http.serve(addr, handler)` — one-line server for simple cases. Spawns a green task per request, each with its own `.clone()` of `handler` (`mem.closures/CV2`), so per-request state the handler carries isn't shared; state shared across requests is a `Shared<T>`. Requires `using Multitasking` |
 
 <!-- surface -->
 ```rask
 extend http {
     func serve(
         addr: string
-        handler: func(Request) -> Response
+        take handler: func(Request) -> Response
     ) -> void or HttpError
 }
 ```

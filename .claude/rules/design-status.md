@@ -17,7 +17,7 @@ concrete reason.
 |------|----------|------|
 | Ownership | Single owner, move semantics, 16-byte copy threshold | [memory/](../../specs/memory/) |
 | Borrowing | Block-scoped (fixed sources), inline + `with` (growable sources) | [borrowing.md](../../specs/memory/borrowing.md) |
-| Closures | Capture mode is inferred — a closure that outlives its frame carries what it captured, one that stays points at it. No `own` keyword | [closures.md](../../specs/memory/closures.md) |
+| Closures | Capture mode is inferred — a closure that outlives its frame carries what it captured, one that stays points at it. No `own` keyword. A closure value is move-only; `.clone()` copies its environment | [closures.md](../../specs/memory/closures.md) |
 | Linearity | Consume exactly once (L1–L6) — shared by `@resource` and `Heap<T>` | [linear.md](../../specs/memory/linear.md) |
 | Scoped access | A value held elsewhere, reached through `with` — `Shared<T, S>`, Rack+Link, Heap. `Cell` and `Mutex<T>` are gone; `Local`/`Readers`/`Mutex` are strategies on `Shared` | [shared-rack-heap.md](../../specs/memory/shared-rack-heap.md) |
 | Collections | Vec, Map, Rack+Link for graphs | [collections.md](../../specs/stdlib/collections.md), [racks.md](../../specs/memory/racks.md) |

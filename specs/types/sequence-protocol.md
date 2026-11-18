@@ -448,7 +448,7 @@ So SEQ17–SEQ19 are the target, not the present state, and this section says so
 | Rule | Description |
 |------|-------------|
 | **SEQ25: Owned captures = storable** | A `Sequence<T>` whose closure captures only owned or Copy data can be stored in structs, returned across function boundaries, and sent across tasks. The canonical pattern is `take self` on the method that builds it |
-| **SEQ26: Borrow captures = expression-scoped** | A `Sequence<T>` whose closure captures any block-scoped borrow is limited to that borrow's scope. It cannot outlive the source, be stored in a struct, or be sent across tasks. Returning one from the function that borrowed the source is fine — the limit travels to the caller, who holds the source (`mem.closures/SL3`, `SL4`) |
+| **SEQ26: Borrow captures = expression-scoped** | A `Sequence<T>` whose closure captures any block-scoped borrow is limited to that borrow's scope. It cannot outlive the source: a struct, tuple or optional may hold it only where that holder dies before the source (`mem.closures/SL5`), and it can't be sent across tasks. Returning one from the function that borrowed the source is fine — the limit travels to the caller, who holds the source (`mem.closures/SL3`, `SL4`) |
 | **SEQ27: No separate closed-world rule** | There is no "Sequence-specific" storability constraint. The rule above is `mem.closures/SL3-SL4` applied verbatim to the closure that implements the sequence |
 
 Concretely: if your method builds a `Sequence<T>` by borrowing `self`, the returned Sequence is limited to that borrow. If the method takes `take self`, the Sequence owns the source and is freely storable.

@@ -153,6 +153,50 @@ originally drafted against. That was never what the compiler did, and it contrad
 analysis described further down this page — escaping is exactly the case that gets a heap
 environment. The rule is the lifetime, not the prefix.
 
+## A closure has one owner
+
+A closure value is move-only, like a `Vec`. It's a function plus an environment,
+and the environment is where its captures live, so copying the value would mean
+either two owners of one environment or a hidden copy of everything in it.
+Neither is something a reader can see in `let g = f`.
+
+| Rule | Description |
+|------|-------------|
+| **CV1: Function values move** | Every `func(…) -> R` value moves on assignment, on a `take` and on a store, whatever it captured. A named function used as a value moves too: the type can't tell the two apart, and one rule is easier to hold than two |
+| **CV2: `.clone()` copies the environment** | `f.clone()` builds a second closure with its own environment. A carried capture is cloned into it; a pointed-at capture is pointed at again, so the clone has the same limit (MC3). A closure with nothing to clone (a named function, a closure with no captures) clones for the cost of a pointer |
+| **CV3: The limit rides the environment** | A closure carried into another closure's environment brings its limit along (SL5 applied to environments). `b.on_click = \|\| p() + 1` with `p` pointing at a local is an error at the store, the same as storing `p` itself |
+
+Most code never moves a closure at all. `v.map(f)`, `for x in seq` and a callback that is
+only called all borrow it, and a borrow is free. The move shows up when one closure
+goes to two keepers:
+
+```rask
+let on_save = |doc: Doc| { log.write(doc.name) }
+editor.on_save(on_save.clone())      // first keeper gets its own copy
+backup.on_save(on_save)              // the second takes the original
+```
+
+Each keeper owns a closure of its own, so a write one of them makes to what it
+carried is not seen by the other. State two closures really share is `Shared<T>`,
+which says so.
+
+This is what makes the borrow rules hold for closures. A borrowed parameter can't
+be stored (`mem.parameters/PM6`), and since a closure is not Copy, `PM6b` gives a
+callee no way round that. A struct holding a closure, a tuple or optional of one,
+and a generic `T: Copy` filled with one are all move-only for the same reason, so
+none of them can smuggle a borrowed closure out either.
+
+I had closures as Copy, with a reference count on the environment to sort out
+who frees it. Every rule above then needed an exception: a function could keep a
+closure it only borrowed, since the copy looked independent, and so `SL4` didn't
+hold; two copies of a closure wrote the same carried `Vec`, a second owner
+without `Shared`; and detached tasks holding copies of one closure raced. The
+compiler made up the difference by reading function bodies to find out which
+ones kept a closure. The `.clone()` costs a word at the few places that hand one
+closure to two keepers (nothing in the stdlib, the examples or the validation
+programs needed one when this was measured); in exchange a closure follows the same rules as every other
+value.
+
 ## Closure parameters
 
 Parameters are independent of capture mode. Both closure modes use the same parameter syntax.
@@ -388,6 +432,9 @@ FIX: Use Shared<T> for shared mutable state:
 | Nested closures | Each level borrows or carries from its immediate outer scope |
 | Pure closure (no captures) | Self-contained either way; nothing to decide |
 | Mutable capture of a Copy type | Borrows mutably (not copied), mutations visible to caller |
+| One closure to two keepers | Second use is a use-after-move (CV1); `.clone()` one of them (CV2) |
+| Borrowed closure parameter stored | Error (PM6): the parameter is the caller's. `take` on the declaration |
+| Carrying closure captures a pointing closure | The pointing closure's limit comes along (CV3) |
 
 I had carrying closures allowed to consume a resource capture for a while: the
 closure owned it, so the `close()` looked legitimate. It wasn't — `store(||
@@ -435,15 +482,11 @@ every write away, so a counter closure answers 1 however many times you call it.
 The environment *is* the variable's home once the closure carried it there, so
 the body works through the slot's address for its whole life.
 
-The block itself is owned like any other value: whoever is holding it when their
-frame ends frees it. A closure value is Copy, so one block can end up with two
-holders — `fs.push(c)` twice, or `spawn { c() }` and then `c()`. The block carries a
-reference count for that: a hand-off to something that keeps the closure, while
-the frame still uses it afterwards, gives the keeper a reference of its own, and
-only the last use hands the frame's over. The free releases what the block carries too: a
-capture moved in is the environment's, so the environment gives it back when it dies, the
-same way the frame would have. A Copy capture is copied in, and the frame keeps its own, so the
-environment holds references of its own to the strings in its copy and gives those back.
+The block itself is owned like any other value (CV1): it has one holder, and the
+holder's frame frees it when it ends, unless it was moved on first. The free
+releases what the block carries too: a capture moved in is the environment's, so
+the environment gives it back when it dies, the same way the frame would have. A
+`.clone()` (CV2) builds a new block and clones each carried capture into it.
 
 ### Closure block layout
 
@@ -456,8 +499,10 @@ implicit first argument to the closure function.
 
 ### Heap vs. stack
 
-Heap exactly when the closure outlives the frame that built it — returned, stored through a
-pointer, or handed to something that keeps it. Everything else is a stack slot.
+Heap exactly when the closure outlives the frame that built it — returned, stored, or
+handed to a `take` parameter (CM1). Everything else is a stack slot. The signature
+says which: a borrowed parameter can't keep a closure (PM6, CV1), so a call never
+has to be looked into to know.
 
 This is the same question CM1 answers, and it is answered once: the closure that
 outlives its frame is exactly the one that carries its captures and exactly the
@@ -467,7 +512,7 @@ made a returned closure read a popped frame.
 | Escapes its frame? | Allocation | Freed by |
 |---|---|---|
 | No | Stack slot | The frame, on the way out |
-| Yes | Heap, behind a size header | Whichever frame is still holding it when it ends |
+| Yes | Heap, behind a size header | Its one holder, when that frame ends (CV1) |
 
 The size header is there because the frame that frees a closure usually isn't the one that built
 it: `let tick = counter()` hands the caller a block whose capture layout only `counter` knew.
@@ -506,6 +551,7 @@ struct with a method, which is how it reads anyway.
 | Mutating a local | `\|x\| count += x` — the mutable capture is inferred (MC1) |
 | Shared mutable state (multiple closures) | `Shared<T>` |
 | Callback stored for later | Whatever stores it declares `take`, and the closure carries |
+| Same callback in two places | `.clone()` for all but the last (CV2) |
 
 **`Shared<T>` for shared mutable state:**
 

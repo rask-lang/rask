@@ -887,7 +887,7 @@ extend http {
     /// One-line HTTP server. Spawns a green task per request.
     /// Requires an active `using Multitasking { ... }` scope in the process
     /// (transitively reaches `spawn`).
-    public func serve(addr: string, handler: func(Request) -> Response) -> void or HttpError {
+    public func serve(addr: string, take handler: func(Request) -> Response) -> void or HttpError {
         mut server = http.listen(addr) catch _ => {
             return HttpError.Io("listen failed")
         }
@@ -899,9 +899,11 @@ extend http {
             }
             // The task carries `req` and `responder` away, so it never reads
             // this iteration's frame, which the next accept() reuses (#474),
-            // and it sends the one response the responder owes.
+            // and it sends the one response the responder owes. Each task
+            // gets a handler of its own, since the next request needs one too.
+            let h = handler.clone()
             spawn {
-                responder.respond(handler(req))
+                responder.respond(h(req))
             }.detach()
         }
     }
