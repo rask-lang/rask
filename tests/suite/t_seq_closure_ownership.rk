@@ -1,0 +1,147 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Who owns what a sequence or a closure hands around, natively. Every string
+// here is longer than 15 bytes, so it lives on the heap and a missed or extra
+// release shows up under RASK_LEAK_CHECK and valgrind.
+
+import sequence.Sequence
+
+func long(n: i64) -> string {
+    return "long-heap-string-number-{n}-xxxxxxxxxxxxxxxxxxxx"
+}
+
+func vecs() -> Sequence<Vec<string>> {
+    return |yield| {
+        if !yield([long(1), long(2)]) { return }
+        if !yield([long(3), long(4)]) { return }
+        if !yield([long(5), long(6)]) { return }
+    }
+}
+
+func strs() -> Sequence<string> {
+    return |yield| {
+        if !yield(long(1)) { return }
+        if !yield(long(2)) { return }
+        if !yield(long(3)) { return }
+    }
+}
+
+func keep_last() -> Vec<string> {
+    mut keep: Vec<string> = []
+    for v in vecs() {
+        keep = v
+    }
+    return keep
+}
+
+func keep_first() -> Vec<string> {
+    mut keep: Vec<string> = []
+    mut kept = false
+    for v in vecs() {
+        if !kept {
+            keep = v
+            kept = true
+        }
+    }
+    return keep
+}
+
+// #2008: a loop body that keeps the item it was handed.
+test "a sequence loop keeps the item it stores and frees the rest" {
+    assert keep_last()[1] == long(6)
+    assert keep_first()[0] == long(1)
+}
+
+func matching() -> Vec<Vec<string>> {
+    mut out: Vec<Vec<string>> = Vec.new()
+    for v in vecs() {
+        for w in vecs() {
+            if w[0] == v[0] { out.push(w) }
+        }
+    }
+    return out
+}
+
+// #2009: the outer item is read by the inner loop's body.
+test "nested sequence loops push the matches and free the rest" {
+    let r = matching()
+    assert r.len() == 3
+    assert r[1][1] == long(4)
+}
+
+func first_opt() -> string? {
+    mut best: string? = none
+    for s in strs() {
+        if best is none {
+            best = s
+        }
+    }
+    return best
+}
+
+// #2011: a loop body stores an owned `string?` into a variable it captured.
+test "a sequence loop writing a captured option keeps the first item" {
+    assert (first_opt() ?? "missing") == long(1)
+}
+
+// #2012: `max_by_key` over a sequence keeps its best item the same way.
+test "max_by_key over a sequence answers the first longest item" {
+    assert (strs().max_by_key(|s| s.len()) ?? "missing") == long(1)
+}
+
+func first_via_closure() -> string? {
+    mut best: string? = none
+    let f = |s: string| {
+        if best is none {
+            best = s
+        }
+    }
+    f(long(1))
+    f(long(2))
+    return best
+}
+
+// The same store from an ordinary closure.
+test "a plain closure writing a captured option keeps the first item" {
+    assert (first_via_closure() ?? "missing") == long(1)
+}
+
+// #1999: a fused `map` whose closure answers `T?`.
+test "map to an optional and collect keeps the wrap" {
+    let xs = Vec.from([1, 2, 3])
+    let a: Vec<i64?> = xs.map(|x| -> i64? x * 2).to_vec()
+    assert (a[0] ?? -1) == 2
+    assert (a[2] ?? -1) == 6
+}
+
+// #1987: a fold whose callback drops the accumulator it is given.
+test "fold releases each accumulator it replaces" {
+    let v = Vec.from([long(1), long(22), long(3)])
+    mut out: Vec<string> = Vec.new()
+    out.push(long(9))
+    out.push(v.fold(long(0), |acc, x| x))
+    assert out.len() == 2
+    assert out[1] == long(3)
+}
+
+// #1980: reduce over heap strings, and over nothing.
+test "reduce seeds from the first element and frees what it replaces" {
+    let vs = Vec.from([long(1), long(2), long(3)])
+    let joined = vs.reduce(|a, b| "{a}+{b}") ?? "none"
+    assert joined == "{long(1)}+{long(2)}+{long(3)}"
+    let empty: Vec<string> = Vec.new()
+    assert (empty.reduce(|a, b| "{a}+{b}") ?? "none") == "none"
+}
+
+struct Person {
+    public name: string
+    public n: i64
+}
+
+// #1984: the key closure copies a string out of the element.
+test "sort_by_key with a string key frees each key" {
+    mut ps: Vec<Person> = Vec.new()
+    ps.push(Person(name: long(7), n: 1))
+    ps.push(Person(name: long(6), n: 2))
+    ps.sort_by_key(|p| p.name)
+    assert ps[0].n == 2
+}
