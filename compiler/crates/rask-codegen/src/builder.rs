@@ -6434,29 +6434,12 @@ impl<'a> FunctionBuilder<'a> {
         let Some(dst) = ctx.dst_param else {
             return Ok(produced);
         };
-        match produced {
-            Some(src) => {
-                let size = rask_layout::size_of(ctx.ret_ty, ctx.target());
-                Self::copy_aggregate_to_ptr(builder, src, dst, size);
-            }
-            // A bare `return` out of a `void or E` function. There is no value
-            // to copy and the answer is still Ok, so say so — leaving the
-            // destination untouched meant the caller read a tag nobody had
-            // written, and `try f()` on the success path branched on it
-            // (#1122). The old convention returned nothing and let the caller
-            // read whatever was in the return register, which was the same
-            // hole one register along.
-            None if rask_layout::wrapper_of(ctx.ret_ty, ctx.target()).is_some() => {
-                let tag = Self::tag_const(builder, crate::layouts::TAG_PRESENT);
-                builder.ins().store(MemFlags::new(), tag, dst, crate::layouts::TAG_OFFSET);
-                if matches!(ctx.ret_ty, MirType::Result { .. }) {
-                    let line = builder.ins().iconst(types::I32, 0);
-                    builder.ins().store(MemFlags::new(), line, dst, crate::layouts::ORIGIN_LINE_OFFSET);
-                    let file = builder.ins().iconst(types::I64, 0);
-                    builder.ins().store(MemFlags::new(), file, dst, crate::layouts::ORIGIN_FILE_OFFSET);
-                }
-            }
-            None => {}
+        // Lowering builds the whole answer, an Ok for a bare `return` out of
+        // a `void or E` function included, so there is always a value to copy
+        // when the caller supplied a destination.
+        if let Some(src) = produced {
+            let size = rask_layout::size_of(ctx.ret_ty, ctx.target());
+            Self::copy_aggregate_to_ptr(builder, src, dst, size);
         }
         // Nothing goes back in a register: the answer is already where the
         // caller asked for it, and Cranelift rejects a `StructReturn` signature
@@ -6482,43 +6465,10 @@ impl<'a> FunctionBuilder<'a> {
             return Ok(Some(addr));
         }
 
-        // A `T?` / `T or E` function returning a bare payload — `return 42`,
-        // `return DivError {}`, a struct local — builds the wrap here. Which
-        // side it is comes from the value's type: an error-typed value is the
-        // Err, anything else the Ok or Some. Without that, returning a struct
-        // error wrapped it as Ok and `is X` at the call site took the wrong
-        // branch (#259). A value that is already the wrapper goes back as is.
+        // A `T?` / `T or E` function's returns all hand back the wrapper:
+        // lowering builds it, and `assign_shapes` reports any return that
+        // doesn't (#1555).
         if rask_layout::wrapper_of(ctx.ret_ty, ctx.target()).is_some() {
-            let val_ty = value.and_then(|v| Self::operand_mir_type(v, ctx.locals));
-            let already_wrapped = val_ty
-                .as_ref()
-                .is_some_and(|t| t.wrapper_depth() >= ctx.ret_ty.wrapper_depth());
-            if !already_wrapped {
-                let wrapper = ctx.ret_ty.clone();
-                let is_err = Self::is_err_component(&wrapper, val_ty.as_ref());
-                let arm = Self::wrapper_arm(&wrapper, is_err).clone();
-                let ss = Self::wrapper_slot(builder, &wrapper, ctx.target());
-                let val = match value {
-                    Some(op) => {
-                        // A scalar payload is typed by the payload, not the
-                        // container: lowered at I64, `return 2.5` from an
-                        // `f32 or E` built an integer (#629). An aggregate
-                        // arrives as its address.
-                        let want = match mir_to_cranelift_type(&arm) {
-                            Ok(t) if !arm.passed_by_address() => t,
-                            _ => types::I64,
-                        };
-                        Self::lower_operand_typed(builder, op, Some(want), ctx)?
-                    }
-                    None => builder.ins().iconst(types::I64, 0),
-                };
-                match &wrapper {
-                    MirType::Option(_) => Self::build_some(builder, ss, &wrapper, val, ctx.target()),
-                    _ if is_err => Self::build_err(builder, ss, &wrapper, val, ctx.target()),
-                    _ => Self::build_ok(builder, ss, &wrapper, val, ctx.target()),
-                }
-                return Ok(Some(ss.addr(builder, 0)));
-            }
             return Self::plain_exit_value(builder, value, ctx);
         }
 
@@ -6781,10 +6731,10 @@ impl<'a> FunctionBuilder<'a> {
     /// dispatch — and a caller that disagrees with its callee writes through a
     /// pointer the other side never passed.
     ///
-    /// A `T?`, `T or E` or union always is, whatever its size. A `u8?` is two
-    /// bytes, and returned in a register it would look exactly like the bare
-    /// payload a `return 5` hands back for wrapping — the return path tells
-    /// the two apart by type, and the type is only there for a value in memory.
+    /// A `T?`, `T or E` or union always is, whatever its size. A wrapper
+    /// lives in memory on both sides of the call, so handing it back through
+    /// the caller's slot is one copy, where a register would be a load in the
+    /// callee and a store in the caller for every small one.
     pub(crate) fn returns_through_dst(ret_ty: &MirType, target: rask_ast::Target) -> bool {
         if matches!(ret_ty, MirType::Void) {
             return false;

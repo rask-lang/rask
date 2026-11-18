@@ -2890,6 +2890,22 @@ impl<'a> MirLowerer<'a> {
             .unwrap_or_else(|| self.builder.ret_ty().clone())
     }
 
+    /// What an empty `return` hands back: nothing from a `void` function, and
+    /// an Ok built here from a `void or E` one. Codegen used to fill the Ok
+    /// in when it met a return with no value, so every other reader of MIR
+    /// (the inliner, miri) saw a result function return nothing (#1555).
+    pub(crate) fn empty_return_value(&mut self) -> Option<MirOperand> {
+        let ret_ty = self.return_ty();
+        if !matches!(&ret_ty, MirType::Result { ok, .. } if matches!(ok.as_ref(), MirType::Void)) {
+            return None;
+        }
+        let slot = self.builder.alloc_temp(ret_ty.clone());
+        // The tag and a zeroed origin, so the caller's copy of the whole slot
+        // carries no stale bytes.
+        self.store_wrapper_tag(slot, &ret_ty, rask_mono::runtime_abi::RASK_TAG_PRESENT);
+        Some(MirOperand::Local(slot))
+    }
+
     /// Terminate the current block as a function return.
     ///
     /// One place, because there are four of them — `return`, `try`'s error path
@@ -4949,29 +4965,11 @@ impl<'a> MirLowerer<'a> {
         // Implicit return for functions that don't explicitly return.
         // Void functions get `return`, non-void get Unreachable (caller
         // must ensure all paths return explicitly).
-        // Result { ok: Void, .. } also gets an implicit return — emit a
-        // wrapped Ok-tagged temp so callers (including the inliner, which
-        // copies the return value into the call-site dst) see a properly
-        // initialized Result instead of stale stack bytes.
         if lowerer.builder.current_block_unterminated() {
-            let result_void_ok = matches!(&ret_ty,
-                MirType::Result { ok, .. } if matches!(ok.as_ref(), MirType::Void));
-            let implicit_ok = matches!(ret_ty, MirType::Void) || result_void_ok;
+            let implicit_ok = matches!(ret_ty, MirType::Void)
+                || matches!(&ret_ty, MirType::Result { ok, .. } if matches!(ok.as_ref(), MirType::Void));
             if implicit_ok {
-                // For Result<Void, E>, build a temp holding Ok(void) so the
-                // caller's slot gets the right tag bytes even when the call
-                // is inlined.
-                let return_value = if result_void_ok {
-                    let wrap_local = lowerer.builder.alloc_temp(ret_ty.clone());
-                    // The tag and a zeroed origin, so the caller's copy of
-                    // the whole slot carries no stale bytes.
-                    lowerer.store_wrapper_tag(
-                        wrap_local, &ret_ty, rask_mono::runtime_abi::RASK_TAG_PRESENT,
-                    );
-                    Some(MirOperand::Local(wrap_local))
-                } else {
-                    None
-                };
+                let return_value = lowerer.empty_return_value();
                 if lowerer.ensure_stack.is_empty() {
                     lowerer.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Return { value: return_value }));
                 } else {

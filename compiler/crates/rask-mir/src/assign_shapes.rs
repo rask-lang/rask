@@ -14,12 +14,13 @@
 
 use std::collections::HashMap;
 
-use crate::{LocalId, MirFunction, MirLocal, MirOperand, MirRValue, MirStmt, MirStmtKind, MirType};
+use crate::{LocalId, MirFunction, MirLocal, MirOperand, MirRValue, MirStmt, MirStmtKind, MirTerminatorKind, MirType};
 
 /// Rewrite the wrapping assignments. Returns the assignments whose two sides
-/// are different shapes with no wrap that could join them: a result assigned
-/// from something that isn't one. Codegen would copy result-sized bytes out of
-/// it, so each is a lowering bug, reported before codegen runs.
+/// are different shapes with no wrap that could join them (a result assigned
+/// from something that isn't one), and the returns that don't hand back the
+/// wrapper their function answers. Codegen would copy wrapper-sized bytes out
+/// of either, so each is a lowering bug, reported before codegen runs.
 pub fn make_wraps_explicit(functions: &mut [MirFunction]) -> Vec<String> {
     let mut mismatches = Vec::new();
     for func in functions {
@@ -37,6 +38,42 @@ fn make_wraps_explicit_in(func: &mut MirFunction, mismatches: &mut Vec<String>) 
         .collect();
     let mut next_id = types.keys().map(|id| id.0 + 1).max().unwrap_or(0);
     let mut new_locals: Vec<MirLocal> = Vec::new();
+
+    // A function that answers `T?` or `T or E` hands back the whole wrapper
+    // from every return: lowering builds it, and codegen copies it out as is.
+    // A bare payload, or nothing, would be read by the caller as a tag. A
+    // niche option (`Link<T>?`) has no tag to read: its payload is the whole
+    // value.
+    let tagged = matches!(
+        rask_layout::Shaped::shape(&func.ret_ty),
+        rask_layout::Shape::Option(_) | rask_layout::Shape::Result(..)
+    );
+    if tagged {
+        for block in &func.blocks {
+            let value = match &block.terminator.kind {
+                MirTerminatorKind::Return { value } | MirTerminatorKind::CleanupReturn { value, .. } => value,
+                _ => continue,
+            };
+            let wrapped = match value {
+                Some(MirOperand::Local(l)) => types
+                    .get(l)
+                    .is_some_and(|t| t.wrapper_depth() >= func.ret_ty.wrapper_depth()),
+                _ => false,
+            };
+            if !wrapped {
+                mismatches.push(format!(
+                    "'{}': returns {} from a function that answers `{}`",
+                    func.name,
+                    match value {
+                        Some(MirOperand::Local(l)) => format!("_{}", l.0),
+                        Some(_) => "a constant".to_string(),
+                        None => "nothing".to_string(),
+                    },
+                    func.ret_ty
+                ));
+            }
+        }
+    }
 
     for block in &mut func.blocks {
         let mut out: Vec<MirStmt> = Vec::with_capacity(block.statements.len());
