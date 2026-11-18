@@ -2176,6 +2176,15 @@ impl<'a> FunctionBuilder<'a> {
                 Self::lower_operand_typed(builder, op, expected_ty, ctx)
             }
 
+            // The payload; `lower_assign` writes the tag around it.
+            MirRValue::WrapSome(op) => {
+                let payload = match dst_mir_ty {
+                    Some(MirType::Option(inner)) => Some(inner.as_ref()),
+                    _ => None,
+                };
+                Self::lower_rvalue(builder, &MirRValue::Use(op.clone()), expected_ty, payload, ctx)
+            }
+
             MirRValue::BinaryOp { op, left, right } => Self::lower_binary_op(builder, op, left, right, expected_ty, dst_mir_ty, ctx),
 
             MirRValue::UnaryOp { op, operand } => {
@@ -2449,21 +2458,9 @@ impl<'a> FunctionBuilder<'a> {
         // Which shape this assignment takes is decided by the destination type
         // and the rvalue alone — never by the lowered value — so it's settled
         // first. The value's type depends on it: a scalar being wrapped as a
-        // payload is typed by the payload, not by the container.
-
-        // When dest is Option(T) and the source is already Option-typed,
-        // copy the struct. When the source is a scalar, wrap as Some.
-        let src_option_ty = if let MirType::Option(_) = &dst_local.ty {
-            if let MirRValue::Use(MirOperand::Local(src_id)) = rvalue {
-                ctx.locals.iter().find(|l| l.id == *src_id)
-                    .map(|l| matches!(l.ty, MirType::Option(_)))
-                    .unwrap_or(false)
-            } else {
-                false
-            }
-        } else {
-            false
-        };
+        // payload is typed by the payload, not by the container. MIR says when
+        // an optional is built around a plain value (`WrapSome`, #1555), so
+        // every other assignment into an optional copies one.
 
         // Aggregate assignment: when the destination has a stack slot and
         // the rvalue produces a pointer to aggregate data, copy the data
@@ -2492,17 +2489,10 @@ impl<'a> FunctionBuilder<'a> {
             // external pointer for mutate-params).
             (MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_),
              MirRValue::Use(MirOperand::Local(_))) => true,
-            // Result/Option whole-aggregate copy: only when src and dst
-            // have the same general shape. Avoid clobbering layout when
-            // src is Result and dst is Option (different payload offsets).
-            (MirType::Result { .. }, MirRValue::Use(MirOperand::Local(src_id))) => {
-                ctx.locals.iter().find(|l| l.id == *src_id)
-                    .map_or(false, |l| matches!(l.ty, MirType::Result { .. }))
-            }
-            (MirType::Option(_), MirRValue::Use(MirOperand::Local(src_id))) => {
-                ctx.locals.iter().find(|l| l.id == *src_id)
-                    .map_or(false, |l| matches!(l.ty, MirType::Option(_)))
-            }
+            // A whole wrapper from another of the same shape: a wrapper built
+            // around a plain value is `WrapSome`, and a result from anything
+            // else is rejected before codegen (`assign_shapes`).
+            (MirType::Result { .. } | MirType::Option(_), MirRValue::Use(MirOperand::Local(_))) => true,
             // An array element that lives in its slot comes back as an address,
             // and for a wrapper element that address *is* a whole wrapper. Copy
             // it. Without this arm the wrap-as-Some path below claimed the
@@ -2517,8 +2507,6 @@ impl<'a> FunctionBuilder<'a> {
             // `try convert`/`try float to int` builds an Option slot and
             // returns its pointer — copy the 16-byte struct into dst.
             (MirType::Option(_), MirRValue::Convert { kind, .. }) => kind.is_optional(),
-            // Option(T) assigned from an Option-typed local: copy the 16-byte struct
-            (MirType::Option(_), _) if src_option_ty => true,
             _ => false,
         };
 
@@ -2543,8 +2531,7 @@ impl<'a> FunctionBuilder<'a> {
             None
         };
 
-        let wrap_as_some = matches!(&dst_local.ty, MirType::Option(_))
-            && !needs_copy
+        let wrap_as_some = matches!(rvalue, MirRValue::WrapSome(_))
             && (ctx.stack_slot_map.contains_key(dst) || borrowed_addr.is_some());
         // If the source is an aggregate and dst is Option<aggregate>,
         // we need full-aggregate wrap (tag + memcpy payload), not the
@@ -2555,8 +2542,8 @@ impl<'a> FunctionBuilder<'a> {
         // payload offset and reading the payload back handed out that slot's
         // address instead of the string (#613).
         let src_is_addressed = match rvalue {
-            MirRValue::Use(MirOperand::Local(_)) => true,
-            MirRValue::Use(MirOperand::Constant(c)) => c.static_buffer().is_some(),
+            MirRValue::WrapSome(MirOperand::Local(_)) => true,
+            MirRValue::WrapSome(MirOperand::Constant(c)) => c.static_buffer().is_some(),
             _ => false,
         };
         let wrap_as_some_aggregate = wrap_as_some
@@ -2593,7 +2580,7 @@ impl<'a> FunctionBuilder<'a> {
             // `u32` → `i64` (CV1a) would turn 3000000000 into a negative
             // (#326's family, reached by a new route).
             let src_mir = match rvalue {
-                MirRValue::Use(op) => Self::operand_mir_type(op, ctx.locals),
+                MirRValue::Use(op) | MirRValue::WrapSome(op) => Self::operand_mir_type(op, ctx.locals),
                 _ => None,
             };
             val = Self::convert_value(builder, val, val_ty, dst_ty, src_mir.as_ref());

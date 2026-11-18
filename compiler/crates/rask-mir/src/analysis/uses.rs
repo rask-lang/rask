@@ -41,7 +41,7 @@ pub enum Named<'a> {
 /// Visit everything an rvalue reads.
 fn visit_rvalue_named<'a>(rv: &'a MirRValue, f: &mut impl FnMut(Named<'a>)) {
     match rv {
-        MirRValue::Use(o) | MirRValue::Deref(o) => f(Named::Operand(o)),
+        MirRValue::Use(o) | MirRValue::Deref(o) | MirRValue::WrapSome(o) => f(Named::Operand(o)),
         MirRValue::Ref(id) => f(Named::Local(*id)),
         MirRValue::FuncAddr(_) => {}
         MirRValue::BinaryOp { left, right, .. } => {
@@ -191,7 +191,7 @@ fn visit_operand_local_mut(op: &mut MirOperand, f: &mut impl FnMut(&mut LocalId,
 
 fn visit_rvalue_locals_mut(rv: &mut MirRValue, f: &mut impl FnMut(&mut LocalId, UseKind)) {
     match rv {
-        MirRValue::Use(o) | MirRValue::Deref(o) => visit_operand_local_mut(o, f),
+        MirRValue::Use(o) | MirRValue::Deref(o) | MirRValue::WrapSome(o) => visit_operand_local_mut(o, f),
         MirRValue::Ref(id) => f(id, UseKind::AddressOf),
         MirRValue::FuncAddr(_) => {}
         MirRValue::BinaryOp { left, right, .. } => {

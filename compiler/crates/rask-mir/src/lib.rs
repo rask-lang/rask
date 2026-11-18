@@ -8,6 +8,7 @@
 //! optimization; `transform::ssa::destruct` lowers back before codegen.
 
 pub mod analysis;
+pub mod assign_shapes;
 pub mod c_call;
 mod builder;
 pub mod dispatch_trace;

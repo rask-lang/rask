@@ -7,3 +7,4 @@ edition = "2021"
 rask-mir = { path = "../rask-mir" }
 rask-check = { path = "../rask-check" }
 rask-layout = { path = "../rask-layout" }
+rask-stdlib = { path = "../rask-stdlib" }

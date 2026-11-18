@@ -648,6 +648,7 @@ fn remap_rvalue(rv: &MirRValue, local_map: &HashMap<LocalId, LocalId>) -> MirRVa
         MirRValue::Ref(id) => MirRValue::Ref(local_map.get(id).copied().unwrap_or(*id)),
         MirRValue::Deref(op) => MirRValue::Deref(remap_operand(op, local_map)),
         MirRValue::FuncAddr(name) => MirRValue::FuncAddr(name.clone()),
+        MirRValue::WrapSome(op) => MirRValue::WrapSome(remap_operand(op, local_map)),
         MirRValue::BinaryOp { op, left, right } => MirRValue::BinaryOp {
             op: *op,
             left: remap_operand(left, local_map),

@@ -345,6 +345,18 @@ impl MiriEngine {
         match rvalue {
             MirRValue::Use(op) => self.resolve_operand_typed(op, dst_ty),
 
+            MirRValue::WrapSome(op) => {
+                let payload_ty = match dst_ty {
+                    Some(MirType::Option(inner)) => Some(inner.as_ref()),
+                    _ => None,
+                };
+                let payload = self.resolve_operand_typed(op, payload_ty)?;
+                Ok(MiriValue::Enum {
+                    tag: rask_stdlib::wrappers::PRESENT_TAG as u64,
+                    payload: Some(Box::new(payload)),
+                })
+            }
+
             MirRValue::BinaryOp { op, left, right } => {
                 // A comparison's destination is always `bool` — that's not
                 // the operand width, so it must not be used as one.

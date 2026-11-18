@@ -147,6 +147,7 @@ impl fmt::Display for MirRValue {
             MirRValue::Use(op) => write!(f, "{}", op),
             MirRValue::Ref(id) => write!(f, "&_{}", id.0),
             MirRValue::FuncAddr(name) => write!(f, "&fn {}", name),
+            MirRValue::WrapSome(op) => write!(f, "Some({})", op),
             MirRValue::Deref(op) => write!(f, "*{}", op),
             MirRValue::BinaryOp { op, left, right } => {
                 write!(f, "{} {} {}", left, op, right)
