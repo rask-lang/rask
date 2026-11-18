@@ -1058,6 +1058,23 @@ fn insert_aggregate_release(
             _ => None,
         })
         .collect();
+    // Storage another frame or the closure's environment owns, reached by
+    // address: an element bound where it sits, or a capture the body writes
+    // through. A copy lowering retains into one gives the storage references
+    // of its own, and its owner releases them. Read as this frame's value,
+    // the retain made a value the body released on its way out, so
+    // `|s| { if best == none { best = s } }` left `best` holding a freed
+    // string (#2011).
+    let elsewhere: HashSet<LocalId> = func
+        .blocks
+        .iter()
+        .flat_map(|b| b.statements.iter())
+        .filter_map(|st| match &st.kind {
+            MirStmtKind::LoadCapture { dst, access, .. } if access.is_addressed() => Some(*dst),
+            _ => None,
+        })
+        .chain(places.iter().copied())
+        .collect();
     let params: Vec<LocalId> = func.params.iter().map(|p| p.id).collect();
     // A parameter every caller gave up at the call (`params_a_callee_keeps`:
     // one written `take`) is ours from entry, and released here unless it is
@@ -1590,7 +1607,8 @@ fn insert_aggregate_release(
                 }
                 // Retained by lowering: from here on the name holds references
                 // of its own, and is ours to release.
-                MirStmtKind::RcIncContents { local, for_hand_off: false } if is_tracked(local) =>
+                MirStmtKind::RcIncContents { local, for_hand_off: false }
+                    if is_tracked(local) && !elsewhere.contains(local) =>
                 {
                     ev.push(ownership::Event::Make(*local))
                 }
