@@ -93,6 +93,12 @@ impl ClosureReach {
         out
     }
 
+    /// Whether `body` went somewhere the walk doesn't follow, so something
+    /// other than a call it can see may run it.
+    pub fn escaped(&self, body: &str) -> bool {
+        self.escaped.contains(body)
+    }
+
     pub fn build(fns: &[MirFunction]) -> Self {
         Walk::new(fns).run()
     }

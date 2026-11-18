@@ -224,7 +224,8 @@ impl fmt::Display for MirStmt {
                 write!(f, "_{} = closure[{}]({}, [", dst.0, alloc, func_name)?;
                 for (i, cap) in captures.iter().enumerate() {
                     if i > 0 { write!(f, ", ")?; }
-                    write!(f, "_{}@{}", cap.local_id.0, cap.offset)?;
+                    let by = if cap.by_ref { "&" } else { "" };
+                    write!(f, "{}_{}@{}", by, cap.local_id.0, cap.offset)?;
                 }
                 write!(f, "])")
             }
