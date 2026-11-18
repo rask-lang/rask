@@ -145,3 +145,91 @@ test "sort_by_key with a string key frees each key" {
     ps.sort_by_key(|p| p.name)
     assert ps[0].n == 2
 }
+
+func captured_keep() -> Vec<string> {
+    mut keep: Vec<string> = []
+    for v in vecs() {
+        let g = || v[0]
+        if g() == long(3) { keep = v }
+    }
+    return keep
+}
+
+func captured_push() -> Vec<Vec<string>> {
+    mut out: Vec<Vec<string>> = Vec.new()
+    for v in vecs() {
+        let g = || v[0]
+        if g() != long(3) { out.push(v) }
+    }
+    return out
+}
+
+// #2008: the loop body also captures its item in a closure, so the item lives
+// in memory; it is kept on one branch and freed on the other.
+test "a sequence loop keeps an item a closure in its body reads" {
+    assert captured_keep()[1] == long(4)
+    let out = captured_push()
+    assert out.len() == 2
+    assert out[1][0] == long(5)
+}
+
+func keep_via_take_closure() -> Vec<string> {
+    mut keep: Vec<string> = Vec.new()
+    let f = |take v: Vec<string>| {
+        let g = || v.len()
+        if g() == 3 { keep = v }
+    }
+    f([long(1), long(2)])
+    f([long(1), long(2), long(3)])
+    f([long(4)])
+    return keep
+}
+
+test "a take closure keeps a captured parameter on one branch" {
+    assert keep_via_take_closure()[2] == long(3)
+}
+
+// A closure body that returns on one path and falls off its end on the other:
+// both values reach the result.
+test "fused closures keep the fall-off value next to an early return" {
+    let xs = Vec.from([1, 2, 3])
+    let p: Vec<i64> = xs.map(|x| -> i64 {
+        if x == 1 { return x }
+        x + 10
+    }).to_vec()
+    assert p[0] == 1
+    assert p[2] == 13
+    let q: Vec<i64?> = xs.map(|x| -> i64? {
+        if x == 1 { return x }
+        x + 10
+    }).to_vec()
+    assert (q[1] ?? -1) == 12
+    let f = xs.fold(0, |acc, x| -> i64 {
+        if x == 2 { return acc }
+        acc + x
+    })
+    assert f == 4
+    let r = xs.reduce(|a, b| -> i64 {
+        if b == 2 { return a }
+        a + b * 100
+    }) ?? -1
+    assert r == 301
+}
+
+func longer(a: string, b: string) -> string {
+    return if b.len() > a.len() { b } else { a }
+}
+
+// Each arm's copy carries the reference the caller gets; only the join is
+// returned, and the arms' retains must stay.
+test "returning one of two borrowed strings through an if keeps both" {
+    mut keep: Vec<string> = Vec.new()
+    let x = long(1)
+    let y = "{long(2)}-longer"
+    keep.push(longer(x, y))
+    keep.push(longer(y, x))
+    assert keep[0] == y
+    assert keep[1] == y
+    let v = Vec.from([long(1), "{long(22)}-longer", long(3)])
+    assert v.fold(long(0), |acc, s| if s.len() > acc.len() { s } else { acc }) == v[1]
+}
