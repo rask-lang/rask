@@ -1,0 +1,39 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A newtype's `clone` is its own when it writes one, and otherwise the
+// wrapped type's. The interpreter copied the fields in both cases, so a custom
+// clone underneath was skipped and the newtype's own was ignored.
+
+struct Big {
+    a: string
+    c: i64
+}
+
+Big implements Cloneable {
+    func clone(self) -> Big {
+        return Big(a: "{self.a}+", c: self.c + 1)
+    }
+}
+
+type Wrapped = Big implements Cloneable
+
+type Names = Vec<string> implements Cloneable
+
+extend Names {
+    func clone(self) -> Names {
+        return Names(Vec.from(["own-clone-padding-padding-padding"]))
+    }
+}
+
+test "a newtype without its own clone runs the wrapped type's" {
+    let w = Wrapped(Big(a: "wrapped", c: 1))
+    let w2 = w.clone()
+    assert w2.value.a == "wrapped+"
+    assert w2.value.c == 2
+}
+
+test "a newtype's own clone wins" {
+    let n = Names(Vec.from(["original-padding-padding-padding"]))
+    let m = n.clone()
+    assert m.value[0] == "own-clone-padding-padding-padding"
+}

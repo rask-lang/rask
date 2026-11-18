@@ -144,7 +144,7 @@ impl Interpreter {
         // bottom of this function, so without this an `extend` block that
         // defines its own ordering was never called — the interpreter answered
         // from the field-by-field default and disagreed with native.
-        if matches!(receiver, Value::Struct(..) | Value::Enum { .. })
+        if matches!(receiver, Value::Struct(..) | Value::Enum { .. } | Value::Nominal { .. })
             && DERIVABLE_METHODS.contains(&method)
         {
             if let Some(method_fn) = self.user_method(&receiver, method) {
@@ -416,8 +416,9 @@ impl Interpreter {
             return Ok(Value::String(Arc::new(Mutex::new(format!("{}", receiver)))));
         }
 
-        // Generic clone fallback (for types that don't have explicit clone)
-        if method == "clone" {
+        // Generic clone fallback (for types that don't have explicit clone).
+        // A newtype's is its underlying value's clone, wrapped: below.
+        if method == "clone" && !matches!(receiver, Value::Nominal { .. }) {
             return Ok(receiver.clone());
         }
 
@@ -492,7 +493,15 @@ impl Interpreter {
                     other => other,
                 })
                 .collect();
-            return self.call_builtin_method((**inner).clone(), method, args, generics);
+            let answer = self.call_builtin_method((**inner).clone(), method, args, generics)?;
+            // A clone is a value of the newtype, whatever clones the inside:
+            // `Wrapped(big).clone()` runs `Big`'s own clone.
+            if method == "clone" {
+                if let Value::Nominal { type_name, .. } = &receiver {
+                    return Ok(Value::Nominal { type_name: type_name.clone(), inner: Box::new(answer) });
+                }
+            }
+            return Ok(answer);
         }
 
         Err(RuntimeError::NoSuchMethod {
