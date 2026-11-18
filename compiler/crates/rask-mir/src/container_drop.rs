@@ -222,7 +222,7 @@ pub fn insert_container_drops(fns: &mut Vec<MirFunction>) {
     // read the closure that captured it while the frame it belongs to is being
     // rewritten.
     let snapshot: Vec<MirFunction> = fns.to_vec();
-    let closure_slots = closure_cell_writers(&snapshot);
+    let closure_slots = closure_cell_writers(&snapshot, &targets);
     for func in fns.iter_mut() {
         insert_for_function(
             func, &snapshot, &handing_over, &interface_handing, &keeps, &targets,
@@ -3317,7 +3317,7 @@ fn cells_this_frame_frees(
             .iter()
             .map(|(_, b)| *b)
             .find(|first| values.iter().all(|(_, b)| dom.dominates(*first, *b)));
-        if let Some(ty) = closure_cell_is_a_variable(func, all, *cell, values, &handed_on, &dom, &mut Vec::new()) {
+        if let Some(ty) = closure_cell_is_a_variable(func, all, keeps.targets, *cell, values, &handed_on, &dom, &mut Vec::new()) {
             out.push((*cell, InCell::Slot(ty), leader.expect("a closure variable has a leading store")));
             continue;
         }
@@ -3382,6 +3382,7 @@ fn cells_this_frame_frees(
 fn closure_cell_is_a_variable(
     func: &MirFunction,
     all: &[MirFunction],
+    targets: &ClosureTargets,
     cell: LocalId,
     values: &[(MirOperand, BlockId)],
     handed_on: &HashSet<LocalId>,
@@ -3416,7 +3417,7 @@ fn closure_cell_is_a_variable(
         return None;
     }
     let mut addrs = HashSet::from([cell]);
-    if !cell_used_as_variable(func, all, &mut addrs, reached, &None, 0) {
+    if !cell_used_as_variable(func, all, targets, &mut addrs, reached, &None, 0) {
         return None;
     }
     Some(ty)
@@ -3462,7 +3463,7 @@ struct CellWriters {
 /// itself handed one. A function a call can reach without naming it (a
 /// function value, a vtable entry, a closure body) has callers nobody can
 /// list, and never releases.
-fn closure_cell_writers(fns: &[MirFunction]) -> CellWriters {
+fn closure_cell_writers(fns: &[MirFunction], targets: &ClosureTargets) -> CellWriters {
     let mut reached: Vec<Reached> = Vec::new();
     for func in fns {
         let mut cells: HashSet<LocalId> = func
@@ -3497,7 +3498,7 @@ fn closure_cell_writers(fns: &[MirFunction]) -> CellWriters {
                 })
                 .collect();
             let mut found = Vec::new();
-            if closure_cell_is_a_variable(func, fns, cell, &values, &handed_on, &dom, &mut found).is_some() {
+            if closure_cell_is_a_variable(func, fns, targets, cell, &values, &handed_on, &dom, &mut found).is_some() {
                 reached.extend(found);
             }
         }
@@ -3513,7 +3514,7 @@ fn closure_cell_writers(fns: &[MirFunction]) -> CellWriters {
             }
             let through = Some((func.name.clone(), i));
             let mut found = Vec::new();
-            if cell_used_as_variable(func, fns, &mut HashSet::from([p.id]), &mut found, &through, 0) {
+            if cell_used_as_variable(func, fns, targets, &mut HashSet::from([p.id]), &mut found, &through, 0) {
                 writers.insert((func.name.clone(), i));
                 reached.extend(found);
             }
@@ -3560,9 +3561,43 @@ fn closure_cell_writers(fns: &[MirFunction]) -> CellWriters {
             }
         }
     }
+    // A closure body is reached through calls with no name. When every one of
+    // them can be listed, each is held to the same test as a call by name;
+    // otherwise the body has callers nobody can see (#2017). A function whose
+    // address is taken, or that sits in a vtable, never has its calls listed.
+    let listed = targets.calls_reaching(fns);
+    let by_address: HashSet<&str> = fns
+        .iter()
+        .flat_map(|f| f.blocks.iter().flat_map(|b| b.statements.iter()))
+        .filter_map(|st| match &st.kind {
+            MirStmtKind::Assign { rvalue: MirRValue::FuncAddr(name), .. } => Some(name.as_str()),
+            _ => None,
+        })
+        .chain(vtable_candidates(fns).into_iter().map(|(_, f)| f.name.as_str()))
+        .collect();
     for f in fns.iter().filter(|f| unnamed.contains(f.name.as_str())) {
+        let sites = listed
+            .as_ref()
+            .filter(|_| !by_address.contains(f.name.as_str()))
+            .and_then(|l| l.get(&f.name));
         for (i, mode) in f.param_modes.iter().enumerate() {
-            if *mode == rask_ast::ty::ParamMode::Mutate {
+            if *mode != rask_ast::ty::ParamMode::Mutate {
+                continue;
+            }
+            let all_lend_owned = sites.is_some_and(|sites| {
+                sites.iter().all(|site| {
+                    if covered.contains(&(site, i)) {
+                        return true;
+                    }
+                    let Some(caller) = fns.iter().find(|c| c.name == site.0) else { return false };
+                    let Some(block) = caller.blocks.iter().find(|b| b.id == site.1) else { return false };
+                    let Some(MirStmtKind::ClosureCall { args, .. }) = block.statements.get(site.2).map(|st| &st.kind) else {
+                        return false;
+                    };
+                    i >= 1 && args.get(i - 1).is_some_and(|a| lends_owned_slot(caller, a))
+                })
+            });
+            if !all_lend_owned {
                 unsure.insert((f.name.clone(), i));
             }
         }
@@ -3794,6 +3829,7 @@ fn extend_by_copies(func: &MirFunction, set: &mut HashSet<LocalId>) {
 fn cell_used_as_variable(
     func: &MirFunction,
     all: &[MirFunction],
+    targets: &ClosureTargets,
     addrs: &mut HashSet<LocalId>,
     reached: &mut Vec<Reached>,
     through: &Option<(String, usize)>,
@@ -3861,7 +3897,38 @@ fn cell_used_as_variable(
                         });
                         let mut inner = HashSet::from([param.id]);
                         let into = Some((target.name.clone(), i));
-                        cell_used_as_variable(target, all, &mut inner, reached, &into, depth + 1)
+                        cell_used_as_variable(target, all, targets, &mut inner, reached, &into, depth + 1)
+                    })
+                }
+                // The same through a closure, to each body it is known to
+                // reach: argument `i` is the body's parameter `i + 1`, after
+                // the environment (#2017).
+                MirStmtKind::ClosureCall { closure, args, .. } if !addrs.contains(closure) => {
+                    let Some(bodies) = targets.known(&func.name, *closure) else { return false };
+                    args.iter().enumerate().all(|(i, a)| {
+                        let MirOperand::Local(a) = a else { return true };
+                        if !addrs.contains(a) {
+                            return true;
+                        }
+                        bodies.iter().all(|b| {
+                            let Some(body) = all.iter().find(|f| f.name == *b) else { return false };
+                            let index = i + 1;
+                            if body.param_modes.get(index) != Some(&rask_ast::ty::ParamMode::Mutate) {
+                                return false;
+                            }
+                            let Some(param) = body.params.get(index) else { return false };
+                            reached.push(Reached {
+                                at: CellReach::Param {
+                                    callee: body.name.clone(),
+                                    index,
+                                    site: (func.name.clone(), block.id, si),
+                                },
+                                through: through.clone(),
+                            });
+                            let mut inner = HashSet::from([param.id]);
+                            let into = Some((body.name.clone(), index));
+                            cell_used_as_variable(body, all, targets, &mut inner, reached, &into, depth + 1)
+                        })
                     })
                 }
                 MirStmtKind::ClosureCreate { func_name, captures, .. } => {
@@ -3880,7 +3947,7 @@ fn cell_used_as_variable(
                             at: CellReach::Capture(func_name.clone(), c.offset),
                             through: through.clone(),
                         });
-                        c.by_ref && cell_used_as_variable(body, all, &mut inner, reached, through, depth + 1)
+                        c.by_ref && cell_used_as_variable(body, all, targets, &mut inner, reached, through, depth + 1)
                     })
                 }
                 _ => false,

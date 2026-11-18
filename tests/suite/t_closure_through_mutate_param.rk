@@ -4,6 +4,10 @@
 // releases the closure it replaces and the caller the last one, so every
 // closure that lands in the variable is a heap one. Before, the closure the
 // callee made was never released (#2016).
+//
+// The same through a function value: `let s = setit` calls through a closure
+// body, whose callers used to count as unknowable, so neither side released
+// anything (#2017).
 
 struct Holder {
     f: func() -> i64
@@ -112,6 +116,32 @@ func an_element() -> i64 {
     return v[0]() + v[1]()
 }
 
+func through_a_value() -> i64 {
+    mut g: func() -> i64 = || 1
+    setit(mutate g, 2)
+    let s = setit
+    s(mutate g, 3)
+    return g()
+}
+
+func a_value_in_a_loop() -> i64 {
+    mut g: func() -> i64 = || 1
+    let s = setit
+    mut total = 0
+    for i in 0..4 {
+        s(mutate g, i)
+        total = total + g()
+    }
+    return total
+}
+
+func a_value_on_a_field() -> i64 {
+    mut h = Holder(f: || 1)
+    let s = setit
+    s(mutate h.f, 5)
+    return (h.f)()
+}
+
 test "a mutate parameter replaces the caller's closure" {
     assert once() == 4
 }
@@ -150,4 +180,10 @@ test "a field handed on through a mutate struct" {
 
 test "a vector element lent to the same parameter" {
     assert an_element() == 7
+}
+
+test "through a function value" {
+    assert through_a_value() == 3
+    assert a_value_in_a_loop() == 6
+    assert a_value_on_a_field() == 5
 }

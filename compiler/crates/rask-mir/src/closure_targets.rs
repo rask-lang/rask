@@ -43,7 +43,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::{FieldSlot, LocalId, MirFunction, MirOperand, MirRValue, MirStmtKind, MirType};
+use crate::{BlockId, FieldSlot, LocalId, MirFunction, MirOperand, MirRValue, MirStmtKind, MirType};
 
 /// What a value might be, as far as this walk can tell.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -248,6 +248,68 @@ impl ClosureTargets {
         }
 
         Self { locals }
+    }
+
+    /// Every `ClosureCall` that can reach each closure body, as (function,
+    /// block, statement), for the bodies where all of them can be named.
+    ///
+    /// The forward question ("which bodies can this call reach") answers the
+    /// backward one only when every call that could reach the body answers
+    /// it. A call through a value this walk lost track of could be calling
+    /// any body that takes as many arguments, so those bodies are left out:
+    /// `g()` on a closure variable rules out every body with no parameters,
+    /// and nothing else. A body handed to a function
+    /// with no MIR (the runtime, `spawn`) is called from places nobody can
+    /// list, so it is left out, and so is every body when a closure the walk
+    /// lost track of is handed there.
+    pub fn calls_reaching(&self, fns: &[MirFunction]) -> Option<HashMap<String, Vec<(String, BlockId, usize)>>> {
+        let with_body: HashSet<&str> = fns.iter().map(|f| f.name.as_str()).collect();
+        let mut sites: HashMap<String, Vec<(String, BlockId, usize)>> = HashMap::new();
+        let mut external: HashSet<String> = HashSet::new();
+        // A call the walk lost track of could reach any body that takes as
+        // many arguments as it passes, and none that doesn't.
+        let mut unknown_arities: HashSet<usize> = HashSet::new();
+        for func in fns {
+            for block in &func.blocks {
+                for (si, st) in block.statements.iter().enumerate() {
+                    match &st.kind {
+                        MirStmtKind::ClosureCall { closure, args, .. } => match self.known(&func.name, *closure) {
+                            Some(bodies) => {
+                                for body in bodies {
+                                    sites.entry(body.clone()).or_default().push((func.name.clone(), block.id, si));
+                                }
+                            }
+                            None => {
+                                unknown_arities.insert(args.len());
+                            }
+                        },
+                        MirStmtKind::Call { func: callee, args, .. } if !with_body.contains(callee.name.as_str()) => {
+                            for arg in args {
+                                let MirOperand::Local(a) = arg else { continue };
+                                if !matches!(func.local_ty(*a), Some(MirType::FuncPtr(_))) {
+                                    continue;
+                                }
+                                external.extend(self.known(&func.name, *a)?.iter().cloned());
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        // A body no call reaches still has a (empty) listing, unless it got out.
+        for func in fns {
+            for st in func.blocks.iter().flat_map(|b| b.statements.iter()) {
+                if let MirStmtKind::ClosureCreate { func_name, .. } = &st.kind {
+                    sites.entry(func_name.clone()).or_default();
+                }
+            }
+        }
+        let arity = |body: &str| fns.iter().find(|f| f.name == body).map(|f| f.params.len().saturating_sub(1));
+        sites.retain(|body, _| {
+            !external.contains(body) && arity(body).is_some_and(|n| !unknown_arities.contains(&n))
+        });
+        Some(sites)
     }
 
     /// The bodies `local` in `func` may hold, when that is fully known and not

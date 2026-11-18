@@ -203,6 +203,10 @@ fn captures_holding_heap_closures(fns: &[MirFunction]) -> HashSet<(String, u32)>
 /// yield.
 pub(crate) struct KeptThroughCalls {
     targets: crate::closure_targets::ClosureTargets,
+    /// The plain walk, the one `container_drop` reads: a variable is only
+    /// worth heap closures when the pass that releases them sees the same
+    /// call targets.
+    plain_targets: crate::closure_targets::ClosureTargets,
     routes: HashMap<String, Vec<Route>>,
     any_keeper: bool,
 }
@@ -224,7 +228,22 @@ impl KeptThroughCalls {
                     && routes.get(&f.name).and_then(|r| r.get(i)) == Some(&Route::Away)
             })
         });
-        Self { targets: crate::closure_targets::ClosureTargets::build_following_returns(fns), routes, any_keeper }
+        Self {
+            targets: crate::closure_targets::ClosureTargets::build_following_returns(fns),
+            plain_targets: crate::closure_targets::ClosureTargets::build(fns),
+            routes,
+            any_keeper,
+        }
+    }
+
+    /// Might `closure(args)` in `func` hand argument `i` to a body's `mutate`
+    /// parameter? Only bodies the call is known to reach count: through an
+    /// unknown one, the caller's variable isn't taken as owning its closure
+    /// (`container_drop::cell_used_as_variable`), so nothing replaces it.
+    fn lends_to_mutate(&self, func: &str, closure: LocalId, i: usize, lent: &LentCells) -> bool {
+        self.plain_targets
+            .known(func, closure)
+            .is_some_and(|bodies| bodies.iter().any(|b| lent.mutate_params.contains(&(b.clone(), i + 1))))
     }
 
     /// May `closure(args)` in `func` keep argument `i`?
@@ -1691,6 +1710,13 @@ fn find_escaping_closures(
                         let Some(id) = uses::operand_local(arg) else { continue };
                         if aliases.holds_closure(&id) && kept.keeps(&func.name, *closure, i) {
                             escaping.extend(aliases.origins(&id).iter().copied());
+                        }
+                        // The variable lent to a body's `mutate` parameter, as
+                        // with a call by name above (#2017).
+                        if let Some(var) = addr_of.get(&id) {
+                            if kept.lends_to_mutate(&func.name, *closure, i, lent) {
+                                escaping.extend(aliases.origins(var).iter().copied());
+                            }
                         }
                     }
                 }
