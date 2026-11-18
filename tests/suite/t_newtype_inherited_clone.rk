@@ -1,0 +1,24 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A newtype's inherited `clone` runs the underlying type's. The call named
+// the newtype as its receiver, so native code looked for `Names_clone`, which
+// nothing emits, and failed to compile (#2006).
+
+type Names = Vec<string> implements Cloneable
+type Count = i64 implements Numeric
+
+func copy_names(n: Names) -> Names {
+    return n.clone()
+}
+
+test "an inherited clone copies the value underneath" {
+    let a = Names(Vec.from(["a-long-enough-name", "another-long-enough-name"]))
+    let b = copy_names(a)
+    assert b.value.len() == 2
+    assert b.value[1] == "another-long-enough-name"
+}
+
+test "an inherited arithmetic method answers the newtype" {
+    let c = Count(2).add(Count(3))
+    assert c.value == 5
+}

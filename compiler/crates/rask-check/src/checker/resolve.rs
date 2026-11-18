@@ -801,7 +801,7 @@ impl TypeChecker {
                 self.call_targets.insert(
                     node,
                     Callee::Method {
-                        recv: ty.clone(),
+                        recv: self.dispatch_receiver(&ty, &method),
                         method: method.clone(),
                         package: self.conformance_package_for_call(&ty, &method, span),
                         body: None,
@@ -922,7 +922,7 @@ impl TypeChecker {
                     self.call_targets.insert(
                         node,
                         Callee::Method {
-                            recv: settled.clone(),
+                            recv: self.dispatch_receiver(&settled, &method),
                             method: method.clone(),
                             package: self.conformance_package_for_call(&settled, &method, span),
                             body: None,
@@ -3942,5 +3942,23 @@ fn mentions_param(ty: &Type, name: &str) -> bool {
         Type::Result { ok, err } => mentions_param(ok, name) || mentions_param(err, name),
         Type::Array { elem, .. } => mentions_param(elem, name),
         _ => false,
+    }
+}
+
+impl TypeChecker {
+    /// The type a method call dispatches on. A newtype's inherited method runs
+    /// on the value underneath (`names.clone()` is the `Vec`'s clone,
+    /// `Money.zero()` is `i64`'s), so the call names the underlying type's
+    /// function. Naming the newtype's left codegen looking for `Names_clone`,
+    /// which nothing emits (#2006).
+    fn dispatch_receiver(&self, ty: &Type, method: &str) -> Type {
+        if let Type::Named(id) = ty {
+            if let Some(TypeDef::NominalAlias { methods, underlying, .. }) = self.types.get(*id) {
+                if !methods.iter().any(|m| m.name == method) {
+                    return underlying.clone();
+                }
+            }
+        }
+        ty.clone()
     }
 }
