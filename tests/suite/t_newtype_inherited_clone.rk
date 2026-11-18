@@ -2,10 +2,18 @@
 //
 // A newtype's inherited `clone` runs the underlying type's. The call named
 // the newtype as its receiver, so native code looked for `Names_clone`, which
-// nothing emits, and failed to compile (#2006).
+// nothing emits, and failed to compile (#2006). Through a `Cloneable` bound
+// the instance asked again with `T` bound to the newtype, and named it again.
 
 type Names = Vec<string> implements Cloneable
 type Count = i64 implements Numeric
+type Nums = Vec<i64> implements Cloneable
+type Table = Map<string, i64> implements Cloneable
+type Outer = Names implements Cloneable
+
+func dup<T: Cloneable>(x: T) -> T {
+    return x.clone()
+}
 
 func copy_names(n: Names) -> Names {
     return n.clone()
@@ -21,4 +29,15 @@ test "an inherited clone copies the value underneath" {
 test "an inherited arithmetic method answers the newtype" {
     let c = Count(2).add(Count(3))
     assert c.value == 5
+}
+
+test "an inherited clone through a bound" {
+    let n = dup(Nums(Vec.from([1, 2])))
+    assert n.value.len() == 2
+    mut m: Map<string, i64> = Map.new()
+    m.insert("one", 1)
+    let t = dup(Table(m))
+    assert t.value.len() == 1
+    let o = dup(Outer(Names(Vec.from(["a-long-enough-name"]))))
+    assert o.value.value[0] == "a-long-enough-name"
 }
