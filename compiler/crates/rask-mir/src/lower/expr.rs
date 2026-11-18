@@ -6208,6 +6208,19 @@ impl<'a> MirLowerer<'a> {
             return Ok((obj_op, obj_ty));
         }
 
+        // A function value is always a closure block, a named function
+        // included (`main__fnval_0`). Its clone is a heap block with its
+        // own copy of the environment (mem.closures/CV2), owned here.
+        if method == "clone" && matches!(obj_ty, MirType::FuncPtr(_)) {
+            let cloned = self.builder.alloc_temp(obj_ty.clone());
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                dst: Some(cloned),
+                func: FunctionRef::borrowing("rask_closure_clone"),
+                args: vec![obj_op.clone()],
+            }));
+            return Ok((MirOperand::Local(cloned), obj_ty));
+        }
+
         // Resolve the receiver's stdlib type prefix, then mangle to
         // `{Type}_{method}`. Dispatch is driven by the resolved receiver
         // type and the stub-derived metadata — not a hand-maintained

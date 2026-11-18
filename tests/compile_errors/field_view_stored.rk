@@ -12,6 +12,10 @@
 // literal, a tuple, a variant payload, a `Heap`, a `take` argument, a push,
 // and a `let` that names the view first. Those compiled after #1283, and
 // native freed the caller's Vec (#1459).
+//
+// A closure that outlives its frame carries what it captures (CM2), so
+// capturing the view is a second owner too. It freed a Plan's closure out
+// from under the Plan once closures moved.
 
 import memory.Heap
 
@@ -126,6 +130,25 @@ func via_let_returned(src: Bag) -> Vec<i64> {
     let tmp = src.items
     // ERROR: returning the view hands the caller its own Vec
     return tmp
+}
+
+func into_closure(src: Bag) -> func() -> u64 {
+    let tmp = src.items
+    // ERROR: a closure that outlives its frame carries `tmp` (CM2)
+    return || tmp.len()
+}
+
+func local_into_closure() -> func() -> u64 {
+    let a = Bag(items: [1], count: 1)
+    let tmp = a.items
+    // ERROR: so it would own a Vec `a` still holds
+    return || tmp.len() + a.items.len()
+}
+
+// Legal: the closure carries a copy of its own.
+func cloned_into_closure(src: Bag) -> func() -> u64 {
+    let tmp = src.items.clone()
+    return || tmp.len()
 }
 
 // Legal: a copy of its own, and a Copy field.

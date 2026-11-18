@@ -102,7 +102,7 @@ fn visit_stmt_named<'a>(stmt: &'a MirStmt, f: &mut impl FnMut(Named<'a>)) {
         }
         MirStmtKind::LoadCapture { env_ptr, .. } => f(Named::Local(*env_ptr)),
         MirStmtKind::BindPlace { addr, .. } => f(Named::Local(*addr)),
-        MirStmtKind::ClosureDrop { closure, .. } | MirStmtKind::ClosureRetain { closure, .. } => f(Named::Local(*closure)),
+        MirStmtKind::ClosureDrop { closure, .. } => f(Named::Local(*closure)),
         MirStmtKind::ResourceConsume { resource_id } => f(Named::Local(*resource_id)),
         MirStmtKind::ArrayStore { base, index, value, .. } => {
             f(Named::Local(*base));
@@ -242,7 +242,7 @@ pub fn visit_stmt_use_locals_mut(
         }
         MirStmtKind::LoadCapture { env_ptr, .. } => f(env_ptr, UseKind::Value),
         MirStmtKind::BindPlace { addr, .. } => f(addr, UseKind::Value),
-        MirStmtKind::ClosureDrop { closure, .. } | MirStmtKind::ClosureRetain { closure, .. } => {
+        MirStmtKind::ClosureDrop { closure, .. } => {
             f(closure, UseKind::Value)
         }
         MirStmtKind::ResourceConsume { resource_id } => f(resource_id, UseKind::Value),

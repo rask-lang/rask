@@ -188,13 +188,13 @@ extend Range<T> where T: Integer {
     // --- Adapters. Lazy, and each forwards to the sequence (SEQ41). ---
 
     /// Keep only the values `f` accepts.
-    public func filter(self, f: func(T) -> bool) -> Sequence<T> {
+    public func filter(self, take f: func(T) -> bool) -> Sequence<T> {
         let src: Sequence<T> = self.as_sequence()
         return src.filter(f)
     }
 
     /// Transform each value.
-    public func map<U>(self, f: func(T) -> U) -> Sequence<U> {
+    public func map<U>(self, take f: func(T) -> U) -> Sequence<U> {
         let src: Sequence<T> = self.as_sequence()
         return src.map(f)
     }
@@ -212,13 +212,13 @@ extend Range<T> where T: Integer {
     }
 
     /// Keep values while `f` holds, then stop.
-    public func take_while(self, f: func(T) -> bool) -> Sequence<T> {
+    public func take_while(self, take f: func(T) -> bool) -> Sequence<T> {
         let src: Sequence<T> = self.as_sequence()
         return src.take_while(f)
     }
 
     /// Drop values while `f` holds, then keep the rest.
-    public func skip_while(self, f: func(T) -> bool) -> Sequence<T> {
+    public func skip_while(self, take f: func(T) -> bool) -> Sequence<T> {
         let src: Sequence<T> = self.as_sequence()
         return src.skip_while(f)
     }
@@ -230,7 +230,7 @@ extend Range<T> where T: Integer {
     }
 
     /// This range's values, then the other's.
-    public func chain(self, other: Sequence<T>) -> Sequence<T> {
+    public func chain(self, take other: Sequence<T>) -> Sequence<T> {
         let src: Sequence<T> = self.as_sequence()
         return src.chain(other)
     }

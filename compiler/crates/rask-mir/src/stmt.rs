@@ -150,18 +150,6 @@ pub enum MirStmtKind {
         closure: LocalId,
         made: Option<LocalId>,
     },
-    /// Take one more reference to a heap closure this frame only borrows,
-    /// because it is about to hand the closure to something that keeps it
-    /// and will free it. The closure's owner still frees its own reference.
-    ///
-    /// `made` is the `ClosureCreate` that built it, when this frame owns it
-    /// and is sharing it with a keeper: then the frame's own `closure_drop`
-    /// isn't the block's last reference, so what the closure captured is the
-    /// environment's to free, not the frame's. A label, not a read.
-    ClosureRetain {
-        closure: LocalId,
-        made: Option<LocalId>,
-    },
     /// Store into a fixed-size array element: base_ptr[index * elem_size] = value
     ArrayStore {
         base: LocalId,
@@ -371,6 +359,13 @@ pub struct ClosureCapture {
     /// the frame is inlined into its caller the capture looks like the
     /// caller's own local, and freeing it freed the caller's Vec (#1679).
     pub lent: bool,
+    /// What the environment owns in this slot, as a type with its containers
+    /// named, or `None` when it owns nothing there. A carried capture was
+    /// moved in (mem.closures/CM2), so the environment gives it back when the
+    /// closure dies and copies it when the closure is cloned (CV2). Codegen
+    /// turns it into the owned-entry list the closure's header carries; the
+    /// runtime walks that list, the same one a `Vec` element type gets.
+    pub owns: Option<crate::MirType>,
 }
 
 /// Lay out a closure environment: each capture at its own alignment, in
@@ -399,7 +394,7 @@ pub fn lay_out_captures(
         .zip(parts)
         .zip(offsets)
         .map(|(((local_id, _, by_ref, copy), (size, _)), offset)| {
-            ClosureCapture { local_id, offset, size, by_ref, copy, lent: false }
+            ClosureCapture { local_id, offset, size, by_ref, copy, lent: false, owns: None }
         })
         .collect()
 }

@@ -138,6 +138,13 @@ impl TypeTable {
         if self.is_linear_value(ty) {
             return Move;
         }
+        // A sequence is the closure that drives it (type.sequence/SEQ36), and
+        // a closure moves (mem.closures/CV1). Read as an empty struct it was a
+        // zero-byte Copy, so a `map` over a `walk()` held a copy of the walk
+        // that owned nothing and kept nothing the walk pointed at alive.
+        if self.is_lang(ty, rask_types::LangItem::Sequence) || self.is_lang(ty, rask_types::LangItem::SequenceMut) {
+            return Move;
+        }
         let verdict = |t: &Type| self.copy_verdict_for(t, is_param, param_is_copy, params_move);
         let size = || self.copy_size(ty, is_param);
         match ty {

@@ -376,6 +376,22 @@ impl<'a> MirLowerer<'a> {
                 cap.lent = lent.iter().any(|l| l == name);
             }
         }
+        // What the environment owns: everything carried in by value (CM2), and
+        // a task's copies (conc.async/S6). A lent parameter stays the caller's,
+        // except a string, whose slot holds a reference taken at the create
+        // (`rc_insert`) rather than the caller's own.
+        for (cap, (_, _, ty, _)) in captures.iter_mut().zip(free_vars.iter()) {
+            if cap.by_ref {
+                continue;
+            }
+            cap.owns = if !cap.lent {
+                Some(ty.clone())
+            } else if *ty == MirType::Buffer {
+                Some(MirType::Buffer)
+            } else {
+                None
+            };
+        }
 
         // 4. Synthesize a MIR function for the closure body.
         //
@@ -586,6 +602,23 @@ impl<'a> MirLowerer<'a> {
         // 5. In the parent function, emit ClosureCreate.
         // Own closures may escape — start heap-allocated so escape analysis can
         // decide whether to downgrade. Scope-limited closures never escape; stack only.
+        // A task that captures a lent closure gets a clone of it (CV2), the
+        // way a lent string gets a count of its own. A carrying closure can
+        // point at the caller's, since SL4 keeps the caller's alive as long;
+        // nothing bounds a task's life that way.
+        let mut captures = captures;
+        for cap in captures.iter_mut().filter(|c| for_spawn && c.lent && !c.by_ref) {
+            let Some(ty @ MirType::FuncPtr(_)) = self.builder.local_type(cap.local_id) else { continue };
+            let copy = self.builder.alloc_temp(ty.clone());
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                dst: Some(copy),
+                func: crate::FunctionRef::borrowing("rask_closure_clone"),
+                args: vec![MirOperand::Local(cap.local_id)],
+            }));
+            cap.local_id = copy;
+            cap.lent = false;
+            cap.owns = Some(ty);
+        }
         let result_local = self.builder.alloc_temp(MirType::FuncPtr(crate::types::SignatureId(0)));
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::ClosureCreate {
             dst: result_local,

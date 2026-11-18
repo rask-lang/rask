@@ -869,6 +869,8 @@ pub enum Sink {
     Heap,
     /// A `take` parameter: `eat(…)`, `out.push(…)`, a channel send.
     TakeArg { callee: String },
+    /// A closure that outlives its frame, carrying the value (mem.closures/CM2).
+    Closure,
 }
 
 /// What happened to the value a pointer points into (mem.unsafe/PT3).

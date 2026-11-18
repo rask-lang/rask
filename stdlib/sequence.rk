@@ -18,6 +18,7 @@
 // `take_all()`, which returns a Vec (SEQ35).
 
 /// A push-iteration source: calls its yield closure once per item.
+@lang(sequence)
 public struct Sequence<T> { }
 
 /// Yields a mutable borrow per item. Same protocol, `mutate` yield parameter.
@@ -29,17 +30,21 @@ public struct Sequence<T> { }
 /// where the adapters that survive are the ones nobody reaches for first,
 /// which is worse than none. `for mutate x in seq` is the whole job; anything
 /// that needs more — reordering, removal, two positions — is index work.
+@lang(sequence_mut)
 public struct SequenceMut<T> { }
 
 // ---------------------------------------------------------------------------
 // Adapters — each returns a new Sequence composed over `self`. Lazy: building
-// one runs nothing (SEQ37). Each borrows `self`, so an adapter chain lives as
-// long as its source does and no longer (SEQ26).
+// one runs nothing (SEQ37). Each takes `self` and its callbacks: the closure it
+// returns outlives the call and carries them (mem.closures/CM2). A borrowed
+// `self` would stay the caller's (CM3), so `|x| count3().take(1)` would hand
+// back a sequence over a temporary its own frame frees. A chain over a
+// collection is still limited to the collection: the head borrows it (SEQ26).
 // ---------------------------------------------------------------------------
 
 extend Sequence<T> {
     /// Yield only the items `pred` accepts.
-    public func filter(self, pred: func(T) -> bool) -> Sequence<T> {
+    public func filter(take self, take pred: func(T) -> bool) -> Sequence<T> {
         return |yield| {
             for x in self {
                 if pred(x) {
@@ -50,7 +55,7 @@ extend Sequence<T> {
     }
 
     /// Yield `f` applied to each item.
-    public func map<U>(self, f: func(T) -> U) -> Sequence<U> {
+    public func map<U>(take self, take f: func(T) -> U) -> Sequence<U> {
         return |yield| {
             for x in self {
                 if !yield(f(x)) { return }
@@ -59,7 +64,7 @@ extend Sequence<T> {
     }
 
     /// Yield at most the first `n` items, then stop.
-    public func take(self, n: usize) -> Sequence<T> {
+    public func take(take self, n: usize) -> Sequence<T> {
         return |yield| {
             mut i: usize = 0
             for x in self {
@@ -71,7 +76,7 @@ extend Sequence<T> {
     }
 
     /// Skip the first `n` items, yield the rest.
-    public func skip(self, n: usize) -> Sequence<T> {
+    public func skip(take self, n: usize) -> Sequence<T> {
         return |yield| {
             mut i: usize = 0
             for x in self {
@@ -84,7 +89,7 @@ extend Sequence<T> {
     }
 
     /// Yield items until `pred` first fails, then stop.
-    public func take_while(self, pred: func(T) -> bool) -> Sequence<T> {
+    public func take_while(take self, take pred: func(T) -> bool) -> Sequence<T> {
         return |yield| {
             for x in self {
                 if !pred(x) { return }
@@ -94,7 +99,7 @@ extend Sequence<T> {
     }
 
     /// Skip while `pred` holds, yield everything after the first failure.
-    public func skip_while(self, pred: func(T) -> bool) -> Sequence<T> {
+    public func skip_while(take self, take pred: func(T) -> bool) -> Sequence<T> {
         return |yield| {
             mut skipping = true
             for x in self {
@@ -108,7 +113,7 @@ extend Sequence<T> {
     }
 
     /// Yield this sequence's items, then `other`'s.
-    public func chain(self, other: Sequence<T>) -> Sequence<T> {
+    public func chain(take self, take other: Sequence<T>) -> Sequence<T> {
         return |yield| {
             for x in self {
                 if !yield(x) { return }
@@ -121,7 +126,7 @@ extend Sequence<T> {
 
     /// Pair each item with its position. The tuple carries a borrow and lives
     /// for one yield call — a yield parameter is not storage (SEQ44).
-    public func enumerate(self) -> Sequence<(usize, T)> {
+    public func enumerate(take self) -> Sequence<(usize, T)> {
         return |yield| {
             mut i: usize = 0
             for x in self {
@@ -132,7 +137,7 @@ extend Sequence<T> {
     }
 
     /// Map each item to a sequence, then flatten one level.
-    public func flat_map<U>(self, f: func(T) -> Sequence<U>) -> Sequence<U> {
+    public func flat_map<U>(take self, take f: func(T) -> Sequence<U>) -> Sequence<U> {
         return |yield| {
             for x in self {
                 for inner in f(x) {
@@ -431,7 +436,7 @@ extend Sequence<StringSlice> {
 // a `T` element and nothing to flatten.
 extend Sequence<Sequence<U>> {
     /// Flatten one level: yield every item of every inner sequence.
-    public func flatten(self) -> Sequence<U> {
+    public func flatten(take self) -> Sequence<U> {
         return self.flat_map(|inner| inner)
     }
 }

@@ -1143,6 +1143,11 @@ impl<'a> MirContext<'a> {
     /// identity. `struct Bad { }` used as the error side of `i64 or Bad` is
     /// told apart from the ok side by its MIR type, and collapsing it to i64
     /// makes both branches identical.
+    fn is_sequence(&self, id: rask_types::TypeId) -> bool {
+        use rask_types::LangItem;
+        [LangItem::Sequence, LangItem::SequenceMut].iter().any(|&l| self.type_defs.lang(l) == Some(id))
+    }
+
     fn struct_or_handle(&self, idx: u32, sl: &StructLayout) -> MirType {
         if sl.fields.is_empty() && sl.key.as_ref().is_some_and(|k| self.type_defs.declared_by_stdlib(k.id)) {
             return MirType::I64;
@@ -1858,6 +1863,13 @@ impl<'a> MirContext<'a> {
             }
             Type::Generic { .. } if self.generic_head(ty).as_deref() == Some("Rack") => {
                 MirType::Ptr
+            }
+            // A sequence is the closure that drives it (SEQ36). As an empty
+            // stdlib struct it lowered to a word, so a `map` carrying a
+            // `walk()` read its capture as a copied number and kept nothing
+            // the `walk()` pointed at alive.
+            Type::Named(id) | Type::Generic { base: id, .. } if self.is_sequence(*id) => {
+                MirType::FuncPtr(crate::types::SignatureId(0))
             }
             // A declared type is found by its identity. A newtype has no
             // layout of its own: it is what it wraps.

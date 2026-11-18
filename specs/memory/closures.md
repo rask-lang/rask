@@ -128,7 +128,9 @@ func counter() -> func() -> i64 {
 and the borrow half is what the whole sequence protocol rests on —
 `vec.filter(|u| u.active)` is `Vec.filter(self, pred) -> Sequence<T>` returning a
 closure over a borrowed receiver. Moving the receiver in would cost every adapter
-chain a `take self`.
+chain a `take self`. The adapters after the head do take theirs
+(`type.sequence/SEQ12`): each one's source is the sequence before it, which
+nobody else holds.
 
 SL4 is why nobody writes a lifetime. The signature already says it: the return type is a
 closure and the parameters say `take` or not, so the caller works out what the result is
@@ -493,11 +495,19 @@ the environment gives it back when it dies, the same way the frame would have. A
 ### Closure block layout
 
 ```
-[func_ptr (8 bytes) | captured_var_0 | captured_var_1 | ...]
+[block size | owned entries | entry count | flags | func_ptr | captured_var_0 | ...]
+ ^ closure_ptr - 32                                  ^ closure_ptr
 ```
 
-The closure value is a pointer to this block. `closure_ptr + 8` is the environment pointer —
-implicit first argument to the closure function.
+The closure value points at `func_ptr`. `closure_ptr + 8` is the environment pointer,
+the implicit first argument to the closure function.
+
+The four header words are on every block, stack or heap. The entries list the
+captures the environment owns (CM2), by offset and kind. Dropping a closure walks
+that list and releases each one, then frees the block if the heap flag is set.
+`.clone()` copies the block to the heap and gives the copy its own of each entry
+(CV2). Neither needs to know who built the closure, which is usually some other
+frame.
 
 ### Heap vs. stack
 
@@ -516,7 +526,7 @@ made a returned closure read a popped frame.
 | No | Stack slot | The frame, on the way out |
 | Yes | Heap, behind a size header | Its one holder, when that frame ends (CV1) |
 
-The size header is there because the frame that frees a closure usually isn't the one that built
+The header is there because the frame that frees a closure usually isn't the one that built
 it: `let tick = counter()` hands the caller a block whose capture layout only `counter` knew.
 
 ---

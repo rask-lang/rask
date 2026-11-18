@@ -109,11 +109,6 @@ pub enum Event {
     Other(LocalId),
     /// Whatever the name holds leaves the frame here, on this path.
     HandOver(LocalId),
-    /// A hand-over into a closure environment that releases what it is given.
-    /// The same as `HandOver` for this frame; `plan_carrying` also reports
-    /// where the environment really was handed the value, so the pass can
-    /// tell the environment to release exactly those.
-    Carry(LocalId),
     /// A whole-width store into the slot. The next field of the value already
     /// there, or a new value over one that lives on under another name; this
     /// analysis decides which.
@@ -131,7 +126,6 @@ impl Event {
             Event::Make(n)
             | Event::Other(n)
             | Event::HandOver(n)
-            | Event::Carry(n)
             | Event::Fill(n)
             | Event::WriteThrough(n) => *n,
             Event::Alias { dst, .. }
@@ -770,7 +764,7 @@ fn apply(
             Event::Other(n) => {
                 st.bind.insert(*n, BTreeSet::from([Bind::Other]));
             }
-            Event::HandOver(n) | Event::Carry(n) => hand_over(st, moved, *n),
+            Event::HandOver(n) => hand_over(st, moved, *n),
             Event::Fill(n) => {
                 let held = st.binds(*n);
                 let only = (held.len() == 1).then(|| *held.iter().next().unwrap());
@@ -1303,38 +1297,8 @@ pub struct Plan {
 
 /// Where each value this frame owns is released, and under which name.
 pub fn plan(func: &MirFunction, facts: &Facts, placement: Placement) -> Plan {
-    plan_carrying(func, facts, placement, &|_, _| false).0
-}
-
-/// A `Carry` that handed the environment a value it now owns outright:
-/// `(block, statement, name)`, by index.
-pub type Carried = BTreeSet<(usize, usize, LocalId)>;
-
-/// `plan`, plus the `Carry` events that handed the environment something it
-/// now owns outright: the name certainly held one value this frame owned, or
-/// a part of one, and nothing the frame reads afterwards holds the same bytes.
-/// Those are what the environment has to release.
-///
-/// `disjoint(carried, other)` is the pass's answer to "do these two names
-/// certainly hold different parts of the value". It is what lets
-/// `let (req, r) = accept()` carry `req` while `r` goes elsewhere. The value
-/// is handed over whole either way, so whatever else is in it is left to
-/// whoever it went to, which is a leak at worst.
-///
-/// Everything else a `Carry` names — a parameter, one value on some paths and
-/// another on others, a Copy value the frame keeps reading — the environment
-/// must leave alone, because something else may still free it or read it.
-pub fn plan_carrying(
-    func: &MirFunction,
-    facts: &Facts,
-    placement: Placement,
-    disjoint: &dyn Fn(LocalId, LocalId) -> bool,
-) -> (Plan, Carried) {
     if func.blocks.is_empty() {
-        return (
-            Plan { releases: Vec::new(), unwind: Vec::new(), guards: Vec::new(), moved_out: Vec::new() },
-            Carried::new(),
-        );
+        return Plan { releases: Vec::new(), unwind: Vec::new(), guards: Vec::new(), moved_out: Vec::new() };
     }
     let mut flags = FlagIndex::default();
     let sh = shape(func, &facts.names);
@@ -1427,11 +1391,6 @@ pub fn plan_carrying(
         eprintln!("releases {:?}", out);
         eprintln!("flags {:?}", defs);
     }
-    let carried = if facts.events.iter().flatten().flatten().any(|e| matches!(e, Event::Carry(_))) {
-        carried_outright(func, facts, &live, &entries, &kills, disjoint)
-    } else {
-        Carried::new()
-    };
     let unwind = unwind_marks(func, facts, &sh, &live, &entries, &exits, &kills, &mut flags);
     let guards = flags.guards(func, &defs);
     let moved_out = if facts.moved_parts.is_empty() {
@@ -1439,7 +1398,7 @@ pub fn plan_carrying(
     } else {
         fields_moved_out(func, facts, &live, &entries, &kills)
     };
-    (Plan { releases: out, unwind, guards, moved_out }, carried)
+    Plan { releases: out, unwind, guards, moved_out }
 }
 
 /// The hand-overs that take a field out of a struct the frame owns, against
@@ -1454,7 +1413,7 @@ fn fields_moved_out(
     let note = |st: &State, events: &[Event], bi: usize, si: usize, out: &mut Vec<(usize, usize, LocalId, Vec<LocalId>)>| {
         for ev in events {
             let names: Vec<LocalId> = match ev {
-                Event::HandOver(n) | Event::Carry(n) => vec![*n],
+                Event::HandOver(n) => vec![*n],
                 Event::Remake { srcs, .. } => srcs.clone(),
                 _ => continue,
             };
@@ -1481,61 +1440,6 @@ fn fields_moved_out(
             killed_at(&mut st, kills, bi, si);
         }
         note(&st, &facts.terminator_events[bi], bi, len, &mut out);
-    }
-    out
-}
-
-/// The `Carry` events that hand over an owned value, or part of one, that
-/// nothing else reads afterwards, against the settled state.
-fn carried_outright(
-    func: &MirFunction,
-    facts: &Facts,
-    live: &Live,
-    entries: &[Option<State>],
-    kills: &Kills,
-    disjoint: &dyn Fn(LocalId, LocalId) -> bool,
-) -> Carried {
-    let mut out = Carried::new();
-    for bi in 0..func.blocks.len() {
-        let Some(entry) = &entries[bi] else { continue };
-        let mut st = entry.clone();
-        for si in 0..func.blocks[bi].statements.len() {
-            if is_phi(func, bi, si) {
-                continue;
-            }
-            let events = &facts.events[bi][si];
-            for ev in events {
-                let Event::Carry(n) = ev else { continue };
-                let held = st.binds(*n);
-                let Some(Bind::Own(v) | Bind::Part(v)) =
-                    (held.len() == 1).then(|| *held.iter().next().unwrap())
-                else {
-                    continue;
-                };
-                // Ours only under a flag: the environment would release it
-                // on every path.
-                if !st.owned(v) || st.guard.contains_key(&v) {
-                    continue;
-                }
-                // The names this statement defines aren't the frame's: the
-                // closure the value went into is the one being built here.
-                let defined: Vec<LocalId> = events
-                    .iter()
-                    .filter_map(|e| match e {
-                        Event::Other(d) | Event::Make(d) => Some(*d),
-                        _ => None,
-                    })
-                    .collect();
-                let read_later = live.at[bi][si + 1]
-                    .iter()
-                    .any(|m| !defined.contains(m) && st.mentions(*m, v) && !disjoint(*n, *m));
-                if !read_later {
-                    out.insert((bi, si, *n));
-                }
-            }
-            apply(&mut st, &facts.moved_parts, events, bi, si, &live.at[bi][si + 1], &mut HashSet::new());
-            killed_at(&mut st, kills, bi, si);
-        }
     }
     out
 }

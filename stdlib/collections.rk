@@ -395,7 +395,7 @@ extend Vec<T> {
     /// outlive the closure call that made the Vec it reads. It segfaults
     /// (#1045). Changing `f`'s type instead would break every call site that
     /// hands back a Vec, which is all of them.
-    public func flat_map(self, f: func(T) -> Vec<U>) -> Sequence<U> {
+    public func flat_map(self, take f: func(T) -> Vec<U>) -> Sequence<U> {
         return |yield| {
             mut i = 0
             while i < self.len() {

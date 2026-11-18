@@ -179,6 +179,10 @@ impl ToDiagnostic for crate::OwnershipError {
                         format!("`{}` takes `{}`, which `{}` still holds", callee, path, root),
                         format!("`{}`", callee),
                     ),
+                    Sink::Closure => (
+                        format!("the closure would carry `{}`, which `{}` still holds", shown, root),
+                        "the closure".to_string(),
+                    ),
                 };
                 let fix = match bound {
                     Some((name, _)) => format!(
@@ -300,6 +304,7 @@ impl ToDiagnostic for crate::OwnershipError {
                     Sink::Payload { variant } => format!("`{}` holding it would be a second owner", variant),
                     Sink::Heap => "a `Heap` holding it would be a second owner".to_string(),
                     Sink::TakeArg { callee } => format!("`{}` would take it as a second owner", callee),
+                    Sink::Closure => "a closure carrying it would be a second owner".to_string(),
                 };
                 let primary = match into {
                     Sink::Return => format!("the signature promises an owned `{}`, and this path doesn't have one", payload_ty),

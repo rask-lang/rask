@@ -4180,8 +4180,20 @@ impl<'a> OwnershipChecker<'a> {
                 if self.instance.is_none() {
                     self.check_task_crossing(expr.id, body, &captures, is_task);
                 }
-                // CM3: what a carrying closure holds without owning.
-                if carries && !is_task {
+                // CM2: a carried capture moves into the environment, which then
+                // owns it. A view (`let src = p.run`) is still its owner's, so
+                // carrying one is the second owner S1 forbids; it has to be
+                // cloned first, the way a struct field built from it does.
+                if carries {
+                    for name in &captures {
+                        let read = Expr { id: expr.id, span: expr.span, kind: ExprKind::Ident(name.clone()) };
+                        self.check_flow_second_owner(&read, &Sink::Closure);
+                    }
+                }
+                // CM3: what a carrying closure or a task holds without owning.
+                // A task frees what it was given (S6), so one that frees a
+                // borrowed parameter frees the caller's.
+                if carries || is_task {
                     let lent: Vec<String> =
                         captures.iter().filter(|n| self.outlives_this_call(n)).cloned().collect();
                     if !lent.is_empty() {
@@ -10583,9 +10595,15 @@ pub fn check_ownership_with_stdlib(
     stdlib.collect_signatures(decls);
     stdlib.collect_signatures(stdlib_decls);
     stdlib.infer_replaces(&[decls, stdlib_decls]);
+    // CM1 holds in the stdlib too: `Sequence.map` returns a closure that
+    // outlives its frame and carries what it captures. Left unmarked, it was
+    // lowered as one that borrows and moved to the heap later owning nothing,
+    // so the `walk()` it carried was never freed.
+    stdlib.collect_escaping_closures(stdlib_decls);
     for decl in stdlib_decls {
         stdlib.check_decl(decl);
     }
+    result.escaping_closures.extend(stdlib.escaping_closures);
     result.return_moves.extend(stdlib.return_moves);
     // A stdlib closure crosses to a task the same way a program's does.
     result.task_bound_closures.extend(stdlib.task_bound_closures);

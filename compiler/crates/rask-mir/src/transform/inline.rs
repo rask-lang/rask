@@ -762,6 +762,7 @@ fn remap_stmt(
                     by_ref: c.by_ref,
                     copy: c.copy,
                     lent: c.lent,
+                    owns: c.owns.clone(),
                 })
                 .collect(),
             heap: *heap,
@@ -787,10 +788,6 @@ fn remap_stmt(
             access: *access,
         },
         MirStmtKind::ClosureDrop { closure, made } => MirStmtKind::ClosureDrop {
-            closure: local_map.get(closure).copied().unwrap_or(*closure),
-            made: made.map(|m| local_map.get(&m).copied().unwrap_or(m)),
-        },
-        MirStmtKind::ClosureRetain { closure, made } => MirStmtKind::ClosureRetain {
             closure: local_map.get(closure).copied().unwrap_or(*closure),
             made: made.map(|m| local_map.get(&m).copied().unwrap_or(m)),
         },
@@ -895,6 +892,7 @@ fn remap_stmt(
                     by_ref: c.by_ref,
                     copy: c.copy,
                     lent: c.lent,
+                    owns: c.owns.clone(),
                 })
                 .collect(),
         },

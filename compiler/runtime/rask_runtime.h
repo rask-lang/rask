@@ -49,15 +49,18 @@ void  rask_free(void *ptr);
 void *rask_alloc_aligned(int64_t size, int64_t align);
 void *rask_realloc_aligned(void *ptr, int64_t old_size, int64_t new_size, int64_t align);
 // `env_align` is the largest alignment a capture held by value needs.
-void *rask_closure_alloc(int64_t block_size, void (*env_drop)(void *), int64_t flags,
-                         int64_t env_align);
-// Closure flags. Codegen passes the same bit (`task_bound` on ClosureCreate).
+// `entries`/`count` say what the environment owns (NULL when nothing).
+void *rask_closure_alloc(int64_t block_size, const int32_t *entries, int64_t count,
+                         int64_t flags, int64_t env_align);
+// Closure flags. Codegen passes the same bits (`task_bound` on ClosureCreate;
+// a stack closure's header has HEAP clear).
 #define RASK_CLOSURE_TASK_BOUND 1
+#define RASK_CLOSURE_HEAP 2
 // Whether a heap closure captured a link or a `Local` box.
 int   rask_closure_task_bound(const void *ptr);
 void  rask_closure_refuse_crossing(void *closure_base);
 void  rask_closure_free(void *ptr);
-void  rask_closure_retain(void *ptr);
+void *rask_closure_clone(const void *ptr);
 
 // A trait object's block: `[refs | value...]`, with the fat pointer's data half
 // pointing at the value. See `rask_box_alloc` in alloc.c for why it counts.
@@ -178,9 +181,10 @@ typedef struct {
 
 // The element *is* a pointer to a closure block, so there is no offset list
 // inside it: one entry at offset zero. The block describes itself —
-// `rask_closure_free` reads its size and its environment-drop glue out of the
-// header words before the pointer — so releasing one needs nothing type-specific
-// and retaining one is a count on the same header (#1149). `RASK_OWNED_CLOSURE`.
+// `rask_closure_free` reads its size and what its environment owns out of the
+// header words before the pointer — so releasing one needs nothing type-specific,
+// and retaining one is `rask_closure_clone` writing the copy back (#1149).
+// `RASK_OWNED_CLOSURE`.
 
 // A trait box element: the 16 bytes are `[data, vtable]`, and the block `data`
 // names belongs to the container. Its size is the vtable's first word, so a

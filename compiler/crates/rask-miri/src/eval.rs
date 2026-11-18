@@ -303,8 +303,7 @@ impl MiriEngine {
             MirStmtKind::ClosureCreate { .. }
             | MirStmtKind::ClosureCall { .. }
             | MirStmtKind::LoadCapture { .. }
-            | MirStmtKind::ClosureDrop { .. }
-            | MirStmtKind::ClosureRetain { .. } => {
+            | MirStmtKind::ClosureDrop { .. } => {
                 return Err(MiriError::UnsupportedOperation(
                     "closures are not yet supported in compile-time evaluation".to_string(),
                 ));

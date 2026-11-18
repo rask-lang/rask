@@ -20,6 +20,9 @@ pub enum LangItem {
     Choices,
     /// `async.Handle<T>`, what a task block hands back.
     TaskHandle,
+    /// `Sequence<T>` and `SequenceMut<T>`: nominal, but a closure at run time.
+    Sequence,
+    SequenceMut,
 }
 
 impl LangItem {
@@ -35,6 +38,8 @@ impl LangItem {
             "json_value" => LangItem::JsonValue,
             "choices" => LangItem::Choices,
             "task_handle" => LangItem::TaskHandle,
+            "sequence" => LangItem::Sequence,
+            "sequence_mut" => LangItem::SequenceMut,
             _ => return None,
         })
     }

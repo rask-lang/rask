@@ -24,7 +24,7 @@ use crate::{
 };
 
 /// The suffix of the function that releases what a frame's record holds.
-/// Codegen looks it up by name, the way it finds `__env_drop` glue.
+/// Codegen looks it up by name.
 pub const UNWIND_SUFFIX: &str = "__unwind";
 
 /// Bytes ahead of the first slot: the record's link and its `run` pointer

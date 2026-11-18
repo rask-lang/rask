@@ -1360,16 +1360,6 @@ impl<'a> FunctionBuilder<'a> {
                 crate::closures::free_closure(builder, closure_val, *free_ref);
             }
 
-            MirStmtKind::ClosureRetain { closure, .. } => {
-                let closure_val = builder.use_var(*ctx.var_map.get(closure)
-                    .ok_or_else(|| CodegenError::UnsupportedFeature(
-                        "ClosureRetain closure variable not found".to_string()
-                    ))?);
-                let retain_ref = ctx.func_refs.get("rask_closure_retain")
-                    .ok_or_else(|| CodegenError::FunctionNotFound("rask_closure_retain".to_string()))?;
-                builder.ins().call(*retain_ref, &[closure_val]);
-            }
-
             MirStmtKind::GlobalRef { dst, name } => {
                 let gv = ctx.comptime_globals.get(name.as_str())
                     .ok_or_else(|| CodegenError::UnsupportedFeature(
@@ -2947,28 +2937,32 @@ impl<'a> FunctionBuilder<'a> {
             .ok_or_else(|| CodegenError::FunctionNotFound(func_name.clone()))?;
         let func_ptr = builder.ins().func_addr(types::I64, *func_ref);
 
+        // What the environment owns, as the header's entry list: the closure
+        // is dropped and cloned by whoever holds it, which is usually not this
+        // frame, so the block says it itself.
+        let (entries, count) = match crate::elem_offsets::env_owned_offsets(captures, ctx.shapes()) {
+            Some(offs) => {
+                let list = Self::element_offsets_global(builder, &offs, ctx).ok_or_else(|| {
+                    CodegenError::UnsupportedFeature(format!(
+                        "the owned-entry list of `{func_name}`'s environment was never registered"
+                    ))
+                })?;
+                (list, builder.ins().iconst(types::I64, offs.len() as i64))
+            }
+            None => {
+                let zero = builder.ins().iconst(types::I64, 0);
+                (zero, zero)
+            }
+        };
         let closure_ptr = if heap {
-            // Escaping closure: heap-allocate behind a size header, so
-            // whoever frees it can account for the bytes without knowing the
-            // capture layout.
             let alloc_ref = ctx.func_refs.get("rask_closure_alloc")
                 .ok_or_else(|| CodegenError::FunctionNotFound("rask_closure_alloc".to_string()))?;
-            // The environment's drop glue, when this closure owns a container
-            // it captured. `container_drop` generates the function and names it
-            // after the closure; the name is the whole agreement between the
-            // two sides (`ENV_DROP_SUFFIX`).
-            let glue_name = format!("{func_name}{}", rask_mir::ENV_DROP_SUFFIX);
-            let env_drop = match ctx.func_refs.get(glue_name.as_str()) {
-                Some(glue) => builder.ins().func_addr(types::I64, *glue),
-                None => builder.ins().iconst(types::I64, 0),
-            };
             crate::closures::allocate_closure_heap(
-                builder, func_ptr, &env_layout, ctx.var_map, *alloc_ref, env_drop, task_bound,
+                builder, func_ptr, &env_layout, ctx.var_map, *alloc_ref, entries, count, task_bound,
             )?
         } else {
-            // Non-escaping closure: stack-allocate
             crate::closures::allocate_closure_stack(
-                builder, func_ptr, &env_layout, ctx.var_map,
+                builder, func_ptr, &env_layout, ctx.var_map, entries, count, task_bound,
             )?
         };
 

@@ -358,7 +358,6 @@ impl<'a> Walk<'a> {
                 }
                 // Bookkeeping on a value never hands it to anyone.
                 MirStmtKind::ClosureDrop { .. }
-                | MirStmtKind::ClosureRetain { .. }
                 | MirStmtKind::RcInc { .. }
                 | MirStmtKind::RcDec { .. }
                 | MirStmtKind::RcDecContents { .. }

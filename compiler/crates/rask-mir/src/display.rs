@@ -226,6 +226,13 @@ impl fmt::Display for MirStmt {
                 for (i, cap) in captures.iter().enumerate() {
                     if i > 0 { write!(f, ", ")?; }
                     write!(f, "_{}@{}", cap.local_id.0, cap.offset)?;
+                    let flags: Vec<&str> = [(cap.by_ref, "ref"), (cap.copy, "copy"), (cap.lent, "lent"), (cap.owns.is_some(), "owns")]
+                        .into_iter()
+                        .filter_map(|(on, name)| on.then_some(name))
+                        .collect();
+                    if !flags.is_empty() {
+                        write!(f, " {}", flags.join(" "))?;
+                    }
                 }
                 write!(f, "])")
             }
@@ -260,7 +267,6 @@ impl fmt::Display for MirStmt {
                 Some(m) if m != closure => write!(f, "closure_drop(_{}) made _{}", closure.0, m.0),
                 _ => write!(f, "closure_drop(_{})", closure.0),
             },
-            MirStmtKind::ClosureRetain { closure, .. } => write!(f, "closure_retain(_{})", closure.0),
             MirStmtKind::ArrayStore { base, index, elem_size, value } => {
                 write!(f, "*(_{}+{}*{}) = {}", base.0, index, elem_size, value)
             }
