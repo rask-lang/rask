@@ -2141,10 +2141,30 @@ fn slot_is_releasable(ty: &MirType) -> bool {
 /// A string read out of a container is the same: `return names[0]` hands
 /// the caller the vector's own reference, and the caller releases it as its
 /// own.
+/// A closure body's names for variables it reaches through its environment.
+/// The variable's home holds the reference: the frame that built the
+/// closure, or the environment's drop glue. A task block's capture
+/// (`Taken`) isn't one; the block owns it.
+fn env_names(func: &MirFunction) -> HashSet<LocalId> {
+    func.blocks
+        .iter()
+        .flat_map(|b| b.statements.iter())
+        .filter_map(|st| match &st.kind {
+            MirStmtKind::LoadCapture { dst, access, .. } if *access != crate::CaptureAccess::Taken => Some(*dst),
+            _ => None,
+        })
+        .collect()
+}
+
 fn retain_returned_params(func: &mut MirFunction, string_locals: &[LocalId], own: &HashSet<String>) {
     let strings: HashSet<LocalId> = string_locals.iter().copied().collect();
     let mut params: HashSet<LocalId> = func.params.iter().map(|p| p.id).collect();
     params.extend(string_views(func, &strings, own));
+    // So is a closure's name for a variable in its environment: the
+    // environment keeps its reference for the next call. Returned without
+    // one, `g(s)` returning `|| s` gave each caller the environment's only
+    // reference, and the second call returned freed bytes.
+    params.extend(env_names(func));
 
     for block in &mut func.blocks {
         let returned = match &block.terminator.kind {
@@ -2379,15 +2399,7 @@ fn insert_rc_dec(func: &mut MirFunction, string_locals: &[LocalId], own: &HashSe
     // A closure built inside the body that borrows such a name made it look
     // like a variable of this frame, and `|| { let inner = || best.len() … }`
     // released the outer frame's `best` each time it ran.
-    let env_names: HashSet<LocalId> = func
-        .blocks
-        .iter()
-        .flat_map(|b| b.statements.iter())
-        .filter_map(|st| match &st.kind {
-            MirStmtKind::LoadCapture { dst, access, .. } if *access != crate::CaptureAccess::Taken => Some(*dst),
-            _ => None,
-        })
-        .collect();
+    let env_names = env_names(func);
     let dying: Vec<LocalId> = locals.iter().copied().filter(|l| !env_names.contains(l)).collect();
 
     let mut in_block: Vec<(usize, usize, LocalId)> = Vec::new();

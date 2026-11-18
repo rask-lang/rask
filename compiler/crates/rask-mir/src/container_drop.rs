@@ -531,10 +531,16 @@ fn env_drop_glue(
                 // count and gives back exactly its own. That is the whole
                 // difference from a container, where the handle is the thing
                 // itself and two owners is a double free.
+                //
+                // A lent string parameter too (`func g(s: string) -> func() {
+                // return || s.len() }`): unlike a lent container, the slot
+                // holds a reference taken at the create, not the caller's
+                // handle, so it is the environment's to give back. Left out,
+                // every such closure leaked its string.
                 owned.extend(
                     captures
                         .iter()
-                        .filter(|c| !c.by_ref && !c.lent)
+                        .filter(|c| !c.by_ref)
                         .filter(|c| !gone(c))
                         .filter(|c| func.local_ty(c.local_id) == Some(&MirType::Buffer))
                         .map(|c| EnvSlot { offset: c.offset, holds: Holds::Str }),
