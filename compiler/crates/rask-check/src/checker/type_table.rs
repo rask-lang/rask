@@ -1490,10 +1490,28 @@ impl TypeTable {
             }
             methods.iter().filter(|m| m.name == name).find_map(|m| m.decl)
         };
-        match method {
+        let own = match method {
             "to_string" | "__fmt" => body_of("to_string").or_else(|| body_of("message")),
             _ => body_of(method),
+        };
+        own.or_else(|| self.inherited_body(id, method))
+    }
+
+    /// A newtype's method that one of its `implements` interfaces declares
+    /// and it doesn't write itself runs the underlying type's body:
+    /// `Money.zero()` is `i64.zero()`, and through a newtype over a newtype it
+    /// goes down until a type has one. Generic code reaches it here, with `T`
+    /// bound to `Money` (#2004).
+    fn inherited_body(&self, id: TypeId, method: &str) -> Option<NodeId> {
+        let Some(TypeDef::NominalAlias { underlying, with_interfaces, .. }) = self.get(id) else { return None };
+        let checker = crate::interfaces::InterfaceChecker::new(self);
+        let declared = with_interfaces
+            .iter()
+            .any(|i| checker.interface_methods_written(i).iter().any(|m| m.name == method));
+        if !declared {
+            return None;
         }
+        self.method_body(underlying, method, None)
     }
 
     /// XC3: is any conformance on this type declared more than once?
