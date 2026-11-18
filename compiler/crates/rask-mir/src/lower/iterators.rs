@@ -749,7 +749,22 @@ impl<'a> MirLowerer<'a> {
                 // continuation block. The local's type isn't known until the
                 // body is lowered, so it's allocated as a placeholder and
                 // retyped afterwards.
-                let result_local = self.builder.alloc_temp(MirType::I64);
+                //
+                // The checker's type for the closure says what it answers. A
+                // body of type `T` in a closure written `-> T?` answers
+                // `Some(t)`, as the closure lowered on its own does: fused
+                // without the widen, `xs.map(|x| -> i64? x * 2).to_vec()`
+                // pushed bare integers into a `Vec<i64?>` and every element
+                // read back as `none` (#1999).
+                let declared_ret = self
+                    .ctx
+                    .lookup_raw_type(closure.id)
+                    .and_then(|ty| match &*ty {
+                        rask_types::Type::Fn { ret, .. } => Some(self.ctx.type_to_mir(ret.as_ref())),
+                        _ => None,
+                    })
+                    .filter(|t| matches!(t, MirType::Option(_) | MirType::Result { .. }));
+                let result_local = self.builder.alloc_temp(declared_ret.clone().unwrap_or(MirType::I64));
                 let cont_block = self.builder.create_block();
 
                 let saved_return_target = self.inline_return_target.take();
@@ -766,6 +781,15 @@ impl<'a> MirLowerer<'a> {
                 // value and route it through the same local so both shapes
                 // leave the caller in the continuation block.
                 if returned_ty.is_none() {
+                    let body_op = match &declared_ret {
+                        Some(ret) => self.coerce_into_wrapper(
+                            rask_ast::coercion::CoercionSite::Return,
+                            body_op,
+                            &body_ty,
+                            ret,
+                        ),
+                        None => body_op,
+                    };
                     self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                         dst: result_local,
                         rvalue: MirRValue::Use(body_op),
@@ -774,7 +798,7 @@ impl<'a> MirLowerer<'a> {
                 // The returned expression's type is the real one; a body that
                 // ends in `return` leaves lower_expr reporting its fall-off
                 // placeholder instead.
-                let body_ty = returned_ty.unwrap_or(body_ty);
+                let body_ty = declared_ret.or(returned_ty).unwrap_or(body_ty);
                 self.builder.terminate(MirTerminator::dummy(
                     MirTerminatorKind::Goto { target: cont_block },
                 ));
@@ -1835,6 +1859,13 @@ impl<'a> MirLowerer<'a> {
 
     /// SEQ: `reduce(f)` — `fold` seeded with the first yielded element. The
     /// answer is `T?` because an empty source has no seed.
+    ///
+    /// The accumulator is that `T?` itself, `none` until the first element
+    /// lands, the way `Sequence.reduce` is written. A bare `T` plus a "have
+    /// one" flag left the `T` unset until the first element and the flag
+    /// unset altogether: the release pass gave back whatever the stack held
+    /// when the seed went in, and again on the way out of an empty source
+    /// (#1980).
     pub(super) fn lower_iter_reduce(
         &mut self,
         chain: &super::IterChain<'_>,
@@ -1849,40 +1880,58 @@ impl<'a> MirLowerer<'a> {
             ));
         }
 
+        // The element's type is known only once the adapters are applied, so
+        // the option is retyped then, as `lower_iter_extreme` does.
+        let empty = self.builder.alloc_temp(MirType::Option(Box::new(MirType::I64)));
+        self.fill_absent(empty);
+        let acc = self.builder.alloc_temp(MirType::Option(Box::new(MirType::I64)));
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: acc,
+            rvalue: MirRValue::Use(MirOperand::Local(empty)),
+        }));
+
         let setup = self.setup_iter_chain_loop(chain)?;
         let (final_op, final_ty) = self.apply_iter_adapters(
             chain, MirOperand::Local(setup.elem_local), setup.elem_ty.clone(),
             &setup,
         )?;
-
         let opt_ty = MirType::Option(Box::new(final_ty.clone()));
-        let acc = self.builder.alloc_temp(final_ty.clone());
-        let have = self.builder.alloc_temp(MirType::Bool);
+        self.builder.set_local_type(empty, opt_ty.clone());
+        self.builder.set_local_type(acc, opt_ty.clone());
 
-        // `have` and `acc` are declared outside the loop, but the loop body is
-        // the only writer, so the initial store has to happen before the
-        // header — which `setup_iter_chain_loop` has already emitted. Seed
-        // them at the top of the function's current block instead by branching
-        // on `have` each iteration: false takes the element as the seed.
+        // What the closure answers, or the first element: wrapped and made
+        // the accumulator in `store_block`.
+        let next = self.builder.alloc_temp(final_ty.clone());
         let seed_block = self.builder.create_block();
         let combine_block = self.builder.create_block();
-        let after_block = self.builder.create_block();
+        let store_block = self.builder.create_block();
+
+        let tag = self.builder.alloc_temp(MirType::U8);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: tag,
+            rvalue: MirRValue::EnumTag { value: MirOperand::Local(acc) },
+        }));
+        let is_empty = self.builder.alloc_temp(MirType::Bool);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: is_empty,
+            rvalue: MirRValue::BinaryOp {
+                op: crate::operand::BinOp::Eq,
+                left: MirOperand::Local(tag),
+                right: MirOperand::Constant(MirConst::Int(rask_mono::runtime_abi::RASK_TAG_ABSENT)),
+            },
+        }));
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
-            cond: MirOperand::Local(have),
-            then_block: combine_block,
-            else_block: seed_block,
+            cond: MirOperand::Local(is_empty),
+            then_block: seed_block,
+            else_block: combine_block,
         }));
 
         self.builder.switch_to_block(seed_block);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-            dst: acc,
+            dst: next,
             rvalue: MirRValue::Use(final_op.clone()),
         }));
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-            dst: have,
-            rvalue: MirRValue::Use(MirOperand::Constant(MirConst::Bool(true))),
-        }));
-        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: after_block }));
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: store_block }));
 
         self.builder.switch_to_block(combine_block);
         let acc_name = &params[0].name;
@@ -1890,10 +1939,12 @@ impl<'a> MirLowerer<'a> {
         let saved_acc = self.locals.remove(acc_name);
         let saved_elem = self.locals.remove(elem_name);
 
+        let is_niche = rask_layout::wrapper_of(&opt_ty, self.ctx.target()).is_none();
+        let held = self.emit_option_payload(MirOperand::Local(acc), final_ty.clone(), is_niche);
         let acc_param = self.builder.alloc_local(acc_name.clone(), final_ty.clone());
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
             dst: acc_param,
-            rvalue: MirRValue::Use(MirOperand::Local(acc)),
+            rvalue: MirRValue::Use(MirOperand::Local(held)),
         }));
         self.locals.insert(acc_name.clone(), (acc_param, final_ty.clone()));
         let elem_param = self.builder.alloc_local(elem_name.clone(), final_ty.clone());
@@ -1905,17 +1956,17 @@ impl<'a> MirLowerer<'a> {
 
         let saved_return_target = self.inline_return_target.take();
         let saved_return_taken = self.inline_return_taken.take();
-        self.inline_return_target = Some((acc, after_block, None));
+        self.inline_return_target = Some((next, store_block, None));
         let (result_op, _) = self.lower_expr(body)?;
         let returned = self.inline_return_taken.take().is_some();
         self.inline_return_target = saved_return_target;
         self.inline_return_taken = saved_return_taken;
         if !returned {
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                dst: acc,
+                dst: next,
                 rvalue: MirRValue::Use(result_op),
             }));
-            self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: after_block }));
+            self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: store_block }));
         }
 
         self.locals.remove(acc_name);
@@ -1923,30 +1974,18 @@ impl<'a> MirLowerer<'a> {
         if let Some(prev) = saved_acc { self.locals.insert(acc_name.clone(), prev); }
         if let Some(prev) = saved_elem { self.locals.insert(elem_name.clone(), prev); }
 
-        self.builder.switch_to_block(after_block);
+        self.builder.switch_to_block(store_block);
+        let wrapped = self.builder.alloc_temp(opt_ty.clone());
+        self.fill_present(wrapped, MirOperand::Local(next));
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: acc,
+            rvalue: MirRValue::Use(MirOperand::Local(wrapped)),
+        }));
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: setup.inc_block }));
 
         self.emit_iter_increment(setup.idx, setup.inc_block, setup.check_block);
         self.builder.switch_to_block(setup.exit_block);
-
-        // Build the `T?`: present only if the loop ran at least once.
-        let result = self.builder.alloc_temp(opt_ty.clone());
-        let some_block = self.builder.create_block();
-        let none_block = self.builder.create_block();
-        let done_block = self.builder.create_block();
-        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
-            cond: MirOperand::Local(have),
-            then_block: some_block,
-            else_block: none_block,
-        }));
-        self.builder.switch_to_block(some_block);
-        self.fill_present(result, MirOperand::Local(acc));
-        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: done_block }));
-        self.builder.switch_to_block(none_block);
-        self.fill_absent(result);
-        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: done_block }));
-        self.builder.switch_to_block(done_block);
-        Ok((MirOperand::Local(result), opt_ty))
+        Ok((MirOperand::Local(acc), opt_ty))
     }
 
     pub(super) fn lower_iter_find(
