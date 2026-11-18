@@ -554,7 +554,7 @@ fn env_drop_glue(
         }
     }
 
-    split_disagreeing_sites(fns, &mut answers, &mut order);
+    split_disagreeing_sites(fns, &mut answers, &mut order, |owned| owned.is_empty(), OWNS);
 
     let mut out = Vec::new();
     for (name, source_file) in order {
@@ -592,16 +592,22 @@ type Site = (usize, usize, usize);
 ///
 /// A copy also copies every closure its body builds (`copy_with_closures`), and
 /// those inner sites carry the answers their originals had.
-fn split_disagreeing_sites(
+///
+/// The struct releases `add_carried_releases` adds later have the same
+/// problem and come here too, with their own answer and `tag`. By then the
+/// bodies already have glue, so a copy gets a copy of its original's.
+fn split_disagreeing_sites<A: PartialEq + Clone>(
     fns: &mut Vec<MirFunction>,
-    answers: &mut HashMap<String, Vec<(Site, Vec<EnvSlot>)>>,
+    answers: &mut HashMap<String, Vec<(Site, A)>>,
     order: &mut Vec<(String, Option<String>)>,
+    owns_nothing: impl Fn(&A) -> bool,
+    tag: &str,
 ) {
     let mut renames: Vec<(Site, String)> = Vec::new();
     let mut copies: Vec<(String, String)> = Vec::new();
     for (name, _) in order.iter() {
         let sites = &answers[name];
-        let mut groups: Vec<&Vec<EnvSlot>> = Vec::new();
+        let mut groups: Vec<&A> = Vec::new();
         for (_, owned) in sites {
             if !groups.contains(&owned) {
                 groups.push(owned);
@@ -611,13 +617,13 @@ fn split_disagreeing_sites(
             continue;
         }
         // The empty answer keeps the name; without one, the first does.
-        groups.sort_by_key(|g| !g.is_empty());
+        groups.sort_by_key(|g| !owns_nothing(g));
         for (site, owned) in sites {
             let group = groups.iter().position(|g| *g == owned).unwrap();
             if group == 0 {
                 continue;
             }
-            let suffix = format!("{OWNS}{group}");
+            let suffix = format!("{tag}{group}");
             renames.push((*site, format!("{name}{suffix}")));
             if !copies.iter().any(|(b, s)| b == name && *s == suffix) {
                 copies.push((name.clone(), suffix));
@@ -632,7 +638,7 @@ fn split_disagreeing_sites(
         let (fi, bi, si) = *site;
         if let MirStmtKind::ClosureCreate { func_name, .. } = &mut fns[fi].blocks[bi].statements[si].kind {
             let old = std::mem::replace(func_name, new_name.clone());
-            let moved: Vec<(Site, Vec<EnvSlot>)> = answers
+            let moved: Vec<(Site, A)> = answers
                 .get_mut(&old)
                 .map(|v| {
                     let (gone, kept): (Vec<_>, Vec<_>) = v.drain(..).partition(|(s, _)| s == site);
@@ -682,11 +688,25 @@ fn split_disagreeing_sites(
         }
     }
     order.retain(|(name, _)| answers.get(name).is_some_and(|v| !v.is_empty()));
+    let glues: Vec<MirFunction> = out
+        .iter()
+        .filter_map(|copy| {
+            let (_, suffix) = copies.iter().find(|(_, suffix)| copy.name.ends_with(suffix.as_str()))?;
+            let original = copy.name.strip_suffix(suffix.as_str())?;
+            let glue_name = format!("{original}{ENV_DROP_SUFFIX}");
+            let mut glue = fns.iter().find(|f| f.name == glue_name)?.clone();
+            glue.name = format!("{}{ENV_DROP_SUFFIX}", copy.name);
+            Some(glue)
+        })
+        .collect();
     fns.extend(out);
+    fns.extend(glues);
 }
 
 /// What a body copied for its own environment glue carries in its name.
 const OWNS: &str = "__owns";
+/// The same, for a copy made for the structs its environment owns.
+const CARRIES: &str = "__carries";
 
 /// Which blocks each block can reach in one step or more.
 ///
@@ -842,8 +862,10 @@ pub(crate) fn task_captures_given_away(
 /// that builds the closure has to give the same answer, because the glue is
 /// one function per closure body. A site that kept its value — the frame
 /// drops the closure itself, or still reads the value — releases it there, so
-/// a glue that also released it would be a double free; disagreeing sites get
-/// no aggregate releases at all, which leaks instead.
+/// a glue that also released it would be a double free. Sites that disagree
+/// get a copy of the body each (`split_disagreeing_sites`); they used to get
+/// no releases at all, and the struct in a closure pushed into a vector leaked
+/// when another copy of that closure stayed a local (#2018).
 ///
 /// A Copy aggregate is the other kind: copied in, not handed over, with
 /// references of its own taken at the create (`rc_insert::retain_copy_captures`),
@@ -855,7 +877,7 @@ pub(crate) fn task_captures_given_away(
 /// (`ReleaseSlot`), pointed at the slot.
 pub(crate) fn add_carried_releases(
     fns: &mut Vec<MirFunction>,
-    sites: Vec<crate::transform::rc_insert::CarriedSite>,
+    sites: Vec<(usize, crate::transform::rc_insert::CarriedSite)>,
     kept: &HashMap<String, Vec<bool>>,
     targets: &ClosureTargets,
     reach: &ClosureReach,
@@ -867,24 +889,21 @@ pub(crate) fn add_carried_releases(
         .collect();
     let body_consumed: HashMap<&str, HashSet<u32>> =
         consumed_by_name.iter().map(|(k, v)| (k.as_str(), v.clone())).collect();
-    let mut answers: HashMap<String, Vec<crate::transform::rc_insert::CarriedSite>> = HashMap::new();
-    let mut order: Vec<String> = Vec::new();
-    for site in sites {
+    type Carried = (Vec<(u32, MirType)>, Vec<(u32, MirType)>);
+    let mut answers: HashMap<String, Vec<(Site, Carried)>> = HashMap::new();
+    let mut order: Vec<(String, Option<String>)> = Vec::new();
+    for (fi, site) in sites {
         if !answers.contains_key(&site.closure) {
-            order.push(site.closure.clone());
+            order.push((site.closure.clone(), None));
         }
-        answers.entry(site.closure.clone()).or_default().push(site);
+        let at = (fi, site.at.0, site.at.1);
+        answers.entry(site.closure).or_default().push((at, (site.slots, site.copies)));
     }
-    for name in order {
-        let all = &answers[&name];
-        let first = &all[0];
-        let mut slots: Vec<(u32, MirType)> = Vec::new();
-        if all.iter().all(|s| s.slots == first.slots) {
-            slots.extend(first.slots.iter().cloned());
-        }
-        if all.iter().all(|s| s.copies == first.copies) {
-            slots.extend(first.copies.iter().cloned());
-        }
+    split_disagreeing_sites(fns, &mut answers, &mut order, |(slots, copies)| slots.is_empty() && copies.is_empty(), CARRIES);
+    for (name, _) in order {
+        // Every site of one body agrees now.
+        let (handed, copied) = &answers[&name][0].1;
+        let mut slots: Vec<(u32, MirType)> = handed.iter().chain(copied).cloned().collect();
         // What a task block gave away is the receiver's now. A closure gives
         // nothing here away: CM4 refuses consuming a non-Copy capture or a
         // non-Copy field of one, and the Copy things a body can consume — a

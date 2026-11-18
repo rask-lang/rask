@@ -119,7 +119,16 @@ pub fn insert_rc_ops(
 
     // And the aggregates: a struct field or a wrapper's payload owns a string —
     // or a container — just as much as a local does.
-    insert_aggregate_release(func, kept, writes, own, &owns_copy, closure_keeps, rack_holders, copy_layouts)
+    let mut sites =
+        insert_aggregate_release(func, kept, writes, own, &owns_copy, closure_keeps, rack_holders, copy_layouts);
+    // The releases went in around the creates, so each create has moved. The
+    // creates themselves are the same ones, in the same order.
+    let now = heap_create_sites(func);
+    debug_assert_eq!(now.len(), sites.len());
+    for (site, (at, _)) in sites.iter_mut().zip(now) {
+        site.at = at;
+    }
+    sites
 }
 
 /// One site that builds a heap closure, and the aggregate captures it handed
@@ -133,6 +142,8 @@ pub fn insert_rc_ops(
 #[derive(Debug, Clone)]
 pub struct CarriedSite {
     pub closure: String,
+    /// The create statement: block and index.
+    pub at: (usize, usize),
     pub slots: Vec<(u32, MirType)>,
     pub copies: Vec<(u32, MirType)>,
 }
@@ -150,7 +161,7 @@ fn heap_create_sites(func: &MirFunction) -> Vec<((usize, usize), CarriedSite)> {
                 copies.sort_by_key(|(off, _)| *off);
                 out.push((
                     (bi, si),
-                    CarriedSite { closure: func_name.clone(), slots: Vec::new(), copies },
+                    CarriedSite { closure: func_name.clone(), at: (bi, si), slots: Vec::new(), copies },
                 ));
             }
         }
