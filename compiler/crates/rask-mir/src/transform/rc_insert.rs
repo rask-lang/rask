@@ -1128,7 +1128,7 @@ fn insert_aggregate_release(
             }
         }
     }
-    let holds_own_reference = own_reference_points(func);
+    let holds_own_reference = own_reference_points(func, &tracked);
     let dom = crate::analysis::dominators::DominatorTree::build(func);
     let mut facts = ownership::Facts {
         moved_parts: slot_parts.keys().copied().collect(),
@@ -2218,11 +2218,18 @@ fn retain_returned_params(func: &mut MirFunction, string_locals: &[LocalId], own
     }
 }
 
-/// Names given their own reference after their one definition: `rc_inc` of a
-/// string, `rc_inc_contents` of an aggregate. Each maps to where the retain
-/// is, block and statement. With a single definition before it, every path
-/// through the retain has the retained value from there on.
-fn own_reference_points(func: &MirFunction) -> HashMap<LocalId, (BlockId, usize)> {
+/// Names given their own reference after their one definition, where the
+/// analysis still sees the name as a view of what it was read from: `rc_inc`
+/// of a string, and an `rc_inc_contents` taken for a hand-off. Each maps to
+/// where the retain is, block and statement. With a single definition before
+/// it, every path through the retain has the retained value from there on.
+///
+/// Not a lowering's `rc_inc_contents` of a tracked aggregate: that one is a
+/// `Make`, so the name already stands for a value of its own, and returning
+/// it is an ordinary hand-over. Counted here, the return stopped handing it
+/// over and the pass released it just before `return`: `return l` out of a
+/// Copy struct parameter gave the caller freed strings.
+fn own_reference_points(func: &MirFunction, tracked: &HashSet<LocalId>) -> HashMap<LocalId, (BlockId, usize)> {
     let mut defs: HashMap<LocalId, (u32, BlockId, usize)> = HashMap::new();
     for block in &func.blocks {
         for (si, st) in block.statements.iter().enumerate() {
@@ -2236,6 +2243,7 @@ fn own_reference_points(func: &MirFunction) -> HashMap<LocalId, (BlockId, usize)
     for block in &func.blocks {
         for (si, st) in block.statements.iter().enumerate() {
             let local = match st.kind {
+                MirStmtKind::RcIncContents { local, for_hand_off: false } if tracked.contains(&local) => continue,
                 MirStmtKind::RcInc { local } | MirStmtKind::RcIncContents { local, .. } => local,
                 _ => continue,
             };
