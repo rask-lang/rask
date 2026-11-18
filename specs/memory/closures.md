@@ -110,7 +110,7 @@ pointing at both places.
 |------|-------------|
 | **SL3: A local travels, a lent parameter is borrowed** | A closure leaving the function takes its locals and `take` parameters with it — they are the frame's to give, and the frame is going away. A *lent* parameter — `param: T`, `mutate param: T`, `self` — is the caller's, so the closure borrows it and SL4 decides how long that lasts |
 | **SL4: The limit rides the return** | A call that answers a closure hands back whatever limits its borrowed arguments had. `make_filter(tags)` gives a closure that lives as long as `tags` does. A `take` argument contributes no limit — it was given away |
-| **SL5: The limit rides what holds it** | A limited closure may sit in a tuple, a struct, a variant or an optional, and the limit goes with the value: to the name it's bound to, to whatever a pattern or a destructuring `let` takes out of it, and to a field read off it whose type can hold a closure. It's checked where the value would outlive the limit (a return, a store into a field or an index), whatever shape carries it there. A part that can't hold a closure, such as `pair.1: i32`, carries nothing |
+| **SL5: The limit rides what holds it** | A limited closure may sit in a tuple, a struct, a variant or an optional, and the limit goes with the value: to the name it's bound to, to whatever a pattern or a destructuring `let` takes out of it, and to a field read off it whose type can hold a closure. It's checked where the value would outlive the limit (a return, a store into a field or an index, a hand-off to a `take` parameter, a channel send, a task that leaves its block), whatever shape carries it there. A part that can't hold a closure, such as `pair.1: i32`, carries nothing |
 
 SL3 is the difference between these two:
 
@@ -162,9 +162,9 @@ Neither is something a reader can see in `let g = f`.
 
 | Rule | Description |
 |------|-------------|
-| **CV1: Function values move** | Every `func(…) -> R` value moves on assignment, on a `take` and on a store, whatever it captured. A named function used as a value moves too: the type can't tell the two apart, and one rule is easier to hold than two |
+| **CV1: Function values move** | Every `func(…) -> R` value moves on assignment, on a `take` and on a store, whatever it captured. Each mention of a declared function's name is a fresh value, so `keep(add)` twice is fine; a value bound to a local (`let f = add`) moves like any other |
 | **CV2: `.clone()` copies the environment** | `f.clone()` builds a second closure with its own environment. A carried capture is cloned into it; a pointed-at capture is pointed at again, so the clone has the same limit (MC3). A closure with nothing to clone (a named function, a closure with no captures) clones for the cost of a pointer |
-| **CV3: The limit rides the environment** | A closure carried into another closure's environment brings its limit along (SL5 applied to environments). `b.on_click = \|\| p() + 1` with `p` pointing at a local is an error at the store, the same as storing `p` itself |
+| **CV3: The limit rides the environment** | A closure carried into another closure's environment brings its limit along (SL5 applied to environments). `b.on_click = \|\| p() + 1`, `register(\|\| p() + 1)` with `register(take f)`, or sending it on a channel, with `p` pointing at a local, is an error there (SL5), the same as doing it with `p` itself |
 
 Most code never moves a closure at all. `v.map(f)`, `for x in seq` and a callback that is
 only called all borrow it, and a borrow is free. The move shows up when one closure

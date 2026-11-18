@@ -893,15 +893,17 @@ extend http {
         }
         ensure server.close()
         loop {
+            // Each task gets a handler of its own, since the next request
+            // needs one too. Cloned before accept: nothing may come between
+            // accept handing back the responder and the task that answers it.
+            let h = handler.clone()
             // A failed accept drops this connection, not the server.
             let (req, responder) = server.accept() catch _ => {
                 continue
             }
             // The task carries `req` and `responder` away, so it never reads
             // this iteration's frame, which the next accept() reuses (#474),
-            // and it sends the one response the responder owes. Each task
-            // gets a handler of its own, since the next request needs one too.
-            let h = handler.clone()
+            // and it sends the one response the responder owes.
             spawn {
                 responder.respond(h(req))
             }.detach()
