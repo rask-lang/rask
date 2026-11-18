@@ -59,9 +59,10 @@ func sink(take v: Vec<string>) -> u64 {
     return v.len()
 }
 
-// --- An ordinary value moved on one path, read by the ensure (C1, C4) ---
-// Not just resources: moving any value the ensure names cancels it (#1978).
-// ERROR: consumption of 'v' depends on which path ran
+// --- An ordinary value moved on one path, read by the ensure (C6) ---
+// The ensure consumes nothing, so nothing cancels it, and moving what it
+// reads is refused on any path (#1978).
+// ERROR: `v` is given away while the ensure still reads it
 func maybe_move_plain(fast: bool) {
     mut v: Vec<string> = Vec.new()
     v.push("x")
