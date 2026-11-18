@@ -960,6 +960,11 @@ fn insert_aggregate_release(
                             .then_some(*dst)
                         })
                 }
+                // `v[1]` on a `Vec<i64>` is a view call, but the element comes
+                // back as a copied number that keeps nothing alive. Tracking
+                // it made `return b[1]` read as returning the vector, and the
+                // option holding it was never released (#2008).
+                MirStmtKind::Call { dst: Some(dst), .. } if ty_of.get(dst).is_some_and(|t| t.is_plain_scalar()) => None,
                 MirStmtKind::Call { func: fref, args, dst: Some(dst), .. } => {
                     let views_receiver = crate::own_names::viewed_argument(fref, args, own)
                         .and_then(uses::operand_local)
@@ -1687,14 +1692,26 @@ fn insert_aggregate_release(
         facts.events.push(events);
         facts.reads.push(reads);
         facts.kills.push(kills);
+        // A string the frame took its own reference to on the way out is that
+        // reference being returned, not a view still reading its base:
+        // `return b[0]` out of a `Vec<string>?` retains the element, so the
+        // option is the frame's to release before the return (#2008).
+        let returned = match &block.terminator.kind {
+            MirTerminatorKind::Return { value: Some(MirOperand::Local(id)) }
+            | MirTerminatorKind::CleanupReturn { value: Some(MirOperand::Local(id)), .. } => Some(*id),
+            _ => None,
+        };
+        let own_reference_returned = returned.filter(|id| {
+            block
+                .statements
+                .iter()
+                .rev()
+                .take_while(|st| uses::stmt_def(st) != Some(*id))
+                .any(|st| matches!(st.kind, MirStmtKind::RcInc { local } if local == *id))
+        });
         let mut term_ev = Vec::new();
-        if let MirTerminatorKind::Return { value: Some(MirOperand::Local(id)) }
-        | MirTerminatorKind::CleanupReturn { value: Some(MirOperand::Local(id)), .. } =
-            &block.terminator.kind
-        {
-            if tracked.contains(id) {
-                term_ev.push(ownership::Event::HandOver(*id));
-            }
+        if let Some(id) = returned.filter(|id| tracked.contains(id) && own_reference_returned.is_none()) {
+            term_ev.push(ownership::Event::HandOver(id));
         }
         // The caller gets its slot back with whatever the frame left in it.
         // A path that never returns (a panic) leaves it to the caller too:
@@ -1714,7 +1731,7 @@ fn insert_aggregate_release(
                 .iter()
                 .copied()
                 .filter(|n| {
-                    uses::terminator_reads(&block.terminator, *n)
+                    (uses::terminator_reads(&block.terminator, *n) && own_reference_returned != Some(*n))
                         || handed_back.contains(n)
                         || slot_captures
                             .iter()
