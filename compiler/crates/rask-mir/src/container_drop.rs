@@ -205,7 +205,7 @@ pub fn insert_container_drops(fns: &mut Vec<MirFunction>) {
     // read the closure that captured it while the frame it belongs to is being
     // rewritten.
     let snapshot: Vec<MirFunction> = fns.to_vec();
-    let closure_slots = closure_cell_body_slots(&snapshot);
+    let closure_slots = closure_cell_writers(&snapshot);
     for func in fns.iter_mut() {
         insert_for_function(
             func, &snapshot, &handing_over, &interface_handing, &keeps, &targets,
@@ -3344,7 +3344,7 @@ fn closure_cell_is_a_variable(
     values: &[(MirOperand, BlockId)],
     handed_on: &HashSet<LocalId>,
     dom: &crate::analysis::dominators::DominatorTree,
-    body_slots: &mut Vec<(String, u32)>,
+    reached: &mut Vec<Reached>,
 ) -> Option<MirType> {
     let ty = match values.first()? {
         (MirOperand::Local(v), _) => func.local_ty(*v)?.clone(),
@@ -3374,19 +3374,56 @@ fn closure_cell_is_a_variable(
         return None;
     }
     let mut addrs = HashSet::from([cell]);
-    if !cell_used_as_variable(func, all, &mut addrs, body_slots, 0) {
+    if !cell_used_as_variable(func, all, &mut addrs, reached, &None, 0) {
         return None;
     }
     Some(ty)
 }
 
-/// The environment slots, as (closure body, offset), through which a body
-/// writes a closure variable `closure_cell_is_a_variable` says its frame owns.
-/// A store there replaces a closure the cell owns, so it releases it first.
-fn closure_cell_body_slots(fns: &[MirFunction]) -> HashSet<(String, u32)> {
-    let mut out = HashSet::new();
+/// Where a closure variable's address reaches another frame that writes it.
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+enum CellReach {
+    /// A body that captured it by reference, at this environment offset.
+    Capture(String, u32),
+    /// A `mutate` parameter, by function and index, from the call at
+    /// (caller, block, statement).
+    Param { callee: String, index: usize, site: (String, BlockId, usize) },
+}
+
+/// One frame a closure variable reaches, and the `mutate` parameter the
+/// traversal came in through, if any: a frame reached through a parameter is
+/// only sure of what it holds when every caller of that parameter is.
+#[derive(Clone, Debug)]
+struct Reached {
+    at: CellReach,
+    through: Option<(String, usize)>,
+}
+
+/// Where a store replaces a closure that a variable owns, so the store
+/// releases it first: a body's environment slot, or a `mutate` parameter.
+#[derive(Default)]
+struct CellWriters {
+    /// (closure body, offset).
+    captures: HashSet<(String, u32)>,
+    /// (function, parameter index).
+    params: HashSet<(String, usize)>,
+}
+
+/// The frames that write a closure variable `closure_cell_is_a_variable` says
+/// its frame owns.
+///
+/// A body that captured the variable has one creator, so that creator's answer
+/// settles it. A `mutate` parameter has as many callers as the function has
+/// calls, and the callee releases what it replaces for all of them, so every
+/// call has to hand it something that owns its closure: such a variable, a
+/// field or collection element (`lends_owned_slot`), or a parameter that was
+/// itself handed one. A function a call can reach without naming it (a
+/// function value, a vtable entry, a closure body) has callers nobody can
+/// list, and never releases.
+fn closure_cell_writers(fns: &[MirFunction]) -> CellWriters {
+    let mut reached: Vec<Reached> = Vec::new();
     for func in fns {
-        let cells: HashSet<LocalId> = func
+        let mut cells: HashSet<LocalId> = func
             .blocks
             .iter()
             .flat_map(|b| b.statements.iter())
@@ -3395,14 +3432,18 @@ fn closure_cell_body_slots(fns: &[MirFunction]) -> HashSet<(String, u32)> {
                 _ => None,
             })
             .flatten()
-            .filter(|c| c.by_ref && matches!(func.local_ty(c.local_id), Some(MirType::FuncPtr(_))))
+            .filter(|c| c.by_ref)
             .map(|c| c.local_id)
             .collect();
+        cells.extend(slots_whose_address_is_taken(func));
+        cells.retain(|c| matches!(func.local_ty(*c), Some(MirType::FuncPtr(_))));
         if cells.is_empty() {
             continue;
         }
         let handed_on = addresses_handed_on(func);
         let dom = crate::analysis::dominators::DominatorTree::build(func);
+        let mut cells: Vec<LocalId> = cells.into_iter().collect();
+        cells.sort_by_key(|c| c.0);
         for cell in cells {
             let values: Vec<(MirOperand, BlockId)> = func
                 .blocks
@@ -3413,34 +3454,173 @@ fn closure_cell_body_slots(fns: &[MirFunction]) -> HashSet<(String, u32)> {
                     _ => None,
                 })
                 .collect();
-            let mut slots = Vec::new();
-            if closure_cell_is_a_variable(func, fns, cell, &values, &handed_on, &dom, &mut slots).is_some() {
-                out.extend(slots);
+            let mut found = Vec::new();
+            if closure_cell_is_a_variable(func, fns, cell, &values, &handed_on, &dom, &mut found).is_some() {
+                reached.extend(found);
             }
         }
     }
+    // Each scalar `mutate` parameter taken as a variable of its own frame:
+    // what the function stores through it has to be a closure it owns,
+    // whoever called it.
+    let mut writers: HashSet<(String, usize)> = HashSet::new();
+    for func in fns {
+        for (i, p) in func.params.iter().enumerate() {
+            if func.param_modes.get(i) != Some(&rask_ast::ty::ParamMode::Mutate) || !matches!(p.ty, MirType::Ptr) {
+                continue;
+            }
+            let through = Some((func.name.clone(), i));
+            let mut found = Vec::new();
+            if cell_used_as_variable(func, fns, &mut HashSet::from([p.id]), &mut found, &through, 0) {
+                writers.insert((func.name.clone(), i));
+                reached.extend(found);
+            }
+        }
+    }
+
+    let unnamed: HashSet<&str> = fns
+        .iter()
+        .flat_map(|f| f.blocks.iter().flat_map(|b| b.statements.iter()))
+        .filter_map(|st| match &st.kind {
+            MirStmtKind::Assign { rvalue: MirRValue::FuncAddr(name), .. } => Some(name.as_str()),
+            _ => None,
+        })
+        .chain(fns.iter().flat_map(|f| f.blocks.iter().flat_map(|b| b.statements.iter())).filter_map(|st| {
+            match &st.kind {
+                MirStmtKind::ClosureCreate { func_name, .. } => Some(func_name.as_str()),
+                _ => None,
+            }
+        }))
+        .chain(vtable_candidates(fns).into_iter().map(|(_, f)| f.name.as_str()))
+        .collect();
+    let covered: HashSet<(&(String, BlockId, usize), usize)> = reached
+        .iter()
+        .filter_map(|r| match &r.at {
+            CellReach::Param { site, index, .. } => Some((site, *index)),
+            _ => None,
+        })
+        .collect();
+    let mut unsure: HashSet<(String, usize)> = HashSet::new();
+    for func in fns {
+        for block in &func.blocks {
+            for (si, st) in block.statements.iter().enumerate() {
+                let MirStmtKind::Call { func: callee, args, .. } = &st.kind else { continue };
+                let Some(target) = fns.iter().find(|f| f.name == callee.name) else { continue };
+                let site = (func.name.clone(), block.id, si);
+                for (i, mode) in target.param_modes.iter().enumerate() {
+                    if *mode != rask_ast::ty::ParamMode::Mutate || covered.contains(&(&site, i)) {
+                        continue;
+                    }
+                    if !args.get(i).is_some_and(|a| lends_owned_slot(func, a)) {
+                        unsure.insert((target.name.clone(), i));
+                    }
+                }
+            }
+        }
+    }
+    for f in fns.iter().filter(|f| unnamed.contains(f.name.as_str())) {
+        for (i, mode) in f.param_modes.iter().enumerate() {
+            if *mode == rask_ast::ty::ParamMode::Mutate {
+                unsure.insert((f.name.clone(), i));
+            }
+        }
+    }
+    // A parameter handed on from an unsure one is unsure too.
+    loop {
+        let before = unsure.len();
+        for r in &reached {
+            if let (CellReach::Param { callee, index, .. }, Some(t)) = (&r.at, &r.through) {
+                if unsure.contains(t) {
+                    unsure.insert((callee.clone(), *index));
+                }
+            }
+        }
+        if unsure.len() == before {
+            break;
+        }
+    }
+
+    let mut out = CellWriters::default();
+    for r in reached {
+        if r.through.as_ref().is_some_and(|t| unsure.contains(t)) {
+            continue;
+        }
+        match r.at {
+            CellReach::Capture(body, offset) => {
+                out.captures.insert((body, offset));
+            }
+            CellReach::Param { .. } => {}
+        }
+    }
+    out.params = writers.into_iter().filter(|w| !unsure.contains(w)).collect();
     out
 }
 
-/// Release what a closure variable held before a body's store replaces it
-/// (`closure_cell_body_slots`).
-fn release_before_body_stores(func: &mut MirFunction, slots: &HashSet<(String, u32)>) {
+/// Is `arg` the address of a slot inside something that owns what the slot
+/// holds: a field of an aggregate (`mutate h.f`), or an element a collection
+/// lends (`mutate v[1]`)? A closure in either is a heap one with a reference
+/// of its own, released when the owner goes.
+fn lends_owned_slot(func: &MirFunction, arg: &MirOperand) -> bool {
+    let MirOperand::Local(mut at) = arg else { return false };
+    for _ in 0..16 {
+        if matches!(
+            func.local_ty(at),
+            Some(MirType::Struct(_) | MirType::Tuple(_) | MirType::Array { .. })
+        ) {
+            return true;
+        }
+        let def = func.blocks.iter().flat_map(|b| b.statements.iter()).find_map(|st| match &st.kind {
+            MirStmtKind::Assign { dst, rvalue } if *dst == at => Some(Ok(rvalue)),
+            MirStmtKind::Call { dst: Some(dst), func: callee, .. } if *dst == at => Some(Err(callee)),
+            _ => None,
+        });
+        match def {
+            Some(Ok(MirRValue::Use(MirOperand::Local(src)))) => at = *src,
+            Some(Ok(MirRValue::BinaryOp {
+                op: crate::operand::BinOp::Add,
+                left: MirOperand::Local(base),
+                ..
+            })) => at = *base,
+            Some(Err(callee)) => return callee.returns_a_view(),
+            _ => return false,
+        }
+    }
+    false
+}
+
+/// Release what a closure variable held before a store from another frame
+/// replaces it (`closure_cell_writers`).
+fn release_before_body_stores(func: &mut MirFunction, writers: &CellWriters) {
     let mut addrs: HashSet<LocalId> = func
         .blocks
         .iter()
         .flat_map(|b| b.statements.iter())
         .filter_map(|st| match &st.kind {
-            MirStmtKind::LoadCapture { dst, offset, .. } if slots.contains(&(func.name.clone(), *offset)) => {
+            MirStmtKind::LoadCapture { dst, offset, .. }
+                if writers.captures.contains(&(func.name.clone(), *offset)) =>
+            {
                 Some(*dst)
             }
             _ => None,
         })
         .collect();
+    let lent: Vec<LocalId> = func
+        .params
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| writers.params.contains(&(func.name.clone(), *i)))
+        .map(|(_, p)| p.id)
+        .collect();
+    // Only a named function has `mutate` parameters here, and a caller hands
+    // such a function a reference of its own to any closure argument it keeps
+    // (`closures::retain_borrowed_closures_handed_on`).
+    let params_handed_over = !lent.is_empty();
+    addrs.extend(lent);
     if addrs.is_empty() {
         return;
     }
     extend_by_copies(func, &mut addrs);
-    retain_borrowed_closures_stored(func, &addrs);
+    retain_borrowed_closures_stored(func, &addrs, params_handed_over);
     let tys: HashMap<LocalId, MirType> = func.locals.iter().map(|l| (l.id, l.ty.clone())).collect();
     for block in func.blocks.iter_mut() {
         let mut at = 0;
@@ -3508,11 +3688,16 @@ fn borrowed_closures(func: &MirFunction) -> HashSet<LocalId> {
 /// goes away. Without it `for f in fs { g = f }` released `fs`'s closures once
 /// too often, and without the variable owning them every closure the loop
 /// body put there leaked.
-fn retain_borrowed_closures_stored(func: &mut MirFunction, addrs: &HashSet<LocalId>) {
+fn retain_borrowed_closures_stored(func: &mut MirFunction, addrs: &HashSet<LocalId>, params_handed_over: bool) {
     if addrs.is_empty() {
         return;
     }
-    let borrowed = borrowed_closures(func);
+    let mut borrowed = borrowed_closures(func);
+    if params_handed_over {
+        let mut own: HashSet<LocalId> = func.params.iter().map(|p| p.id).collect();
+        extend_by_copies(func, &mut own);
+        borrowed.retain(|b| !own.contains(b));
+    }
     for block in func.blocks.iter_mut() {
         let mut at = 0;
         while at < block.statements.len() {
@@ -3562,23 +3747,38 @@ fn extend_by_copies(func: &MirFunction, set: &mut HashSet<LocalId>) {
 }
 
 /// Does `func` treat the closure cell at `addrs` as a plain variable: store a
-/// heap closure it built, release, read, hand the address to another body that
-/// does the same?
+/// heap closure it built, release, read, hand the address to another body or
+/// a `mutate` parameter that does the same?
 fn cell_used_as_variable(
     func: &MirFunction,
     all: &[MirFunction],
     addrs: &mut HashSet<LocalId>,
-    body_slots: &mut Vec<(String, u32)>,
+    reached: &mut Vec<Reached>,
+    through: &Option<(String, usize)>,
     depth: u32,
 ) -> bool {
     if depth > 8 {
         return false;
     }
-    extend_by_copies(func, addrs);
+    // `&g` is the cell's address too, the one `mutate g` hands over.
+    loop {
+        let before = addrs.len();
+        extend_by_copies(func, addrs);
+        for st in func.blocks.iter().flat_map(|b| b.statements.iter()) {
+            if let MirStmtKind::Assign { dst, rvalue: MirRValue::Ref(src) } = &st.kind {
+                if addrs.contains(src) {
+                    addrs.insert(*dst);
+                }
+            }
+        }
+        if addrs.len() == before {
+            break;
+        }
+    }
     let heap = heap_closures(func);
     let borrowed = borrowed_closures(func);
     for block in &func.blocks {
-        for st in &block.statements {
+        for (si, st) in block.statements.iter().enumerate() {
             if !addrs.iter().any(|a| crate::analysis::uses::stmt_reads(st, *a)) {
                 continue;
             }
@@ -3589,8 +3789,39 @@ fn cell_used_as_variable(
                 MirStmtKind::ReleaseSlot { addr, .. } | MirStmtKind::ZeroAggregate { local: addr } => {
                     addrs.contains(addr)
                 }
-                MirStmtKind::Assign { rvalue: MirRValue::Deref(MirOperand::Local(a)), .. } => addrs.contains(a),
-                MirStmtKind::Assign { dst, rvalue: MirRValue::Use(MirOperand::Local(_)) } => addrs.contains(dst),
+                MirStmtKind::Assign { rvalue: MirRValue::Deref(MirOperand::Local(a)), .. }
+                | MirStmtKind::Assign {
+                    rvalue: MirRValue::Field { base: MirOperand::Local(a), byte_offset: Some(0), .. },
+                    ..
+                } => addrs.contains(a),
+                MirStmtKind::Assign { dst, rvalue: MirRValue::Use(MirOperand::Local(_)) | MirRValue::Ref(_) } => {
+                    addrs.contains(dst)
+                }
+                MirStmtKind::Call { func: callee, args, .. } => {
+                    let target = all.iter().find(|f| f.name == callee.name);
+                    args.iter().enumerate().all(|(i, a)| {
+                        let MirOperand::Local(a) = a else { return true };
+                        if !addrs.contains(a) {
+                            return true;
+                        }
+                        let Some(target) = target else { return false };
+                        if target.param_modes.get(i) != Some(&rask_ast::ty::ParamMode::Mutate) {
+                            return false;
+                        }
+                        let Some(param) = target.params.get(i) else { return false };
+                        reached.push(Reached {
+                            at: CellReach::Param {
+                                callee: target.name.clone(),
+                                index: i,
+                                site: (func.name.clone(), block.id, si),
+                            },
+                            through: through.clone(),
+                        });
+                        let mut inner = HashSet::from([param.id]);
+                        let into = Some((target.name.clone(), i));
+                        cell_used_as_variable(target, all, &mut inner, reached, &into, depth + 1)
+                    })
+                }
                 MirStmtKind::ClosureCreate { func_name, captures, .. } => {
                     captures.iter().filter(|c| addrs.contains(&c.local_id)).all(|c| {
                         let Some(body) = all.iter().find(|f| f.name == *func_name) else { return false };
@@ -3603,8 +3834,11 @@ fn cell_used_as_variable(
                                 _ => None,
                             })
                             .collect();
-                        body_slots.push((func_name.clone(), c.offset));
-                        c.by_ref && cell_used_as_variable(body, all, &mut inner, body_slots, depth + 1)
+                        reached.push(Reached {
+                            at: CellReach::Capture(func_name.clone(), c.offset),
+                            through: through.clone(),
+                        });
+                        c.by_ref && cell_used_as_variable(body, all, &mut inner, reached, through, depth + 1)
                     })
                 }
                 _ => false,
@@ -3875,7 +4109,7 @@ fn insert_cell_drops(func: &mut MirFunction, cells: &[(LocalId, InCell, BlockId)
         .filter(|(_, holds, _)| matches!(holds, InCell::Slot(MirType::FuncPtr(_))))
         .map(|(cell, _, _)| *cell)
         .collect();
-    retain_borrowed_closures_stored(func, &closure_cells);
+    retain_borrowed_closures_stored(func, &closure_cells, false);
     let dom = crate::analysis::dominators::DominatorTree::build(func);
     let exits: Vec<Vec<(usize, HashSet<LocalId>)>> = cells.iter().map(|(cell, _, _)| exit_blocks(func, *cell)).collect();
     let slots = arm_cells(func, cells);

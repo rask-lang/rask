@@ -1,0 +1,153 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A closure variable lent to a `mutate` parameter that assigns it. The callee
+// releases the closure it replaces and the caller the last one, so every
+// closure that lands in the variable is a heap one. Before, the closure the
+// callee made was never released (#2016).
+
+struct Holder {
+    f: func() -> i64
+}
+
+struct Pair {
+    n: i64
+    f: func() -> i64
+}
+
+func setit(mutate g: func() -> i64, n: i64) {
+    g = || n
+}
+
+func set_twice(mutate g: func() -> i64, n: i64) {
+    setit(mutate g, n)
+    g = || n * 2
+}
+
+func set_to(mutate g: func() -> i64, h: func() -> i64) {
+    g = h
+}
+
+func bump(mutate g: func() -> i64) {
+    let before = g()
+    g = || before + 1
+}
+
+func set_in_loop(mutate g: func() -> i64, items: Vec<i64>) {
+    for x in items {
+        g = || x
+    }
+}
+
+func once() -> i64 {
+    mut g: func() -> i64 = || 1
+    setit(mutate g, 4)
+    return g()
+}
+
+func in_a_loop() -> i64 {
+    mut g: func() -> i64 = || 1
+    mut total = 0
+    for i in 0..5 {
+        setit(mutate g, i)
+        total = total + g()
+    }
+    return total
+}
+
+func handed_on() -> i64 {
+    mut g: func() -> i64 = || 1
+    set_twice(mutate g, 5)
+    return g()
+}
+
+func borrowed(h: func() -> i64) -> i64 {
+    mut g: func() -> i64 = || 1
+    set_to(mutate g, h)
+    return g() + h()
+}
+
+func read_then_replaced() -> i64 {
+    mut g: func() -> i64 = || 10
+    bump(mutate g)
+    bump(mutate g)
+    return g()
+}
+
+func last_of_a_loop() -> i64 {
+    mut g: func() -> i64 = || 0
+    let v: Vec<i64> = Vec.from([3, 7, 9])
+    set_in_loop(mutate g, v)
+    return g()
+}
+
+func overwritten_after() -> i64 {
+    mut g: func() -> i64 = || 1
+    setit(mutate g, 2)
+    g = || 30
+    return g()
+}
+
+func a_field() -> i64 {
+    mut h = Holder(f: || 1)
+    setit(mutate h.f, 6)
+    return (h.f)()
+}
+
+func set_pair(mutate p: Pair) {
+    setit(mutate p.f, 9)
+}
+
+func a_second_field() -> i64 {
+    mut p = Pair(n: 1, f: || 1)
+    setit(mutate p.f, 6)
+    set_pair(mutate p)
+    return (p.f)() + p.n
+}
+
+func an_element() -> i64 {
+    mut v: Vec<func() -> i64> = Vec.new()
+    v.push(|| 1)
+    v.push(|| 2)
+    setit(mutate v[1], 6)
+    return v[0]() + v[1]()
+}
+
+test "a mutate parameter replaces the caller's closure" {
+    assert once() == 4
+}
+
+test "replaced on every turn of a loop" {
+    assert in_a_loop() == 10
+}
+
+test "handed on to another mutate parameter" {
+    assert handed_on() == 10
+}
+
+test "replaced by a borrowed closure" {
+    assert borrowed(|| 7) == 14
+}
+
+test "read before it is replaced" {
+    assert read_then_replaced() == 12
+}
+
+test "replaced in the callee's loop" {
+    assert last_of_a_loop() == 9
+}
+
+test "the caller replaces it after the call" {
+    assert overwritten_after() == 30
+}
+
+test "a struct field lent to the same parameter" {
+    assert a_field() == 6
+}
+
+test "a field handed on through a mutate struct" {
+    assert a_second_field() == 10
+}
+
+test "a vector element lent to the same parameter" {
+    assert an_element() == 7
+}

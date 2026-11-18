@@ -33,9 +33,39 @@ pub fn optimize_all_closures(fns: &mut [MirFunction]) {
     let callee_escapes = build_callee_escape_map(fns, CaptureRule::EscapingClosure);
     let kept = KeptThroughCalls::build(fns);
     let heap_slots = captures_holding_heap_closures(fns);
+    let lent = LentCells::build(fns, heap_slots);
 
     for func in fns.iter_mut() {
-        decide_allocation(func, &callee_escapes, &kept, &heap_slots);
+        decide_allocation(func, &callee_escapes, &kept, &lent);
+    }
+}
+
+/// Where a closure stored in a variable passes to another frame that may
+/// replace it, so every closure stored there has to be a heap one: the other
+/// frame releases the one it replaces.
+struct LentCells {
+    /// (closure body, offset) of a captured variable the body assigns to or
+    /// hands on (`captures_holding_heap_closures`).
+    slots: HashSet<(String, u32)>,
+    /// (function, index) of each `mutate` parameter. `setit(mutate g)` lends
+    /// `g` itself, and a body that assigns `g = || n` stores through it
+    /// (`container_drop::release_before_param_stores`).
+    mutate_params: HashSet<(String, usize)>,
+}
+
+impl LentCells {
+    fn build(fns: &[MirFunction], slots: HashSet<(String, u32)>) -> Self {
+        let mutate_params = fns
+            .iter()
+            .flat_map(|f| {
+                f.param_modes
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, m)| **m == rask_ast::ty::ParamMode::Mutate)
+                    .map(|(i, _)| (f.name.clone(), i))
+            })
+            .collect();
+        LentCells { slots, mutate_params }
     }
 }
 
@@ -581,13 +611,13 @@ fn decide_allocation(
     func: &mut MirFunction,
     callee_escapes: &HashMap<String, Vec<bool>>,
     kept: &KeptThroughCalls,
-    heap_slots: &HashSet<(String, u32)>,
+    lent: &LentCells,
 ) {
     let created = created_closures(func);
     if created.is_empty() {
         return;
     }
-    let escaping = find_escaping_closures(func, &created, callee_escapes, kept, heap_slots);
+    let escaping = find_escaping_closures(func, &created, callee_escapes, kept, lent);
 
     for block in &mut func.blocks {
         for stmt in &mut block.statements {
@@ -1428,7 +1458,7 @@ pub(crate) fn build_callee_escape_map(
         .iter()
         .map(|f| (f.name.clone(), vec![false; f.params.len()]))
         .collect();
-    let heap_slots = captures_holding_heap_closures(fns);
+    let lent = LentCells::build(fns, captures_holding_heap_closures(fns));
     loop {
         let mut changed = false;
         for func in fns {
@@ -1440,7 +1470,7 @@ pub(crate) fn build_callee_escape_map(
                     if created.is_empty() {
                         HashSet::new()
                     } else {
-                        find_escaping_closures(func, &created, &map, kept, &heap_slots)
+                        find_escaping_closures(func, &created, &map, kept, &lent)
                     }
                 }
                 None => HashSet::new(),
@@ -1449,7 +1479,7 @@ pub(crate) fn build_callee_escape_map(
                 if map.get(&func.name).is_some_and(|e| e[i]) {
                     continue;
                 }
-                if param_escapes_from(func, p.id, rule, &leaving, &map, &heap_slots) {
+                if param_escapes_from(func, p.id, rule, &leaving, &map, &lent.slots) {
                     if let Some(e) = map.get_mut(&func.name) {
                         e[i] = true;
                         changed = true;
@@ -1605,7 +1635,7 @@ fn find_escaping_closures(
     closure_locals: &HashMap<LocalId, bool>,
     callee_escapes: &HashMap<String, Vec<bool>>,
     kept: &KeptThroughCalls,
-    heap_slots: &HashSet<(String, u32)>,
+    lent: &LentCells,
 ) -> HashSet<LocalId> {
     // Lowering routinely copies the `ClosureCreate` result on before returning
     // it, so reading only the original destination missed the escape. Every
@@ -1614,6 +1644,15 @@ fn find_escaping_closures(
     // destination, which is the origin, never a copy of it.
     let aliases = closure_aliases(func, closure_locals);
     let mut escaping: HashSet<LocalId> = HashSet::new();
+    let addr_of: HashMap<LocalId, LocalId> = func
+        .blocks
+        .iter()
+        .flat_map(|b| b.statements.iter())
+        .filter_map(|st| match &st.kind {
+            MirStmtKind::Assign { dst, rvalue: crate::MirRValue::Ref(src) } => Some((*dst, *src)),
+            _ => None,
+        })
+        .collect();
 
     for block in &func.blocks {
         for stmt in &block.statements {
@@ -1635,6 +1674,13 @@ fn find_escaping_closures(
 
                                 if !is_borrow {
                                     escaping.insert(origin);
+                                }
+                            }
+                            // The variable itself lent to a `mutate` parameter:
+                            // the callee may replace what it holds.
+                            if let Some(var) = addr_of.get(&id) {
+                                if lent.mutate_params.contains(&(callee.name.clone(), arg_idx)) {
+                                    escaping.extend(aliases.origins(var).iter().copied());
                                 }
                             }
                         }
@@ -1669,7 +1715,7 @@ fn find_escaping_closures(
                 // variable a body it creates assigns closures to or hands on
                 // (`captures_holding_heap_closures`).
                 MirStmtKind::ClosureCreate { func_name, captures, .. } => {
-                    for c in captures.iter().filter(|c| c.by_ref && heap_slots.contains(&(func_name.clone(), c.offset))) {
+                    for c in captures.iter().filter(|c| c.by_ref && lent.slots.contains(&(func_name.clone(), c.offset))) {
                         escaping.extend(aliases.origins(&c.local_id).iter().copied());
                     }
                 }
