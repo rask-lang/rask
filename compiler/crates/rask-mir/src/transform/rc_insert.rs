@@ -333,10 +333,14 @@ fn retain_views_handed_over(
         .collect();
     // A box read out of a container is the same case: the element is a
     // pointer to a counted block, and a second owner needs a count of its own
-    // (`boxes.skip(1).to_vec()`).
+    // (`boxes.skip(1).to_vec()`). So is a container under a tag or in a
+    // tuple: the release walks into it, so a `Vec<i64>?` element copied into
+    // a pick's answer was freed under the array that held it.
     let is_aggregate = |l: &LocalId| {
         ty_of.get(l).is_some_and(|t| {
-            aggregate_may_hold_string(t) || matches!(t, MirType::InterfaceObject { .. })
+            aggregate_may_hold_string(t)
+                || wraps_a_container(t)
+                || matches!(t, MirType::InterfaceObject { .. })
         })
     };
 
@@ -842,6 +846,19 @@ fn insert_aggregate_release(
         })
         .chain(take_addresses.iter().copied())
         .collect();
+    // Elements bound where they sit (`BindPlace`): a store through one writes
+    // the collection's element, never a value of this frame's. A scalar one
+    // is memory-resident (`addr_taken`), so its reads arrive as
+    // `Deref(place)`, which reads the element exactly as `Use(place)` does.
+    let places: HashSet<LocalId> = func
+        .blocks
+        .iter()
+        .flat_map(|b| b.statements.iter())
+        .filter_map(|st| match &st.kind {
+            MirStmtKind::BindPlace { dst, .. } => Some(*dst),
+            _ => None,
+        })
+        .collect();
     // The aggregate each take address points into.
     let take_bases: HashMap<LocalId, LocalId> = func
         .blocks
@@ -902,6 +919,11 @@ fn insert_aggregate_release(
         for stmt in func.blocks.iter().flat_map(|b| b.statements.iter()) {
             let reached = match &stmt.kind {
                 MirStmtKind::Assign { dst, rvalue: MirRValue::Use(MirOperand::Local(src)) } => {
+                    tracked.contains(src).then_some(*dst)
+                }
+                MirStmtKind::Assign { dst, rvalue: MirRValue::Deref(MirOperand::Local(src)) }
+                    if places.contains(src) =>
+                {
                     tracked.contains(src).then_some(*dst)
                 }
                 // An array element is a part the same way a field is (#1403).
@@ -1041,17 +1063,6 @@ fn insert_aggregate_release(
         }
         lent
     };
-    // Elements bound where they sit (`BindPlace`): a store through one writes
-    // the collection's element, never a value of this frame's.
-    let places: HashSet<LocalId> = func
-        .blocks
-        .iter()
-        .flat_map(|b| b.statements.iter())
-        .filter_map(|st| match &st.kind {
-            MirStmtKind::BindPlace { dst, .. } => Some(*dst),
-            _ => None,
-        })
-        .collect();
     let params: Vec<LocalId> = func.params.iter().map(|p| p.id).collect();
     // A parameter every caller gave up at the call (`params_a_callee_keeps`:
     // one written `take`) is ours from entry, and released here unless it is
@@ -1221,6 +1232,11 @@ fn insert_aggregate_release(
                     if is_tracked(dst) && parked.contains_key(a) =>
                 {
                     ev.push(ownership::Event::Alias { dst: *dst, src: parked[a] });
+                }
+                MirStmtKind::Assign { dst, rvalue: MirRValue::Deref(MirOperand::Local(src)) }
+                    if is_tracked(dst) && is_tracked(src) && places.contains(src) =>
+                {
+                    ev.push(ownership::Event::Alias { dst: *dst, src: *src });
                 }
                 MirStmtKind::Assign { dst, rvalue: MirRValue::Use(MirOperand::Local(src)) }
                     if is_tracked(dst) =>

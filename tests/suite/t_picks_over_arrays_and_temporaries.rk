@@ -11,6 +11,10 @@
 //     same to its answer.
 //   - `max_by_key` with a string key released the "best so far" key before
 //     the first item had set it.
+//   - An element that is a bare vector is read through a load, which the
+//     release pass didn't follow: a `break` out of a walk, or a pick, freed
+//     the array under the element still being read. A `Vec<i64>?` copied into
+//     a pick's answer took no reference, and the answer's release freed it.
 // The leak and memcheck gates hold the releases; the asserts hold the answers.
 
 struct Row {
@@ -82,4 +86,27 @@ test "max_by_key with a string key" {
     assert (top ?? Row(name: "", tags: Vec.new())).name == "C"
     let low = js.min_by_key(|r| r.name.to_lowercase())
     assert (low ?? Row(name: "", tags: Vec.new())).name == "A"
+}
+
+test "elements that are vectors stay the array's" {
+    let vs: [Vec<string>; 2] = [["a".to_uppercase()], ["b".to_uppercase(), "c".to_uppercase()]]
+    mut last = ""
+    for v in vs {
+        if v.len() == 2 {
+            last = v[1].clone()
+            break
+        }
+    }
+    assert last == "C"
+    let ns: [Vec<i64>; 2] = [[1], [2, 3]]
+    assert (ns.max_by_key(|v| v.len()) ?? Vec.new()).len() == 2
+    if ns.enumerate().find(|p| p.1.len() == 2)? as p {
+        assert p.0 == 1
+        assert p.1.len() == 2
+    } else {
+        assert false
+    }
+    let opts: [Vec<i64>?; 3] = [none, [1, 2], [3]]
+    assert opts.find(|o| o != none) != none
+    assert (opts[1] ?? Vec.new()).len() == 2
 }
