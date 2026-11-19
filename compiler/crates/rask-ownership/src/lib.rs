@@ -4457,7 +4457,9 @@ impl<'a> OwnershipChecker<'a> {
                 // back under a second name (#1458).
                 let saved_borrowed_params = self.borrowed_params.clone();
                 let saved_mutate_params = self.mutate_params.clone();
-                let saved_closure_params = self.closure_params.clone();
+                // Only this closure's own: an enclosing closure's parameter
+                // reached from here is a capture, which the capture rules cover.
+                let saved_closure_params = std::mem::take(&mut self.closure_params);
                 let saved_parts = self.parts.clone();
                 let saved_decls = self.binding_decl_blocks.clone();
                 for p in params {
@@ -5857,11 +5859,14 @@ impl<'a> OwnershipChecker<'a> {
                     // away something the caller still owns. Reporting it as a
                     // borrow conflict named the wrong event: nothing is being
                     // mutated in `o.only = next`, and neither the message nor
-                    // the fix said `take next` (#818). Asked of the parameter
-                    // list, not the binding state: a closure's parameters are
-                    // bound as owned, so `keep = v` in `|v: Vec<string>|`
-                    // moved the caller's vector into a capture (#2030).
-                    if self.borrowed_params.contains_key(&source_name) {
+                    // the fix said `take next` (#818). A closure binds its own
+                    // parameters as owned, so it's asked by name too: `keep =
+                    // v` in `|v: Vec<string>|` moved the caller's vector into a
+                    // capture (#2030). A parameter reached as a capture is the
+                    // capture rules' to judge; a task block owns what it carries.
+                    let own_param = self.closure_params.contains(&source_name)
+                        || matches!(self.bindings.get(&source_name), Some(BindingState::Borrowed { .. }));
+                    if own_param && self.borrowed_params.contains_key(&source_name) {
                         self.consume_binding(&source_name, span, None);
                         return;
                     }
