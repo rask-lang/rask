@@ -569,29 +569,6 @@ impl ToDiagnostic for crate::OwnershipError {
                     )
             }
 
-            PickOfLentItem { terminal, elem, holder, on_vec } => {
-                let src = holder.clone().unwrap_or_else(|| "the source".to_string());
-                let owner = match holder {
-                    Some(s) => format!("`{}`", s),
-                    None => "the source".to_string(),
-                };
-                let fix = if *on_vec && terminal == "find" {
-                    format!(
-                        "find the index and clone the one you keep: `{src}.position(|x| …)` gives `i`, then `{src}[i].clone()`"
-                    )
-                } else {
-                    format!("clone where you mean it — a `map` makes values the chain owns: `.map(|x| x.clone()).{terminal}(…)`")
-                };
-                Diagnostic::error(format!("`{}` would hand back a `{}` that {} still owns", terminal, elem, owner))
-                    .with_code("E0977")
-                    .with_primary(self.span, format!("this answers with one of {}'s items", owner))
-                    .with_fix(fix)
-                    .with_why(format!(
-                        "`{}` picks one of the items it's lent and hands it back. A `{}` isn't Copy, so the answer would be a second owner of what {} holds and frees, and `{}` won't deep-clone it on your behalf [type.sequence/SEQ47]",
-                        terminal, elem, owner, terminal
-                    ))
-            }
-
             ToVecOfLentItems { elem, adapter } => {
                 Diagnostic::error(format!("`to_vec` has nothing it may move — `{}` is lent, not owned", elem))
                     .with_code("E0905")

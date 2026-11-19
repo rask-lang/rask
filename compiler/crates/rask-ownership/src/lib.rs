@@ -819,54 +819,6 @@ impl<'a> OwnershipChecker<'a> {
         });
     }
 
-    /// type.sequence/SEQ47 for the terminals that answer with one of the
-    /// items (`find`, `reduce`, `min_by_key`, …). Over a Vec, or a chain that
-    /// only lends, that item is still the source's, so for a type that isn't
-    /// Copy the answer would be a second owner of it.
-    ///
-    /// Unchecked, `vv.find(|v| v.len() == 1)` over `Vec<Vec<i64>>` handed back
-    /// the inner vector `vv` still held, and natively both freed it (#2028).
-    fn check_pick_has_owned_item(&mut self, expr: &Expr, object: &Expr, terminal: &str) {
-        let on_vec = self
-            .node_ty(&object.id)
-            .and_then(|t| self.type_name_of(t))
-            .is_some_and(|n| n == "Vec");
-        if !on_vec && Self::lending_adapter(object).is_none() {
-            return;
-        }
-        let mut elem = match self.node_ty(&expr.id) {
-            Some(Type::Result { ok, err }) if **err == Type::None => (**ok).clone(),
-            _ => return,
-        };
-        if Self::chain_has(object, "enumerate") {
-            if let Type::Tuple(parts) = &elem {
-                if let [_, lent] = parts.as_slice() {
-                    elem = lent.clone();
-                }
-            }
-        }
-        // A type parameter is the instantiation's to judge, as in E0872.
-        if matches!(elem, Type::Var(_) | Type::UnresolvedNamed(_))
-            || self.is_copy(&elem)
-            || Self::is_boxed_interface(&elem)
-        {
-            return;
-        }
-        let mut source = object;
-        while let ExprKind::MethodCall { object, .. } = &source.kind {
-            source = object;
-        }
-        self.errors.push(OwnershipError {
-            kind: OwnershipErrorKind::PickOfLentItem {
-                terminal: terminal.to_string(),
-                elem: format!("{}", self.program.types.resolve_type_names(&elem)),
-                holder: Self::render_place(source),
-                on_vec,
-            },
-            span: expr.span,
-        });
-    }
-
     /// type.sequence/SEQ47 for `Vec.zip`: it borrows both vectors and builds
     /// pairs that own what they hold, so each side has to be something a
     /// copy can produce. For a vector of vectors nothing could: the pairs and
@@ -3864,13 +3816,6 @@ impl<'a> OwnershipChecker<'a> {
                 if method == "to_vec" && args.is_empty() {
                     self.check_to_vec_has_owned_items(expr, object);
                 }
-                if matches!(
-                    method.as_str(),
-                    "find" | "reduce" | "min" | "max" | "min_by" | "max_by" | "min_by_key" | "max_by_key"
-                ) && args.len() <= 1
-                {
-                    self.check_pick_has_owned_item(expr, object, method);
-                }
                 if method == "zip" && args.len() == 1 {
                     self.check_zip_items_copy(expr);
                 }
@@ -4860,6 +4805,9 @@ impl<'a> OwnershipChecker<'a> {
                             self.parts.remove(name);
                         }
                     }
+                    // `if rows.get(1)? as m` reads the element where it sits,
+                    // as `let m = rows.get(1)!` does.
+                    self.record_lent_binding(name, inner);
                     if let Some(ty) = self.node_ty(&inner.id).cloned() {
                         let narrowed = ty.as_option().cloned().unwrap_or(ty);
                         // SL1: `o? as g` hands `g` any limit `o` carries.
@@ -5988,6 +5936,38 @@ impl<'a> OwnershipChecker<'a> {
         self.lent_value_where(expr, &|this, ty| this.lendable_payload(ty))
     }
 
+    /// A terminal that answers with one of the items it was lent: `find`,
+    /// `min`, `max` and their `_by` and `_by_key` forms over a vector, or over
+    /// a chain of adapters that only hand on what they were given. The answer
+    /// is the item where it sits, the same as `get`'s (type.sequence/SEQ34).
+    /// Answers with the expression that holds it.
+    ///
+    /// A `map` (or anything else that makes values) between the terminal and
+    /// the source gives the chain items of its own, which the terminal may
+    /// hand on (SEQ47). A `Sequence` held in a name lends: the frame can't
+    /// see what built it, and a yield lends unless the chain is seen to own.
+    fn picks_lent_item<'e>(&self, object: &'e Expr, method: &str) -> Option<&'e Expr> {
+        const PICKS: &[&str] =
+            &["find", "min", "max", "min_by", "max_by", "min_by_key", "max_by_key"];
+        const LENDS: &[&str] =
+            &["filter", "take", "skip", "take_while", "skip_while", "as_sequence"];
+        if !PICKS.contains(&method) {
+            return None;
+        }
+        let mut cur = object;
+        while let ExprKind::MethodCall { object: inner, method, .. } = &cur.kind {
+            if !LENDS.contains(&method.as_str()) {
+                break;
+            }
+            cur = inner;
+        }
+        if let ExprKind::MethodCall { .. } = &cur.kind {
+            return None;
+        }
+        let head = self.type_name_of(self.node_ty(&cur.id)?)?;
+        matches!(head.as_str(), "Vec" | "Sequence").then_some(cur)
+    }
+
     /// `lent_value`, asking `payload_ok` which payloads count.
     fn lent_value_where(
         &self,
@@ -5998,14 +5978,18 @@ impl<'a> OwnershipChecker<'a> {
             ExprKind::MethodCall { object, method, args, .. } => {
                 let recv = self.node_ty(&object.id)?;
                 let head = self.type_name_of(recv)?;
-                let (_, _, clone_form) = Self::LENDING_METHODS
+                let (holder_expr, head, clone_form) = match Self::LENDING_METHODS
                     .iter()
-                    .find(|(t, m, _)| *t == head && m == method)?;
+                    .find(|(t, m, _)| *t == head && m == method)
+                {
+                    Some((_, _, clone_form)) => (object.as_ref(), head, *clone_form),
+                    None => (self.picks_lent_item(object, method)?, head, None),
+                };
                 let ty = self.node_ty(&expr.id)?;
                 if !payload_ok(self, ty) {
                     return None;
                 }
-                let source = Self::render_place(object).unwrap_or_else(|| head.to_lowercase());
+                let source = Self::render_place(holder_expr).unwrap_or_else(|| head.to_lowercase());
                 let written = if args.is_empty() { "()" } else { "(…)" };
                 Some(LentValue {
                     call: format!("{}.{}{}", source, method, written),
@@ -8956,11 +8940,11 @@ impl<'a> OwnershipChecker<'a> {
         if self.pay_moved_field(arg_expr) {
             return;
         }
-        // `out.push(m.get(k)!)`: a binding is answered by its own state below;
-        // a lookup written in place has no binding to mark.
-        if !matches!(arg_expr.kind, ExprKind::Ident(_)) {
-            self.check_lent_value_taken(arg_expr, sink.unwrap_or("this call"));
-        }
+        // `out.push(m.get(k)!)`, or the same through a name bound to the
+        // lookup (`let m = rows.get(1)!; out.push(m)`). The name's own state
+        // says nothing about the lookup: it moved like any binding, and the
+        // vector and `out` both freed the element.
+        self.check_lent_value_taken(arg_expr, sink.unwrap_or("this call"));
         if let ExprKind::Ident(name) = &arg_expr.kind {
             // An `Owned` box reads as its payload, so a small payload made the
             // binding look Copy and `drop(p)` consumed nothing — the leak was

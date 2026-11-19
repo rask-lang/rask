@@ -324,7 +324,7 @@ Terminals drive the chain to completion (or short-circuit) and produce a value.
 <!-- test: skip -->
 ```rask
 let total = orders.map(|o| o.amount).sum()
-let first_big = orders.map(|o| o.amount).find(|a| a > 1000)
+let admin = users.find(|u| u.is_admin)
 let active = users.filter(|u| u.active).map(|u| u.clone()).to_vec()
 ```
 
@@ -348,7 +348,7 @@ Every terminal that builds a collection names the collection it builds. There is
 | **SEQ30: `join(sep)` builds a `string`** | Defined only on sequences of text: `Sequence<string>` and `Sequence<StringSlice>`. This is the third materializing target and it does not read as a "collect" at all — evidence that the polymorphic version was never the right shape |
 | **SEQ30a: `to_strings()` keeps a sequence of slices** | Defined only on `Sequence<StringSlice>` — what `split`, `lines` and `split_whitespace` yield (std.strings/S2). Each slice is copied into a `Vec<string>`. `to_vec()` there would make a `Vec<StringSlice>`, which `type.temporary/TM2` refuses like any container of a temporary. `join` works on that sequence too, without copying the pieces first |
 | **SEQ31: No generic target** | There is no `collect()`, no `collect<C>()`, no `FromSequence` interface, no turbofish. Adding a materializing target means adding a named terminal to this table |
-| **SEQ47: Terminals never clone for you** | `to_vec` copies a `Copy` element and moves an element the chain owns. It does **not** deep-clone: a chain that only lends non-`Copy` items has nothing it may give away, and asking for a `Vec` of them is a compile error telling you to clone. `map` is the ownership boundary — the values a `map` closure returns belong to the chain, so `.map(\|u\| u.clone()).to_vec()` clones exactly once, where you wrote it. `Vec.zip` follows the same rule: it lends both vectors, so both element types have to be `Copy`. For anything else, pair by index and write the clone. The terminals that answer with one of the items (`find`, `reduce`, `min`, `max` and the `_by`/`_by_key` forms) follow it too. Over a Vec or a lending chain the item is still the source's, so a non-`Copy` answer would be a second owner of it, and that's a compile error. To keep one element of a Vec, find its index with `position` and clone that one; for the rest, clone in a `map` first |
+| **SEQ47: `to_vec` never clones for you** | `to_vec` copies a `Copy` element and moves an element the chain owns. It does **not** deep-clone: a chain that only lends non-`Copy` items has nothing it may give away, and asking for a `Vec` of them is a compile error telling you to clone. `map` is the ownership boundary — the values a `map` closure returns belong to the chain, so `.map(\|u\| u.clone()).to_vec()` clones exactly once, where you wrote it. `Vec.zip` follows the same rule: it lends both vectors, so both element types have to be `Copy`. For anything else, pair by index and write the clone |
 | **SEQ32: Terminals borrow, they don't consume** | `to_*`, never `into_*`. A `Sequence<T>` is a function value and survives the call, so `to_vec()` twice runs the traversal twice (SEQ11). The `to_*` prefix already means "non-consuming, allocates" (`canonical-patterns`) |
 | **SEQ33: `Vec.from` / `Map.from` stay array-only** | The static constructors take array literals (`std.collections`). They do not take a `Sequence<T>`. One operation, one spelling (`std.api/SD5`) |
 

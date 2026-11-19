@@ -1931,12 +1931,20 @@ impl<'a> MirLowerer<'a> {
             else_block: combine_block,
         }));
 
+        // The seed is the element where it sits, so it goes into the
+        // accumulator on a way of its own: stored into the option there, it
+        // is a view handed to a keeper, and `rc_insert` gives the accumulator
+        // its own copy. Joined with the closure's answer on the way into
+        // `store_block`, it was half view and half owned, so nobody copied it
+        // and replacing the accumulator freed the source's first element.
         self.builder.switch_to_block(seed_block);
+        let seeded = self.builder.alloc_temp(opt_ty.clone());
+        self.fill_present(seeded, final_op.clone());
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-            dst: next,
-            rvalue: MirRValue::Use(final_op.clone()),
+            dst: acc,
+            rvalue: MirRValue::Use(MirOperand::Local(seeded)),
         }));
-        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: store_block }));
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: setup.inc_block }));
 
         self.builder.switch_to_block(combine_block);
         let acc_name = &params[0].name;

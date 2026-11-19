@@ -313,8 +313,14 @@ fn call_keeps_arg(fref: &crate::FunctionRef, i: usize, kept: &HashMap<String, Ve
 /// frame owns is handed over instead, and `insert_aggregate_release` stops
 /// releasing it. The checker only lets a Copy value be given away from a
 /// borrow (`mem.parameters/PM6`, `type.sequence/SEQ47`), and a Copy aggregate
-/// holds no container, so what this retains is strings — and the count on a
-/// box, which a derived container shares rather than copies.
+/// holds no container, so what this retains in written code is strings, and
+/// the count on a box, which a derived container shares rather than copies.
+///
+/// Generic code is the exception: `best = x` in `Sequence.max_by_key` keeps a
+/// yielded item for any `T`, and with `T` a `Vec` that item is the source's
+/// element. A bare vector or map has no count to take, so its keeper gets a
+/// clone, the same one `rask_owned_retain` makes of a container nested in an
+/// aggregate (#2028).
 fn retain_views_handed_over(
     func: &mut MirFunction,
     kept: &HashMap<String, Vec<bool>>,
@@ -347,6 +353,15 @@ fn retain_views_handed_over(
     // way in; retaining on the view's edge would make every join owned
     // (#1904).
     let mut views: HashSet<LocalId> = HashSet::new();
+    // A bare vector or map is in the set too: it can't take a reference, so
+    // a keeper gets a clone of it (below).
+    let container_clone = |l: &LocalId| match ty_of.get(l) {
+        Some(MirType::Container(crate::types::ContainerKind::Vec)) => Some("Vec_clone"),
+        Some(MirType::Container(crate::types::ContainerKind::Map)) => Some("Map_clone"),
+        _ => None,
+    };
+    let mut next_local = func.locals.iter().chain(func.params.iter()).map(|l| l.id.0 + 1).max().unwrap_or(0);
+    let mut new_locals: Vec<crate::MirLocal> = Vec::new();
     // A parameter the caller didn't give up is the caller's storage: a
     // borrowed or `mutate` one reaches a keeper only as a copy of a Copy
     // value (or, `mutate`, moved out and refilled), and the caller still
@@ -393,7 +408,7 @@ fn retain_views_handed_over(
             };
             // A copy that took references of its own isn't a view: handing
             // it over hands those references on.
-            if let Some(d) = found.filter(|d| is_aggregate(d) && !owns_copy.contains(d)) {
+            if let Some(d) = found.filter(|d| (is_aggregate(d) || container_clone(d).is_some()) && !owns_copy.contains(d)) {
                 if views.insert(d) {
                     changed = true;
                 }
@@ -430,7 +445,7 @@ fn retain_views_handed_over(
     }
 
     for block in &mut func.blocks {
-        let mut insertions: Vec<(usize, LocalId)> = Vec::new();
+        let mut insertions: Vec<(usize, LocalId, Option<usize>)> = Vec::new();
         // A value the frame owns, handed to a keeper while the frame still
         // reads it afterwards, is a Copy value copied there: the checker
         // rejects any use of a non-Copy value after it moves. The keeper
@@ -504,7 +519,7 @@ fn retain_views_handed_over(
                         if call_keeps_arg(fref, i, kept)
                             && copies(si, id, None, &block.statements, &block.terminator)
                         {
-                            insertions.push((si, id));
+                            insertions.push((si, id, Some(si)));
                         }
                     }
                 }
@@ -516,7 +531,7 @@ fn retain_views_handed_over(
                         if closure_keeps(&func_name, *closure, i, args.len())
                             && copies(si, id, None, &block.statements, &block.terminator)
                         {
-                            insertions.push((si, id));
+                            insertions.push((si, id, Some(si)));
                         }
                     }
                 }
@@ -540,7 +555,15 @@ fn retain_views_handed_over(
                         (Some(MirStmtKind::ReleaseSlot { .. }), MirStmtKind::ArrayStore { .. }) => si - 1,
                         _ => si,
                     };
-                    insertions.push((at, *v));
+                    // A vector stored into a slot that never gives back a
+                    // container (the `(i64, ptr)` pair `enumerate` builds per
+                    // item) is still a view there, and a clone would leak.
+                    if container_clone(v).is_some()
+                        && !ty_of.get(addr).is_some_and(|t| aggregate_may_hold_string(t) || wraps_a_container(t))
+                    {
+                        continue;
+                    }
+                    insertions.push((at, *v, Some(si)));
                 }
                 _ => {}
             }
@@ -552,13 +575,56 @@ fn retain_views_handed_over(
             &block.terminator.kind
         {
             if views.contains(id) {
-                insertions.push((block.statements.len(), *id));
+                insertions.push((block.statements.len(), *id, None));
             }
         }
-        for (idx, local) in insertions.into_iter().rev() {
+        for (idx, local, target) in insertions.into_iter().rev() {
             let span = block.statements.get(idx).map(|s| s.span).unwrap_or(block.terminator.span);
+            // A vector or a map has one owner, so the keeper's copy is a clone
+            // of its own, the same one `rask_owned_retain` makes of a
+            // container nested in an aggregate. The keeper gets the clone in
+            // the view's place.
+            if let Some(clone) = container_clone(&local) {
+                let copy = LocalId(next_local);
+                next_local += 1;
+                new_locals.push(crate::MirLocal { id: copy, name: None, ty: ty_of[&local].clone(), is_param: false });
+                block.statements.insert(idx, MirStmt::new(MirStmtKind::Call {
+                    dst: Some(copy),
+                    func: crate::FunctionRef::internal(clone.to_string()),
+                    args: vec![MirOperand::Local(local)],
+                }, span));
+                match target {
+                    Some(si) => {
+                        let at = if idx <= si { si + 1 } else { si };
+                        hand_copy_on(&mut block.statements[at].kind, local, copy);
+                    }
+                    None => {
+                        if let MirTerminatorKind::Return { value: Some(v) }
+                        | MirTerminatorKind::CleanupReturn { value: Some(v), .. } = &mut block.terminator.kind
+                        {
+                            *v = MirOperand::Local(copy);
+                        }
+                    }
+                }
+                continue;
+            }
             block.statements.insert(idx, MirStmt::new(MirStmtKind::RcIncContents { local, for_hand_off: true }, span));
         }
+    }
+    func.locals.extend(new_locals);
+}
+
+/// Give the keeper in `kind` the clone `copy` in place of the view `view`.
+fn hand_copy_on(kind: &mut MirStmtKind, view: LocalId, copy: LocalId) {
+    let swap = move |op: &mut MirOperand| {
+        if uses::operand_local(op) == Some(view) {
+            *op = MirOperand::Local(copy);
+        }
+    };
+    match kind {
+        MirStmtKind::Store { value, .. } | MirStmtKind::ArrayStore { value, .. } => swap(value),
+        MirStmtKind::Call { args, .. } | MirStmtKind::ClosureCall { args, .. } => args.iter_mut().for_each(swap),
+        _ => {}
     }
 }
 

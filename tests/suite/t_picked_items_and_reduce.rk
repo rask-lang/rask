@@ -1,0 +1,73 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+import sequence.Sequence
+
+// Terminals that pick an item out of a vector of vectors, and `reduce` over
+// one. Natively `find`, `max_by_key` and friends freed the vector's own
+// element when their answer went (#2028), and `reduce` freed the first element
+// when the closure's answer replaced it as the accumulator.
+
+func longest(rows: Sequence<Vec<i64>>) -> u64 {
+    return (rows.max_by_key(|r| r.len()) ?? Vec.new()).len()
+}
+
+func first_short(rows: Sequence<Vec<i64>>) -> u64 {
+    return (rows.find(|r| r.len() < 2) ?? Vec.new()).len()
+}
+
+struct Named {
+    first: string
+    last: string
+    note: string
+}
+
+test "picking an item reads it where it sits" {
+    let rows: Vec<Vec<i64>> = [[1, 2], [3], [4, 5, 6]]
+    assert (rows.find(|r| r.len() > 2) ?? Vec.new()).len() == 3
+    assert (rows.filter(|r| r.len() < 3).max_by_key(|r| r.len()) ?? Vec.new()).len() == 2
+    assert (rows.skip(1).min_by_key(|r| r.len()) ?? Vec.new()).len() == 1
+    assert longest(rows.as_sequence()) == 3
+    assert first_short(rows.as_sequence()) == 1
+    if rows.enumerate().find(|p| p.0 == 2)? as p {
+        assert p.1.len() == 3
+    }
+    assert rows[0].len() == 2
+}
+
+test "a picked copy is the caller's" {
+    let rows: Vec<Vec<i64>> = [[1, 2], [3], [4, 5, 6]]
+    mut keep: Vec<Vec<i64>> = Vec.new()
+    if rows.map(|r| r.clone()).max_by_key(|r| r.len())? as m {
+        keep.push(m)
+    }
+    assert keep[0].len() == 3
+    assert rows[2].len() == 3
+}
+
+test "reduce leaves the source whole" {
+    let rows: Vec<Vec<i64>> = [[1, 2], [3], [4, 5, 6]]
+    let r = rows.reduce(|a, b| if b.len() > a.len() { b.clone() } else { a.clone() })
+    assert (r ?? Vec.new()).len() == 3
+    assert rows[0].len() == 2
+    let one: Vec<Vec<i64>> = [[9, 9]]
+    assert (one.reduce(|a, b| a.clone()) ?? Vec.new()).len() == 2
+    assert one[0].len() == 2
+    let empty: Vec<Vec<i64>> = Vec.new()
+    assert (empty.reduce(|a, b| a.clone()) ?? Vec.new()).len() == 0
+}
+
+test "reduce over strings and structs keeps the source's" {
+    let n = 7
+    let words: Vec<string> = ["a word long enough for the heap {n}", "short {n}"]
+    let w = words.reduce(|a, b| if b.len() > a.len() { b.clone() } else { a.clone() })
+    assert (w ?? "") == "a word long enough for the heap 7"
+    assert words[0] == "a word long enough for the heap 7"
+    mut people: Vec<Named> = Vec.new()
+    people.push(Named(first: "a first name past sixteen bytes {n}", last: "x", note: "y"))
+    people.push(Named(first: "b first name past sixteen bytes {n}", last: "x", note: "y"))
+    let p = people.reduce(|a, b| if b.first > a.first { b.clone() } else { a.clone() })
+    if p? as q {
+        assert q.first == "b first name past sixteen bytes 7"
+    }
+    assert people[0].first == "a first name past sixteen bytes 7"
+}

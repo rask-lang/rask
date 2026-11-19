@@ -213,20 +213,6 @@ pub enum OwnershipErrorKind {
         adapter: String,
     },
 
-    /// type.sequence/SEQ47: a terminal that answers with one of the items
-    /// (`find`, `reduce`, `max_by_key`, …), over items that are only lent and
-    /// aren't Copy. The answer would be a second owner of the source's item.
-    #[error("`{terminal}` would hand back a `{elem}` that is lent, not owned")]
-    PickOfLentItem {
-        terminal: String,
-        /// The item type, as written for the reader.
-        elem: String,
-        /// The chain's source, when it's a place.
-        holder: Option<String>,
-        /// Called on the Vec itself, where `position` finds the index.
-        on_vec: bool,
-    },
-
     /// type.sequence/SEQ47: `Vec.zip` over elements that aren't Copy. It
     /// lends both vectors, so a pair has no element of its own to hold.
     #[error("`zip` can't pair `{elem}` — both vectors only lend their elements")]
