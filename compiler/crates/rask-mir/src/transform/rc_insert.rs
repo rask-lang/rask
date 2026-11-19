@@ -829,7 +829,20 @@ fn insert_aggregate_release(
             _ => None,
         })
         .collect();
-    // The aggregate each of those addresses points into.
+    // Addresses into an aggregate: the ones a take goes through, and the
+    // ones an element is bound at (`arr + i * 24` for an array walk). Either
+    // reaches into the aggregate, which has to outlive it.
+    let inner_addresses: HashSet<LocalId> = func
+        .blocks
+        .iter()
+        .flat_map(|b| b.statements.iter())
+        .filter_map(|st| match &st.kind {
+            MirStmtKind::BindPlace { addr, .. } => Some(*addr),
+            _ => None,
+        })
+        .chain(take_addresses.iter().copied())
+        .collect();
+    // The aggregate each take address points into.
     let take_bases: HashMap<LocalId, LocalId> = func
         .blocks
         .iter()
@@ -921,11 +934,11 @@ fn insert_aggregate_release(
                     .filter(|v| tracked.contains(v) && !aggregates.contains(v) && !aggregates.contains(addr))
                     .map(|_| *addr),
                 MirStmtKind::BindPlace { dst, addr } => tracked.contains(addr).then_some(*dst),
-                // The address `Field_take` reads and zeroes through.
+                // An address into a tracked aggregate.
                 MirStmtKind::Assign {
                     dst,
                     rvalue: MirRValue::BinaryOp { op: crate::operand::BinOp::Add, left: MirOperand::Local(base), .. },
-                } if take_addresses.contains(dst) => tracked.contains(base).then_some(*dst),
+                } if inner_addresses.contains(dst) => tracked.contains(base).then_some(*dst),
                 MirStmtKind::ClosureCreate { dst, .. } | MirStmtKind::InterfaceBox { dst, .. } => {
                     Some(*dst)
                 }
@@ -1256,7 +1269,7 @@ fn insert_aggregate_release(
                 MirStmtKind::Assign {
                     dst,
                     rvalue: MirRValue::BinaryOp { op: crate::operand::BinOp::Add, left: MirOperand::Local(base), .. },
-                } if take_addresses.contains(dst) && is_tracked(dst) && is_tracked(base) => {
+                } if inner_addresses.contains(dst) && is_tracked(dst) && is_tracked(base) => {
                     ev.push(ownership::Event::View { dst: *dst, base: *base });
                 }
                 // An element bound where it sits reaches into the collection

@@ -1171,15 +1171,8 @@ impl<'a> MirLowerer<'a> {
         // body: load element
         self.builder.switch_to_block(body_block);
         let elem_local = self.builder.alloc_temp(elem_ty.clone());
-        if let Some(elem_size) = array_elem_size {
-            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                dst: elem_local,
-                rvalue: MirRValue::ArrayIndex {
-                    base: MirOperand::Local(collection),
-                    index: MirOperand::Local(idx),
-                    elem_size,
-                },
-            }));
+        if array_elem_size.is_some() {
+            self.read_array_element(elem_local, collection, idx, &elem_ty);
         } else {
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: Some(elem_local),
@@ -1445,7 +1438,8 @@ impl<'a> MirLowerer<'a> {
     /// the push is a hand-over of a view, which takes a reference of its own
     /// the way any view given to a keeper does (`rc_insert`). Before that, a
     /// lent chain built a vector that owned nothing, so describing its
-    /// elements released what the source still held (#1419).
+    /// elements released what the source still held (#1419). Over a vector
+    /// made for the chain each item is moved out of it (`chain_owns_items`).
     pub(super) fn lower_iter_collect(
         &mut self,
         chain: &super::IterChain<'_>,
@@ -1477,6 +1471,7 @@ impl<'a> MirLowerer<'a> {
         self.builder.set_call(vec_new_pos.0, vec_new_pos.1, "Vec_new", &ctor.name, args);
         self.collected_elem_types.insert(result_vec, slot_ty.clone());
 
+        let final_op = self.owned_item(chain, &setup, final_op, &final_ty);
         let final_op = self.as_slot_value(final_op, &slot_ty);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: None,
@@ -2082,7 +2077,8 @@ impl<'a> MirLowerer<'a> {
         // and replacing the accumulator freed the source's first element.
         self.builder.switch_to_block(seed_block);
         let seeded = self.builder.alloc_temp(opt_ty.clone());
-        self.fill_present(seeded, final_op.clone());
+        let seed = self.owned_item(chain, &setup, final_op.clone(), &final_ty);
+        self.fill_present(seeded, seed);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
             dst: acc,
             rvalue: MirRValue::Use(MirOperand::Local(seeded)),
@@ -2144,8 +2140,54 @@ impl<'a> MirLowerer<'a> {
         Ok((MirOperand::Local(acc), opt_ty))
     }
 
+    /// A chain over a vector made for it (`load().find(p)`,
+    /// `v.take_all().to_vec()`) owns its items: nothing else holds that
+    /// vector, so a terminal that keeps an item moves it out and the vector's
+    /// free releases the rest (type.sequence/SEQ47). Only through adapters
+    /// that hand on the element itself; an `enumerate` pair or a `map`'s value
+    /// is built around it.
+    ///
+    /// A function's result is its caller's (mem.borrowing/S3), and a lookup
+    /// that lends (`rows.get(i)`) answers an option, never a bare `Vec`, so a
+    /// call typed `Vec` is a vector made for the chain.
+    pub(super) fn chain_owns_items(&self, chain: &super::IterChain<'_>) -> bool {
+        matches!(chain.source.kind, ExprKind::Call { .. } | ExprKind::MethodCall { .. })
+            && self
+                .checked_type_of(chain.source)
+                .is_some_and(|t| self.generic_head(&t).is_some_and(|(name, _)| name == "Vec"))
+            && chain.adapters.iter().all(|a| matches!(
+                a,
+                super::IterAdapter::Filter { .. }
+                    | super::IterAdapter::Skip { .. }
+                    | super::IterAdapter::Take { .. }
+                    | super::IterAdapter::TakeWhile { .. }
+                    | super::IterAdapter::SkipWhile { .. }
+            ))
+    }
+
+    /// The item a keeping terminal stores: moved out of the vector when the
+    /// chain owns its items, else `item` as the chain yields it.
+    fn owned_item(
+        &mut self,
+        chain: &super::IterChain<'_>,
+        setup: &IterLoopSetup,
+        item: MirOperand,
+        item_ty: &MirType,
+    ) -> MirOperand {
+        if !self.chain_owns_items(chain) {
+            return item;
+        }
+        let moved = self.builder.alloc_temp(self.handed_over_elem(chain.source, item_ty.clone()));
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+            dst: Some(moved),
+            func: FunctionRef::like("Vec_move_out", "Vec_remove"),
+            args: vec![MirOperand::Local(setup.collection), MirOperand::Local(setup.idx)],
+        }));
+        MirOperand::Local(moved)
+    }
+
     /// A pick (`find`, `min`/`max`, `_by`, `_by_key`) over a vector held in a
-    /// place, or over `take_all()`, fused into one loop that remembers where
+    /// place, or over a vector made for the chain, fused into one loop that remembers where
     /// the winner sits (type.sequence/SEQ34).
     ///
     /// Over a held vector the answer is the element where it sits, read with
@@ -2176,12 +2218,12 @@ impl<'a> MirLowerer<'a> {
         if enumerates > 1 || chain.adapters.iter().any(|a| matches!(a, super::IterAdapter::Map { .. })) {
             return Ok(None);
         }
-        let takes = Self::is_take_all_call(chain.source);
+        let takes = self.chain_owns_items(chain);
         let held = matches!(chain.source.kind, ExprKind::Ident(_) | ExprKind::Field { .. } | ExprKind::Index { .. });
-        let on_vec = self
-            .checked_type_of(chain.source)
-            .is_some_and(|t| self.generic_head(&t).is_some_and(|(name, _)| name == "Vec"));
-        if !on_vec || !(held || (takes && enumerates == 0)) {
+        let on_vec = self.checked_type_of(chain.source).is_some_and(|t| {
+            matches!(t, Type::Array { .. }) || self.generic_head(&t).is_some_and(|(name, _)| name == "Vec")
+        });
+        if !on_vec || !(held || takes) {
             return Ok(None);
         }
         let f = args.first().map(|a| &a.expr);
@@ -2196,8 +2238,11 @@ impl<'a> MirLowerer<'a> {
             dst: found_pos,
             rvalue: MirRValue::Use(MirOperand::Constant(MirConst::Int(0))),
         }));
-        // The winner's key, for `_by_key`; typed once the key is lowered.
+        // The winner's key, for `_by_key`: `none` until the first take, so
+        // replacing it never releases a key nobody computed. Typed, and set
+        // to `none` here before the loop, once the key is lowered.
         let best_key = self.builder.alloc_temp(MirType::I64);
+        let before_loop = self.builder.current_block();
 
         let fns: Vec<&Expr> = f.into_iter().collect();
         let setup = self.setup_iter_chain_loop_calling(chain, &fns)?;
@@ -2224,7 +2269,11 @@ impl<'a> MirLowerer<'a> {
                         dst: k_local,
                         rvalue: MirRValue::Use(k),
                     }));
-                    self.builder.set_local_type(best_key, k_ty.clone());
+                    self.builder.set_local_type(best_key, MirType::Option(Box::new(k_ty.clone())));
+                    let here = self.builder.current_block();
+                    self.builder.switch_to_block(before_loop);
+                    self.fill_absent(best_key);
+                    self.builder.switch_to_block(here);
                     Some((k_local, k_ty))
                 } else {
                     None
@@ -2249,10 +2298,18 @@ impl<'a> MirLowerer<'a> {
                 let beats = match &key {
                     // Ties keep the first item seen, so the test is strict.
                     Some((k, k_ty)) => {
-                        if want_max {
-                            self.emit_ordered_less(k_ty, MirOperand::Local(best_key), MirOperand::Local(*k))
+                        let opt_ty = MirType::Option(Box::new(k_ty.clone()));
+                        let best = self.builder.alloc_temp(k_ty.clone());
+                        let rvalue = if rask_layout::wrapper_of(&opt_ty, self.ctx.target()).is_none() {
+                            MirRValue::Use(MirOperand::Local(best_key))
                         } else {
-                            self.emit_ordered_less(k_ty, MirOperand::Local(*k), MirOperand::Local(best_key))
+                            self.payload_field(MirOperand::Local(best_key), &opt_ty, k_ty)
+                        };
+                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign { dst: best, rvalue }));
+                        if want_max {
+                            self.emit_ordered_less(k_ty, MirOperand::Local(best), MirOperand::Local(*k))
+                        } else {
+                            self.emit_ordered_less(k_ty, MirOperand::Local(*k), MirOperand::Local(best))
                         }
                     }
                     None => {
@@ -2292,10 +2349,7 @@ impl<'a> MirLowerer<'a> {
                 if let Some((k, _)) = key {
                     // The key goes with the winner.
                     self.builder.switch_to_block(take_block);
-                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                        dst: best_key,
-                        rvalue: MirRValue::Use(MirOperand::Local(k)),
-                    }));
+                    self.fill_present(best_key, MirOperand::Local(k));
                     let rest = self.builder.create_block();
                     self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: rest }));
                     return self.finish_pick(call, chain, &setup, rest, found, found_pos, enumerates > 0, takes, false).map(Some);
@@ -2335,7 +2389,8 @@ impl<'a> MirLowerer<'a> {
         self.emit_iter_increment(setup.idx, setup.inc_block, setup.check_block);
         self.builder.switch_to_block(setup.exit_block);
 
-        if !takes && !enumerated {
+        let on_array = matches!(self.builder.local_type(setup.collection), Some(MirType::Array { .. }));
+        if !takes && !enumerated && !on_array {
             // `Vec_get` answers `none` for -1.
             let opt_ty = match self.ctx.lookup_raw_type(call.id) {
                 Some(t) => self.ctx.type_to_mir(&t),
@@ -2352,8 +2407,10 @@ impl<'a> MirLowerer<'a> {
 
         let payload_ty = if takes {
             self.handed_over_elem(chain.source, setup.elem_ty.clone())
-        } else {
+        } else if enumerated {
             MirType::Tuple(vec![MirType::I64, setup.elem_ty.borrowed()])
+        } else {
+            setup.elem_ty.borrowed()
         };
         let opt_ty = MirType::Option(Box::new(payload_ty.clone()));
         let answer = self.builder.alloc_temp(opt_ty.clone());
@@ -2387,7 +2444,7 @@ impl<'a> MirLowerer<'a> {
             }));
             MirOperand::Local(moved)
         } else {
-            self.pick_winner(setup, found, found_pos, true)
+            self.pick_winner(setup, found, found_pos, enumerated)
         };
         self.fill_present(answer, value);
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: done_block }));
@@ -2399,11 +2456,16 @@ impl<'a> MirLowerer<'a> {
     /// element, or the `enumerate` pair around it.
     fn pick_winner(&mut self, setup: &IterLoopSetup, found: LocalId, found_pos: LocalId, enumerated: bool) -> MirOperand {
         let elem = self.builder.alloc_temp(setup.elem_ty.clone());
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-            dst: Some(elem),
-            func: FunctionRef::like("Vec_index", "Vec_get"),
-            args: vec![MirOperand::Local(setup.collection), MirOperand::Local(found)],
-        }));
+        match self.builder.local_type(setup.collection) {
+            Some(MirType::Array { elem: of, .. }) => {
+                self.read_array_element(elem, setup.collection, found, &of);
+            }
+            _ => self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                dst: Some(elem),
+                func: FunctionRef::like("Vec_index", "Vec_get"),
+                args: vec![MirOperand::Local(setup.collection), MirOperand::Local(found)],
+            })),
+        }
         if !enumerated {
             return MirOperand::Local(elem);
         }

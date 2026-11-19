@@ -690,6 +690,10 @@ struct FieldView {
     /// The declaration `root` resolves to, so a later binding that reuses the
     /// name isn't taken for it.
     root_sym: Option<u32>,
+    /// An element a container lent (`rows.get(i)`, `rows.find(p)`), not a
+    /// field read. Storing one is `check_lent_escape`'s question; here it
+    /// only stops the container changing under it.
+    lent: bool,
 }
 
 /// A non-Copy field read, as the place it reads.
@@ -728,6 +732,10 @@ struct LentValue {
     clone_form: Option<String>,
     /// The lookup itself, which may be several lines from the `return`.
     span: Span,
+    /// Where the element sits: the holder's root, the steps down to the
+    /// element, and the declaration the root resolves to. `None` when the
+    /// holder isn't a place.
+    place: Option<(String, Vec<String>, Option<u32>)>,
 }
 
 /// One live mutable capture: a closure binding and the variables its body writes.
@@ -981,10 +989,6 @@ impl<'a> OwnershipChecker<'a> {
     /// what's left.
     fn chain_head(&self, expr: &Expr) -> ChainHead {
         let cur = self.chain_source(expr);
-        // `take_all()` moves each element out of the collection (LP7).
-        if self.is_take_all(cur) {
-            return ChainHead::Owns;
-        }
         if let ExprKind::MethodCall { method, .. } = &cur.kind {
             // A `map` makes values for the chain, which are its own to give.
             if matches!(method.as_str(), "map" | "filter_map" | "flat_map") {
@@ -996,19 +1000,28 @@ impl<'a> OwnershipChecker<'a> {
             }
         }
         let Some(ty) = self.node_ty(&cur.id) else { return ChainHead::Unknown };
-        // A vector holds its elements where a pick can answer with one. A
-        // map's pairs are made by the walk, and an array's pick isn't
-        // answered in place natively, so both lend like any sequence.
-        let collection = matches!(self.type_name_of(ty).as_deref(), Some("Vec"));
+        let is_vec = matches!(self.type_name_of(ty).as_deref(), Some("Vec"));
+        // A vector made for the chain (`load().find(p)`, `v.take_all()`) is
+        // nobody else's, so its elements are the chain's to give: a call's
+        // result is its caller's (mem.borrowing/S3), and a lookup that lends
+        // answers an option, never a bare `Vec`. An `enumerate` pair is built
+        // around the element, and nothing moves it out of the vector first.
+        if is_vec
+            && matches!(cur.kind, ExprKind::Call { .. } | ExprKind::MethodCall { .. })
+            && !Self::chain_has_before(expr, cur, "enumerate")
+        {
+            return ChainHead::Owns;
+        }
         let head = Self::render_place(cur)
             .or_else(|| Self::call_text(cur))
             .unwrap_or_else(|| "the sequence".to_string());
-        // A collection made for the call (`rows().find(p)`) is gone with the
-        // statement, the same as the items a sequence makes.
-        if collection {
+        // A vector or an array held in a place holds its elements where a
+        // pick can answer with one (mem.borrowing/B1). A map's pairs are made
+        // by the walk, so they lend like any sequence's items.
+        if is_vec || matches!(ty, Type::Array { .. }) {
             return ChainHead::Lends { head, collection: Self::is_place(cur) };
         }
-        if matches!(ty, Type::Array { .. }) || matches!(self.type_name_of(ty).as_deref(), Some("Map" | "Sequence")) {
+        if matches!(self.type_name_of(ty).as_deref(), Some("Map" | "Sequence")) {
             return ChainHead::Lends { head, collection: false };
         }
         ChainHead::Unknown
@@ -1041,6 +1054,20 @@ impl<'a> OwnershipChecker<'a> {
     }
 
     /// Whether a chain passes through `adapter`.
+    /// Whether the adapters between `expr` and its source `cur` include
+    /// `adapter`.
+    fn chain_has_before(expr: &Expr, cur: &Expr, adapter: &str) -> bool {
+        let mut at = expr;
+        while !std::ptr::eq(at, cur) {
+            let ExprKind::MethodCall { object, method, .. } = &at.kind else { return false };
+            if method == adapter {
+                return true;
+            }
+            at = object;
+        }
+        false
+    }
+
     fn chain_has(expr: &Expr, adapter: &str) -> bool {
         let mut cur = expr;
         while let ExprKind::MethodCall { object, method, .. } = &cur.kind {
@@ -2574,6 +2601,10 @@ impl<'a> OwnershipChecker<'a> {
 
     /// Is `ty` a `leaf`, or does it hold one anywhere a value can sit: a tuple
     /// element, an option, a container, a struct or enum field?
+    ///
+    /// A `Link<T>` holds nothing: the node sits in its rack, and the link is a
+    /// pointer that copies (mem.racks/RK2). Walking into `T` made returning a
+    /// `Map<string, Link<Pkg>>` lookup read as handing out the node's vectors.
     fn type_holds(
         &self,
         ty: &Type,
@@ -2582,6 +2613,9 @@ impl<'a> OwnershipChecker<'a> {
     ) -> bool {
         if leaf(ty) {
             return true;
+        }
+        if self.is_link_type(ty) {
+            return false;
         }
         let def = |id: rask_types::TypeId, seen: &mut Vec<rask_types::TypeId>| -> bool {
             if seen.contains(&id) {
@@ -2775,7 +2809,7 @@ impl<'a> OwnershipChecker<'a> {
     /// tells lowering not to release it).
     fn field_view(&self, expr: &Expr) -> Option<FieldView> {
         if let ExprKind::Ident(name) = &expr.kind {
-            return self.field_views.get(name).cloned();
+            return self.field_views.get(name).filter(|v| !v.lent).cloned();
         }
         let view = self.non_copy_field_view(expr)?;
         if let Some((t_root, t_fields)) = &self.store_target {
@@ -2791,6 +2825,7 @@ impl<'a> OwnershipChecker<'a> {
             bound: None,
             block: self.current_block,
             root_sym: self.root_symbol(expr),
+            lent: false,
         })
     }
 
@@ -3045,6 +3080,7 @@ impl<'a> OwnershipChecker<'a> {
                     bound: Some((name.clone(), pattern.span)),
                     block: self.current_block,
                     root_sym,
+                    lent: false,
                 },
             );
             prior.push((name, outer));
@@ -3096,8 +3132,10 @@ impl<'a> OwnershipChecker<'a> {
                 bound: Some((name.to_string(), init.span)),
                 block: self.current_block,
                 root_sym: self.root_symbol(init),
+                lent: false,
             }),
         };
+        let view = view.or_else(|| self.lent_view(name, init, self.current_block));
         if let Some(v) = view {
             self.field_views.insert(name.to_string(), v);
         }
@@ -3428,6 +3466,11 @@ impl<'a> OwnershipChecker<'a> {
                     // What it holds now is whatever the assignment put there;
                     // a view stored this way is reported below.
                     self.field_views.remove(name);
+                    // A lent element lasts as long as the name does.
+                    let block = self.binding_decl_blocks.get(name).map_or(self.current_block, |d| d.block);
+                    if let Some(view) = self.lent_view(name, value, block) {
+                        self.field_views.insert(name.clone(), view);
+                    }
                 }
                 // A whole-variable assignment reinitializes the target — it is
                 // not a use of the old value, so don't flag a moved/maybe-moved
@@ -5055,6 +5098,9 @@ impl<'a> OwnershipChecker<'a> {
                     // `if rows.get(1)? as m` reads the element where it sits,
                     // as `let m = rows.get(1)!` does.
                     self.record_lent_binding(name, inner);
+                    if let Some(view) = self.lent_view(name, inner, self.current_block + 1) {
+                        self.field_views.insert(name.clone(), view);
+                    }
                     if let Some(ty) = self.node_ty(&inner.id).cloned() {
                         let narrowed = ty.as_option().cloned().unwrap_or(ty);
                         // SL1: `o? as g` hands `g` any limit `o` carries.
@@ -6221,7 +6267,10 @@ impl<'a> OwnershipChecker<'a> {
         match &expr.kind {
             ExprKind::MethodCall { object, method, args, .. } => {
                 let recv = self.node_ty(&object.id)?;
-                let head = self.type_name_of(recv)?;
+                let head = match recv {
+                    Type::Array { .. } => "array".to_string(),
+                    other => self.type_name_of(other)?,
+                };
                 let (holder_expr, head, clone_form) = match Self::LENDING_METHODS
                     .iter()
                     .find(|(t, m, _)| *t == head && m == method)
@@ -6246,6 +6295,7 @@ impl<'a> OwnershipChecker<'a> {
                     payload_ty: self.lent_payload_display(ty),
                     clone_form: clone_form.map(|c| c.to_string()),
                     span: expr.span,
+                    place: self.element_of(holder_expr),
                 })
             }
             // `rows[0]` is the same read `rows.get(0)` is, minus the `T?`.
@@ -6268,6 +6318,7 @@ impl<'a> OwnershipChecker<'a> {
                     payload_ty: self.lent_payload_display(ty),
                     clone_form: Some("get_clone".to_string()),
                     span: expr.span,
+                    place: self.element_of(object),
                 })
             }
             // The default side is fresh; the lookup side is not, and one path
@@ -6373,21 +6424,66 @@ impl<'a> OwnershipChecker<'a> {
     /// question with a different answer — those carry a count, and the fix for
     /// them is to take a reference on the read (#1035), not to reject the
     /// program.
+    ///
+    /// A container anywhere inside counts: a `Row { tags: Vec<string> }`
+    /// picked out of `rows` shares its `tags` buffer with the element, and so
+    /// does a tuple from `rows.enumerate().find(…)`.
     fn lendable_payload(&self, ty: &Type) -> bool {
-        match ty {
-            Type::Result { ok, err } if **err == Type::None => self.lendable_payload(ok),
-            // A closure is move-only (mem.closures/CV1): the element the
-            // lookup reads is still the container's, so handing it out is a
-            // second owner exactly as a `Vec` element is. `return fs[0]`
-            // compiled, and the caller couldn't know whether to free it.
-            Type::Fn { .. } => true,
-            // `rows.enumerate().find(…)` answers with an index and the
-            // element where it sits.
-            Type::Tuple(elems) => elems.iter().any(|t| self.lendable_payload(t)),
-            other => self
-                .type_name_of(other)
-                .is_some_and(|n| matches!(n.as_str(), "Vec" | "Map" | "Set")),
+        let ty = match ty {
+            Type::Result { ok, err } if **err == Type::None => ok.as_ref(),
+            other => other,
+        };
+        // A closure is move-only (mem.closures/CV1): the element the lookup
+        // reads is still the container's, so handing it out is a second owner
+        // exactly as a `Vec` element is. `return fs[0]` compiled, and the
+        // caller couldn't know whether to free it.
+        let leaf = |t: &Type| {
+            matches!(t, Type::Fn { .. })
+                || self.type_name_of(t).is_some_and(|n| matches!(n.as_str(), "Vec" | "Map" | "Set"))
+        };
+        self.type_holds(ty, &leaf, &mut Vec::new())
+    }
+
+    /// The element a holder lends, as a place: `rows` → `rows[…]`.
+    fn element_of(&self, holder: &Expr) -> Option<(String, Vec<String>, Option<u32>)> {
+        let (root, mut steps) = self.place_of(holder, true)?;
+        if !self.names_a_value(&root) {
+            return None;
         }
+        if !matches!(self.node_ty(&holder.id), Some(Type::Array { .. })) {
+            steps.push(replaces::ELEM.to_string());
+        }
+        Some((root, steps, self.root_symbol(holder)))
+    }
+
+    /// `let best = rows.find(p)`: `best` is the element where it sits, so
+    /// changing `rows` while `best` is in scope would free it under the
+    /// reader (mem.borrowing/S5, E0958). Any payload that isn't Copy: a
+    /// string the vector frees is gone as surely as a vector is.
+    fn lent_view(&self, name: &str, init: &Expr, block: u32) -> Option<FieldView> {
+        if let ExprKind::Ident(src) = &init.kind {
+            return self.field_views.get(src).filter(|v| v.lent).cloned().map(|v| FieldView {
+                bound: Some((name.to_string(), init.span)),
+                block,
+                ..v
+            });
+        }
+        let not_copy = |this: &Self, ty: &Type| match ty {
+            Type::Result { ok, err } if **err == Type::None => !this.is_copy(ok),
+            other => !this.is_copy(other),
+        };
+        let lent = self.lent_value_where(init, &not_copy)?;
+        let (root, steps, root_sym) = lent.place?;
+        Some(FieldView {
+            path: lent.holder,
+            steps,
+            root,
+            field_ty: lent.payload_ty,
+            bound: Some((name.to_string(), lent.span)),
+            block,
+            root_sym,
+            lent: true,
+        })
     }
 
     /// `Vec<i64>`, not `Vec`. The name table drops the arguments and `Display`

@@ -15,7 +15,7 @@ Iteration in Rask is **push**: the source owns the loop and hands you each item.
 | **SEQ2: Mutable variant** | `SequenceMut<T>` wraps `func(yield: \|mutate item: T\| -> bool)` |
 | **SEQ3: Yield return** | `yield` returns `true` to continue, `false` to stop. The sequence must honor the return — on `false`, stop yielding and return |
 | **SEQ34: Yields lend, except to a terminal** | A yield lends its item for the length of one call — `Sequence<T>` a read-only borrow, `SequenceMut<T>` a mutable one (`mem.closures/CP1`, `CP2`). The one exception is a terminal consuming a value the chain **owns**: nothing can observe that item afterwards, so the terminal may move it instead of copying it (SEQ47) |
-| **SEQ35: Owned iteration is not a sequence** | Consuming a collection is `take_all()`, which returns the drained `Vec<T>`. `for x in v.take_all()` is an ordinary for-over-Vec on a temporary the loop owns |
+| **SEQ35: Owned iteration is not a sequence** | Consuming a collection is `take_all()`, which returns the drained `Vec<T>`. Like any vector a call returns, it is a temporary nothing else holds, so the chain over it owns its items: `for x in v.take_all()` owns each element, and `v.take_all().filter(p).to_vec()` moves the ones it keeps |
 | **SEQ46: Naming it needs an import, using it doesn't** | `import sequence.Sequence` to write `Sequence<T>` in a signature — the same terms as `memory.Heap` or `memory.Link`. Iterating one needs no import: `for x in tree.in_order()` works because the compiler knows the type, not because the name is in scope. So the import lands only in files that *author* sequences, never in files that merely consume them |
 | **SEQ36: A closure literal fills a Sequence slot** | Where a `Sequence<T>` is expected, a closure of the right shape is one — no constructor call. Same rule as `let xs: Vec<i64> = [1, 2, 3]`: the slot picks the shape (`std.collections/C9`) |
 
@@ -42,7 +42,7 @@ Two things fall out.
 
 **Nothing needs a linearity story.** There is no once-only sequence, no consumed-ness to thread through ten adapters, no second protocol type. `filter` lends on what its source lent it.
 
-The cost: `files.take_all().filter(|f| f.stale)` does not exist. Draining and adapting are separate steps (SEQ35).
+Draining needs no second protocol either. `take_all()` hands back a `Vec` nobody else holds, and a chain over a temporary owns what it walks, so `files.take_all().filter(|f| f.stale)` passes owned items on (SEQ35).
 
 **The one exception, and why it isn't a second kind of sequence.** A terminal is the last thing that touches an item — after `to_vec` has run, nothing can observe what it consumed. So where the chain *owns* the value, the terminal may move it rather than copy it (SEQ47). Ownership is a property of the chain's shape, not a second type: `map` returns values its closure made, so they belong to the chain; `filter`, `take` and `skip` pass along whatever they were lent. The compiler reads that off the chain, so `Sequence<T>` stays one type.
 
@@ -349,7 +349,7 @@ Every terminal that builds a collection names the collection it builds. There is
 | **SEQ30a: `to_strings()` keeps a sequence of slices** | Defined only on `Sequence<StringSlice>` — what `split`, `lines` and `split_whitespace` yield (std.strings/S2). Each slice is copied into a `Vec<string>`. `to_vec()` there would make a `Vec<StringSlice>`, which `type.temporary/TM2` refuses like any container of a temporary. `join` works on that sequence too, without copying the pieces first |
 | **SEQ31: No generic target** | There is no `collect()`, no `collect<C>()`, no `FromSequence` interface, no turbofish. Adding a materializing target means adding a named terminal to this table |
 | **SEQ47: `to_vec` never clones for you** | `to_vec` copies a `Copy` element and moves an element the chain owns. It does **not** deep-clone: a chain that only lends non-`Copy` items has nothing it may give away, and asking for a `Vec` of them is a compile error telling you to clone. `map` is the ownership boundary — the values a `map` closure returns belong to the chain, so `.map(\|u\| u.clone()).to_vec()` clones exactly once, where you wrote it. `Vec.zip` follows the same rule: it lends both vectors, so both element types have to be `Copy`. For anything else, pair by index and write the clone |
-| **SEQ50: A pick lends what a collection holds** | `find`, `min`, `max`, `min_by`, `max_by`, `min_by_key` and `max_by_key` answer with one item. Over a vector held in a place (`rows`, `self.rows`, `grid[i]`), with `filter`, `take`, `skip`, `take_while`, `skip_while`, `enumerate` or `as_sequence` in between, the answer is the element where it sits, lent like `rows.get(i)`: read it, don't keep it. Over `take_all()` or a `map` the chain owns its items and the answer is the caller's. Anywhere else (a sequence that makes its items, one held in a name, a vector returned by a call, a map's pairs, an array) nothing holds a non-`Copy` item once the walk moves on, so picking one is a compile error, and `reduce` and `to_map` with it, for the reason SEQ47 gives: the fix is a `.map(\|v\| v.clone())` in front |
+| **SEQ50: A pick answers with the item where it sits** | `find`, `min`, `max`, `min_by`, `max_by`, `min_by_key` and `max_by_key` answer with one item. Over a vector or array held in a place (`rows`, `self.rows`, `grid[i]`), with `filter`, `take`, `skip`, `take_while`, `skip_while`, `enumerate` or `as_sequence` in between, the answer is the element where it sits: a view that lasts until its binding's block ends (`mem.borrowing/S1`), can't be returned or stored (`S3`), and keeps the source from changing while it lives (`S5`). Over a vector a call returned (`take_all()`, `load()`), through `filter`, `take`, `skip`, `take_while` or `skip_while`, or after a `map`, the chain owns its items and the answer is the caller's. Anywhere else (a sequence that makes its items, one held in a name, a map's pairs or values) nothing holds a non-`Copy` item once the walk moves on, so picking one is a compile error, and `reduce` and `to_map` with it, for the reason SEQ47 gives: the fix is a `.map(\|v\| v.clone())` in front |
 | **SEQ32: Terminals borrow, they don't consume** | `to_*`, never `into_*`. A `Sequence<T>` is a function value and survives the call, so `to_vec()` twice runs the traversal twice (SEQ11). The `to_*` prefix already means "non-consuming, allocates" (`canonical-patterns`) |
 | **SEQ33: `Vec.from` / `Map.from` stay array-only** | The static constructors take array literals (`std.collections`). They do not take a `Sequence<T>`. One operation, one spelling (`std.api/SD5`) |
 
@@ -669,24 +669,6 @@ FIX: do the work in the loop, where each item is still just lent:
 
   // or take ownership of all of them by draining the source:
   while files.pop()? as f { try f.close() }
-```
-
-**Adapting a drained collection [type.sequence/SEQ35]:**
-```
-ERROR [type.sequence/SEQ35]: no method `filter` on Vec<Job>
-   |
-3  |  for j in jobs.take_all().filter(|j| j.stale) {
-   |                            ^^^^^^ take_all hands back a Vec, not a sequence
-
-WHY: adapters lend what they were lent, and `take_all` exists to give the
-     items away — the two don't compose. Draining and adapting are separate
-     steps.
-
-FIX: test inside the loop, where the item is yours:
-
-  for j in jobs.take_all() {
-      if !j.stale { run(j) }
-  }
 ```
 
 ## Edge Cases

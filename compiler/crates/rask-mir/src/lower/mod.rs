@@ -2884,6 +2884,54 @@ impl<'a> MirLowerer<'a> {
         slot
     }
 
+    /// Read `array[at]` into `dst` for a walk over the array. An element that
+    /// holds storage (a struct with a `Vec` in it) comes back lent, the way
+    /// `Vec_index` lends a vector's: read as a plain copy it looked like a
+    /// second owner, and releasing it freed what the array still holds. A
+    /// plain number is just copied.
+    pub(crate) fn read_array_element(&mut self, dst: LocalId, array: LocalId, at: LocalId, elem: &MirType) {
+        let elem_size = rask_layout::size_of(elem, self.ctx.target());
+        if elem.is_plain_scalar() {
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                dst,
+                rvalue: MirRValue::ArrayIndex {
+                    base: MirOperand::Local(array),
+                    index: MirOperand::Local(at),
+                    elem_size,
+                },
+            }));
+            return;
+        }
+        let offset = self.builder.alloc_temp(MirType::I64);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: offset,
+            rvalue: MirRValue::BinaryOp {
+                op: crate::operand::BinOp::Mul,
+                left: MirOperand::Local(at),
+                right: MirOperand::Constant(MirConst::Int(elem_size as i64)),
+            },
+        }));
+        let slot = self.builder.alloc_temp(MirType::Ptr);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: slot,
+            rvalue: MirRValue::BinaryOp {
+                op: crate::operand::BinOp::Add,
+                left: MirOperand::Local(array),
+                right: MirOperand::Local(offset),
+            },
+        }));
+        let place = self.builder.alloc_temp(elem.clone());
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::BindPlace { dst: place, addr: slot }));
+        self.addressed_locals.insert(place);
+        // The walk reads a copy of the bytes, still lent: anything that
+        // retains it (a pair built around it) retains its own copy, not the
+        // array's slot.
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst,
+            rvalue: MirRValue::Use(MirOperand::Local(place)),
+        }));
+    }
+
     /// Hand an `Ordering` back as its tag when the function is declared to
     /// return a plain integer.
     ///
