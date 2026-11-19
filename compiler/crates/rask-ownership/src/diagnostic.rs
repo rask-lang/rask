@@ -570,15 +570,33 @@ impl ToDiagnostic for crate::OwnershipError {
                     )
             }
 
-            ToVecOfLentItems { elem, adapter } => {
-                Diagnostic::error(format!("`to_vec` has nothing it may move — `{}` is lent, not owned", elem))
+            KeepsLentItems { terminal, elem, lender, collection } => {
+                let args = if terminal == "to_vec" || terminal == "to_map" { "()" } else { "(…)" };
+                let (label, why) = if *collection {
+                    (
+                        format!("every item still belongs to `{}`", lender),
+                        format!(
+                            "`{}` keeps the items it's handed, and these are `{}`'s, lent for the walk. It won't deep-clone a `{}` on your behalf: the allocation would be invisible [type.sequence/SEQ47]",
+                            terminal, lender, elem
+                        ),
+                    )
+                } else {
+                    (
+                        format!("`{}` lends each item for one call", lender),
+                        format!(
+                            "a sequence lends each item for one call, and once the walk moves on nothing holds it, so there is nothing left for `{}` to keep. Over a vector a picked item is the element where it sits; here nothing holds it. `{}` won't deep-clone a `{}` on your behalf: the allocation would be invisible [type.sequence/SEQ47, SEQ50]",
+                            terminal, terminal, elem
+                        ),
+                    )
+                };
+                Diagnostic::error(format!("`{}` has nothing it may keep — `{}` is lent, not owned", terminal, elem))
                     .with_code("E0905")
-                    .with_primary(self.span, "needs an owned element")
-                    .with_fix("clone where you mean it — a `map` makes values the chain owns: `.map(|x| x.clone()).to_vec()`")
-                    .with_why(format!(
-                        "`{}` hands on what its source lent it, so every item still belongs to the source. A Vec owns what it holds, and `to_vec` won't deep-clone a `{}` on your behalf — the allocation would be invisible [type.sequence/SEQ47]",
-                        adapter, elem
+                    .with_primary(self.span, label)
+                    .with_fix(format!(
+                        "clone where you mean it, and a `map` makes values the chain owns: `.map(|x| x.clone()).{}{}`",
+                        terminal, args
                     ))
+                    .with_why(why)
             }
 
             ZipOfLentItems { elem } => {

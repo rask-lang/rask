@@ -3490,6 +3490,8 @@ impl<'a> MirLowerer<'a> {
                 super::IterAdapter::Filter { .. }
                     | super::IterAdapter::Skip { .. }
                     | super::IterAdapter::Take { .. }
+                    | super::IterAdapter::TakeWhile { .. }
+                    | super::IterAdapter::SkipWhile { .. }
             ));
         let final_ty = if consumes {
             self.handed_over_elem(chain.source, final_ty)
@@ -3542,7 +3544,7 @@ impl<'a> MirLowerer<'a> {
     }
 
     /// `v.take_all()`, the one loop source whose elements the loop owns.
-    fn is_take_all_call(expr: &Expr) -> bool {
+    pub(super) fn is_take_all_call(expr: &Expr) -> bool {
         matches!(&expr.kind, ExprKind::MethodCall { method, args, .. }
             if method == "take_all" && args.is_empty())
     }

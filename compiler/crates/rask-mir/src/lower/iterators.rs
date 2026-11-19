@@ -26,6 +26,9 @@ pub(super) struct IterLoopSetup {
     /// `skip`/`take` that a `filter` upstream forced into a runtime counter,
     /// keyed by position in the adapter list: counter local, and the limit.
     pub(super) counted: std::collections::HashMap<usize, (LocalId, MirOperand)>,
+    /// `skip_while` adapters, keyed by position: the flag that stays set
+    /// until the predicate first fails.
+    pub(super) skipping: std::collections::HashMap<usize, LocalId>,
     /// Set when the loop walks the vector through a registered cursor: the
     /// `ensure_stack` depth below the cleanup that unregisters it, which the
     /// loop's exit runs (`setup_iter_chain_loop_tracked`).
@@ -48,7 +51,7 @@ fn counted_skip_take(adapters: &[super::IterAdapter<'_>]) -> std::collections::H
     let mut out = std::collections::HashSet::new();
     for (i, adapter) in adapters.iter().enumerate() {
         match adapter {
-            super::IterAdapter::Filter { .. } => dropping = true,
+            super::IterAdapter::Filter { .. } | super::IterAdapter::SkipWhile { .. } => dropping = true,
             super::IterAdapter::Skip { .. } | super::IterAdapter::Take { .. } if dropping => {
                 out.insert(i);
             }
@@ -74,21 +77,29 @@ impl<'a> MirLowerer<'a> {
             match &current.kind {
                 ExprKind::MethodCall { object, method, args, .. } => {
                     match method.as_str() {
+                        // A closure written in place is inlined; any other
+                        // function value is lowered once ahead of the loop and
+                        // called per element (`fused_fns`).
                         "filter" if args.len() == 1 => {
-                            if matches!(&args[0].expr.kind, ExprKind::Closure { .. }) {
-                                adapters.push(super::IterAdapter::Filter { closure: &args[0].expr });
-                                current = object;
-                            } else {
-                                return None;
-                            }
+                            adapters.push(super::IterAdapter::Filter { closure: &args[0].expr });
+                            current = object;
                         }
                         "map" if args.len() == 1 => {
-                            if matches!(&args[0].expr.kind, ExprKind::Closure { .. }) {
-                                adapters.push(super::IterAdapter::Map { closure: &args[0].expr });
-                                current = object;
-                            } else {
-                                return None;
-                            }
+                            adapters.push(super::IterAdapter::Map { closure: &args[0].expr });
+                            current = object;
+                        }
+                        "take_while" if args.len() == 1 => {
+                            adapters.push(super::IterAdapter::TakeWhile { closure: &args[0].expr });
+                            current = object;
+                        }
+                        "skip_while" if args.len() == 1 => {
+                            adapters.push(super::IterAdapter::SkipWhile { closure: &args[0].expr });
+                            current = object;
+                        }
+                        // A collection's own chain head (SEQ49): the walk it
+                        // stands for is the loop's.
+                        "as_sequence" if args.is_empty() && self.is_iterable_source(object) => {
+                            current = object;
                         }
                         "take" if args.len() == 1 => {
                             adapters.push(super::IterAdapter::Take { count: &args[0].expr });
@@ -269,18 +280,14 @@ impl<'a> MirLowerer<'a> {
             // and `for x in v.filter(p)` are the same index loop they were.
             "any" if args.len() == 1 => {
                 if let Some(chain) = self.try_parse_iter_chain(object) {
-                    if matches!(&args[0].expr.kind, ExprKind::Closure { .. }) {
-                        let result = self.lower_iter_any(&chain, &args[0].expr)?;
-                        return Ok(Some(result));
-                    }
+                    let result = self.lower_iter_any(&chain, &args[0].expr)?;
+                    return Ok(Some(result));
                 }
             }
             "all" if args.len() == 1 => {
                 if let Some(chain) = self.try_parse_iter_chain(object) {
-                    if matches!(&args[0].expr.kind, ExprKind::Closure { .. }) {
-                        let result = self.lower_iter_all(&chain, &args[0].expr)?;
-                        return Ok(Some(result));
-                    }
+                    let result = self.lower_iter_all(&chain, &args[0].expr)?;
+                    return Ok(Some(result));
                 }
             }
             "count" if args.is_empty() => {
@@ -295,9 +302,13 @@ impl<'a> MirLowerer<'a> {
                     return Ok(Some(result));
                 }
             }
-            "find" if args.len() == 1 => {
+            "find" | "min" | "max" | "min_by" | "max_by" | "min_by_key" | "max_by_key" => {
                 if let Some(chain) = self.try_parse_iter_chain(object) {
-                    if matches!(&args[0].expr.kind, ExprKind::Closure { .. }) {
+                    if let Some(result) = self.lower_iter_pick(_full_expr, &chain, method, args)? {
+                        return Ok(Some(result));
+                    }
+                    // A `map` made the items: the answer is the one kept.
+                    if method == "find" && args.len() == 1 {
                         let result = self.lower_iter_find(&chain, &args[0].expr)?;
                         return Ok(Some(result));
                     }
@@ -308,10 +319,8 @@ impl<'a> MirLowerer<'a> {
             // codegen as a call to `Vec_position`, which doesn't exist (#842).
             "position" if args.len() == 1 => {
                 if let Some(chain) = self.try_parse_iter_chain(object) {
-                    if matches!(&args[0].expr.kind, ExprKind::Closure { .. }) {
-                        let result = self.lower_iter_position(&chain, &args[0].expr)?;
-                        return Ok(Some(result));
-                    }
+                    let result = self.lower_iter_position(&chain, &args[0].expr)?;
+                    return Ok(Some(result));
                 }
             }
             // `v.read(i, f)` and `v.modify(i, f)`. Not an iterator chain — an
@@ -720,21 +729,79 @@ impl<'a> MirLowerer<'a> {
         arg: ClosureArg,
         arg_ty: MirType,
     ) -> Result<TypedOperand, LoweringError> {
+        self.inline_closure_call(closure, vec![(arg, arg_ty)])
+    }
+
+    /// Lower a function value a fused chain calls per element, once, ahead
+    /// of the loop. A closure written in place is inlined instead, and needs
+    /// nothing here.
+    pub(super) fn lower_fused_fn(&mut self, f: &Expr) -> Result<(), LoweringError> {
+        if matches!(f.kind, ExprKind::Closure { .. }) {
+            return Ok(());
+        }
+        let ty = self.ctx.lookup_raw_type(f.id).ok_or_else(|| LoweringError::no_checked_type("fused function value"))?;
+        let (ret, modes) = self
+            .ctx
+            .callable_sig(&ty, self.ctx.type_names)
+            .ok_or_else(|| LoweringError::InvalidConstruct(format!("internal compiler error: calling a `{ty}`, which isn't a function")))?;
+        let (op, op_ty) = self.lower_expr(f)?;
+        let local = self.builder.alloc_temp(op_ty);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: local,
+            rvalue: MirRValue::Use(op),
+        }));
+        self.fused_fns.insert(f.id, (local, ret, modes));
+        Ok(())
+    }
+
+    /// Call `closure` with `args`: inline a closure written in place, binding
+    /// each parameter, or call the function value `lower_fused_fn` lowered.
+    pub(super) fn inline_closure_call(
+        &mut self,
+        closure: &Expr,
+        args: Vec<(ClosureArg, MirType)>,
+    ) -> Result<TypedOperand, LoweringError> {
+        if !matches!(closure.kind, ExprKind::Closure { .. }) {
+            let Some((local, ret, modes)) = self.fused_fns.get(&closure.id).cloned() else {
+                return Err(LoweringError::InvalidConstruct("expected closure".to_string()));
+            };
+            let mut ops = Vec::with_capacity(args.len());
+            for (arg, _) in args {
+                let ClosureArg::Value(op) = arg else {
+                    return Err(LoweringError::InvalidConstruct(
+                        "a function value can't be handed an element in place".to_string(),
+                    ));
+                };
+                ops.push(op);
+            }
+            let dst = self.builder.alloc_temp(ret.clone());
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::ClosureCall {
+                dst: Some(dst),
+                closure: local,
+                args: ops,
+                modes,
+            }));
+            return Ok((MirOperand::Local(dst), ret));
+        }
         if let ExprKind::Closure { params, body, .. } = &closure.kind {
-            if let Some(param) = params.first() {
-                let param_name = &param.name;
-                let saved = self.locals.remove(param_name);
-                let param_local = self.builder.alloc_local(param_name.clone(), arg_ty.clone());
-                match arg {
-                    ClosureArg::Value(op) => self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                        dst: param_local,
-                        rvalue: MirRValue::Use(op),
-                    })),
-                    ClosureArg::InPlace { collection, at, map } => {
-                        self.bind_element_in_place(param_local, collection, at, map);
+            if params.len() >= args.len() && !args.is_empty() {
+                let mut bound = Vec::with_capacity(args.len());
+                for (param, (arg, arg_ty)) in params.iter().zip(args) {
+                    let param_name = &param.name;
+                    let saved = self.locals.remove(param_name);
+                    let param_local = self.builder.alloc_local(param_name.clone(), arg_ty.clone());
+                    match arg {
+                        ClosureArg::Value(op) => self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                            dst: param_local,
+                            rvalue: MirRValue::Use(op),
+                        })),
+                        ClosureArg::InPlace { collection, at, map } => {
+                            self.bind_element_in_place(param_local, collection, at, map);
+                        }
                     }
+                    self.locals.insert(param_name.clone(), (param_local, arg_ty));
+                    bound.push((param_name.clone(), saved));
                 }
-                self.locals.insert(param_name.clone(), (param_local, arg_ty));
 
                 // `|x| { return x % 2 == 0 }` is the ordinary way to write this
                 // — Rask functions return explicitly. Lowering it with no
@@ -808,9 +875,11 @@ impl<'a> MirLowerer<'a> {
                 self.builder.switch_to_block(cont_block);
                 self.builder.set_local_type(result_local, body_ty.clone());
 
-                self.locals.remove(param_name);
-                if let Some(prev) = saved {
-                    self.locals.insert(param_name.clone(), prev);
+                for (param_name, saved) in bound.into_iter().rev() {
+                    self.locals.remove(&param_name);
+                    if let Some(prev) = saved {
+                        self.locals.insert(param_name, prev);
+                    }
                 }
                 return Ok((MirOperand::Local(result_local), body_ty));
             }
@@ -823,7 +892,18 @@ impl<'a> MirLowerer<'a> {
         &mut self,
         chain: &super::IterChain<'_>,
     ) -> Result<IterLoopSetup, LoweringError> {
-        self.setup_iter_chain_loop_inner(chain, false)
+        self.setup_iter_chain_loop_inner(chain, false, &[])
+    }
+
+    /// The same, for a terminal that calls `fns` per element: a function
+    /// value among them is evaluated once, with the chain's own, ahead of the
+    /// loop.
+    pub(super) fn setup_iter_chain_loop_calling(
+        &mut self,
+        chain: &super::IterChain<'_>,
+        fns: &[&Expr],
+    ) -> Result<IterLoopSetup, LoweringError> {
+        self.setup_iter_chain_loop_inner(chain, false, fns)
     }
 
     /// The same, for a `for` loop whose body runs user code. A body can delete
@@ -837,7 +917,7 @@ impl<'a> MirLowerer<'a> {
         &mut self,
         chain: &super::IterChain<'_>,
     ) -> Result<IterLoopSetup, LoweringError> {
-        self.setup_iter_chain_loop_inner(chain, true)
+        self.setup_iter_chain_loop_inner(chain, true, &[])
     }
 
     /// The same loop for a body no delete can reach: nothing to record, no
@@ -846,13 +926,14 @@ impl<'a> MirLowerer<'a> {
         &mut self,
         chain: &super::IterChain<'_>,
     ) -> Result<IterLoopSetup, LoweringError> {
-        self.setup_iter_chain_loop_inner(chain, false)
+        self.setup_iter_chain_loop_inner(chain, false, &[])
     }
 
     fn setup_iter_chain_loop_inner(
         &mut self,
         chain: &super::IterChain<'_>,
         tolerate_removal: bool,
+        terminal_fns: &[&Expr],
     ) -> Result<IterLoopSetup, LoweringError> {
         let (source_op, source_ty) = self.lower_expr(chain.source)?;
         let (array_len, array_elem_size) = match &source_ty {
@@ -879,6 +960,30 @@ impl<'a> MirLowerer<'a> {
                 func: FunctionRef::internal("Vec_len".to_string()),
                 args: vec![MirOperand::Local(collection)],
             }));
+        }
+
+        // Function values the loop calls, in the order they're written, and
+        // a flag per `skip_while`.
+        let mut skipping = std::collections::HashMap::new();
+        for (adapter_idx, adapter) in chain.adapters.iter().enumerate() {
+            match adapter {
+                super::IterAdapter::Filter { closure }
+                | super::IterAdapter::Map { closure }
+                | super::IterAdapter::TakeWhile { closure } => self.lower_fused_fn(closure)?,
+                super::IterAdapter::SkipWhile { closure } => {
+                    self.lower_fused_fn(closure)?;
+                    let flag = self.builder.alloc_temp(MirType::Bool);
+                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                        dst: flag,
+                        rvalue: MirRValue::Use(MirOperand::Constant(MirConst::Bool(true))),
+                    }));
+                    skipping.insert(adapter_idx, flag);
+                }
+                _ => {}
+            }
+        }
+        for f in terminal_fns {
+            self.lower_fused_fn(f)?;
         }
 
         // Process Skip/Take adapters to adjust start/end bounds. The ones a
@@ -1112,6 +1217,7 @@ impl<'a> MirLowerer<'a> {
             exit_block,
             check_block,
             counted,
+            skipping,
             cursor_depth: cursor.map(|(_, depth, _)| depth),
             position,
         })
@@ -1165,6 +1271,43 @@ impl<'a> MirLowerer<'a> {
                         then_block: pass_block,
                         else_block: inc_block,
                     }));
+                    self.builder.switch_to_block(pass_block);
+                }
+                super::IterAdapter::TakeWhile { closure } => {
+                    let (pred_op, _) = self.inline_closure_body(closure, current_op.clone(), current_ty.clone())?;
+                    let pass_block = self.builder.create_block();
+                    self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
+                        cond: pred_op,
+                        then_block: pass_block,
+                        else_block: setup.exit_block,
+                    }));
+                    self.builder.switch_to_block(pass_block);
+                }
+                super::IterAdapter::SkipWhile { closure } => {
+                    // While the flag is up, an element the predicate accepts
+                    // is dropped; the first it refuses lowers the flag for good.
+                    let flag = setup.skipping[&adapter_idx];
+                    let test_block = self.builder.create_block();
+                    let pass_block = self.builder.create_block();
+                    self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
+                        cond: MirOperand::Local(flag),
+                        then_block: test_block,
+                        else_block: pass_block,
+                    }));
+                    self.builder.switch_to_block(test_block);
+                    let (pred_op, _) = self.inline_closure_body(closure, current_op.clone(), current_ty.clone())?;
+                    let stop_block = self.builder.create_block();
+                    self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
+                        cond: pred_op,
+                        then_block: inc_block,
+                        else_block: stop_block,
+                    }));
+                    self.builder.switch_to_block(stop_block);
+                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                        dst: flag,
+                        rvalue: MirRValue::Use(MirOperand::Constant(MirConst::Bool(false))),
+                    }));
+                    self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: pass_block }));
                     self.builder.switch_to_block(pass_block);
                 }
                 super::IterAdapter::Map { closure } => {
@@ -1549,7 +1692,7 @@ impl<'a> MirLowerer<'a> {
             rvalue: MirRValue::Use(MirOperand::Constant(MirConst::Bool(false))),
         }));
 
-        let setup = self.setup_iter_chain_loop(chain)?;
+        let setup = self.setup_iter_chain_loop_calling(chain, &[predicate])?;
         let (final_op, final_ty) = self.apply_iter_adapters(
             chain, MirOperand::Local(setup.elem_local), setup.elem_ty.clone(),
             &setup,
@@ -1587,7 +1730,7 @@ impl<'a> MirLowerer<'a> {
             rvalue: MirRValue::Use(MirOperand::Constant(MirConst::Bool(true))),
         }));
 
-        let setup = self.setup_iter_chain_loop(chain)?;
+        let setup = self.setup_iter_chain_loop_calling(chain, &[predicate])?;
         let (final_op, final_ty) = self.apply_iter_adapters(
             chain, MirOperand::Local(setup.elem_local), setup.elem_ty.clone(),
             &setup,
@@ -1819,7 +1962,7 @@ impl<'a> MirLowerer<'a> {
             rvalue: MirRValue::Use(MirOperand::Constant(MirConst::Int(0))),
         }));
 
-        let setup = self.setup_iter_chain_loop(chain)?;
+        let setup = self.setup_iter_chain_loop_calling(chain, &[predicate])?;
         let (final_op, final_ty) = self.apply_iter_adapters(
             chain, MirOperand::Local(setup.elem_local), setup.elem_ty.clone(),
             &setup,
@@ -2001,6 +2144,331 @@ impl<'a> MirLowerer<'a> {
         Ok((MirOperand::Local(acc), opt_ty))
     }
 
+    /// A pick (`find`, `min`/`max`, `_by`, `_by_key`) over a vector held in a
+    /// place, or over `take_all()`, fused into one loop that remembers where
+    /// the winner sits (type.sequence/SEQ34).
+    ///
+    /// Over a held vector the answer is the element where it sits, read with
+    /// `Vec_get` once the loop is done, so it is a view of the vector like
+    /// `v.get(i)`. Copying each candidate into the answer is what the generic
+    /// body did, and for a vector of vectors that meant a clone per winner the
+    /// program never wrote. Over `take_all()` the chain owns its items, so the
+    /// winner moves out of the vector and the rest go with it.
+    ///
+    /// `None` when the chain isn't one of these: a `map` makes the items, so
+    /// keeping one is the generic body's move.
+    pub(super) fn lower_iter_pick(
+        &mut self,
+        call: &Expr,
+        chain: &super::IterChain<'_>,
+        method: &str,
+        args: &[rask_ast::expr::CallArg],
+    ) -> Result<Option<TypedOperand>, LoweringError> {
+        let arity = match method {
+            "min" | "max" => 0,
+            "find" | "min_by" | "max_by" | "min_by_key" | "max_by_key" => 1,
+            _ => return Ok(None),
+        };
+        if args.len() != arity {
+            return Ok(None);
+        }
+        let enumerates = chain.adapters.iter().filter(|a| matches!(a, super::IterAdapter::Enumerate)).count();
+        if enumerates > 1 || chain.adapters.iter().any(|a| matches!(a, super::IterAdapter::Map { .. })) {
+            return Ok(None);
+        }
+        let takes = Self::is_take_all_call(chain.source);
+        let held = matches!(chain.source.kind, ExprKind::Ident(_) | ExprKind::Field { .. } | ExprKind::Index { .. });
+        let on_vec = self
+            .checked_type_of(chain.source)
+            .is_some_and(|t| self.generic_head(&t).is_some_and(|(name, _)| name == "Vec"));
+        if !on_vec || !(held || (takes && enumerates == 0)) {
+            return Ok(None);
+        }
+        let f = args.first().map(|a| &a.expr);
+
+        let found = self.builder.alloc_temp(MirType::I64);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: found,
+            rvalue: MirRValue::Use(MirOperand::Constant(MirConst::Int(-1))),
+        }));
+        let found_pos = self.builder.alloc_temp(MirType::I64);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: found_pos,
+            rvalue: MirRValue::Use(MirOperand::Constant(MirConst::Int(0))),
+        }));
+        // The winner's key, for `_by_key`; typed once the key is lowered.
+        let best_key = self.builder.alloc_temp(MirType::I64);
+
+        let fns: Vec<&Expr> = f.into_iter().collect();
+        let setup = self.setup_iter_chain_loop_calling(chain, &fns)?;
+        let (item_op, item_ty) = self.apply_iter_adapters(
+            chain, MirOperand::Local(setup.elem_local), setup.elem_ty.clone(),
+            &setup,
+        )?;
+
+        let take_block = self.builder.create_block();
+        match method {
+            "find" => {
+                let (pred, _) = self.inline_closure_body(f.unwrap(), item_op.clone(), item_ty.clone())?;
+                self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
+                    cond: pred,
+                    then_block: take_block,
+                    else_block: setup.inc_block,
+                }));
+            }
+            _ => {
+                let key = if method.ends_with("_by_key") {
+                    let (k, k_ty) = self.inline_closure_body(f.unwrap(), item_op.clone(), item_ty.clone())?;
+                    let k_local = self.builder.alloc_temp(k_ty.clone());
+                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                        dst: k_local,
+                        rvalue: MirRValue::Use(k),
+                    }));
+                    self.builder.set_local_type(best_key, k_ty.clone());
+                    Some((k_local, k_ty))
+                } else {
+                    None
+                };
+                let first = self.builder.alloc_temp(MirType::Bool);
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                    dst: first,
+                    rvalue: MirRValue::BinaryOp {
+                        op: crate::operand::BinOp::Lt,
+                        left: MirOperand::Local(found),
+                        right: MirOperand::Constant(MirConst::Int(0)),
+                    },
+                }));
+                let compare_block = self.builder.create_block();
+                self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
+                    cond: MirOperand::Local(first),
+                    then_block: take_block,
+                    else_block: compare_block,
+                }));
+                self.builder.switch_to_block(compare_block);
+                let want_max = method.starts_with("max");
+                let beats = match &key {
+                    // Ties keep the first item seen, so the test is strict.
+                    Some((k, k_ty)) => {
+                        if want_max {
+                            self.emit_ordered_less(k_ty, MirOperand::Local(best_key), MirOperand::Local(*k))
+                        } else {
+                            self.emit_ordered_less(k_ty, MirOperand::Local(*k), MirOperand::Local(best_key))
+                        }
+                    }
+                    None => {
+                        let best = self.pick_winner(&setup, found, found_pos, enumerates > 0);
+                        if method.ends_with("_by") {
+                            let (ord, _) = self.inline_closure_call(
+                                f.unwrap(),
+                                vec![
+                                    (ClosureArg::Value(item_op.clone()), item_ty.clone()),
+                                    (ClosureArg::Value(best), item_ty.clone()),
+                                ],
+                            )?;
+                            let tag = self.emit_ordering_tag_i64(ord);
+                            let beats = self.builder.alloc_temp(MirType::Bool);
+                            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                                dst: beats,
+                                rvalue: MirRValue::BinaryOp {
+                                    op: crate::operand::BinOp::Eq,
+                                    left: MirOperand::Local(tag),
+                                    // Less 0, Greater 2.
+                                    right: MirOperand::Constant(MirConst::Int(if want_max { 2 } else { 0 })),
+                                },
+                            }));
+                            beats
+                        } else if want_max {
+                            self.emit_ordered_less(&item_ty, best, item_op.clone())
+                        } else {
+                            self.emit_ordered_less(&item_ty, item_op.clone(), best)
+                        }
+                    }
+                };
+                self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
+                    cond: MirOperand::Local(beats),
+                    then_block: take_block,
+                    else_block: setup.inc_block,
+                }));
+                if let Some((k, _)) = key {
+                    // The key goes with the winner.
+                    self.builder.switch_to_block(take_block);
+                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                        dst: best_key,
+                        rvalue: MirRValue::Use(MirOperand::Local(k)),
+                    }));
+                    let rest = self.builder.create_block();
+                    self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: rest }));
+                    return self.finish_pick(call, chain, &setup, rest, found, found_pos, enumerates > 0, takes, false).map(Some);
+                }
+            }
+        }
+        self.finish_pick(call, chain, &setup, take_block, found, found_pos, enumerates > 0, takes, method == "find")
+            .map(Some)
+    }
+
+    /// The take block of a pick, the loop's end, and the answer.
+    #[allow(clippy::too_many_arguments)]
+    fn finish_pick(
+        &mut self,
+        call: &Expr,
+        chain: &super::IterChain<'_>,
+        setup: &IterLoopSetup,
+        take_block: BlockId,
+        found: LocalId,
+        found_pos: LocalId,
+        enumerated: bool,
+        takes: bool,
+        first_wins: bool,
+    ) -> Result<TypedOperand, LoweringError> {
+        self.builder.switch_to_block(take_block);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: found,
+            rvalue: MirRValue::Use(MirOperand::Local(setup.idx)),
+        }));
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: found_pos,
+            rvalue: MirRValue::Use(MirOperand::Local(setup.position)),
+        }));
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
+            target: if first_wins { setup.exit_block } else { setup.inc_block },
+        }));
+        self.emit_iter_increment(setup.idx, setup.inc_block, setup.check_block);
+        self.builder.switch_to_block(setup.exit_block);
+
+        if !takes && !enumerated {
+            // `Vec_get` answers `none` for -1.
+            let opt_ty = match self.ctx.lookup_raw_type(call.id) {
+                Some(t) => self.ctx.type_to_mir(&t),
+                None => MirType::Option(Box::new(setup.elem_ty.clone())),
+            };
+            let answer = self.builder.alloc_temp(opt_ty.clone());
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                dst: Some(answer),
+                func: FunctionRef::like("Vec_get", "Vec_get"),
+                args: vec![MirOperand::Local(setup.collection), MirOperand::Local(found)],
+            }));
+            return Ok((MirOperand::Local(answer), opt_ty));
+        }
+
+        let payload_ty = if takes {
+            self.handed_over_elem(chain.source, setup.elem_ty.clone())
+        } else {
+            MirType::Tuple(vec![MirType::I64, setup.elem_ty.borrowed()])
+        };
+        let opt_ty = MirType::Option(Box::new(payload_ty.clone()));
+        let answer = self.builder.alloc_temp(opt_ty.clone());
+        let none_block = self.builder.create_block();
+        let some_block = self.builder.create_block();
+        let done_block = self.builder.create_block();
+        let missing = self.builder.alloc_temp(MirType::Bool);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: missing,
+            rvalue: MirRValue::BinaryOp {
+                op: crate::operand::BinOp::Lt,
+                left: MirOperand::Local(found),
+                right: MirOperand::Constant(MirConst::Int(0)),
+            },
+        }));
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
+            cond: MirOperand::Local(missing),
+            then_block: none_block,
+            else_block: some_block,
+        }));
+        self.builder.switch_to_block(none_block);
+        self.fill_absent(answer);
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: done_block }));
+        self.builder.switch_to_block(some_block);
+        let value = if takes {
+            let moved = self.builder.alloc_temp(payload_ty);
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                dst: Some(moved),
+                func: FunctionRef::like("Vec_move_out", "Vec_remove"),
+                args: vec![MirOperand::Local(setup.collection), MirOperand::Local(found)],
+            }));
+            MirOperand::Local(moved)
+        } else {
+            self.pick_winner(setup, found, found_pos, true)
+        };
+        self.fill_present(answer, value);
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: done_block }));
+        self.builder.switch_to_block(done_block);
+        Ok((MirOperand::Local(answer), opt_ty))
+    }
+
+    /// The pick's current winner where it sits, as the chain yields it: the
+    /// element, or the `enumerate` pair around it.
+    fn pick_winner(&mut self, setup: &IterLoopSetup, found: LocalId, found_pos: LocalId, enumerated: bool) -> MirOperand {
+        let elem = self.builder.alloc_temp(setup.elem_ty.clone());
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+            dst: Some(elem),
+            func: FunctionRef::like("Vec_index", "Vec_get"),
+            args: vec![MirOperand::Local(setup.collection), MirOperand::Local(found)],
+        }));
+        if !enumerated {
+            return MirOperand::Local(elem);
+        }
+        let word = rask_layout::size_of(&MirType::I64, self.ctx.target());
+        let pair = self.builder.alloc_temp(MirType::Tuple(vec![MirType::I64, setup.elem_ty.borrowed()]));
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+            addr: pair,
+            offset: 0,
+            value: MirOperand::Local(found_pos),
+            store_size: word,
+            field: None,
+        }));
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+            addr: pair,
+            offset: word,
+            value: MirOperand::Local(elem),
+            store_size: self.aggregate_size(&setup.elem_ty),
+            field: None,
+        }));
+        MirOperand::Local(pair)
+    }
+
+    /// `left < right` in the type's own order: a string through `string_lt`,
+    /// a struct or enum through its `compare` when it has one, anything else
+    /// through `<`, which codegen orders field by field for an aggregate.
+    pub(super) fn emit_ordered_less(&mut self, ty: &MirType, left: MirOperand, right: MirOperand) -> LocalId {
+        let less = self.builder.alloc_temp(MirType::Bool);
+        if matches!(ty, MirType::Buffer) {
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                dst: Some(less),
+                func: FunctionRef::borrowing("string_lt"),
+                args: vec![left, right],
+            }));
+            return less;
+        }
+        let compare = matches!(ty, MirType::Struct(_) | MirType::Enum(_))
+            .then(|| self.mir_type_name(ty))
+            .flatten()
+            .map(|n| format!("{n}_compare"))
+            .and_then(|n| self.signature(&n).map(|s| (n, s.ret_ty.clone())));
+        if let Some((name, ret)) = compare {
+            let ord = self.builder.alloc_temp(ret);
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                dst: Some(ord),
+                func: FunctionRef::internal(name),
+                args: vec![left, right],
+            }));
+            let tag = self.emit_ordering_tag_i64(MirOperand::Local(ord));
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                dst: less,
+                rvalue: MirRValue::BinaryOp {
+                    op: crate::operand::BinOp::Eq,
+                    left: MirOperand::Local(tag),
+                    right: MirOperand::Constant(MirConst::Int(0)),
+                },
+            }));
+            return less;
+        }
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: less,
+            rvalue: MirRValue::BinaryOp { op: crate::operand::BinOp::Lt, left, right },
+        }));
+        less
+    }
+
     pub(super) fn lower_iter_find(
         &mut self,
         chain: &super::IterChain<'_>,
@@ -2011,7 +2479,7 @@ impl<'a> MirLowerer<'a> {
         let result = self.builder.alloc_temp(MirType::Option(Box::new(MirType::I64)));
         self.fill_absent(result);
 
-        let setup = self.setup_iter_chain_loop(chain)?;
+        let setup = self.setup_iter_chain_loop_calling(chain, &[predicate])?;
         let (final_op, final_ty) = self.apply_iter_adapters(
             chain, MirOperand::Local(setup.elem_local), setup.elem_ty.clone(),
             &setup,

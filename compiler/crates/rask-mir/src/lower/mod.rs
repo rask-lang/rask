@@ -135,6 +135,8 @@ pub(crate) enum IterAdapter<'a> {
     Map { closure: &'a Expr },
     Take { count: &'a Expr },
     Skip { count: &'a Expr },
+    TakeWhile { closure: &'a Expr },
+    SkipWhile { closure: &'a Expr },
     Enumerate,
 }
 
@@ -2301,6 +2303,10 @@ pub struct MirLowerer<'a> {
     /// return had just written, resetting it every iteration (#462) — and an
     /// inlined predicate reported the wrong type for its result local.
     inline_return_taken: Option<MirType>,
+    /// A function value a fused chain calls per element, lowered once ahead
+    /// of the loop: the local holding it, what it answers, and its modes.
+    /// Keyed by the argument expression (`rows.find(is_short)`).
+    fused_fns: HashMap<rask_ast::NodeId, (LocalId, MirType, Vec<ParamMode>)>,
     /// Stack of active ensure cleanup blocks (innermost last).
     /// At function exit points (return, try error, implicit return),
     /// this becomes the cleanup_chain on CleanupReturn terminators.
@@ -4652,6 +4658,7 @@ impl<'a> MirLowerer<'a> {
             ensure_read_names: std::collections::HashSet::new(),
             inline_return_target: None,
             inline_return_taken: None,
+            fused_fns: HashMap::new(),
             ensure_stack: Vec::new(),
             elem_writebacks: Vec::new(),
             ensure_flags: HashMap::new(),

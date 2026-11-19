@@ -703,6 +703,18 @@ struct ViewPlace {
 
 /// A value a container lent out, carried from wherever the walk found it to
 /// the `return` that hands it on.
+/// Who a chain's items belong to (`chain_head`).
+enum ChainHead {
+    /// A `map` made them: the chain's own to give.
+    Owns,
+    /// Handed on from `head`. A collection still holds each item, so one
+    /// can be read where it sits; anything else lends each item for one
+    /// call.
+    Lends { head: String, collection: bool },
+    /// Nothing this walk can judge.
+    Unknown,
+}
+
 #[derive(Debug, Clone)]
 struct LentValue {
     /// `index.get(…)`, for the message.
@@ -850,41 +862,75 @@ impl<'a> OwnershipChecker<'a> {
         }
     }
 
-    /// type.sequence/SEQ47: `to_vec` moves what the chain owns and copies a
-    /// Copy item, and never deep-clones. A chain of only lending adapters —
-    /// `filter`, `take`, `skip` and the like — hands on items its source still
-    /// owns, so for a type that isn't Copy there is nothing to put in the Vec.
+    /// type.sequence/SEQ34, SEQ47: a terminal that keeps items keeps only
+    /// what the chain owns, or a Copy item it copies. `to_vec`, `to_map` and
+    /// `reduce` keep every item they're handed; `find`, `min`, `max` and their
+    /// `_by` and `_by_key` forms keep the one they answer with.
     ///
-    /// Unchecked, `vs.filter(p).to_vec()` over `Vec<Vec<i64>>` compiled, the
-    /// interpreter copied values and never noticed, and natively both vectors
-    /// held the same inner vectors and freed them twice (#1415).
-    fn check_to_vec_has_owned_items(&mut self, expr: &Expr, object: &Expr) {
-        let Some(adapter) = Self::lending_adapter(object) else { return };
-        let Some(mut elem) = self.node_ty(&expr.id).and_then(Self::vec_elem) else { return };
+    /// A collection's items sit in the collection, so a picked one is the
+    /// element where it sits, a view like `get`'s (`picks_lent_item`). That
+    /// leaves the others: `to_vec` and friends over a collection's lent items,
+    /// and any keeping terminal over a sequence that makes its items or that
+    /// the frame can't see into. A yield lends its item for one call, so once
+    /// the walk moves on nothing holds it. Natively the compiler made these
+    /// work by cloning each item behind the program's back (#1415 was the
+    /// double free before that). A `map` in front is the copy written out.
+    fn check_terminal_keeps_owned_items(&mut self, expr: &Expr, object: &Expr, method: &str) {
+        let picks = Self::PICKS.contains(&method);
+        if !picks && !matches!(method, "to_vec" | "to_map" | "reduce") {
+            return;
+        }
+        let ChainHead::Lends { head, collection } = self.chain_head(object) else { return };
+        if picks && collection {
+            return;
+        }
+        let Some(result) = self.node_ty(&expr.id) else { return };
+        // The item as the terminal sees it: a `T?` for the pickers and
+        // `reduce`, a `Vec<T>` for `to_vec`, and for `to_map` the key and
+        // the value, either of which may be the lent one.
+        let mut items: Vec<Type> = match method {
+            "to_vec" => Self::vec_elem(result).into_iter().collect(),
+            "to_map" => match result {
+                Type::Generic { args, .. } | Type::UnresolvedGeneric { args, .. } => args
+                    .iter()
+                    .filter_map(|a| match a {
+                        rask_types::GenericArg::Type(t) => Some((**t).clone()),
+                        _ => None,
+                    })
+                    .collect(),
+                _ => Vec::new(),
+            },
+            _ => result.as_option().cloned().into_iter().collect(),
+        };
         // `enumerate` builds its pair, so the pair is the chain's own; only
         // the half it was lent has to copy. `v.enumerate().to_vec()` over
-        // strings is a `(u64, string)` — 24 bytes, not Copy, and nothing in
-        // it that isn't.
+        // strings is a `(u64, string)`: 24 bytes, not Copy, and nothing in it
+        // that isn't.
         if Self::chain_has(object, "enumerate") {
-            if let Type::Tuple(parts) = &elem {
-                if let [_, lent] = parts.as_slice() {
-                    elem = lent.clone();
-                }
-            }
+            items = items
+                .into_iter()
+                .map(|t| match &t {
+                    Type::Tuple(parts) if parts.len() == 2 => parts[1].clone(),
+                    _ => t,
+                })
+                .collect();
         }
-        // Not settled: nothing to judge, and the checker reports it.
-        if matches!(elem, Type::Var(_)) || self.is_copy(&elem) {
+        let Some(elem) = items.into_iter().find(|t| {
+            // Not settled: nothing to judge, and the checker reports it. An
+            // unbounded `T` moves (G1a).
+            self.copy_verdict_params_move(t) == CopyVerdict::Move
+                // A box is shared by count, the way a derived container
+                // shares its boxes: a second reference, not a deep clone.
+                && !Self::is_boxed_interface(t)
+        }) else {
             return;
-        }
-        // A box is shared by count, the way a derived container shares its
-        // boxes (`boxes.clone()`): a second reference, not a deep clone.
-        if Self::is_boxed_interface(&elem) {
-            return;
-        }
+        };
         self.errors.push(OwnershipError {
-            kind: OwnershipErrorKind::ToVecOfLentItems {
+            kind: OwnershipErrorKind::KeepsLentItems {
+                terminal: method.to_string(),
                 elem: format!("{}", self.program.types.resolve_type_names(&elem)),
-                adapter: adapter.to_string(),
+                lender: head,
+                collection,
             },
             span: expr.span,
         });
@@ -920,31 +966,81 @@ impl<'a> OwnershipChecker<'a> {
         }
     }
 
-    /// The adapter that makes `expr` a chain of lent items: one that hands on
-    /// what it was given, with no `map` between it and the source. `None` for
-    /// anything that isn't a chain, or one a `map` makes values for.
-    fn lending_adapter(expr: &Expr) -> Option<&str> {
-        const LENDS: &[&str] = &["filter", "take", "skip", "take_while", "skip_while", "enumerate"];
-        let mut cur = expr;
-        let mut last: Option<&str> = None;
-        while let ExprKind::MethodCall { object, method, .. } = &cur.kind {
-            if !LENDS.contains(&method.as_str()) {
-                break;
-            }
-            last = Some(method.as_str());
-            cur = object;
+    /// The terminals that answer with one of the items they're handed.
+    const PICKS: &'static [&'static str] =
+        &["find", "min", "max", "min_by", "max_by", "min_by_key", "max_by_key"];
+
+    /// Adapters that hand on what they were given. `enumerate` hands on each
+    /// item too, paired with its index; `as_sequence` is the collection's own
+    /// chain head (SEQ49).
+    const LENDS: &'static [&'static str] =
+        &["filter", "take", "skip", "take_while", "skip_while", "enumerate", "as_sequence"];
+
+    /// Who the items of a chain belong to, read off its shape (SEQ34): walk
+    /// back through the adapters that hand on what they were given, and see
+    /// what's left.
+    fn chain_head(&self, expr: &Expr) -> ChainHead {
+        let cur = self.chain_source(expr);
+        // `take_all()` moves each element out of the collection (LP7).
+        if self.is_take_all(cur) {
+            return ChainHead::Owns;
         }
-        // Stopped on a `map` (or anything else that isn't the source): the
-        // items may be the chain's own, which is not this rule's to judge.
         if let ExprKind::MethodCall { method, .. } = &cur.kind {
-            if matches!(method.as_str(), "map" | "flat_map" | "filter_map" | "chain" | "flatten") {
-                return None;
+            // A `map` makes values for the chain, which are its own to give.
+            if matches!(method.as_str(), "map" | "filter_map" | "flat_map") {
+                return ChainHead::Owns;
+            }
+            // Joins two chains; what each half owns is not this walk's to say.
+            if matches!(method.as_str(), "chain" | "flatten") {
+                return ChainHead::Unknown;
             }
         }
-        last
+        let Some(ty) = self.node_ty(&cur.id) else { return ChainHead::Unknown };
+        // A vector holds its elements where a pick can answer with one. A
+        // map's pairs are made by the walk, and an array's pick isn't
+        // answered in place natively, so both lend like any sequence.
+        let collection = matches!(self.type_name_of(ty).as_deref(), Some("Vec"));
+        let head = Self::render_place(cur)
+            .or_else(|| Self::call_text(cur))
+            .unwrap_or_else(|| "the sequence".to_string());
+        // A collection made for the call (`rows().find(p)`) is gone with the
+        // statement, the same as the items a sequence makes.
+        if collection {
+            return ChainHead::Lends { head, collection: Self::is_place(cur) };
+        }
+        if matches!(ty, Type::Array { .. }) || matches!(self.type_name_of(ty).as_deref(), Some("Map" | "Sequence")) {
+            return ChainHead::Lends { head, collection: false };
+        }
+        ChainHead::Unknown
     }
 
-    /// Whether a lending chain passes through `adapter`.
+    /// What a chain walks: `expr` with the adapters that hand on what they
+    /// were given peeled off.
+    fn chain_source<'e>(&self, expr: &'e Expr) -> &'e Expr {
+        let mut cur = expr;
+        while let ExprKind::MethodCall { object, method, .. } = &cur.kind {
+            let lends = Self::LENDS.contains(&method.as_str())
+                // A map's keys and values sit in the map.
+                || (matches!(method.as_str(), "keys" | "values")
+                    && self.node_ty(&object.id).and_then(|t| self.type_name_of(t)).as_deref() == Some("Map"));
+            if !lends {
+                break;
+            }
+            cur = object;
+        }
+        cur
+    }
+
+    /// `rows`, `self.rows` or `grid[i]`: storage that outlives the statement.
+    fn is_place(expr: &Expr) -> bool {
+        match &expr.kind {
+            ExprKind::Ident(_) => true,
+            ExprKind::Field { object, .. } | ExprKind::Index { object, .. } => Self::is_place(object),
+            _ => false,
+        }
+    }
+
+    /// Whether a chain passes through `adapter`.
     fn chain_has(expr: &Expr, adapter: &str) -> bool {
         let mut cur = expr;
         while let ExprKind::MethodCall { object, method, .. } = &cur.kind {
@@ -3936,9 +4032,7 @@ impl<'a> OwnershipChecker<'a> {
                 self.check_taken_call(expr);
                 self.check_expr(object);
                 self.check_views_at_writing_call(expr);
-                if method == "to_vec" && args.is_empty() {
-                    self.check_to_vec_has_owned_items(expr, object);
-                }
+                self.check_terminal_keeps_owned_items(expr, object, method);
                 if method == "zip" && args.len() == 1 {
                     self.check_zip_items_copy(expr);
                 }
@@ -6097,37 +6191,25 @@ impl<'a> OwnershipChecker<'a> {
         self.lent_value_where(expr, &|this, ty| this.lendable_payload(ty))
     }
 
-    /// A terminal that answers with one of the items it was lent: `find`,
-    /// `min`, `max` and their `_by` and `_by_key` forms over a vector, or over
-    /// a chain of adapters that only hand on what they were given. The answer
-    /// is the item where it sits, the same as `get`'s (type.sequence/SEQ34).
-    /// Answers with the expression that holds it.
+    /// A terminal that answers with one of the items a collection lent it:
+    /// `find`, `min`, `max` and their `_by` and `_by_key` forms over a
+    /// vector held in a place, or over a chain of
+    /// adapters that only hand on what they were given. The answer is the
+    /// item where it sits, the same as `get`'s (type.sequence/SEQ34).
+    /// Answers with the collection that holds it.
     ///
-    /// A `map` (or anything else that makes values) between the terminal and
-    /// the source gives the chain items of its own, which the terminal may
-    /// hand on (SEQ47). A `Sequence` held in a name lends: the frame can't
-    /// see what built it, and a yield lends unless the chain is seen to own.
+    /// A `map` between the terminal and the source gives the chain items of
+    /// its own, which the terminal may hand on (SEQ47). Over anything else
+    /// that lends, nothing holds the item once the walk moves on, and
+    /// `check_terminal_keeps_owned_items` rejects the pick outright.
     fn picks_lent_item<'e>(&self, object: &'e Expr, method: &str) -> Option<&'e Expr> {
-        const PICKS: &[&str] =
-            &["find", "min", "max", "min_by", "max_by", "min_by_key", "max_by_key"];
-        // `enumerate` hands on each item too, paired with its index.
-        const LENDS: &[&str] =
-            &["filter", "take", "skip", "take_while", "skip_while", "as_sequence", "enumerate"];
-        if !PICKS.contains(&method) {
+        if !Self::PICKS.contains(&method) {
             return None;
         }
-        let mut cur = object;
-        while let ExprKind::MethodCall { object: inner, method, .. } = &cur.kind {
-            if !LENDS.contains(&method.as_str()) {
-                break;
-            }
-            cur = inner;
+        match self.chain_head(object) {
+            ChainHead::Lends { collection: true, .. } => Some(self.chain_source(object)),
+            _ => None,
         }
-        if let ExprKind::MethodCall { .. } = &cur.kind {
-            return None;
-        }
-        let head = self.type_name_of(self.node_ty(&cur.id)?)?;
-        matches!(head.as_str(), "Vec" | "Sequence").then_some(cur)
     }
 
     /// `lent_value`, asking `payload_ok` which payloads count.
@@ -6145,7 +6227,11 @@ impl<'a> OwnershipChecker<'a> {
                     .find(|(t, m, _)| *t == head && m == method)
                 {
                     Some((_, _, clone_form)) => (object.as_ref(), head, *clone_form),
-                    None => (self.picks_lent_item(object, method)?, head, None),
+                    None => {
+                        let holder = self.picks_lent_item(object, method)?;
+                        let lender = self.node_ty(&holder.id).and_then(|t| self.type_name_of(t)).unwrap_or(head);
+                        (holder, lender, None)
+                    }
                 };
                 let ty = self.node_ty(&expr.id)?;
                 if !payload_ok(self, ty) {
@@ -9600,7 +9686,9 @@ impl<'a> OwnershipChecker<'a> {
     /// { out.push(Change.Rename { at: s }) }`). LP4 has value mode lend
     /// whatever the source; `take_all()` is the consuming walk (LP7).
     fn loop_lender(&self, iter: &Expr) -> Option<(String, bool)> {
-        if self.is_take_all(iter) {
+        // `take_all()` behind `filter`/`take`/`skip` still hands the loop
+        // each element it lets through.
+        if self.is_take_all(self.chain_source(iter)) {
             return None;
         }
         let place = Self::place_text(iter).or_else(|| Self::call_text(iter));
@@ -9680,12 +9768,12 @@ impl<'a> OwnershipChecker<'a> {
         if !lent {
             return false;
         }
-        // A type parameter is left alone, as E0872 leaves it: whether `T`
-        // is Copy is the instantiation's to say, and generic bodies are
-        // re-checked per instantiation only for linear ones.
+        // An unbounded `T` is the move G1a says it is: nothing asks again
+        // per instantiation, and with `T` a vector the lender still holds
+        // what was handed on.
         if self
             .node_ty(&expr.id)
-            .is_some_and(|t| self.is_copy(t) || matches!(t, Type::UnresolvedNamed(_)))
+            .is_some_and(|t| self.copy_verdict_params_move(t) != CopyVerdict::Move)
         {
             return false;
         }

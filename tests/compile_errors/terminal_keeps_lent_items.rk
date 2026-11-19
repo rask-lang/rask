@@ -1,0 +1,72 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Rejects: a terminal keeping items its chain only lends
+//
+// Spec: type.sequence (SEQ34, SEQ47, SEQ50)
+//
+// `to_vec`, `to_map` and `reduce` keep the items they're handed; `find`,
+// `max_by_key` and the other pickers keep the one they answer with. Over a
+// vector a picked item is the element where it sits. Over a sequence that
+// makes its items, or one held in a name, nothing holds the item once the
+// walk moves on, and natively the compiler cloned each one behind the
+// program's back to make these work. The copy is the program's to write: a
+// `map` in front.
+//
+// One marker per rejection, on the line the compiler points at.
+
+import sequence.Sequence
+
+func vecs() -> Sequence<Vec<i64>> {
+    return |yield| {
+        if !yield([1, 2]) { return }
+        if !yield([3]) { return }
+    }
+}
+
+func longest_made() -> u64 {
+    // ERROR: `max_by_key` has nothing it may keep — `Vec<i64>` is lent, not owned [E0905]
+    let best = vecs().max_by_key(|v| v.len())
+    return (best ?? Vec.new()).len()
+}
+
+func first_of(s: Sequence<Vec<i64>>) -> u64 {
+    // ERROR: `find` has nothing it may keep — `Vec<i64>` is lent, not owned [E0905]
+    let f = s.find(|v| v.len() > 1)
+    return (f ?? Vec.new()).len()
+}
+
+func all_made() -> Vec<Vec<i64>> {
+    // ERROR: `to_vec` has nothing it may keep — `Vec<i64>` is lent, not owned [E0905]
+    return vecs().to_vec()
+}
+
+func all_of(rows: Vec<Vec<i64>>) -> Vec<Vec<i64>> {
+    // ERROR: `to_vec` has nothing it may keep — `Vec<i64>` is lent, not owned [E0905]
+    return rows.as_sequence().to_vec()
+}
+
+func joined(rows: Vec<Vec<i64>>) -> u64 {
+    // ERROR: `reduce` has nothing it may keep — `Vec<i64>` is lent, not owned [E0905]
+    let r = rows.reduce(|a, b| if b.len() > a.len() { b.clone() } else { a.clone() })
+    return (r ?? Vec.new()).len()
+}
+
+func biggest(m: Map<string, Vec<i64>>) -> u64 {
+    // A map's pairs are made by the walk.
+    // ERROR: `max_by_key` has nothing it may keep — `(string, Vec<i64>)` is lent, not owned [E0905]
+    let b = m.max_by_key(|p| p.1.len())
+    return (b ?? ("", Vec.new())).1.len()
+}
+
+// Picking over a vector reads the element where it sits; a `map` makes items
+// the chain owns; a Copy item copies.
+func legal(rows: Vec<Vec<i64>>) -> u64 {
+    let a = (rows.find(|r| r.len() > 1) ?? Vec.new()).len()
+    let b = (rows.filter(|r| r.len() < 3).max_by_key(|r| r.len()) ?? Vec.new()).len()
+    let c = (vecs().map(|v| v.clone()).max_by_key(|v| v.len()) ?? Vec.new()).len()
+    let d = vecs().map(|v| v.clone()).to_vec().len()
+    let e = rows.map(|r| r.len()).to_vec().len()
+    let f = (rows.map(|r| r.clone()).reduce(|a, b| if b.len() > a.len() { b.clone() } else { a.clone() }) ?? Vec.new()).len()
+    return a + b + c + d + e + f
+}
+
+func main() {}

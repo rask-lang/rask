@@ -202,15 +202,20 @@ pub enum OwnershipErrorKind {
         sink: Option<String>,
     },
 
-    /// type.sequence/SEQ47: `to_vec` over a chain that only lends its items,
-    /// of a type that isn't Copy. The chain owns nothing it could move into
-    /// the Vec, and `to_vec` doesn't deep-clone on its own.
-    #[error("`to_vec` has nothing it may move — `{elem}` is lent, not owned")]
-    ToVecOfLentItems {
+    /// type.sequence/SEQ34, SEQ47: a terminal that keeps items (`to_vec`,
+    /// `to_map`, `reduce`, or a pick like `find` over a sequence that isn't
+    /// a collection) handed items that aren't Copy and that the chain only
+    /// lends. It owns nothing it could keep, and it doesn't deep-clone on its
+    /// own.
+    #[error("`{terminal}` has nothing it may keep — `{elem}` is lent, not owned")]
+    KeepsLentItems {
+        terminal: String,
         /// The item type, as written for the reader.
         elem: String,
-        /// The adapter nearest the source, which is what lends.
-        adapter: String,
+        /// What the items come from: `rows`, `vecs()`, `s`.
+        lender: String,
+        /// The lender is a collection, which still holds every item.
+        collection: bool,
     },
 
     /// type.sequence/SEQ47: `Vec.zip` over elements that aren't Copy. It
