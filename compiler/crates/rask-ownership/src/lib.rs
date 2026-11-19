@@ -434,6 +434,9 @@ pub struct OwnershipChecker<'a> {
     /// carry their captures instead of pointing at them. Collected before any
     /// body is walked — see `collect_escaping_closures`.
     escaping_closures: HashSet<rask_ast::NodeId>,
+    /// The `mutate` parameters of the function `collect_escaping_closures` is
+    /// walking: assigning one writes the caller's variable, not a local.
+    mutate_params_in_walk: HashSet<String>,
     /// See `OwnershipResult::closure_captures`.
     closure_captures: HashMap<rask_ast::NodeId, Vec<String>>,
     /// Which parameters each function and method can resize (`resize.rs`).
@@ -744,6 +747,7 @@ impl<'a> OwnershipChecker<'a> {
             named_fn_values: HashMap::new(),
             fn_name_bindings: HashMap::new(),
             escaping_closures: HashSet::new(),
+            mutate_params_in_walk: HashSet::new(),
             closure_captures: HashMap::new(),
             task_bound_closures: HashSet::new(),
             lent_captures: HashMap::new(),
@@ -7124,15 +7128,15 @@ impl<'a> OwnershipChecker<'a> {
     fn collect_escaping_closures(&mut self, decls: &[Decl]) {
         for decl in decls {
             match &decl.kind {
-                DeclKind::Fn(f) => self.escapes_in_body(&f.body),
+                DeclKind::Fn(f) => self.escapes_in_fn(f),
                 DeclKind::Struct(s) => {
-                    for m in &s.methods { self.escapes_in_body(&m.body); }
+                    for m in &s.methods { self.escapes_in_fn(m); }
                 }
                 DeclKind::Enum(e) => {
-                    for m in &e.methods { self.escapes_in_body(&m.body); }
+                    for m in &e.methods { self.escapes_in_fn(m); }
                 }
                 DeclKind::Impl(i) => {
-                    for m in &i.methods { self.escapes_in_body(&m.body); }
+                    for m in &i.methods { self.escapes_in_fn(m); }
                 }
                 // `test` and `benchmark` bodies are function bodies, and the
                 // task tests live in them.
@@ -7176,6 +7180,12 @@ impl<'a> OwnershipChecker<'a> {
         out
     }
 
+    fn escapes_in_fn(&mut self, f: &FnDecl) {
+        self.mutate_params_in_walk = f.params.iter().filter(|p| p.is_mutate).map(|p| p.name.clone()).collect();
+        self.escapes_in_body(&f.body);
+        self.mutate_params_in_walk.clear();
+    }
+
     fn escapes_in_body(&mut self, body: &[Stmt]) {
         let mut named: HashMap<String, Vec<rask_ast::NodeId>> = HashMap::new();
         self.escapes_in_stmts(body, &mut named);
@@ -7197,6 +7207,7 @@ impl<'a> OwnershipChecker<'a> {
     fn escapes_in_stmt(&mut self, stmt: &Stmt, named: &mut HashMap<String, Vec<rask_ast::NodeId>>) {
         match &stmt.kind {
             StmtKind::Let { name, init, .. } | StmtKind::Mut { name, init, .. } => {
+                self.mutate_params_in_walk.remove(name);
                 self.escapes_in_expr(init, named);
                 let carried = self.closure_ids_of(init, named);
                 if carried.is_empty() { named.remove(name); }
@@ -7206,8 +7217,14 @@ impl<'a> OwnershipChecker<'a> {
                 self.escapes_in_expr(value, named);
                 self.escapes_in_expr(target, named);
                 // Through a field or an index the closure lands in something
-                // that outlives the assignment; a plain name is just a rebind.
-                if let ExprKind::Ident(name) = &target.kind {
+                // that outlives the assignment; a plain name is just a rebind,
+                // unless it is a `mutate` parameter: that writes the caller's
+                // variable, which outlives this frame.
+                let local = match &target.kind {
+                    ExprKind::Ident(name) if !self.mutate_params_in_walk.contains(name) => Some(name),
+                    _ => None,
+                };
+                if let Some(name) = local {
                     let carried = self.closure_ids_of(value, named);
                     if carried.is_empty() { named.remove(name); }
                     else { named.insert(name.clone(), carried); }

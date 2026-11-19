@@ -1,0 +1,165 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// Closures cloned as part of something else, and closure variables whose
+// owner the release pass couldn't see.
+//
+// A struct or enum with a closure field had no derived `clone`, so native
+// copied it in place: two values shared one environment and freed it twice.
+// `f.clone()` on a local made `f` carry copies of what it pointed at, so its
+// writes never reached the variable. A closure a call handed back, stored
+// through a `mutate` parameter or kept in a variable another closure borrows,
+// was never released. A closure couldn't carry a `Sender` at all, because
+// `Sender` didn't say it was Cloneable.
+
+import async.Sender
+
+struct Btn {
+    name: string
+    on: func() -> i64
+}
+
+struct Inner {
+    f: func() -> string
+}
+
+struct Outer {
+    name: string
+    inner: Inner
+}
+
+enum Act {
+    Run(func() -> string)
+    Skip
+}
+
+func counter() -> func() -> i64 {
+    mut n = 0
+    return || {
+        n = n + 1
+        return n
+    }
+}
+
+func words(s: string) -> func() -> string {
+    let v: Vec<string> = Vec.from(["{s} first", "{s} second"])
+    return || v[0]
+}
+
+func struct_clone_has_its_own_counter() -> string {
+    let b = Btn(name: "a", on: counter())
+    let c = b.clone()
+    let r1 = (b.on)()
+    let r2 = (c.on)()
+    let r3 = (b.on)()
+    return "{r1} {r2} {r3}"
+}
+
+func nested_struct_clone() -> string {
+    mut keep: Vec<Outer> = Vec.new()
+    let o = Outer(name: "o", inner: Inner(f: words("nested")))
+    keep.push(o.clone())
+    keep.push(o)
+    return (keep[1].inner.f)()
+}
+
+func enum_clone() -> i64 {
+    mut keep: Vec<Act> = Vec.new()
+    let a = Act.Run(words("hi"))
+    keep.push(a.clone())
+    keep.push(a)
+    return keep.len().wrap<i64>()
+}
+
+func clone_of_a_pointing_closure() -> i64 {
+    mut n = 0
+    let f = || {
+        n = n + 1
+    }
+    let g = f.clone()
+    g()
+    f()
+    return n
+}
+
+func setit(mutate g: func() -> string, s: string) {
+    g = words(s)
+}
+
+func stored_from_a_call() -> string {
+    mut g: func() -> string = || "start"
+    for i in 0..100 {
+        setit(mutate g, "c{i}")
+    }
+    return g()
+}
+
+func set_over_local(mutate g: func() -> i64, n: i64) {
+    let v: Vec<i64> = Vec.from([n, n])
+    g = || v[0]
+}
+
+func carries_a_local_through_mutate() -> i64 {
+    mut g: func() -> i64 = || 1
+    for i in 0..100 {
+        set_over_local(mutate g, i)
+    }
+    return g()
+}
+
+func borrowed_in_a_loop() -> i64 {
+    mut total = 0
+    for i in 0..100 {
+        let h = counter()
+        let k = || h() + i
+        total = total + k()
+    }
+    return total
+}
+
+func make_sender(take tx: Sender<i64>) -> func(i64) {
+    return |n| {
+        tx.send(n)!
+    }
+}
+
+func callback_carries_a_sender() -> i64 {
+    let (tx, rx) = Channel<i64>.buffered(4)
+    let send = make_sender(tx)
+    send(1)
+    send(2)
+    let a = rx.receive()!
+    let b = rx.receive()!
+    return a + b
+}
+
+test "a struct's clone clones its closure field" {
+    assert struct_clone_has_its_own_counter() == "1 1 2"
+}
+
+test "a nested struct's clone clones the closure inside" {
+    assert nested_struct_clone() == "nested first"
+}
+
+test "an enum's clone clones its closure payload" {
+    assert enum_clone() == 2
+}
+
+test "a clone of a closure that points at a local points at it too" {
+    assert clone_of_a_pointing_closure() == 2
+}
+
+test "a closure a call hands back, stored through a mutate parameter" {
+    assert stored_from_a_call() == "c99 first"
+}
+
+test "a closure over the callee's own vector, stored through a mutate parameter" {
+    assert carries_a_local_through_mutate() == 99
+}
+
+test "a closure variable another closure borrows, in a loop" {
+    assert borrowed_in_a_loop() == 5050
+}
+
+test "a callback carries a sender" {
+    assert callback_carries_a_sender() == 3
+}

@@ -2461,7 +2461,7 @@ fn cells_this_frame_frees(
 /// returns it. Each store before that had leaked.
 ///
 /// Only where the variable is nothing but a variable: filled by one store every
-/// other follows, and holding heap closures built where they're stored. A
+/// other follows, and holding closures this frame owns (`owned_closures`). A
 /// closure read out and kept somewhere took a reference of its own at the read
 /// (`closures::retain_loads_handed_on`), so what is read out may go anywhere.
 fn closure_cell_is_a_variable(
@@ -2490,8 +2490,8 @@ fn closure_cell_is_a_variable(
     if from_env {
         return None;
     }
-    let heap = heap_closures(func);
-    if !values.iter().all(|(v, _)| matches!(v, MirOperand::Local(l) if heap.contains(l))) {
+    let owned = owned_closures(func, all);
+    if !values.iter().all(|(v, _)| matches!(v, MirOperand::Local(l) if owned.contains(l))) {
         return None;
     }
     // Some store has to come before all the others. Block numbers don't say
@@ -2813,15 +2813,30 @@ fn addresses_handed_on(func: &MirFunction) -> HashSet<LocalId> {
     out
 }
 
-/// Heap closures `func` builds or clones, and the copies made of them.
-fn heap_closures(func: &MirFunction) -> HashSet<LocalId> {
+/// Closures `func` owns outright: heap ones it builds or clones, ones a call
+/// hands back, and the copies made of them. A function that returns a closure
+/// always hands over its own (the checker refuses to return a lent one or a
+/// capture), and so does a call through a closure. A runtime call is not one
+/// of those: `fs[0]` reads a closure the vector still holds, unless the
+/// declaration says it moves out.
+fn owned_closures(func: &MirFunction, all: &[MirFunction]) -> HashSet<LocalId> {
+    let returns_closure = |name: &str| {
+        all.iter().any(|f| f.name == name && !f.is_extern_c && matches!(f.ret_ty, MirType::FuncPtr(_)))
+    };
     let mut out: HashSet<LocalId> = func
         .blocks
         .iter()
         .flat_map(|b| b.statements.iter())
         .filter_map(|st| match &st.kind {
             MirStmtKind::ClosureCreate { dst, heap: true, .. } => Some(*dst),
-            MirStmtKind::Call { dst: Some(dst), func: callee, .. } if callee.name == "rask_closure_clone" => {
+            MirStmtKind::Call { dst: Some(dst), func: callee, .. }
+                if callee.name == "rask_closure_clone"
+                    || returns_closure(&callee.name)
+                    || (callee.moves_out() && matches!(func.local_ty(*dst), Some(MirType::FuncPtr(_)))) =>
+            {
+                Some(*dst)
+            }
+            MirStmtKind::ClosureCall { dst: Some(dst), .. } if matches!(func.local_ty(*dst), Some(MirType::FuncPtr(_))) => {
                 Some(*dst)
             }
             _ => None,
@@ -2848,7 +2863,7 @@ fn extend_by_copies(func: &MirFunction, set: &mut HashSet<LocalId>) {
 }
 
 /// Does `func` treat the closure cell at `addrs` as a plain variable: store a
-/// heap closure it built, release, read, hand the address to another body or
+/// closure it owns, release, read, hand the address to another body or
 /// a `mutate` parameter that does the same?
 fn cell_used_as_variable(
     func: &MirFunction,
@@ -2877,7 +2892,7 @@ fn cell_used_as_variable(
             break;
         }
     }
-    let heap = heap_closures(func);
+    let owned = owned_closures(func, all);
     for block in &func.blocks {
         for (si, st) in block.statements.iter().enumerate() {
             if !addrs.iter().any(|a| crate::analysis::uses::stmt_reads(st, *a)) {
@@ -2885,7 +2900,7 @@ fn cell_used_as_variable(
             }
             let fine = match &st.kind {
                 MirStmtKind::Store { addr, offset: 0, value: MirOperand::Local(v), .. } => {
-                    addrs.contains(addr) && heap.contains(v)
+                    addrs.contains(addr) && owned.contains(v)
                 }
                 MirStmtKind::ReleaseSlot { addr, .. } | MirStmtKind::ZeroAggregate { local: addr } => {
                     addrs.contains(addr)
@@ -3236,6 +3251,7 @@ fn slots_whose_address_is_taken(func: &MirFunction) -> HashSet<LocalId> {
 /// `RASK_POISON_STACK=1`, which is the point of that flag.
 fn insert_cell_drops(func: &mut MirFunction, cells: &[(LocalId, InCell, BlockId)]) {
     release_overwritten_slot_cells(func, cells);
+    empty_closure_cells_at_entry(func, cells);
     let dom = crate::analysis::dominators::DominatorTree::build(func);
     let exits: Vec<Vec<(usize, HashSet<LocalId>)>> = cells.iter().map(|(cell, _, _)| exit_blocks(func, *cell)).collect();
     let slots = arm_cells(func, cells);
@@ -3264,7 +3280,7 @@ fn insert_cell_drops(func: &mut MirFunction, cells: &[(LocalId, InCell, BlockId)
     for (ci, (cell, holds, store_block)) in cells.iter().enumerate() {
         for (block_idx, consumed_here) in exits[ci].clone() {
             let exit = func.blocks[block_idx].id;
-            if !dom.dominates(*store_block, exit) {
+            if !starts_empty(holds) && !dom.dominates(*store_block, exit) {
                 continue;
             }
             // Already handed away on the path that reaches this exit.
@@ -3333,7 +3349,7 @@ fn release_overwritten_slot_cells(func: &mut MirFunction, cells: &[(LocalId, InC
         let is_store = |s: &MirStmt| matches!(&s.kind, MirStmtKind::Store { addr, offset: 0, .. } if addr == cell);
         let is_zero = |s: &MirStmt| matches!(&s.kind, MirStmtKind::ZeroAggregate { local } if local == cell);
         for block in func.blocks.iter_mut() {
-            let mut skip_first = block.id == *fill_block;
+            let mut skip_first = block.id == *fill_block && !starts_empty(holds);
             // A whole write of an addressed cell starts by zeroing it
             // (`addr_taken`), so the old string has to go before the zero,
             // not before the store that follows it.
@@ -3357,6 +3373,35 @@ fn release_overwritten_slot_cells(func: &mut MirFunction, cells: &[(LocalId, InC
                 at += 1;
             }
         }
+    }
+}
+
+/// A closure cell holds no closure until something is stored in it. Emptied on
+/// entry, every store can release what the cell held and every exit can
+/// release what it holds, whether or not the store ran: a release of an empty
+/// closure does nothing. Without that, a variable filled in a loop body
+/// (`let h = make(); let k = || h()`) was released by none of its turns, since
+/// the fill neither came first nor ran on every path to the exit.
+fn starts_empty(holds: &InCell) -> bool {
+    matches!(holds, InCell::Slot(MirType::FuncPtr(_)))
+}
+
+fn empty_closure_cells_at_entry(func: &mut MirFunction, cells: &[(LocalId, InCell, BlockId)]) {
+    let Some(entry) = func.blocks.first_mut() else { return };
+    for (cell, holds, _) in cells {
+        if !starts_empty(holds) {
+            continue;
+        }
+        entry.statements.insert(
+            0,
+            MirStmt::dummy(MirStmtKind::Store {
+                addr: *cell,
+                offset: 0,
+                value: MirOperand::Constant(crate::MirConst::Int(0)),
+                store_size: 8,
+                field: None,
+            }),
+        );
     }
 }
 

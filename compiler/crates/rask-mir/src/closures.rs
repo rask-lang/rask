@@ -391,7 +391,7 @@ pub(crate) fn closures_handed_on(fns: &[MirFunction]) -> HashSet<String> {
         if created.is_empty() {
             continue;
         }
-        let aliases = closure_aliases(func, &created);
+        let aliases = closure_aliases_through_clones(func, &created);
         let leaving = leaves_the_frame(func, routes, &kept.targets);
         // Only a closure that actually borrows something has a borrow to
         // withdraw, so the map is built from those creates alone.
@@ -422,6 +422,9 @@ pub(crate) fn closures_handed_on(fns: &[MirFunction]) -> HashSet<String> {
         for block in &func.blocks {
             for stmt in &block.statements {
                 match &stmt.kind {
+                    // A clone keeps nothing: it is another name for what
+                    // its source points at, followed through the aliases.
+                    MirStmtKind::Call { func: callee, .. } if callee.name == "rask_closure_clone" => {}
                     MirStmtKind::Call { dst, func: callee, args } => {
                         for (idx, arg) in args.iter().enumerate() {
                             let Some(id) = uses::operand_local(arg) else { continue };
@@ -1402,6 +1405,9 @@ fn find_escaping_closures(
     for block in &func.blocks {
         for stmt in &block.statements {
             match &stmt.kind {
+                // A clone reads its source and copies the environment into a
+                // block of its own (mem.closures/CV2); the source stays here.
+                MirStmtKind::Call { func: callee, .. } if callee.name == "rask_closure_clone" => {}
                 MirStmtKind::Call { func: callee, args, .. } => {
                     for (arg_idx, arg) in args.iter().enumerate() {
                         if let Some(id) = uses::operand_local(arg) {
@@ -1572,6 +1578,25 @@ fn closure_aliases(
     func: &MirFunction,
     closure_locals: &HashMap<LocalId, bool>,
 ) -> ClosureAliases {
+    aliases_of(func, closure_locals, false)
+}
+
+/// The same, with a clone counted as one more name for its source. A clone is
+/// a block of its own, so the drop pass mustn't read it that way, but it
+/// points wherever the source points (mem.closures/CV2): when the clone
+/// leaves the frame, what the source borrows has to be carried instead.
+fn closure_aliases_through_clones(
+    func: &MirFunction,
+    closure_locals: &HashMap<LocalId, bool>,
+) -> ClosureAliases {
+    aliases_of(func, closure_locals, true)
+}
+
+fn aliases_of(
+    func: &MirFunction,
+    closure_locals: &HashMap<LocalId, bool>,
+    through_clones: bool,
+) -> ClosureAliases {
     let mut map: HashMap<LocalId, Vec<LocalId>> =
         closure_locals.keys().map(|id| (*id, vec![*id])).collect();
     // Sets only grow, so this settles.
@@ -1598,6 +1623,11 @@ fn closure_aliases(
                             })
                             .collect(),
                     ),
+                    MirStmtKind::Call { dst: Some(dst), func: callee, args }
+                        if through_clones && callee.name == "rask_closure_clone" =>
+                    {
+                        (dst, args.iter().filter_map(uses::operand_local).collect())
+                    }
                     _ => continue,
                 };
                 let from: Vec<LocalId> =

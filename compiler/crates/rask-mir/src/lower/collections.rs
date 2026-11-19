@@ -950,6 +950,8 @@ impl<'a> MirLowerer<'a> {
             rask_types::Type::UnresolvedNamed(n) if n == "string" => Some("string_clone"),
             rask_types::Type::UnresolvedGeneric { name, .. } if name == "Vec" => Some("Vec_clone"),
             rask_types::Type::UnresolvedGeneric { name, .. } if name == "Map" => Some("Map_clone"),
+            // A closure is one pointer, and its clone is a new environment.
+            rask_types::Type::Fn { .. } => Some("rask_closure_clone"),
             _ => None,
         }
     }
