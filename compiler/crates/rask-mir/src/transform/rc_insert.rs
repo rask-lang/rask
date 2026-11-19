@@ -388,8 +388,13 @@ fn retain_views_handed_over(
                 // gives the caller references of its own. A closure that
                 // borrows a non-Copy capture can't return it (E0907,
                 // #1449); one that carries it still can, and then each call
-                // deep-clones it.
-                MirStmtKind::LoadCapture { dst, .. } => Some(*dst),
+                // deep-clones it. A task block's capture is the block's own:
+                // the environment frees only what the block didn't hand on
+                // (`container_drop::task_captures_given_away`), so handing it
+                // on is a move.
+                MirStmtKind::LoadCapture { dst, access, .. } => {
+                    (*access != crate::CaptureAccess::Taken).then_some(*dst)
+                }
                 // An element bound where it sits: the collection keeps it.
                 MirStmtKind::BindPlace { dst, .. } => Some(*dst),
                 MirStmtKind::Assign { dst, rvalue: MirRValue::Use(MirOperand::Local(src)) } => {

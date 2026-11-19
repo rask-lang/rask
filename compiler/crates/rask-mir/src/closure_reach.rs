@@ -76,6 +76,12 @@ impl Held {
 pub struct ClosureReach {
     locals: HashMap<(String, LocalId), Held>,
     escaped: HashSet<String>,
+    /// Per closure body, which of its parameters after the environment take a
+    /// closure.
+    body_shapes: HashMap<String, Vec<bool>>,
+    /// Per closure local, which arguments its calls pass are closures. A
+    /// local called with two shapes keeps none, and every body stays.
+    call_shapes: HashMap<(String, LocalId), Option<Vec<bool>>>,
 }
 
 impl ClosureReach {
@@ -89,6 +95,15 @@ impl ClosureReach {
         }
         if held.reaches_unrouted() {
             out.extend(self.escaped.iter().map(String::as_str));
+        }
+        // A body can't be behind a call it can't be called with: one taking
+        // two arguments behind a one-argument call, or one taking a callback
+        // where the call passes a value. Every escaped sequence closure takes
+        // its yield as its one argument, so without this each one-argument
+        // yield call reached them all, and the loop bodies behind a vector's
+        // `as_sequence` couldn't be settled to agree on who frees the item.
+        if let Some(Some(shape)) = self.call_shapes.get(&(func.to_string(), local)) {
+            out.retain(|b| self.body_shapes.get(*b).is_none_or(|p| p == shape));
         }
         out
     }
@@ -204,7 +219,30 @@ impl<'a> Walk<'a> {
                 break;
             }
         }
-        ClosureReach { locals: self.locals, escaped: self.escaped }
+        let is_closure = |f: &MirFunction, id: LocalId| matches!(f.local_ty(id), Some(crate::MirType::FuncPtr(_)));
+        let body_shapes = self
+            .fns
+            .iter()
+            .map(|f| (f.name.clone(), f.params.iter().skip(1).map(|p| is_closure(f, p.id)).collect()))
+            .collect();
+        let mut call_shapes: HashMap<(String, LocalId), Option<Vec<bool>>> = HashMap::new();
+        for f in self.fns {
+            for stmt in f.blocks.iter().flat_map(|b| b.statements.iter()) {
+                let MirStmtKind::ClosureCall { closure, args, .. } = &stmt.kind else { continue };
+                let shape: Option<Vec<bool>> = args
+                    .iter()
+                    .map(|a| match a {
+                        MirOperand::Local(id) => f.local_ty(*id).map(|t| matches!(t, crate::MirType::FuncPtr(_))),
+                        _ => Some(false),
+                    })
+                    .collect();
+                call_shapes
+                    .entry((f.name.clone(), *closure))
+                    .and_modify(|seen| if *seen != shape { *seen = None })
+                    .or_insert(shape);
+            }
+        }
+        ClosureReach { locals: self.locals, escaped: self.escaped, body_shapes, call_shapes }
     }
 
     fn unseen(&self, name: &str) -> bool {
