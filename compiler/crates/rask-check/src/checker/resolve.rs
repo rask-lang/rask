@@ -801,7 +801,7 @@ impl TypeChecker {
                 self.call_targets.insert(
                     node,
                     Callee::Method {
-                        recv: ty.clone(),
+                        recv: self.types.dispatch_receiver(&ty, &method),
                         method: method.clone(),
                         package: self.conformance_package_for_call(&ty, &method, span),
                         body: None,
@@ -922,7 +922,7 @@ impl TypeChecker {
                     self.call_targets.insert(
                         node,
                         Callee::Method {
-                            recv: settled.clone(),
+                            recv: self.types.dispatch_receiver(&settled, &method),
                             method: method.clone(),
                             package: self.conformance_package_for_call(&settled, &method, span),
                             body: None,
@@ -1239,16 +1239,24 @@ impl TypeChecker {
                     Some(TypeDef::Enum { methods, type_params, .. }) => {
                         (methods.clone(), type_params.clone())
                     }
-                    Some(TypeDef::NominalAlias { methods, with_interfaces, .. }) => {
+                    Some(TypeDef::NominalAlias { methods, with_interfaces, underlying, .. }) => {
                         // T11/T12: a nominal newtype inherits the interfaces its
                         // `implements` clause lists, and they delegate to the
                         // value underneath. The list was recorded and never
                         // read, so `type Id = u64 implements Equal` gave `Id` no
                         // `eq` at all and `a == b` didn't compile (#551).
                         let own = methods.iter().any(|m| m.name == method);
+                        // The call runs the underlying type's body, not the
+                        // interface's declaration: `Money.zero()` is
+                        // `i64.zero()`. With the interface's, nothing was
+                        // emitted under the symbol the call named (#2004).
                         let inherited = (!own)
                             .then(|| self.inherited_interface_method(&ty, with_interfaces, &method))
-                            .flatten();
+                            .flatten()
+                            .map(|mut sig| {
+                                sig.decl = self.types.method_body(underlying, &method, None);
+                                sig
+                            });
                         match inherited {
                             Some(sig) => (vec![sig], Vec::new()),
                             None => (methods.clone(), Vec::new()),

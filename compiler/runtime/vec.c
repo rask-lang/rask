@@ -136,10 +136,9 @@ void rask_owned_release(char *elem, int32_t entry) {
             rask_map_free(*(RaskMap **)at);
             *(RaskMap **)at = NULL;
             break;
-        // The block describes itself, so there is nothing to look up: the
-        // release is a decrement and the last one runs `env_drop` and gives
-        // the bytes back. The slot is left alone — unlike a nested container's,
-        // whose handle is rewritten, because a count needs no new pointer.
+        // The block describes itself, so there is nothing to look up: its
+        // header lists what the environment owns, and the free walks that
+        // list before giving the bytes back.
         case RASK_OWNED_CLOSURE:
             rask_closure_free(*(void **)at);
             break;
@@ -207,12 +206,13 @@ void rask_owned_retain(char *elem, int32_t entry) {
             if (inner) *(RaskMap **)at = rask_map_clone(inner);
             break;
         }
-        // A count rather than a copy. The env layout is known only to the
-        // closure's generated `env_drop`, so a real copy would have to retain
-        // whatever the captures own and there is no glue to ask.
-        case RASK_OWNED_CLOSURE:
-            rask_closure_retain(*(void **)at);
+        // A closure has one owner like a nested container (mem.closures/CV1),
+        // so the copy gets a clone of its own.
+        case RASK_OWNED_CLOSURE: {
+            void *inner = *(void **)at;
+            if (inner) *(void **)at = rask_closure_clone(inner);
             break;
+        }
         case RASK_OWNED_TRAITBOX:
             rask_box_retain((void *)(intptr_t)*(int64_t *)at);
             break;
@@ -220,8 +220,7 @@ void rask_owned_retain(char *elem, int32_t entry) {
         // copies element bytes and a box's element is a pointer, so without
         // this the second release would free one block twice. Copying the value
         // instead would mean copying whatever it holds, and Rask doesn't deep
-        // clone implicitly — so `boxes.clone()` shares its boxes, the way a
-        // cloned `Vec<func>` shares its closures.
+        // clone implicitly — so `boxes.clone()` shares its boxes.
         default:
             break;
     }

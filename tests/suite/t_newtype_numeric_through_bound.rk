@@ -1,0 +1,46 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A newtype's inherited Numeric methods reached through a bound, and through a
+// newtype over a newtype. `T.zero()` with `T = Money` found no body for
+// `Money`, because the newtype writes no `zero` of its own, so native called a
+// `T_zero` nobody emits. The interpreter didn't look under the newtype, and in a
+// generic body it didn't wrap `x.add(x)` back into `Money`.
+
+type Money = i64 implements Numeric
+type Ratio = f32 implements Numeric
+type Inner = i64 implements Numeric
+type Outer = Inner implements Numeric
+
+func total<T: Numeric>(items: Vec<T>) -> T {
+    mut sum = T.zero()
+    for x in items {
+        sum = sum.add(x)
+    }
+    return sum.add(T.one()).add(T.from_int(10))
+}
+
+func double<T: Numeric>(x: T) -> T {
+    return x.add(x)
+}
+
+test "a bound reaches a newtype's inherited statics" {
+    let ms: Vec<Money> = Vec.from([Money(1), Money(2)])
+    assert total(ms).value == 14
+    let rs: Vec<Ratio> = Vec.from([Ratio(0.5)])
+    assert total(rs).value == 11.5
+    let bs: Vec<u8> = Vec.from([1, 2])
+    assert total(bs) == 14
+}
+
+test "an inherited instance method through a bound keeps the newtype" {
+    assert double(Money(4)).value == 8
+}
+
+test "a newtype over a newtype" {
+    let z = Outer.zero()
+    assert z.value.value == 0
+    let b = Outer(Inner(1)).add(Outer(Inner(2)))
+    assert b.value.value == 3
+    let d = double(Outer(Inner(5)))
+    assert d.value.value == 10
+}

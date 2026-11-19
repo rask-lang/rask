@@ -2185,9 +2185,9 @@ impl<'a> MirLowerer<'a> {
         self.closure_counter += 1;
 
         let mut wb = crate::BlockBuilder::new(wrapper_name.clone(), MirType::I64);
-        wb.add_param("__env".to_string(), MirType::Ptr);
-        let a = wb.add_param("__a".to_string(), key_ty.clone());
-        let b = wb.add_param("__b".to_string(), key_ty.clone());
+        wb.add_param("__env".to_string(), MirType::Ptr, rask_ast::ty::ParamMode::Borrow);
+        let a = wb.add_param("__a".to_string(), key_ty.clone(), rask_ast::ty::ParamMode::Borrow);
+        let b = wb.add_param("__b".to_string(), key_ty.clone(), rask_ast::ty::ParamMode::Borrow);
 
         let saved = std::mem::replace(&mut self.builder, wb);
 

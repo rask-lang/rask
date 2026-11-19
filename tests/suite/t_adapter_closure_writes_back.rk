@@ -15,7 +15,7 @@
 
 import sequence.Sequence
 
-func evens_of(s: Sequence<i32>, keep: func(i32) -> bool) -> Sequence<i32> {
+func evens_of(take s: Sequence<i32>, keep: func(i32) -> bool) -> Sequence<i32> {
     return s.filter(keep)
 }
 

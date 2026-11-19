@@ -865,7 +865,38 @@ impl Interpreter {
                 return self.apply_try(try_id, expr.span, val);
             }
         }
-        self.eval_expr_inner(expr)
+        let val = self.eval_expr_inner(expr)?;
+        Ok(self.rewrap_newtype_result(expr, val))
+    }
+
+    /// A method a nominal newtype inherits runs on the value underneath
+    /// (type.aliases/T12), so what comes back is that value's type: `a.add(b)`
+    /// on two `Money`s answered a bare `i64`, and `.value` on it failed. The
+    /// checker typed the call as `Money`, so it is wrapped back here. A method
+    /// whose answer isn't the newtype (`hash`, `eq`) is left alone. In a
+    /// generic body the checker's type is `T`, which this instance binds.
+    fn rewrap_newtype_result(&self, expr: &Expr, val: Value) -> Value {
+        if !matches!(expr.kind, ExprKind::MethodCall { .. }) {
+            return val;
+        }
+        let Some(ty) = self.node_types.get(&expr.id) else { return val };
+        let ty = match self.generic_frames.last().and_then(|f| f.as_deref()) {
+            Some(frame) => rask_check::substitute_type(ty, frame),
+            None => ty.clone(),
+        };
+        self.wrap_as_newtype(&ty, val)
+    }
+
+    /// `val` as a value of `ty`, adding each newtype layer it lacks: an `i64`
+    /// answered for `Outer` over `Inner` over `i64` becomes `Outer(Inner(n))`.
+    fn wrap_as_newtype(&self, ty: &rask_types::Type, val: Value) -> Value {
+        let rask_types::Type::Named(id) = ty else { return val };
+        let Some(rask_types::TypeDef::NominalAlias { name, underlying, .. }) = self.types.get(*id) else { return val };
+        if matches!(&val, Value::Nominal { type_name, .. } if type_name == name) {
+            return val;
+        }
+        let inner = self.wrap_as_newtype(underlying, val);
+        Value::Nominal { type_name: name.clone(), inner: Box::new(inner) }
     }
 
     /// ER16/ER16a: hand back the payload, or leave through the other branch.
@@ -1250,6 +1281,13 @@ impl Interpreter {
                     }
                     None => object,
                 };
+                // A newtype's inherited static method is its underlying
+                // type's, through as many newtype layers as it takes.
+                let mut underlying = None;
+                while let Some(next) = self.newtype_static_receiver(underlying.as_ref().unwrap_or(object), method) {
+                    underlying = Some(next);
+                }
+                let object = underlying.as_ref().unwrap_or(object);
                 if let Some(ident) = object.name() {
                     // A transparent `type alias` is the same type under another
                     // spelling, and everything below keys off the spelling. One
@@ -2574,16 +2612,22 @@ impl Interpreter {
                 // of the split were once added together with only one wired
                 // here, and `own` aliased: `mut n = 0; let f = own || { print(n)
                 // }; n = 42; f()` printed 42 on the interpreter and 0 on native.
-                let captured = if self.escaping_closures.contains(&expr.id) {
-                    self.env.capture_snapshot()
+                let carried: Vec<String> = if self.escaping_closures.contains(&expr.id) {
+                    self.closure_captures.get(&expr.id).cloned().unwrap_or_default()
                 } else {
+                    Vec::new()
+                };
+                let captured = if carried.is_empty() {
                     self.env.capture_shared()
+                } else {
+                    self.env.capture_snapshot(&carried)
                 };
                 Ok(Value::Closure {
                     params: params.iter().map(|p| p.name.clone()).collect(),
                     body: (**body).clone(),
                     captured_env: captured,
                     lent: self.env.lent_names(),
+                    carried,
                     task_bound: self.closure_is_task_bound(expr.id),
                     generics: self.generic_frames.last().cloned().flatten(),
                     // A real error side: `T?` is a `Result` whose error is

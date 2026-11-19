@@ -160,6 +160,8 @@ impl PassManager {
         // and one in a block nothing reaches — the code after a `panic` — is
         // not a path the value takes.
         pm.add(UnreachableBlockPass);
+        // First of the passes that ask whether a callee keeps an argument.
+        pm.add(LoopItemModePass);
         pm.add(ContainerDropInsertionPass);
         pm.add(StringRcInsertionPass);
         pm.add(StringRcElisionPass);
@@ -217,6 +219,16 @@ impl MirPass for UnwindRecordPass {
     fn name(&self) -> &str { "unwind_records" }
     fn run(&self, fns: &mut Vec<MirFunction>, ctx: &mut PassContext) {
         crate::transform::unwind::build_unwind_records(fns, ctx.target);
+    }
+}
+
+/// Settle whether each `for` body over a sequence keeps its item.
+pub struct LoopItemModePass;
+
+impl MirPass for LoopItemModePass {
+    fn name(&self) -> &str { "loop_item_modes" }
+    fn run(&self, fns: &mut Vec<MirFunction>, _ctx: &mut PassContext) {
+        crate::container_drop::settle_loop_item_modes(fns);
     }
 }
 
@@ -309,18 +321,17 @@ impl MirPass for StringRcInsertionPass {
     fn name(&self) -> &str { "string_rc_insert" }
     // Whole-program rather than per-function: releasing a struct that arrived
     // by value needs to know whether the callee kept it, and that answer is
-    // read off every body (see `container_drop::params_a_callee_keeps`).
+    // the callee's parameter modes (`container_drop::params_a_callee_keeps`).
     fn run(&self, fns: &mut Vec<MirFunction>, ctx: &mut PassContext) {
         let targets = crate::closure_targets::ClosureTargets::build(fns);
         let reach = crate::closure_reach::ClosureReach::build(fns);
-        let kept = crate::container_drop::params_a_callee_keeps(fns, &targets, &reach);
+        let kept = crate::container_drop::params_a_callee_keeps(fns);
         let closure_keeps = |func: &str, closure, i, n| {
             crate::container_drop::closure_call_keeps_argument(&targets, &reach, &kept, func, closure, i, n)
         };
         let writes = crate::transform::inline::params_written_through(fns);
-        let mut carried = Vec::new();
         for func in fns.iter_mut() {
-            carried.extend(crate::transform::rc_insert::insert_rc_ops(
+            crate::transform::rc_insert::insert_rc_ops(
                 func,
                 &kept,
                 &writes,
@@ -329,9 +340,8 @@ impl MirPass for StringRcInsertionPass {
                 &ctx.rack_holders,
                 &ctx.copy_layouts,
                 ctx.target,
-            ));
+            );
         }
-        crate::container_drop::add_carried_releases(fns, carried, &kept, &targets, &reach);
     }
 }
 

@@ -1,0 +1,138 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A closure kept past the block of a local it points at (E0862, MC3, #2014).
+//
+// A closure that stays in its frame reads its captures where they live, so it
+// can't outlive any of them. A Copy value is no exception. Natively the closure
+// in `g` read the body's dead slot after the loop. For a sequence loop, whose
+// body is a function of its own, that slot was in a frame already popped.
+import sequence.Sequence
+
+func vecs() -> Sequence<Vec<i64>> {
+    return |yield| {
+        if !yield([1, 2, 3]) { return }
+        if !yield([4, 5, 6]) { return }
+    }
+}
+
+func over_a_sequence() -> i64 {
+    mut g: func() -> i64 = || 0
+    for v in vecs() {
+        let k = v[0]
+        // ERROR: E0862 — `k` ends with the body, `g` is called after it
+        g = || k
+    }
+    return g()
+}
+
+func over_a_range() -> i64 {
+    mut g: func() -> i64 = || 0
+    for i in 0..3 {
+        let k = i * 2
+        // ERROR: E0862 — the same in a range loop's body
+        g = || k
+    }
+    return g()
+}
+
+func in_a_block(c: bool) -> string {
+    mut g: func() -> string = || "none"
+    if c {
+        let s = "inner"
+        // ERROR: E0862 — a string local, same rule
+        g = || s
+    }
+    return g()
+}
+
+func shadows_a_parameter(k: i64) -> i64 {
+    mut g: func() -> i64 = || 0
+    for v in vecs() {
+        let k = v[0]
+        // ERROR: E0862 — the body's `k`, not the parameter it shadows
+        g = || k
+    }
+    return g()
+}
+
+func a_loop_variable() -> i64 {
+    let k = 7
+    mut g: func() -> i64 = || 0
+    for k in 0..3 {
+        // ERROR: E0862 — the loop's `k` ends with each iteration
+        g = || k
+    }
+    return g() + k
+}
+
+enum Shape {
+    Circle(i64)
+    Empty
+}
+
+func an_arm_binding() -> i64 {
+    mut g: func() -> i64 = || 0
+    for v in vecs() {
+        match Shape.Circle(v[0]) {
+            Shape.Circle(k) => {
+                // ERROR: E0862 — `k` ends with its arm
+                g = || k
+            }
+            Shape.Empty => {}
+        }
+    }
+    return g()
+}
+
+// These compile: the closure dies with `k`, or what it reads lives as long as it.
+func stays_inside() -> i64 {
+    mut t = 0
+    for v in vecs() {
+        let k = v[0]
+        let f = || k
+        t += f()
+    }
+    return t
+}
+
+func outer_local() -> i64 {
+    let k = 5
+    mut g: func() -> i64 = || 0
+    for v in vecs() { g = || k + 1 }
+    return g()
+}
+
+// An inner `let k` that has ended leaves the outer `k` to the closure.
+func after_an_inner_shadow(c: bool) -> i64 {
+    let k = 1
+    mut g: func() -> i64 = || 0
+    if c {
+        let k = 2
+        println("{k}")
+    }
+    if c { g = || k }
+    return g()
+}
+
+// A `take` parameter lives as long as the body.
+func a_take_parameter(take v: Vec<i64>, c: bool) -> i64 {
+    mut g: func() -> i64 = || 0
+    if c { g = || v[0] }
+    return g()
+}
+
+// The variable and the loop variable end together.
+func held_inside_the_loop() -> i64 {
+    mut t = 0
+    for x in 0..3 {
+        mut g: func() -> i64 = || 0
+        if t >= 0 { g = || x }
+        t += g()
+    }
+    return t
+}
+
+func main() {
+    println("{over_a_sequence()} {over_a_range()} {in_a_block(true)} {stays_inside()} {outer_local()}")
+    println("{shadows_a_parameter(1)} {a_loop_variable()} {an_arm_binding()}")
+    println("{after_an_inner_shadow(true)} {a_take_parameter([4], true)} {held_inside_the_loop()}")
+}

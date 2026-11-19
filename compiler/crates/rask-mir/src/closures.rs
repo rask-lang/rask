@@ -32,17 +32,157 @@ use crate::{LocalId, MirFunction, MirOperand, MirStmt, MirStmtKind, MirTerminato
 pub fn optimize_all_closures(fns: &mut [MirFunction]) {
     let callee_escapes = build_callee_escape_map(fns, CaptureRule::EscapingClosure);
     let kept = KeptThroughCalls::build(fns);
+    let heap_slots = captures_holding_heap_closures(fns);
+    let lent = LentCells::build(fns, heap_slots);
 
     for func in fns.iter_mut() {
-        decide_allocation(func, &callee_escapes, &kept);
+        decide_allocation(func, &callee_escapes, &kept, &lent);
+    }
+}
+
+/// Where a closure stored in a variable passes to another frame that may
+/// replace it, so every closure stored there has to be a heap one: the other
+/// frame releases the one it replaces.
+struct LentCells {
+    /// (closure body, offset) of a captured variable the body assigns to or
+    /// hands on (`captures_holding_heap_closures`).
+    slots: HashSet<(String, u32)>,
+    /// (function, index) of each `mutate` parameter. `setit(mutate g)` lends
+    /// `g` itself, and a body that assigns `g = || n` stores through it
+    /// (`container_drop::release_before_param_stores`).
+    mutate_params: HashSet<(String, usize)>,
+}
+
+impl LentCells {
+    fn build(fns: &[MirFunction], slots: HashSet<(String, u32)>) -> Self {
+        let mutate_params = fns
+            .iter()
+            .flat_map(|f| {
+                f.param_modes
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, m)| **m == rask_ast::ty::ParamMode::Mutate)
+                    .map(|(i, _)| (f.name.clone(), i))
+            })
+            .collect();
+        LentCells { slots, mutate_params }
+    }
+}
+
+/// The environment slots, as (closure body, offset), whose captured closure
+/// variable has to hold heap closures: the body assigns a closure to it, or
+/// hands the closure in it on.
+///
+/// Such a variable trades closures across two frames: the creating frame put
+/// one in it, the body replaces it and the replaced one is released. So every
+/// closure that lands in it is a heap one, the first included. Left on the
+/// stack, the first one was freed by the body as if it had been allocated, or
+/// pointed into the body's frame after it returned.
+///
+/// Handed on is the same trade the other way: `fs.push(g)` in a loop body
+/// gives the vector a reference of its own to what `g` holds
+/// (`retain_loads_handed_on`), and a stack closure has nothing to count with.
+/// Any call counts, since which calls keep an argument isn't settled yet when
+/// this is asked.
+///
+/// A body that hands the variable on to a body that does either counts too:
+/// nested loops write the outer function's variable from the inner body, and
+/// the outer body only passes the address along.
+fn captures_holding_heap_closures(fns: &[MirFunction]) -> HashSet<(String, u32)> {
+    let mut out = HashSet::new();
+    // (body, offset) the slot came in at, and (inner body, offset) it went to.
+    let mut passed: Vec<((String, u32), (String, u32))> = Vec::new();
+    for func in fns {
+        let slots: HashMap<LocalId, u32> = func
+            .blocks
+            .iter()
+            .flat_map(|b| b.statements.iter())
+            .filter_map(|stmt| match &stmt.kind {
+                MirStmtKind::LoadCapture { dst, offset, .. }
+                    if matches!(func.local_ty(*dst), Some(crate::MirType::FuncPtr(_))) =>
+                {
+                    Some((*dst, *offset))
+                }
+                _ => None,
+            })
+            .collect();
+        if slots.is_empty() {
+            continue;
+        }
+        // Each slot's variable and the plain copies made of it.
+        let mut holders: HashMap<LocalId, u32> = slots.clone();
+        loop {
+            let before = holders.len();
+            for stmt in func.blocks.iter().flat_map(|b| b.statements.iter()) {
+                if let MirStmtKind::Assign { dst, rvalue: crate::MirRValue::Use(MirOperand::Local(src)) } = &stmt.kind {
+                    if let Some(offset) = holders.get(src).copied().filter(|_| !slots.contains_key(dst)) {
+                        holders.entry(*dst).or_insert(offset);
+                    }
+                }
+            }
+            if holders.len() == before {
+                break;
+            }
+        }
+        let held = |op: &MirOperand| match op {
+            MirOperand::Local(l) => holders.get(l).copied(),
+            _ => None,
+        };
+        for stmt in func.blocks.iter().flat_map(|b| b.statements.iter()) {
+            let handed: Vec<u32> = match &stmt.kind {
+                MirStmtKind::Call { args, .. }
+                | MirStmtKind::InterfaceCall { args, .. }
+                | MirStmtKind::ClosureCall { args, .. } => args.iter().filter_map(held).collect(),
+                MirStmtKind::Store { value, .. }
+                | MirStmtKind::ArrayStore { value, .. }
+                | MirStmtKind::InterfaceBox { value, .. } => held(value).into_iter().collect(),
+                MirStmtKind::ClosureCreate { captures, .. } => captures
+                    .iter()
+                    .filter(|c| !c.by_ref)
+                    .filter_map(|c| holders.get(&c.local_id).copied())
+                    .collect(),
+                _ => Vec::new(),
+            };
+            out.extend(handed.into_iter().map(|offset| (func.name.clone(), offset)));
+            // `g = h` with both captured: `h`'s closure now sits in a variable
+            // the body writes, so it has to be a heap one as well.
+            if let MirStmtKind::Assign { dst, rvalue: crate::MirRValue::Use(op) } = &stmt.kind {
+                if slots.contains_key(dst) {
+                    out.extend(held(op).map(|offset| (func.name.clone(), offset)));
+                }
+            }
+            if let MirStmtKind::ClosureCreate { func_name, captures, .. } = &stmt.kind {
+                for c in captures.iter().filter(|c| c.by_ref) {
+                    if let Some(offset) = slots.get(&c.local_id) {
+                        passed.push(((func.name.clone(), *offset), (func_name.clone(), c.offset)));
+                    }
+                }
+            }
+            if matches!(stmt.kind, MirStmtKind::LoadCapture { .. }) {
+                continue;
+            }
+            if let Some(offset) = uses::stmt_def(stmt).and_then(|d| slots.get(&d)) {
+                out.insert((func.name.clone(), *offset));
+            }
+        }
+    }
+    loop {
+        let before = out.len();
+        for (from, to) in &passed {
+            if out.contains(to) {
+                out.insert(from.clone());
+            }
+        }
+        if out.len() == before {
+            return out;
+        }
     }
 }
 
 /// Which calls *through* a closure may keep a closure they are handed.
 ///
-/// A yield lends its item, and a terminal that keeps one takes a reference of
-/// its own (`retain_borrowed_closures_handed_on`). That only works on a heap
-/// block. A closure literal yielded straight out of a sequence body —
+/// A yield lends its item, and a terminal that keeps one clones it (CV2),
+/// which needs a block with a header. A closure literal yielded straight out of a sequence body —
 ///
 /// ```text
 /// func pair() -> Sequence<func(i64) -> i64> {
@@ -62,13 +202,18 @@ pub fn optimize_all_closures(fns: &mut [MirFunction]) {
 /// yield.
 pub(crate) struct KeptThroughCalls {
     targets: crate::closure_targets::ClosureTargets,
+    /// The plain walk, the one `container_drop` reads: a variable is only
+    /// worth heap closures when the pass that releases them sees the same
+    /// call targets.
+    plain_targets: crate::closure_targets::ClosureTargets,
     routes: HashMap<String, Vec<Route>>,
     any_keeper: bool,
 }
 
 impl KeptThroughCalls {
     pub(crate) fn build(fns: &[MirFunction]) -> Self {
-        let routes = build_param_routes(fns);
+        let targets = crate::closure_targets::ClosureTargets::build_following_returns(fns);
+        let routes = build_param_routes(fns, &targets);
         let bodies: HashSet<&str> = fns
             .iter()
             .flat_map(|f| f.blocks.iter().flat_map(|b| b.statements.iter()))
@@ -83,7 +228,22 @@ impl KeptThroughCalls {
                     && routes.get(&f.name).and_then(|r| r.get(i)) == Some(&Route::Away)
             })
         });
-        Self { targets: crate::closure_targets::ClosureTargets::build_following_returns(fns), routes, any_keeper }
+        Self {
+            targets,
+            plain_targets: crate::closure_targets::ClosureTargets::build(fns),
+            routes,
+            any_keeper,
+        }
+    }
+
+    /// Might `closure(args)` in `func` hand argument `i` to a body's `mutate`
+    /// parameter? Only bodies the call is known to reach count: through an
+    /// unknown one, the caller's variable isn't taken as owning its closure
+    /// (`container_drop::cell_used_as_variable`), so nothing replaces it.
+    fn lends_to_mutate(&self, func: &str, closure: LocalId, i: usize, lent: &LentCells) -> bool {
+        self.plain_targets
+            .known(func, closure)
+            .is_some_and(|bodies| bodies.iter().any(|b| lent.mutate_params.contains(&(b.clone(), i + 1))))
     }
 
     /// May `closure(args)` in `func` keep argument `i`?
@@ -120,212 +280,35 @@ impl KeptThroughCalls {
 pub fn insert_all_closure_drops(fns: &mut [MirFunction]) {
     let callee_escapes = build_callee_escape_map(fns, CaptureRule::HeapClosure);
 
-    // A function that hands a heap closure back makes its caller the owner —
+    // A function that hands a closure back makes its caller the owner —
     // `let tick = counter()` is the caller receiving a block nobody else will
-    // free. Which functions those are can only be read off the finished
-    // allocation decisions, so it waits for every function to have one.
-    // Which bodies a call *through* a closure can reach, so the same question
-    // can be asked of a callback. `flat_map(|x| upto(x))` builds a sequence per
-    // element and hands it back through a `ClosureCall`, which has no name to
-    // look up — so nothing owned any of them and each element leaked its
-    // environment (#1045).
+    // free.
+    let hands_back = functions_handing_back_a_closure(fns);
     let targets = crate::closure_targets::ClosureTargets::build(fns);
-    let hands_back = functions_handing_back_a_closure(fns, &targets);
+    let reach = crate::closure_reach::ClosureReach::build(fns);
+    let through = ThroughClosures { targets: &targets, reach: &reach };
 
-    let own: HashSet<String> = fns.iter().map(|f| f.name.clone()).collect();
-    let bodies: HashSet<String> = fns
-        .iter()
-        .flat_map(|f| f.blocks.iter().flat_map(|b| b.statements.iter()))
-        .filter_map(|stmt| match &stmt.kind {
-            MirStmtKind::ClosureCreate { func_name, .. } => Some(func_name.clone()),
-            _ => None,
-        })
-        .collect();
     for func in fns.iter_mut() {
-        insert_drops(func, &callee_escapes, &hands_back, &targets);
-        let is_body = bodies.contains(&func.name);
-        retain_borrowed_closures_handed_on(func, &callee_escapes, &own, is_body);
+        insert_drops(func, &callee_escapes, &hands_back, &through);
     }
 }
 
-/// Give a closure this frame only borrows a reference of its own before it is
-/// handed to something that keeps it.
-///
-/// A closure value is a pointer to a shared block, and copying the value
-/// copies the pointer. That's fine while one holder frees it. `let f = fs[0]`
-/// reads the vector's closure without taking it — the vector still frees it
-/// when it dies — so `spawn { f() }` handed the task a block it didn't own. The
-/// task freed it at `join`, the vector freed it again (#1386). Same for a
-/// closure read out of a struct field and pushed somewhere, or stored in
-/// another struct.
-///
-/// The block carries a count for exactly this (`rask_closure_retain`; a
-/// derived `Vec` uses it for the same reason). The keeper gets its own
-/// reference and frees that one; the owner frees its own.
-///
-/// Borrowed here means read out of something else: a field, or a call that
-/// hands back a view into its receiver (`Vec_index`), or a closure parameter of
-/// a closure body — a yield's item, which the caller frees once the yield
-/// returns. A named function's parameters are left alone: whether the caller
-/// handed one over is already the callee escape map's answer, and a retain on
-/// top would leak it.
-fn retain_borrowed_closures_handed_on(
-    func: &mut MirFunction,
-    callee_escapes: &HashMap<String, Vec<bool>>,
-    own: &HashSet<String>,
-    is_closure_body: bool,
-) {
-    let is_closure = |id: &LocalId| matches!(func.local_ty(*id), Some(crate::MirType::FuncPtr(_)));
-    let aggregate_locals: HashSet<LocalId> = func
-        .locals
-        .iter()
-        .filter(|l| {
-            matches!(
-                l.ty,
-                crate::MirType::Struct(_)
-                    | crate::MirType::Enum(_)
-                    | crate::MirType::Tuple(_)
-                    | crate::MirType::Array { .. }
-                    | crate::MirType::Option(_)
-                    | crate::MirType::Result { .. }
-            )
-        })
-        .map(|l| l.id)
-        .collect();
-    let is_aggregate = |id: &LocalId| aggregate_locals.contains(id);
-    let mut borrowed: HashSet<LocalId> = HashSet::new();
-    // A closure handed to a closure is lent (type.sequence/SEQ34): the caller
-    // of a yield frees what it passed once the yield returns. `to_vec`'s yield
-    // pushing `x` and `find`'s keeping it were each holding a closure `map`
-    // was about to free.
-    let lent_params: HashSet<LocalId> = if is_closure_body {
-        func.params.iter().map(|p| p.id).filter(|id| is_closure(id)).collect()
-    } else {
-        HashSet::new()
-    };
-    borrowed.extend(lent_params.iter().copied());
-    for stmt in func.blocks.iter().flat_map(|b| b.statements.iter()) {
-        match &stmt.kind {
-            MirStmtKind::Assign { dst, rvalue: crate::MirRValue::Field { .. } } if is_closure(dst) => {
-                borrowed.insert(*dst);
-            }
-            MirStmtKind::Call { dst: Some(dst), func: callee, .. }
-                if is_closure(dst) && crate::own_names::returns_a_view(callee, own) =>
-            {
-                borrowed.insert(*dst);
-            }
-            _ => {}
-        }
-    }
-    // What a task block captures, it frees when the task ends
-    // (`insert_drops`), so it needs a reference of its own to every closure it
-    // captures that this frame doesn't hand over: one borrowed as above, a
-    // parameter (the caller's), or one this frame reaches through its own
-    // environment.
-    let tasks = task_closures(func);
-    let mut foreign: HashSet<LocalId> = HashSet::new();
-    if !tasks.is_empty() {
-        foreign.extend(func.params.iter().map(|p| p.id).filter(|id| is_closure(id)));
-        for stmt in func.blocks.iter().flat_map(|b| b.statements.iter()) {
-            if let MirStmtKind::LoadCapture { dst, access, .. } = &stmt.kind {
-                if *access != crate::CaptureAccess::Taken && is_closure(dst) {
-                    foreign.insert(*dst);
-                }
-            }
-        }
-    }
-    if borrowed.is_empty() && foreign.is_empty() {
-        return;
-    }
-    // Copies of a borrowed closure are the same borrow.
-    let mut changed = true;
-    while changed {
-        changed = false;
-        for stmt in func.blocks.iter().flat_map(|b| b.statements.iter()) {
-            if let MirStmtKind::Assign { dst, rvalue: crate::MirRValue::Use(MirOperand::Local(src)) } =
-                &stmt.kind
-            {
-                if borrowed.contains(src) && borrowed.insert(*dst) {
-                    changed = true;
-                }
-                if foreign.contains(src) && foreign.insert(*dst) {
-                    changed = true;
-                }
-            }
-        }
-    }
-
-    for block in &mut func.blocks {
-        let mut at: Vec<(usize, LocalId)> = Vec::new();
-        for (si, stmt) in block.statements.iter().enumerate() {
-            match &stmt.kind {
-                MirStmtKind::Call { func: callee, args, .. } => {
-                    for (i, arg) in args.iter().enumerate() {
-                        let Some(id) = uses::operand_local(arg).filter(|id| borrowed.contains(id)) else {
-                            continue;
-                        };
-                        if callee_keeps(callee_escapes, callee, i) {
-                            at.push((si, id));
-                        }
-                    }
-                }
-                // Captured by a task block, which frees what it captured when
-                // the task ends.
-                MirStmtKind::ClosureCreate { dst, captures, .. } if tasks.contains(dst) => {
-                    for cap in captures
-                        .iter()
-                        .filter(|c| borrowed.contains(&c.local_id) || foreign.contains(&c.local_id))
-                    {
-                        at.push((si, cap.local_id));
-                    }
-                }
-                // Captured by value into a closure that outlives this frame.
-                // Its environment is a keeper like any other: the closure it
-                // copied is still the owner's, and the owner frees it when it
-                // likes — a `Plan(run: …)` the caller built for the call and
-                // dropped after, while the new closure still had `p.run` in its
-                // environment. The environment takes a reference of its own
-                // here and gives it back when it is freed (`env_drop_glue`
-                // reads this retain), the way a captured string does.
-                MirStmtKind::ClosureCreate { captures, heap: true, .. } => {
-                    for cap in captures
-                        .iter()
-                        .filter(|c| !c.by_ref && borrowed.contains(&c.local_id))
-                    {
-                        at.push((si, cap.local_id));
-                    }
-                }
-                // Into an aggregate this frame is building — `Holder { f:
-                // fs[1] }` — which frees its fields when it dies. A store
-                // through a pointer is left alone: that is `with`'s write-back
-                // putting the closure back where it was read from.
-                MirStmtKind::Store { addr, value: MirOperand::Local(id), .. }
-                    if borrowed.contains(id) && (is_aggregate(addr) || lent_params.contains(id)) =>
-                {
-                    at.push((si, *id));
-                }
-                MirStmtKind::ArrayStore { base, value: MirOperand::Local(id), .. }
-                    if borrowed.contains(id) && is_aggregate(base) =>
-                {
-                    at.push((si, *id));
-                }
-                _ => {}
-            }
-        }
-        for (si, closure) in at.into_iter().rev() {
-            block.statements.insert(si, MirStmt::dummy(MirStmtKind::ClosureRetain { closure, made: None }));
-        }
-    }
+/// Which bodies a call through a closure can reach, to ask what each does
+/// with its arguments.
+struct ThroughClosures<'a> {
+    targets: &'a crate::closure_targets::ClosureTargets,
+    reach: &'a crate::closure_reach::ClosureReach,
 }
 
 /// Does a call keep argument `i`? A callee with no body of its own keeps what
-/// it isn't known to borrow.
+/// it isn't known to borrow: its declared shape, or a runtime call that uses
+/// its callback up.
 fn callee_keeps(callee_escapes: &HashMap<String, Vec<bool>>, callee: &crate::FunctionRef, i: usize) -> bool {
     callee_escapes
         .get(&callee.name)
         .and_then(|e| e.get(i))
         .copied()
-        .unwrap_or_else(|| !uses_up_callback(callee))
+        .unwrap_or_else(|| !uses_up_callback(callee) && callee.shape.map_or(true, |s| s.gives(i)))
 }
 
 /// A bodiless callee that is done with a closure it's handed before it
@@ -333,91 +316,6 @@ fn callee_keeps(callee_escapes: &HashMap<String, Vec<bool>>, callee: &crate::Fun
 /// lowering made for itself, which only reads what it's handed (#1555).
 fn uses_up_callback(callee: &crate::FunctionRef) -> bool {
     callee.runtime || callee.shape.is_some_and(|s| s.is_eager_callback())
-}
-
-/// The hand-overs of a closure this frame owns where the frame still uses the
-/// closure afterwards, as `(block, stmt, name)`.
-///
-/// A closure value is Copy, so `spawn(c)` twice, `fs.push(c)` twice, or
-/// `fs.push(c)` then `c()` are all legal — and each hands the one block to
-/// something that frees it. The first keeper used to take the frame's only
-/// reference, and whoever freed second freed a dead block (#1411). So where
-/// the closure is read again on some path after it, the keeper gets a
-/// reference of its own (`closure_retain`) and the frame goes on owning its
-/// own. Only the last use hands the frame's reference over.
-///
-/// Captured by another closure is left out: that environment's release is
-/// already accounted for as the inner closure's (`captured_environments`).
-/// Except by a task block: two tasks capturing one closure — `spawn { c() }`
-/// twice — each free their environment when they end, so each needs its own
-/// reference the way two keepers do.
-fn handed_on_while_still_used(
-    func: &MirFunction,
-    aliases: &ClosureAliases,
-    callee_escapes: &HashMap<String, Vec<bool>>,
-) -> HashSet<(usize, usize, LocalId)> {
-    let tracked: HashSet<LocalId> = aliases.map.keys().copied().collect();
-    let tasks = task_closures(func);
-    let mut sites: Vec<(usize, usize, LocalId)> = Vec::new();
-    for (bi, block) in func.blocks.iter().enumerate() {
-        for (si, stmt) in block.statements.iter().enumerate() {
-            match &stmt.kind {
-                MirStmtKind::ClosureCreate { dst, heap: true, captures, .. } if tasks.contains(dst) => {
-                    for cap in captures {
-                        if tracked.contains(&cap.local_id) {
-                            sites.push((bi, si, cap.local_id));
-                        }
-                    }
-                }
-                MirStmtKind::Call { func: callee, args, .. } => {
-                    for (i, arg) in args.iter().enumerate() {
-                        let Some(id) = uses::operand_local(arg).filter(|id| tracked.contains(id)) else {
-                            continue;
-                        };
-                        if callee_keeps(callee_escapes, callee, i) {
-                            sites.push((bi, si, id));
-                        }
-                    }
-                }
-                MirStmtKind::Store { value: MirOperand::Local(id), .. }
-                | MirStmtKind::ArrayStore { value: MirOperand::Local(id), .. }
-                | MirStmtKind::InterfaceBox { value: MirOperand::Local(id), .. }
-                    if tracked.contains(id) =>
-                {
-                    sites.push((bi, si, *id));
-                }
-                _ => {}
-            }
-        }
-    }
-    if sites.is_empty() {
-        return HashSet::new();
-    }
-    // Liveness, not reachability: a closure built inside a loop is a fresh
-    // block each turn, and the next turn's read is of that one.
-    let live = crate::analysis::liveness::analyze_phis_on_edges(func);
-    let live_after = |bi: usize, si: usize, name: LocalId| -> bool {
-        let block = &func.blocks[bi];
-        for st in &block.statements[si + 1..] {
-            if uses::stmt_reads(st, name) {
-                return true;
-            }
-            if uses::stmt_def(st) == Some(name) {
-                return false;
-            }
-        }
-        uses::terminator_reads(&block.terminator, name) || live.live_at_exit(block.id, name)
-    };
-    sites
-        .into_iter()
-        .filter(|(bi, si, id)| {
-            let origins = aliases.origins(id);
-            tracked
-                .iter()
-                .filter(|t| aliases.origins(t).iter().any(|o| origins.contains(o)))
-                .any(|t| live_after(*bi, *si, *t))
-        })
-        .collect()
 }
 
 /// The closures `func` hands to a task: the first argument of each task
@@ -437,27 +335,6 @@ fn task_closures(func: &MirFunction) -> HashSet<LocalId> {
         .collect()
 }
 
-/// The heap closures built in `func` that it will share with a keeper while
-/// still using them — the creates `insert_drops` will mark with a
-/// `closure_retain`. Asked early, by `closure_specialize`, because a site that
-/// shares its closure and one that doesn't want different environment glue:
-/// the first leaves the captures to the glue, the second frees them itself.
-pub(crate) fn creates_shared_with_a_keeper(
-    func: &MirFunction,
-    callee_escapes: &HashMap<String, Vec<bool>>,
-) -> HashSet<LocalId> {
-    let made: HashMap<LocalId, bool> =
-        created_closures(func).into_iter().filter(|(_, heap)| *heap).collect();
-    if made.is_empty() {
-        return HashSet::new();
-    }
-    let aliases = closure_aliases(func, &made);
-    handed_on_while_still_used(func, &aliases, callee_escapes)
-        .into_iter()
-        .filter_map(|(_, _, id)| sole_origin(&aliases, &id))
-        .collect()
-}
-
 /// Heap exactly when the closure outlives this frame.
 ///
 /// This used to only downgrade. Lowering picks the initial answer from `own`,
@@ -470,12 +347,13 @@ fn decide_allocation(
     func: &mut MirFunction,
     callee_escapes: &HashMap<String, Vec<bool>>,
     kept: &KeptThroughCalls,
+    lent: &LentCells,
 ) {
     let created = created_closures(func);
     if created.is_empty() {
         return;
     }
-    let escaping = find_escaping_closures(func, &created, callee_escapes, kept);
+    let escaping = find_escaping_closures(func, &created, callee_escapes, kept, lent);
 
     for block in &mut func.blocks {
         for stmt in &mut block.statements {
@@ -514,8 +392,8 @@ fn decide_allocation(
 /// frame captures by value in all of them.
 pub(crate) fn closures_handed_on(fns: &[MirFunction]) -> HashSet<String> {
     let callee_escapes = build_callee_escape_map(fns, CaptureRule::HeapClosure);
-    let routes = build_param_routes(fns);
     let kept = KeptThroughCalls::build(fns);
+    let routes = &kept.routes;
     let mut names = HashSet::new();
 
     for func in fns {
@@ -523,8 +401,8 @@ pub(crate) fn closures_handed_on(fns: &[MirFunction]) -> HashSet<String> {
         if created.is_empty() {
             continue;
         }
-        let aliases = closure_aliases(func, &created);
-        let leaving = leaves_the_frame(func, &routes);
+        let aliases = closure_aliases_through_clones(func, &created);
+        let leaving = leaves_the_frame(func, routes, &kept.targets);
         // Only a closure that actually borrows something has a borrow to
         // withdraw, so the map is built from those creates alone.
         let borrows: HashMap<LocalId, &str> = func
@@ -554,6 +432,9 @@ pub(crate) fn closures_handed_on(fns: &[MirFunction]) -> HashSet<String> {
         for block in &func.blocks {
             for stmt in &block.statements {
                 match &stmt.kind {
+                    // A clone keeps nothing: it is another name for what
+                    // its source points at, followed through the aliases.
+                    MirStmtKind::Call { func: callee, .. } if callee.name == "rask_closure_clone" => {}
                     MirStmtKind::Call { dst, func: callee, args } => {
                         for (idx, arg) in args.iter().enumerate() {
                             let Some(id) = uses::operand_local(arg) else { continue };
@@ -638,8 +519,12 @@ enum Route {
 }
 
 /// `Route` for every parameter of every function, as a fixed point — a
-/// parameter handed to another function goes wherever that one sends it.
-fn build_param_routes(fns: &[MirFunction]) -> HashMap<String, Vec<Route>> {
+/// parameter handed to another function goes wherever that one sends it,
+/// called by name or through a closure (`targets`).
+fn build_param_routes(
+    fns: &[MirFunction],
+    targets: &crate::closure_targets::ClosureTargets,
+) -> HashMap<String, Vec<Route>> {
     let mut routes: HashMap<String, Vec<Route>> = fns
         .iter()
         .map(|f| (f.name.clone(), vec![Route::Stays; f.params.len()]))
@@ -648,7 +533,7 @@ fn build_param_routes(fns: &[MirFunction]) -> HashMap<String, Vec<Route>> {
     loop {
         let mut changed = false;
         for func in fns {
-            let (into_result, away) = frame_routes(func, &routes);
+            let (into_result, away) = frame_routes(func, &routes, targets);
             for (i, p) in func.params.iter().enumerate() {
                 let r = if away.contains(&p.id) {
                     Route::Away
@@ -674,8 +559,12 @@ fn build_param_routes(fns: &[MirFunction]) -> HashMap<String, Vec<Route>> {
 
 /// The locals in `func` whose value may outlive it: returned, stored, or
 /// handed on to something that keeps it.
-fn leaves_the_frame(func: &MirFunction, routes: &HashMap<String, Vec<Route>>) -> HashSet<LocalId> {
-    let (into_result, away) = frame_routes(func, routes);
+fn leaves_the_frame(
+    func: &MirFunction,
+    routes: &HashMap<String, Vec<Route>>,
+    targets: &crate::closure_targets::ClosureTargets,
+) -> HashSet<LocalId> {
+    let (into_result, away) = frame_routes(func, routes, targets);
     into_result.union(&away).copied().collect()
 }
 
@@ -689,6 +578,7 @@ fn leaves_the_frame(func: &MirFunction, routes: &HashMap<String, Vec<Route>>) ->
 fn frame_routes(
     func: &MirFunction,
     routes: &HashMap<String, Vec<Route>>,
+    targets: &crate::closure_targets::ClosureTargets,
 ) -> (HashSet<LocalId>, HashSet<LocalId>) {
     let mut into_result: HashSet<LocalId> = HashSet::new();
     let mut away: HashSet<LocalId> = HashSet::new();
@@ -755,6 +645,32 @@ fn frame_routes(
                         }
                     }
                 }
+                // Through a closure, argument `i` goes wherever parameter
+                // `i + 1` of each body it reaches sends it, after the
+                // environment. `let s = set_to; s(mutate g, h)` keeps `h` the
+                // way `set_to(mutate g, h)` does; read as staying, the caller
+                // built `h` on its stack and the frame that took it freed it.
+                // A call nobody can place is left as staying, the same answer
+                // `KeptThroughCalls::keeps` gives when no body keeps a closure.
+                MirStmtKind::ClosureCall { dst, closure, args, .. } => {
+                    let Some(bodies) = targets.known(&func.name, *closure) else { continue };
+                    for (i, arg) in args.iter().enumerate() {
+                        let Some(id) = uses::operand_local(arg) else { continue };
+                        let route = bodies
+                            .iter()
+                            .map(|b| routes.get(b).map_or(Route::Away, |r| r.get(i + 1).copied().unwrap_or(Route::Away)))
+                            .max()
+                            .unwrap_or(Route::Stays);
+                        match (route, dst) {
+                            (Route::Stays, _) => {}
+                            (Route::Away, _) => changed |= away.insert(id),
+                            (Route::IntoResult, Some(d)) => {
+                                changed |= follow(&mut into_result, &mut away, *d, id);
+                            }
+                            (Route::IntoResult, None) => {}
+                        }
+                    }
+                }
                 _ => {}
             }
         }
@@ -773,13 +689,19 @@ fn insert_drops(
     func: &mut MirFunction,
     callee_escapes: &HashMap<String, Vec<bool>>,
     hands_back: &HashSet<String>,
-    targets: &crate::closure_targets::ClosureTargets,
+    through: &ThroughClosures,
 ) {
-    let mut owned: HashMap<LocalId, bool> = HashMap::new();
+    let mut owned: HashMap<LocalId, bool> =
+        retain_loads_handed_on(func, callee_escapes).into_iter().map(|l| (l, true)).collect();
+    owned.extend(clone_lent_params_handed_on(func, callee_escapes).into_iter().map(|l| (l, true)));
     for block in &func.blocks {
         for stmt in &block.statements {
             match &stmt.kind {
-                MirStmtKind::ClosureCreate { dst, heap: true, .. } => {
+                // A heap closure, and a stack one whose environment owns what
+                // it carried: dropping it is what releases that.
+                MirStmtKind::ClosureCreate { dst, heap, captures, .. }
+                    if *heap || captures.iter().any(|c| c.owns.is_some()) =>
+                {
                     owned.insert(*dst, true);
                 }
                 // A closure value a task block captured is the task's: the
@@ -791,7 +713,7 @@ fn insert_drops(
                     owned.insert(*dst, true);
                 }
                 MirStmtKind::Call { dst: Some(dst), func: callee, .. }
-                    if hands_back.contains(&callee.name) =>
+                    if hands_back.contains(&callee.name) || callee.name == "rask_closure_clone" =>
                 {
                     owned.insert(*dst, true);
                 }
@@ -806,16 +728,12 @@ fn insert_drops(
                     owned.insert(*dst, true);
                 }
                 // A third way: take one back from a call *through* a closure.
-                // Same rule as the named case, asked of every body the call can
-                // reach — one that hands back somebody else's closure is the
-                // whole set's answer, the way `flat_map(|k| SHARED_SEQ)` would
-                // be.
-                MirStmtKind::ClosureCall { dst: Some(dst), closure, .. } => {
-                    if let Some(bodies) = targets.known(&func.name, *closure) {
-                        if bodies.iter().all(|b| hands_back.contains(b)) {
-                            owned.insert(*dst, true);
-                        }
-                    }
+                // Same rule as the named case, and it needs no body to ask:
+                // whatever `flat_map(|x| upto(x))` calls hands back its own.
+                MirStmtKind::ClosureCall { dst: Some(dst), .. }
+                    if matches!(func.local_ty(*dst), Some(crate::MirType::FuncPtr(_))) =>
+                {
+                    owned.insert(*dst, true);
                 }
                 _ => {}
             }
@@ -827,54 +745,22 @@ fn insert_drops(
     }
 
     let aliases = closure_aliases(func, &owned);
-    // The chain's inner environments are handed to the closure that captures
-    // them, and freed when it is (#1045).
-    let owned_by = captured_environments(func, &owned, &aliases);
-
-    let shared = handed_on_while_still_used(func, &aliases, callee_escapes);
-    let facts = closure_facts(func, &owned, &aliases, callee_escapes, &shared);
+    let facts = closure_facts(func, &owned, &aliases, callee_escapes, through);
     let plan = crate::analysis::ownership::plan(
         func,
         &facts,
         crate::analysis::ownership::Placement::ScopeEnd,
     );
-    // Before the plan lands: its releases go at block ends and on edges, and
-    // the sites were found by index in the blocks as they are now.
-    let created = created_closures(func);
-    let mut shared: Vec<(usize, usize, LocalId)> = shared.into_iter().collect();
-    shared.sort_by(|a, b| b.cmp(a));
-    let shared: Vec<(usize, usize, LocalId, Option<LocalId>)> = shared
-        .into_iter()
-        .map(|(bi, si, closure)| {
-            (bi, si, closure, sole_origin(&aliases, &closure).filter(|c| created.contains_key(c)))
-        })
-        .collect();
-    let shared_creates: HashSet<LocalId> = shared.iter().filter_map(|(_, _, _, made)| *made).collect();
-    // Freeing an environment frees what only it captured, innermost first —
-    // unless a keeper shares it, when the frame's free isn't the last one and
-    // the environment's glue releases what it swallowed.
     let drops_for = |name: LocalId, made: Option<LocalId>| -> Vec<MirStmt> {
-        let root = made.unwrap_or(name);
-        let swallowed = if shared_creates.contains(&root) { Vec::new() } else { expand_owned(&[root], &owned_by) };
-        let mut out: Vec<MirStmt> = swallowed
-            .into_iter()
-            .filter(|id| *id != root)
-            .map(|closure| MirStmt::dummy(MirStmtKind::ClosureDrop { closure, made: Some(closure) }))
-            .collect();
-        out.push(MirStmt::dummy(MirStmtKind::ClosureDrop { closure: name, made }));
-        out
+        vec![MirStmt::dummy(MirStmtKind::ClosureDrop { closure: name, made })]
     };
     let guards = crate::analysis::ownership::Guards::new(func, &plan);
-    let (shifted, unwind_edges) = crate::analysis::ownership::place_unwind(
+    let (_, unwind_edges) = crate::analysis::ownership::place_unwind(
         func,
         plan.unwind,
         &guards,
         &mut |_: &mut MirFunction, name: LocalId, made: Option<LocalId>| drops_for(name, made),
     );
-    for (bi, si, closure, made) in shared {
-        let at = shifted.at(bi, si);
-        func.blocks[bi].statements.insert(at, MirStmt::dummy(MirStmtKind::ClosureRetain { closure, made }));
-    }
     let mut at_end: Vec<(usize, LocalId, Option<LocalId>, Option<usize>)> = Vec::new();
     let mut on_edges: Vec<(crate::BlockId, crate::BlockId, Vec<MirStmt>)> = Vec::new();
     for r in plan.releases {
@@ -903,6 +789,231 @@ fn insert_drops(
     guards.finish(func);
 }
 
+/// A closure read out of a variable's cell and handed to something that keeps
+/// it gets a copy of its own, made at the read.
+///
+/// A closure variable a closure body writes lives in a cell, and the cell owns
+/// the closure it holds: an overwrite releases the old one and the frame
+/// releases the last (`container_drop::closure_cell_is_a_variable`). Reading
+/// the cell copies the pointer, so `fs.push(g)` in a loop body hands the vector
+/// the block the cell still holds, and the next `g = || 7` freed it under the vector. The
+/// cell doesn't know the read moved its closure out, so the read clones it
+/// (CV2), and this frame owns the copy like any other: handed over where it
+/// goes, released where it doesn't. The cell goes on releasing its own.
+///
+/// The copy is made at the read, not the hand-off, because a write to the
+/// cell in between (`let r = g; g = || 3; return r`) releases the cell's.
+fn retain_loads_handed_on(func: &mut MirFunction, callee_escapes: &HashMap<String, Vec<bool>>) -> HashSet<LocalId> {
+    let is_closure = |func: &MirFunction, l: &LocalId| matches!(func.local_ty(*l), Some(crate::MirType::FuncPtr(_)));
+    let mut handed: HashSet<LocalId> = HashSet::new();
+    for block in &func.blocks {
+        for stmt in &block.statements {
+            match &stmt.kind {
+                MirStmtKind::ClosureCreate { heap: true, captures, .. } => {
+                    handed.extend(captures.iter().filter(|c| !c.by_ref).map(|c| c.local_id));
+                }
+                MirStmtKind::Call { func: callee, args, .. } => {
+                    for (i, arg) in args.iter().enumerate() {
+                        if let Some(id) = uses::operand_local(arg).filter(|_| callee_keeps(callee_escapes, callee, i)) {
+                            handed.insert(id);
+                        }
+                    }
+                }
+                MirStmtKind::Store { value: MirOperand::Local(id), .. }
+                | MirStmtKind::ArrayStore { value: MirOperand::Local(id), .. }
+                | MirStmtKind::InterfaceBox { value: MirOperand::Local(id), .. } => {
+                    handed.insert(*id);
+                }
+                _ => {}
+            }
+        }
+        if let MirTerminatorKind::Return { value: Some(MirOperand::Local(id)) }
+        | MirTerminatorKind::CleanupReturn { value: Some(MirOperand::Local(id)), .. } = &block.terminator.kind
+        {
+            handed.insert(*id);
+        }
+    }
+    // A read kept in a variable (`let r = g`) may be used after the cell is
+    // written, which releases the cell's reference, so it takes its own too.
+    // A read used only to call it right away needs none.
+    for stmt in func.blocks.iter().flat_map(|b| b.statements.iter()) {
+        if let MirStmtKind::Assign { rvalue: crate::MirRValue::Use(MirOperand::Local(src)), .. } = &stmt.kind {
+            handed.insert(*src);
+        }
+    }
+    loop {
+        let before = handed.len();
+        for stmt in func.blocks.iter().flat_map(|b| b.statements.iter()) {
+            if let MirStmtKind::Assign { dst, rvalue: crate::MirRValue::Use(MirOperand::Local(src)) } = &stmt.kind {
+                if handed.contains(dst) {
+                    handed.insert(*src);
+                }
+            }
+        }
+        if handed.len() == before {
+            break;
+        }
+    }
+    // Only a variable's cell: one this function writes, or a loop body's
+    // view of the enclosing frame's. The slot a body's `return` fills is read
+    // once by the frame and handed over, so a read of it takes nothing; a
+    // reference taken there was one nobody released.
+    let variables: HashSet<LocalId> = func
+        .blocks
+        .iter()
+        .flat_map(|b| b.statements.iter())
+        .filter_map(|st| match &st.kind {
+            MirStmtKind::Store { addr, offset: 0, .. } => Some(*addr),
+            MirStmtKind::LoadCapture { dst, .. } => Some(*dst),
+            _ => None,
+        })
+        .collect();
+    let mut next = func.locals.iter().chain(func.params.iter()).map(|l| l.id.0).max().map_or(0, |m| m + 1);
+    let mut cloned = HashSet::new();
+    for bi in 0..func.blocks.len() {
+        let mut si = 0;
+        while si < func.blocks[bi].statements.len() {
+            if let MirStmtKind::Assign { dst, rvalue: crate::MirRValue::Deref(MirOperand::Local(cell)) } =
+                &func.blocks[bi].statements[si].kind
+            {
+                let dst = *dst;
+                if handed.contains(&dst) && is_closure(func, &dst) && is_closure(func, cell) && variables.contains(cell) {
+                    let read = LocalId(next);
+                    next += 1;
+                    let ty = func.local_ty(dst).cloned().unwrap_or(crate::MirType::Ptr);
+                    func.locals.push(crate::MirLocal { id: read, name: None, ty, is_param: false });
+                    let MirStmtKind::Assign { dst: d, .. } = &mut func.blocks[bi].statements[si].kind else {
+                        unreachable!()
+                    };
+                    *d = read;
+                    func.blocks[bi].statements.insert(
+                        si + 1,
+                        MirStmt::dummy(MirStmtKind::Call {
+                            dst: Some(dst),
+                            func: crate::FunctionRef::borrowing("rask_closure_clone"),
+                            args: vec![MirOperand::Local(read)],
+                        }),
+                    );
+                    cloned.insert(dst);
+                    si += 1;
+                }
+            }
+            si += 1;
+        }
+    }
+    cloned
+}
+
+/// A closure parameter the function only borrows, handed to something that
+/// keeps it: the keeper gets a clone (mem.closures/CV2), made at the hand-off
+/// and owned by this frame until then.
+///
+/// The checker rules this out in a body someone wrote (PM6), so what reaches
+/// here is a loop body lowering made. A yield lends its item (SEQ34), and a
+/// body that keeps one keeps a copy unless every call reaching it hands the
+/// item over (`container_drop::settle_loop_item_modes`). `to_vec` over a
+/// `map(keep_i)` pushed the closure `map` was about to free.
+fn clone_lent_params_handed_on(func: &mut MirFunction, callee_escapes: &HashMap<String, Vec<bool>>) -> HashSet<LocalId> {
+    let mut lent: HashSet<LocalId> = func
+        .params
+        .iter()
+        .zip(&func.param_modes)
+        .filter(|(p, m)| **m == rask_ast::ty::ParamMode::Borrow && matches!(p.ty, crate::MirType::FuncPtr(_)))
+        .map(|(p, _)| p.id)
+        .collect();
+    let mut cloned = HashSet::new();
+    if lent.is_empty() {
+        return cloned;
+    }
+    loop {
+        let before = lent.len();
+        for stmt in func.blocks.iter().flat_map(|b| b.statements.iter()) {
+            if let MirStmtKind::Assign { dst, rvalue: crate::MirRValue::Use(MirOperand::Local(src)) } = &stmt.kind {
+                if lent.contains(src) {
+                    lent.insert(*dst);
+                }
+            }
+        }
+        if lent.len() == before {
+            break;
+        }
+    }
+    let mut next = func.locals.iter().chain(func.params.iter()).map(|l| l.id.0).max().map_or(0, |m| m + 1);
+    let mut fresh = |func: &mut MirFunction, of: LocalId| {
+        let id = LocalId(next);
+        next += 1;
+        let ty = func.local_ty(of).cloned().unwrap_or(crate::MirType::Ptr);
+        func.locals.push(crate::MirLocal { id, name: None, ty, is_param: false });
+        id
+    };
+    let clone_of = |dst: LocalId, of: LocalId| {
+        MirStmt::dummy(MirStmtKind::Call {
+            dst: Some(dst),
+            func: crate::FunctionRef::borrowing("rask_closure_clone"),
+            args: vec![MirOperand::Local(of)],
+        })
+    };
+    for bi in 0..func.blocks.len() {
+        let mut si = 0;
+        while si < func.blocks[bi].statements.len() {
+            let mut swaps: Vec<LocalId> = Vec::new();
+            match &func.blocks[bi].statements[si].kind {
+                MirStmtKind::ClosureCreate { heap: true, captures, .. } => {
+                    swaps.extend(captures.iter().filter(|c| !c.by_ref && !c.lent).map(|c| c.local_id));
+                }
+                MirStmtKind::Call { func: callee, args, .. } => {
+                    swaps.extend(
+                        args.iter()
+                            .enumerate()
+                            .filter(|(i, _)| callee_keeps(callee_escapes, callee, *i))
+                            .filter_map(|(_, a)| uses::operand_local(a)),
+                    );
+                }
+                MirStmtKind::Store { value: MirOperand::Local(id), .. }
+                | MirStmtKind::ArrayStore { value: MirOperand::Local(id), .. }
+                | MirStmtKind::InterfaceBox { value: MirOperand::Local(id), .. } => swaps.push(*id),
+                _ => {}
+            }
+            swaps.retain(|id| lent.contains(id));
+            for of in swaps {
+                let copy = fresh(func, of);
+                func.blocks[bi].statements.insert(si, clone_of(copy, of));
+                si += 1;
+                let swap = |l: &mut LocalId| {
+                    if *l == of {
+                        *l = copy;
+                    }
+                };
+                let swap_op = |op: &mut MirOperand| {
+                    if let MirOperand::Local(l) = op {
+                        swap(l);
+                    }
+                };
+                match &mut func.blocks[bi].statements[si].kind {
+                    MirStmtKind::ClosureCreate { captures, .. } => captures.iter_mut().for_each(|c| swap(&mut c.local_id)),
+                    MirStmtKind::Call { args, .. } => args.iter_mut().for_each(swap_op),
+                    MirStmtKind::Store { value, .. }
+                    | MirStmtKind::ArrayStore { value, .. }
+                    | MirStmtKind::InterfaceBox { value, .. } => swap_op(value),
+                    _ => {}
+                }
+                cloned.insert(copy);
+            }
+            si += 1;
+        }
+        if let MirTerminatorKind::Return { value: Some(MirOperand::Local(id)) } = &func.blocks[bi].terminator.kind {
+            let of = *id;
+            if lent.contains(&of) {
+                let copy = fresh(func, of);
+                func.blocks[bi].statements.push(clone_of(copy, of));
+                func.blocks[bi].terminator.kind = MirTerminatorKind::Return { value: Some(MirOperand::Local(copy)) };
+                cloned.insert(copy);
+            }
+        }
+    }
+    cloned
+}
+
 /// What each statement does to the closures this frame may hold.
 ///
 /// Made here: built, or handed back by a call. Handed over: captured by an
@@ -911,14 +1022,12 @@ fn insert_drops(
 /// whose body says it keeps nothing leaves the closure to this frame; no
 /// answer means it might keep it. Calling a closure is a borrow.
 ///
-/// A hand-over in `shared` isn't one: the keeper gets a reference of its own
-/// there (`handed_on_while_still_used`) and the frame keeps holding its own.
 fn closure_facts(
     func: &MirFunction,
     made: &HashMap<LocalId, bool>,
     aliases: &ClosureAliases,
     callee_escapes: &HashMap<String, Vec<bool>>,
-    shared: &HashSet<(usize, usize, LocalId)>,
+    through: &ThroughClosures,
 ) -> crate::analysis::ownership::Facts {
     use crate::analysis::ownership::Event;
     let tracked: std::collections::BTreeSet<LocalId> = aliases.map.keys().copied().collect();
@@ -935,18 +1044,19 @@ fn closure_facts(
         owned: Vec::new(),
         caller_slots: Vec::new(),
     };
-    for (bi, block) in func.blocks.iter().enumerate() {
+    for block in &func.blocks {
         let (mut events, mut reads, mut kills) = (Vec::new(), Vec::new(), Vec::new());
-        for (si, stmt) in block.statements.iter().enumerate() {
+        for stmt in &block.statements {
             let mut ev: Vec<Event> = Vec::new();
             let give = |ev: &mut Vec<Event>, id: LocalId| {
-                if is(&id) && !shared.contains(&(bi, si, id)) {
+                if is(&id) {
                     ev.push(Event::HandOver(id));
                 }
             };
             match &stmt.kind {
-                MirStmtKind::ClosureCreate { heap: true, captures, .. } => {
-                    for cap in captures {
+                // Carried in: the environment owns it now (CM2).
+                MirStmtKind::ClosureCreate { captures, .. } => {
+                    for cap in captures.iter().filter(|c| !c.by_ref && !c.lent) {
                         give(&mut ev, cap.local_id);
                     }
                 }
@@ -954,6 +1064,25 @@ fn closure_facts(
                     for (i, arg) in args.iter().enumerate() {
                         let Some(id) = uses::operand_local(arg) else { continue };
                         if callee_keeps(callee_escapes, callee, i) {
+                            give(&mut ev, id);
+                        }
+                    }
+                }
+                // A closure handed to a `take` parameter of a closure is
+                // that body's, the same as through a named call: `f(x)` with
+                // `f = |take p| p` hands `x` back as the result, and freeing
+                // `x` here as well freed the one environment twice. Any other
+                // parameter only borrows (`mem.closures/CP1`). That has to be
+                // read off the call: a sequence's yield calls a body nobody
+                // can place, and "unknown, so it keeps" leaked every closure
+                // `map(keep_i).to_vec()` yielded.
+                MirStmtKind::ClosureCall { closure, args, modes, .. } => {
+                    for (i, arg) in args.iter().enumerate() {
+                        let Some(id) = uses::operand_local(arg) else { continue };
+                        if modes.get(i) == Some(&rask_ast::ty::ParamMode::Take)
+                            && crate::container_drop::closure_call_keeps_argument(
+                            through.targets, through.reach, callee_escapes, &func.name, *closure, i, args.len(),
+                        ) {
                             give(&mut ev, id);
                         }
                     }
@@ -1009,40 +1138,6 @@ fn closure_facts(
     facts
 }
 
-/// Closures a function reads out of a join's result and returns.
-///
-/// A task that ends in a closure hands it over through the join as a boxed
-/// payload, and the joiner is the only one left holding it: the task's frame is
-/// gone and the handle was consumed. `return h.join()!` reads it out of the
-/// result wrapper with a field read, which no other rule saw as a source, so a
-/// function written that way didn't count as handing a closure back and its
-/// caller never freed the one it got.
-fn closures_out_of_joins(func: &MirFunction) -> Vec<LocalId> {
-    let mut joined: HashSet<LocalId> = HashSet::new();
-    let mut out = Vec::new();
-    for block in &func.blocks {
-        for stmt in &block.statements {
-            match &stmt.kind {
-                MirStmtKind::Call { dst: Some(dst), func: callee, .. }
-                    if matches!(callee.name.as_str(), "Handle_join" | "Handle_cancel") =>
-                {
-                    joined.insert(*dst);
-                }
-                MirStmtKind::Assign {
-                    dst,
-                    rvalue: crate::MirRValue::Field { base: MirOperand::Local(base), .. },
-                } if joined.contains(base)
-                    && matches!(func.local_ty(*dst), Some(crate::MirType::FuncPtr(_))) =>
-                {
-                    out.push(*dst);
-                }
-                _ => {}
-            }
-        }
-    }
-    out
-}
-
 /// The `ClosureCreate` destinations in a function.
 fn created_closures(func: &MirFunction) -> HashMap<LocalId, bool> {
     let mut found = HashMap::new();
@@ -1056,67 +1151,24 @@ fn created_closures(func: &MirFunction) -> HashMap<LocalId, bool> {
     found
 }
 
-/// Functions whose return value is a heap closure the caller now owns.
-fn functions_handing_back_a_closure(
-    fns: &[MirFunction],
-    targets: &crate::closure_targets::ClosureTargets,
-) -> HashSet<String> {
-    let mut names = HashSet::new();
-    // A fixed point, because handing one back is transitive. `|x| upto(x)`
-    // creates no closure of its own — it calls `upto` and returns what came
-    // back — so a single pass left it out, and `flat_map` over it owned nothing
-    // and freed nothing. One environment per element (#1045).
-    loop {
-        let before = names.len();
-        for func in fns {
-            if names.contains(&func.name) {
-                continue;
-            }
-            let mut owned: HashMap<LocalId, bool> = created_closures(func)
-                .into_iter()
-                .filter(|(_, heap)| *heap)
-                .collect();
-            for stmt in func.blocks.iter().flat_map(|b| b.statements.iter()) {
-                match &stmt.kind {
-                    MirStmtKind::Call { dst: Some(dst), func: callee, .. }
-                        if names.contains(&callee.name) =>
-                    {
-                        owned.insert(*dst, true);
-                    }
-                    MirStmtKind::ClosureCall { dst: Some(dst), closure, .. } => {
-                        if let Some(bodies) = targets.known(&func.name, *closure) {
-                            if bodies.iter().all(|b| names.contains(b)) {
-                                owned.insert(*dst, true);
-                            }
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            for id in closures_out_of_joins(func) {
-                owned.insert(id, true);
-            }
-            if owned.is_empty() {
-                continue;
-            }
-            let aliases = closure_aliases(func, &owned);
-            for block in &func.blocks {
-                let returned = match &block.terminator.kind {
-                    MirTerminatorKind::Return { value: Some(MirOperand::Local(id)) }
-                    | MirTerminatorKind::CleanupReturn { value: Some(MirOperand::Local(id)), .. } => {
-                        *id
-                    }
-                    _ => continue,
-                };
-                if aliases.holds_closure(&returned) {
-                    names.insert(func.name.clone());
-                }
-            }
-        }
-        if names.len() == before {
-            return names;
-        }
-    }
+/// Functions that hand back a closure: the caller owns it.
+///
+/// The type says so. A closure is move-only (mem.closures/CV1), and the
+/// checker refuses every return that would hand out a second name for one: a
+/// lent parameter (E0872, or lowering clones it), a capture (E0907), an
+/// element a container still holds (E0879). What's left is made here, taken
+/// out of something this frame owned, or handed back by a call, and each is
+/// the caller's.
+///
+/// This used to be worked out from the body, one source at a time: made here,
+/// read out of a join, loaded from a cell. Each missed source was a leak, and
+/// a call through a callback had no body to look at, so `map(|f| f.clone())`
+/// leaked every closure it built.
+fn functions_handing_back_a_closure(fns: &[MirFunction]) -> HashSet<String> {
+    fns.iter()
+        .filter(|f| !f.is_extern_c && matches!(f.ret_ty, crate::MirType::FuncPtr(_)))
+        .map(|f| f.name.clone())
+        .collect()
 }
 
 /// How a parameter that a closure captures counts in the callee escape map.
@@ -1174,6 +1226,8 @@ pub(crate) fn build_callee_escape_map(
         .iter()
         .map(|f| (f.name.clone(), vec![false; f.params.len()]))
         .collect();
+    let lent = LentCells::build(fns, captures_holding_heap_closures(fns));
+    let targets = crate::closure_targets::ClosureTargets::build_following_returns(fns);
     loop {
         let mut changed = false;
         for func in fns {
@@ -1185,7 +1239,7 @@ pub(crate) fn build_callee_escape_map(
                     if created.is_empty() {
                         HashSet::new()
                     } else {
-                        find_escaping_closures(func, &created, &map, kept)
+                        find_escaping_closures(func, &created, &map, kept, &lent)
                     }
                 }
                 None => HashSet::new(),
@@ -1194,7 +1248,7 @@ pub(crate) fn build_callee_escape_map(
                 if map.get(&func.name).is_some_and(|e| e[i]) {
                     continue;
                 }
-                if param_escapes_from(func, p.id, rule, &leaving, &map) {
+                if param_escapes_from(func, p.id, rule, &leaving, &map, &lent.slots, &targets) {
                     if let Some(e) = map.get_mut(&func.name) {
                         e[i] = true;
                         changed = true;
@@ -1210,20 +1264,39 @@ pub(crate) fn build_callee_escape_map(
 
 /// Check if a parameter escapes from its function.
 ///
-/// A parameter "escapes" if it appears in a Call arg, Store value, or Return.
-/// If it only appears in ClosureCall position, the function merely borrows it.
+/// A parameter "escapes" if it appears in a Call arg, Store value, or Return,
+/// or is an argument of a closure call that reaches a body keeping it. Called
+/// itself, the function merely borrows it.
 fn param_escapes_from(
     func: &MirFunction,
     param_id: LocalId,
     rule: CaptureRule,
     leaving: &HashSet<LocalId>,
     known: &HashMap<String, Vec<bool>>,
+    heap_slots: &HashSet<(String, u32)>,
+    targets: &crate::closure_targets::ClosureTargets,
 ) -> bool {
-    // A task block takes a reference of its own to a closure parameter it
-    // captures (`retain_borrowed_closures_handed_on`), so for who frees what
-    // the caller's reference stays the caller's. It still has to be on the
-    // heap, which is the other question this map answers.
+    // A task block captures a lent closure parameter as a view, so for who
+    // frees what the caller's closure stays the caller's. It still has to be
+    // on the heap, which is the other question this map answers.
     let tasks = if rule == CaptureRule::HeapClosure { task_closures(func) } else { HashSet::new() };
+    // `g = h` lowers through a temporary, so a copy of the parameter going
+    // somewhere is the parameter going there.
+    let mut names = HashSet::from([param_id]);
+    loop {
+        let before = names.len();
+        for stmt in func.blocks.iter().flat_map(|b| b.statements.iter()) {
+            if let MirStmtKind::Assign { dst, rvalue: crate::MirRValue::Use(MirOperand::Local(src)) } = &stmt.kind {
+                if names.contains(src) {
+                    names.insert(*dst);
+                }
+            }
+        }
+        if names.len() == before {
+            break;
+        }
+    }
+    let is_it = |l: &LocalId| names.contains(l);
     for block in &func.blocks {
         for stmt in &block.statements {
             match &stmt.kind {
@@ -1239,39 +1312,68 @@ fn param_escapes_from(
                 // Which closures count is the rule's (`CaptureRule`). Erring
                 // toward escaping costs a leak; erring the other way costs a
                 // use-after-free.
+                // Captured by a body that keeps closures in it, as in a loop
+                // body doing `g = h`: the body takes a reference of its own,
+                // which only a heap closure has.
+                MirStmtKind::ClosureCreate { func_name, captures, .. }
+                    if rule == CaptureRule::EscapingClosure
+                        && captures.iter().any(|c| {
+                            c.by_ref && is_it(&c.local_id) && heap_slots.contains(&(func_name.clone(), c.offset))
+                        }) =>
+                {
+                    return true;
+                }
                 MirStmtKind::ClosureCreate { dst, captures, heap, .. } => {
                     let takes_it = match rule {
                         CaptureRule::AnyClosure => true,
                         CaptureRule::HeapClosure => *heap,
                         CaptureRule::EscapingClosure => leaving.contains(dst),
                     };
-                    if takes_it && captures.iter().any(|c| c.local_id == param_id) {
+                    if takes_it && captures.iter().any(|c| is_it(&c.local_id)) {
                         return true;
                     }
                 }
                 // Passed on. Whether that gives it away is the callee's
-                // answer, in the same position — the map being built. A callee
-                // with no body of its own (a runtime helper) has no answer, and
-                // "unaccounted for" has to mean "might keep it"; the ones that
-                // demonstrably don't are written down.
+                // answer, in the same position — the map being built, or for
+                // a callee with no body, its declared shape. This asks what
+                // `callee_keeps` asks: when the two disagreed, a function
+                // cloning its lent closure for a task (`rask_closure_clone`
+                // borrows) read here as keeping it, so its caller skipped the
+                // drop the clone left it owing.
                 MirStmtKind::Call { func: callee, args, .. } => {
                     for (arg_idx, arg) in args.iter().enumerate() {
-                        if !uses::operand_reads(arg, param_id) {
-                            continue;
-                        }
-                        let borrows = known
-                            .get(&callee.name)
-                            .and_then(|e| e.get(arg_idx))
-                            .map(|escapes| !escapes)
-                            .unwrap_or_else(|| {
-                                uses_up_callback(callee)
-                            });
-                        if !borrows {
+                        if names.iter().any(|n| uses::operand_reads(arg, *n)) && callee_keeps(known, callee, arg_idx) {
                             return true;
                         }
                     }
                 }
-                MirStmtKind::Store { value: MirOperand::Local(id), .. } if *id == param_id => {
+                // Passed through a closure to bodies that are known: argument
+                // `i` is each body's parameter `i + 1`, after the environment,
+                // and escapes where that parameter does. `let s = set_to;
+                // s(mutate g, h)` keeps `h` as `set_to(mutate g, h)` does; read
+                // as a borrow, the caller built `h` on its stack and the frame
+                // that took it freed it. A call nobody can place stays a
+                // borrow, as before.
+                MirStmtKind::ClosureCall { closure, args, .. } => {
+                    let Some(bodies) = targets.known(&func.name, *closure) else { continue };
+                    for (i, arg) in args.iter().enumerate() {
+                        if !names.iter().any(|n| uses::operand_reads(arg, *n)) {
+                            continue;
+                        }
+                        if bodies.iter().any(|b| known.get(b).and_then(|e| e.get(i + 1)).copied().unwrap_or(true)) {
+                            return true;
+                        }
+                    }
+                }
+                // Storing a lent closure into a variable that owns one is
+                // refused by the checker (E0902, fix `f.clone()`), so a store
+                // here leaves the caller's closure the caller's. It still has
+                // to be on the heap.
+                MirStmtKind::Store { addr, value: MirOperand::Local(id), .. }
+                    if is_it(id)
+                        && rule == CaptureRule::HeapClosure
+                        && matches!(func.local_ty(*addr), Some(crate::MirType::FuncPtr(_))) => {}
+                MirStmtKind::Store { value: MirOperand::Local(id), .. } if is_it(id) => {
                     return true;
                 }
                 _ => {}
@@ -1280,7 +1382,7 @@ fn param_escapes_from(
         match &block.terminator.kind {
             MirTerminatorKind::Return { value: Some(MirOperand::Local(id)) }
             | MirTerminatorKind::CleanupReturn { value: Some(MirOperand::Local(id)), .. }
-                if *id == param_id => return true,
+                if is_it(id) => return true,
             _ => {}
         }
     }
@@ -1312,6 +1414,7 @@ fn find_escaping_closures(
     closure_locals: &HashMap<LocalId, bool>,
     callee_escapes: &HashMap<String, Vec<bool>>,
     kept: &KeptThroughCalls,
+    lent: &LentCells,
 ) -> HashSet<LocalId> {
     // Lowering routinely copies the `ClosureCreate` result on before returning
     // it, so reading only the original destination missed the escape. Every
@@ -1320,10 +1423,22 @@ fn find_escaping_closures(
     // destination, which is the origin, never a copy of it.
     let aliases = closure_aliases(func, closure_locals);
     let mut escaping: HashSet<LocalId> = HashSet::new();
+    let addr_of: HashMap<LocalId, LocalId> = func
+        .blocks
+        .iter()
+        .flat_map(|b| b.statements.iter())
+        .filter_map(|st| match &st.kind {
+            MirStmtKind::Assign { dst, rvalue: crate::MirRValue::Ref(src) } => Some((*dst, *src)),
+            _ => None,
+        })
+        .collect();
 
     for block in &func.blocks {
         for stmt in &block.statements {
             match &stmt.kind {
+                // A clone reads its source and copies the environment into a
+                // block of its own (mem.closures/CV2); the source stays here.
+                MirStmtKind::Call { func: callee, .. } if callee.name == "rask_closure_clone" => {}
                 MirStmtKind::Call { func: callee, args, .. } => {
                     for (arg_idx, arg) in args.iter().enumerate() {
                         if let Some(id) = uses::operand_local(arg) {
@@ -1343,6 +1458,13 @@ fn find_escaping_closures(
                                     escaping.insert(origin);
                                 }
                             }
+                            // The variable itself lent to a `mutate` parameter:
+                            // the callee may replace what it holds.
+                            if let Some(var) = addr_of.get(&id) {
+                                if lent.mutate_params.contains(&(callee.name.clone(), arg_idx)) {
+                                    escaping.extend(aliases.origins(var).iter().copied());
+                                }
+                            }
                         }
                     }
                 }
@@ -1351,6 +1473,13 @@ fn find_escaping_closures(
                         let Some(id) = uses::operand_local(arg) else { continue };
                         if aliases.holds_closure(&id) && kept.keeps(&func.name, *closure, i) {
                             escaping.extend(aliases.origins(&id).iter().copied());
+                        }
+                        // The variable lent to a body's `mutate` parameter, as
+                        // with a call by name above (#2017).
+                        if let Some(var) = addr_of.get(&id) {
+                            if kept.lends_to_mutate(&func.name, *closure, i, lent) {
+                                escaping.extend(aliases.origins(var).iter().copied());
+                            }
                         }
                     }
                 }
@@ -1361,6 +1490,23 @@ fn find_escaping_closures(
                 | MirStmtKind::ArrayStore { value: MirOperand::Local(id), .. }
                 | MirStmtKind::InterfaceBox { value: MirOperand::Local(id), .. } => {
                     escaping.extend(aliases.origins(id).iter().copied());
+                }
+                // A captured variable belongs to the frame that made the
+                // environment, so a closure assigned to it outlives this one.
+                // `f = || v[2]` in a `for` body over a sequence is this: the
+                // body is its own function, and the write only becomes a store
+                // once `addr_taken` runs, after this decision. Left on the
+                // stack, `f` pointed into the body's frame after it returned.
+                MirStmtKind::LoadCapture { dst, .. } => {
+                    escaping.extend(aliases.origins(dst).iter().copied());
+                }
+                // The other side of the same trade: what this frame puts in a
+                // variable a body it creates assigns closures to or hands on
+                // (`captures_holding_heap_closures`).
+                MirStmtKind::ClosureCreate { func_name, captures, .. } => {
+                    for c in captures.iter().filter(|c| c.by_ref && lent.slots.contains(&(func_name.clone(), c.offset))) {
+                        escaping.extend(aliases.origins(&c.local_id).iter().copied());
+                    }
                 }
                 _ => {}
             }
@@ -1459,52 +1605,28 @@ impl ClosureAliases {
     }
 }
 
-/// The one closure `id` holds, when there is exactly one. A capture that might
-/// be either of two closures has no single owner to free it, so the ownership
-/// analyses leave it alone — a leak rather than a free of the wrong one.
-fn sole_origin(aliases: &ClosureAliases, id: &LocalId) -> Option<LocalId> {
-    match aliases.origins(id) {
-        [only] => Some(*only),
-        _ => None,
-    }
-}
-
-/// Each `closure_drop` in `func` that names the create it frees, as
-/// `(create, block, stmt)`.
-pub(crate) fn closure_drops_by_create(
-    func: &MirFunction,
-) -> impl Iterator<Item = (LocalId, usize, usize)> + '_ {
-    func.blocks.iter().enumerate().flat_map(|(bi, block)| {
-        block.statements.iter().enumerate().filter_map(move |(si, stmt)| match &stmt.kind {
-            MirStmtKind::ClosureDrop { made: Some(made), .. } => Some((*made, bi, si)),
-            _ => None,
-        })
-    })
-}
-
-/// The creates whose last reference is the frame's own `closure_drop`: the
-/// frame drops them and never shared one with a keeper (`closure_retain` naming
-/// the create). Those are the closures whose captures the frame may free right
-/// after the drop; a shared one's captures are the environment's glue's.
-pub(crate) fn closures_the_frame_frees_last(func: &MirFunction) -> HashSet<LocalId> {
-    let shared: HashSet<LocalId> = func
-        .blocks
-        .iter()
-        .flat_map(|b| b.statements.iter())
-        .filter_map(|st| match &st.kind {
-            MirStmtKind::ClosureRetain { made: Some(made), .. } => Some(*made),
-            _ => None,
-        })
-        .collect();
-    closure_drops_by_create(func)
-        .map(|(create, _, _)| create)
-        .filter(|c| !shared.contains(c))
-        .collect()
-}
-
 fn closure_aliases(
     func: &MirFunction,
     closure_locals: &HashMap<LocalId, bool>,
+) -> ClosureAliases {
+    aliases_of(func, closure_locals, false)
+}
+
+/// The same, with a clone counted as one more name for its source. A clone is
+/// a block of its own, so the drop pass mustn't read it that way, but it
+/// points wherever the source points (mem.closures/CV2): when the clone
+/// leaves the frame, what the source borrows has to be carried instead.
+fn closure_aliases_through_clones(
+    func: &MirFunction,
+    closure_locals: &HashMap<LocalId, bool>,
+) -> ClosureAliases {
+    aliases_of(func, closure_locals, true)
+}
+
+fn aliases_of(
+    func: &MirFunction,
+    closure_locals: &HashMap<LocalId, bool>,
+    through_clones: bool,
 ) -> ClosureAliases {
     let mut map: HashMap<LocalId, Vec<LocalId>> =
         closure_locals.keys().map(|id| (*id, vec![*id])).collect();
@@ -1514,12 +1636,36 @@ fn closure_aliases(
         changed = false;
         for block in &func.blocks {
             for stmt in &block.statements {
-                let MirStmtKind::Assign { dst, rvalue: crate::MirRValue::Use(MirOperand::Local(src)) } =
-                    &stmt.kind
-                else {
-                    continue;
+                // A phi is a copy from whichever edge came in. Once SSA has
+                // run, `f = || …` in a loop is `f = phi [first, made_here]`,
+                // and skipping it lost track of what `f` holds: the drop pass
+                // freed the new closure at the end of the turn and the first
+                // one at the return, and handed back the freed one.
+                let (dst, srcs): (&LocalId, Vec<LocalId>) = match &stmt.kind {
+                    MirStmtKind::Assign { dst, rvalue: crate::MirRValue::Use(MirOperand::Local(src)) } => {
+                        (dst, vec![*src])
+                    }
+                    MirStmtKind::Phi { dst, args } => (
+                        dst,
+                        args.iter()
+                            .filter_map(|(_, op)| match op {
+                                MirOperand::Local(l) => Some(*l),
+                                _ => None,
+                            })
+                            .collect(),
+                    ),
+                    MirStmtKind::Call { dst: Some(dst), func: callee, args }
+                        if through_clones && callee.name == "rask_closure_clone" =>
+                    {
+                        (dst, args.iter().filter_map(uses::operand_local).collect())
+                    }
+                    _ => continue,
                 };
-                let Some(from) = map.get(src).cloned() else { continue };
+                let from: Vec<LocalId> =
+                    srcs.iter().filter_map(|s| map.get(s)).flatten().copied().collect();
+                if from.is_empty() {
+                    continue;
+                }
                 let into = map.entry(*dst).or_default();
                 for origin in from {
                     if !into.contains(&origin) {
@@ -1531,127 +1677,6 @@ fn closure_aliases(
         }
     }
     ClosureAliases { map }
-}
-
-/// How many environments captured each one.
-///
-/// This is the ownership test, and it is deliberately not "did a `let` name
-/// it". A MIR local's name is not only a binding — after inlining, the callee's
-/// parameter names land in the caller, so `self` and `f` from an inlined
-/// adapter look exactly like a user's `let`. Counting capturers asks the
-/// question directly instead.
-///
-/// Captured once: that capturer owns it, and frees it when it is itself freed.
-/// Captured more than once, as in
-///
-/// ```text
-/// let src = counter(1)
-/// let a = src.map(f)
-/// let b = src.map(g)
-/// ```
-///
-/// no single environment owns `src`, and picking either would free it twice.
-/// Those keep today's behaviour — this frame does not free them, so they leak
-/// rather than double-free. The enclosing scope is the right owner there and
-/// that is a separate change; erring toward a leak is the same call
-/// `find_transferred_closures` already makes.
-fn capture_counts(
-    func: &MirFunction,
-    closure_locals: &HashMap<LocalId, bool>,
-    aliases: &ClosureAliases,
-) -> HashMap<LocalId, usize> {
-    let mut counts: HashMap<LocalId, usize> = HashMap::new();
-    for block in &func.blocks {
-        for stmt in &block.statements {
-            let MirStmtKind::ClosureCreate { dst, captures, heap: true, .. } = &stmt.kind else {
-                continue;
-            };
-            let owner = *dst;
-            let mut seen_here: HashSet<LocalId> = HashSet::new();
-            for cap in captures {
-                let Some(inner) = sole_origin(aliases, &cap.local_id) else { continue };
-                if inner == owner || !closure_locals.contains_key(&inner) {
-                    continue;
-                }
-                // One environment capturing the same thing at two offsets is
-                // still one owner.
-                if seen_here.insert(inner) {
-                    *counts.entry(inner).or_insert(0) += 1;
-                }
-            }
-        }
-    }
-    counts
-}
-
-/// What each environment captured that it therefore owns.
-///
-/// An adapter's environment holds the sequence it wraps and the closure it was
-/// given — `closure[heap](Sequence_filter…, [_36@0, _37@8])` — and both are
-/// environments of their own. `find_transferred_closures` already worked this
-/// out and used it to say "not this frame's to free"; this is the other half of
-/// the same fact, which nothing was asking for: they are the *owner's* to free.
-///
-/// Named captures are left out, per `named_closures`.
-fn captured_environments(
-    func: &MirFunction,
-    closure_locals: &HashMap<LocalId, bool>,
-    aliases: &ClosureAliases,
-) -> HashMap<LocalId, Vec<LocalId>> {
-    let counts = capture_counts(func, closure_locals, aliases);
-    let mut owned: HashMap<LocalId, Vec<LocalId>> = HashMap::new();
-    for block in &func.blocks {
-        for stmt in &block.statements {
-            let MirStmtKind::ClosureCreate { dst, captures, heap: true, .. } = &stmt.kind else {
-                continue;
-            };
-            let owner = *dst;
-            for cap in captures {
-                let Some(inner) = sole_origin(aliases, &cap.local_id) else { continue };
-                if inner == owner || !closure_locals.contains_key(&inner) {
-                    continue;
-                }
-                if counts.get(&inner).copied().unwrap_or(0) != 1 {
-                    continue;
-                }
-                let slot = owned.entry(owner).or_default();
-                if !slot.contains(&inner) {
-                    slot.push(inner);
-                }
-            }
-        }
-    }
-    owned
-}
-
-/// Everything `roots` transitively owns, the roots included, innermost first.
-///
-/// Innermost first because freeing an environment releases its block, and the
-/// inner ones are reached through what that block holds. They are separate MIR
-/// locals so the order is not strictly required, but emitting the other way
-/// round is a use-after-free waiting for the first person who changes how a
-/// capture is read.
-fn expand_owned(roots: &[LocalId], owned: &HashMap<LocalId, Vec<LocalId>>) -> Vec<LocalId> {
-    let mut out: Vec<LocalId> = Vec::new();
-    let mut seen: HashSet<LocalId> = HashSet::new();
-    fn walk(
-        id: LocalId,
-        owned: &HashMap<LocalId, Vec<LocalId>>,
-        seen: &mut HashSet<LocalId>,
-        out: &mut Vec<LocalId>,
-    ) {
-        if !seen.insert(id) {
-            return;
-        }
-        for inner in owned.get(&id).map(|v| v.as_slice()).unwrap_or(&[]) {
-            walk(*inner, owned, seen, out);
-        }
-        out.push(id);
-    }
-    for root in roots {
-        walk(*root, owned, &mut seen, &mut out);
-    }
-    out
 }
 
 #[cfg(test)]
@@ -1715,7 +1740,7 @@ mod tests {
                         dst: Some(LocalId(1)),
                         closure: LocalId(0),
                         args: vec![],
-                        taken: Vec::new(),
+                        modes: vec![rask_ast::ty::ParamMode::Borrow; 0],
                     }),
                 ], ret(Some(MirOperand::Local(LocalId(1))))),
             ],
@@ -1723,6 +1748,7 @@ mod tests {
             is_extern_c: false,
             inline_hint: false,
             param_modes: Vec::new(),
+            item_mode_from_body: false,
             source_file: None,
         };
 
@@ -1756,6 +1782,7 @@ mod tests {
             is_extern_c: false,
             inline_hint: false,
             param_modes: Vec::new(),
+            item_mode_from_body: false,
             source_file: None,
         }];
 
@@ -1793,6 +1820,7 @@ mod tests {
             is_extern_c: false,
             inline_hint: false,
             param_modes: Vec::new(),
+            item_mode_from_body: false,
             source_file: None,
         }];
 
@@ -1817,7 +1845,7 @@ mod tests {
                         dst: Some(LocalId(1)),
                         closure: LocalId(0),
                         args: vec![],
-                        taken: Vec::new(),
+                        modes: vec![rask_ast::ty::ParamMode::Borrow; 0],
                     }),
                 ], ret(Some(MirOperand::Local(LocalId(1))))),
             ],
@@ -1825,6 +1853,7 @@ mod tests {
             is_extern_c: false,
             inline_hint: false,
             param_modes: Vec::new(),
+            item_mode_from_body: false,
             source_file: None,
         };
 
@@ -1853,6 +1882,7 @@ mod tests {
             is_extern_c: false,
             inline_hint: false,
             param_modes: Vec::new(),
+            item_mode_from_body: false,
             source_file: None,
         };
 
@@ -1887,6 +1917,7 @@ mod tests {
             is_extern_c: false,
             inline_hint: false,
             param_modes: Vec::new(),
+            item_mode_from_body: false,
             source_file: None,
         };
 
@@ -1915,6 +1946,7 @@ mod tests {
             is_extern_c: false,
             inline_hint: false,
             param_modes: Vec::new(),
+            item_mode_from_body: false,
             source_file: None,
         };
 
@@ -1924,50 +1956,6 @@ mod tests {
 
         assert!(get_heap(main), "closure to escaping callee must be heap");
         assert!(!has_drop(main), "ownership transferred — no drop");
-    }
-
-    #[test]
-    fn unknown_callee_plus_local_use_gets_drop() {
-        // Closure passed to unknown `run` AND used via ClosureCall.
-        // Unknown → escaping → heap. Also used locally → not transferred. Drop inserted.
-        let mut fns = vec![MirFunction {
-            name: "f".to_string(),
-            params: vec![],
-            ret_ty: MirType::I64,
-            locals: vec![temp(0, MirType::Ptr), temp(1, MirType::I64)],
-            blocks: vec![
-                block(0, vec![
-                    MirStmt::dummy(MirStmtKind::ClosureCreate {
-                        dst: LocalId(0),
-                        func_name: "f__closure_0".to_string(),
-                        captures: vec![],
-                        heap: true,
-                        task_bound: false,
-                    }),
-                    MirStmt::dummy(MirStmtKind::Call {
-                        dst: None,
-                        func: FunctionRef::internal("run".to_string()),
-                        args: vec![MirOperand::Local(LocalId(0))],
-                    }),
-                    MirStmt::dummy(MirStmtKind::ClosureCall {
-                        dst: Some(LocalId(1)),
-                        closure: LocalId(0),
-                        args: vec![],
-                        taken: Vec::new(),
-                    }),
-                ], ret(Some(MirOperand::Local(LocalId(1))))),
-            ],
-            entry_block: BlockId(0),
-            is_extern_c: false,
-            inline_hint: false,
-            param_modes: Vec::new(),
-            source_file: None,
-        }];
-
-        run_closure_passes(&mut fns);
-
-        assert!(get_heap(&fns[0]), "unknown callee forces heap");
-        assert!(has_drop(&fns[0]), "local use prevents transfer — drop needed");
     }
 
     // ═══════════════════════════════════════════════════════════
@@ -2012,7 +2000,7 @@ mod tests {
                         dst: Some(LocalId(2)),
                         closure: LocalId(1),
                         args: vec![],
-                        taken: Vec::new(),
+                        modes: vec![rask_ast::ty::ParamMode::Borrow; 0],
                     }),
                 ], ret(Some(MirOperand::Local(LocalId(2))))),
             ],
@@ -2020,6 +2008,7 @@ mod tests {
             is_extern_c: false,
             inline_hint: false,
             param_modes: Vec::new(),
+            item_mode_from_body: false,
             source_file: None,
         };
 
@@ -2041,7 +2030,7 @@ mod tests {
                         dst: Some(LocalId(1)),
                         closure: LocalId(0),
                         args: vec![],
-                        taken: Vec::new(),
+                        modes: vec![rask_ast::ty::ParamMode::Borrow; 0],
                     }),
                 ], ret(Some(MirOperand::Local(LocalId(1))))),
             ],
@@ -2049,6 +2038,7 @@ mod tests {
             is_extern_c: false,
             inline_hint: false,
             param_modes: Vec::new(),
+            item_mode_from_body: false,
             source_file: None,
         };
 
@@ -2107,6 +2097,7 @@ mod tests {
             is_extern_c: false,
             inline_hint: false,
             param_modes: Vec::new(),
+            item_mode_from_body: false,
             source_file: None,
         };
 
@@ -2132,13 +2123,13 @@ mod tests {
                         dst: Some(LocalId(1)),
                         closure: LocalId(0),
                         args: vec![],
-                        taken: Vec::new(),
+                        modes: vec![rask_ast::ty::ParamMode::Borrow; 0],
                     }),
                     MirStmt::dummy(MirStmtKind::ClosureCall {
                         dst: Some(LocalId(2)),
                         closure: LocalId(1),
                         args: vec![],
-                        taken: Vec::new(),
+                        modes: vec![rask_ast::ty::ParamMode::Borrow; 0],
                     }),
                 ], ret(Some(MirOperand::Local(LocalId(2))))),
             ],
@@ -2146,6 +2137,7 @@ mod tests {
             is_extern_c: false,
             inline_hint: false,
             param_modes: Vec::new(),
+            item_mode_from_body: false,
             source_file: None,
         };
 
@@ -2213,7 +2205,7 @@ mod tests {
                         dst: Some(LocalId(2)),
                         closure: LocalId(1),
                         args: vec![],
-                        taken: Vec::new(),
+                        modes: vec![rask_ast::ty::ParamMode::Borrow; 0],
                     }),
                 ], MirTerminator::dummy(MirTerminatorKind::Goto { target: BlockId(1) })),
                 block(3, vec![], ret(Some(MirOperand::Local(LocalId(0))))),
@@ -2222,6 +2214,7 @@ mod tests {
             is_extern_c: false,
             inline_hint: false,
             param_modes: Vec::new(),
+            item_mode_from_body: false,
             source_file: None,
         }];
 
@@ -2280,6 +2273,7 @@ mod tests {
             is_extern_c: false,
             inline_hint: false,
             param_modes: Vec::new(),
+            item_mode_from_body: false,
             source_file: None,
         }];
 
@@ -2341,7 +2335,7 @@ mod tests {
                         dst: Some(LocalId(2)),
                         closure: LocalId(1),
                         args: vec![],
-                        taken: Vec::new(),
+                        modes: vec![rask_ast::ty::ParamMode::Borrow; 0],
                     }),
                 ], MirTerminator::dummy(MirTerminatorKind::Goto { target: BlockId(3) })),
                 block(2, vec![
@@ -2356,7 +2350,7 @@ mod tests {
                         dst: Some(LocalId(4)),
                         closure: LocalId(3),
                         args: vec![],
-                        taken: Vec::new(),
+                        modes: vec![rask_ast::ty::ParamMode::Borrow; 0],
                     }),
                 ], MirTerminator::dummy(MirTerminatorKind::Goto { target: BlockId(3) })),
                 block(3, vec![], ret(Some(MirOperand::Constant(MirConst::Int(0))))),
@@ -2365,6 +2359,7 @@ mod tests {
             is_extern_c: false,
             inline_hint: false,
             param_modes: Vec::new(),
+            item_mode_from_body: false,
             source_file: None,
         }];
 
@@ -2421,6 +2416,7 @@ mod tests {
             is_extern_c: false,
             inline_hint: false,
             param_modes: Vec::new(),
+            item_mode_from_body: false,
             source_file: None,
         }];
 
@@ -2437,16 +2433,16 @@ mod tests {
     // ═══════════════════════════════════════════════════════════
 
     #[test]
-    fn closure_in_loop_escaping_and_local_gets_back_edge_drop() {
-        // Closure in loop body: passed to unknown callee AND used locally.
-        // Must be heap. Not transferred (local use). Drop at back-edge.
+    fn closure_in_loop_owning_capture_gets_back_edge_drop() {
+        // Closure in loop body whose environment owns what it carried, called
+        // locally. Stack, but dropping it releases the capture: drop at the
+        // back-edge.
         //
         //   block0: goto block1
         //   block1: branch(cond, block2, block3)
         //   block2:
-        //     _1 = ClosureCreate[heap]
-        //     Call(run, [_1])         ← unknown callee → escaping
-        //     _2 = ClosureCall(_1)    ← local use → not transferred
+        //     _1 = ClosureCreate[_3 owns]
+        //     _2 = ClosureCall(_1)
         //     goto block1             ← back-edge: drop _1 here
         //   block3: return void      ← and *not* here: block2 doesn't dominate it
 
@@ -2458,6 +2454,7 @@ mod tests {
                 temp(0, MirType::I64),
                 temp(1, MirType::Ptr),
                 temp(2, MirType::I64),
+                temp(3, MirType::Ptr),
             ],
             blocks: vec![
                 block(0, vec![], MirTerminator::dummy(MirTerminatorKind::Goto { target: BlockId(1) })),
@@ -2470,20 +2467,23 @@ mod tests {
                     MirStmt::dummy(MirStmtKind::ClosureCreate {
                         dst: LocalId(1),
                         func_name: "f__closure_0".to_string(),
-                        captures: vec![],
-                        heap: true,
+                        captures: vec![crate::ClosureCapture {
+                            local_id: LocalId(3),
+                            offset: 0,
+                            size: 8,
+                            by_ref: false,
+                            copy: false,
+                            lent: false,
+                            owns: Some(MirType::Ptr),
+                        }],
+                        heap: false,
                         task_bound: false,
-                    }),
-                    MirStmt::dummy(MirStmtKind::Call {
-                        dst: None,
-                        func: FunctionRef::internal("run".to_string()),
-                        args: vec![MirOperand::Local(LocalId(1))],
                     }),
                     MirStmt::dummy(MirStmtKind::ClosureCall {
                         dst: Some(LocalId(2)),
                         closure: LocalId(1),
                         args: vec![],
-                        taken: Vec::new(),
+                        modes: vec![rask_ast::ty::ParamMode::Borrow; 0],
                     }),
                 ], MirTerminator::dummy(MirTerminatorKind::Goto { target: BlockId(1) })),
                 block(3, vec![], ret(None)),
@@ -2492,6 +2492,7 @@ mod tests {
             is_extern_c: false,
             inline_hint: false,
             param_modes: Vec::new(),
+            item_mode_from_body: false,
             source_file: None,
         }];
 
@@ -2546,11 +2547,15 @@ mod tests {
             is_extern_c: false,
             inline_hint: false,
             param_modes: Vec::new(),
+            item_mode_from_body: false,
             source_file: None,
         };
         let mut fns = vec![func];
         let escapes = HashMap::from([("keep_nothing".to_string(), vec![false])]);
-        insert_drops(&mut fns[0], &escapes, &HashSet::new(), &crate::closure_targets::ClosureTargets::build(&[]));
+        let targets = crate::closure_targets::ClosureTargets::build(&fns);
+        let reach = crate::closure_reach::ClosureReach::build(&fns);
+        let through = ThroughClosures { targets: &targets, reach: &reach };
+        insert_drops(&mut fns[0], &escapes, &HashSet::new(), &through);
         let made: Vec<Option<LocalId>> = fns[0].blocks[0]
             .statements
             .iter()

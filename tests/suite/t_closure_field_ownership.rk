@@ -40,7 +40,7 @@ func fresh() -> Vec<i64> {
     return v
 }
 
-func set_run(mutate o: Outer, f: func() -> Vec<i64>) {
+func set_run(mutate o: Outer, take f: func() -> Vec<i64>) {
     o.inner.run = f
 }
 

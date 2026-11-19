@@ -1,0 +1,29 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A link put into a vector or a map by `insert` is an edge the node's delete reaches,
+// the same as one put into a vector by `push` (mem.racks/RK3). Natively `insert` once
+// registered nothing, so after the delete the vector still held the dead link.
+import memory.Link
+import memory.Rack
+
+struct Leaf { id: i32 }
+
+test "a delete removes a link that insert put into a vector" {
+    mut rack: Rack<Leaf> = Rack.new()
+    let a = rack.insert(Leaf(id: 1))
+    let b = rack.insert(Leaf(id: 2))
+    mut v: Vec<Link<Leaf>> = Vec.new()
+    v.push(b)
+    v.insert(0, a)
+    rack.delete(a)
+    assert v.len() == 1
+}
+
+test "a delete removes a link that insert put into a map" {
+    mut rack: Rack<Leaf> = Rack.new()
+    let a = rack.insert(Leaf(id: 1))
+    mut m: Map<i32, Link<Leaf>> = Map.new()
+    m.insert(1, a)
+    rack.delete(a)
+    assert m.len() == 0
+}

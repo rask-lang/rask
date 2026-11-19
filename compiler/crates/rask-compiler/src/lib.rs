@@ -655,6 +655,7 @@ fn check_loaded_scoped(
     // CM1: which closures outlive their frame is ownership's to work out, and
     // lowering and the interpreter both need the same answer.
     typed.escaping_closures = ownership_result.escaping_closures.clone();
+    typed.closure_captures = ownership_result.closure_captures.clone();
     typed.return_moves = ownership_result.return_moves.clone();
     // Which closures may not reach another task: ownership's answer, read
     // by lowering, mono and the interpreter.
@@ -1183,6 +1184,7 @@ fn check_package_scoped(
     typed.template_copies =
         rounds.copies_of.iter().map(|(copy, of)| (*copy, (of.template, of.type_args.clone()))).collect();
     typed.escaping_closures = ownership_result.escaping_closures.clone();
+    typed.closure_captures = ownership_result.closure_captures.clone();
     typed.return_moves = ownership_result.return_moves.clone();
     // Which closures may not reach another task: ownership's answer, read
     // by lowering, mono and the interpreter.

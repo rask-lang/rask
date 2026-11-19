@@ -1,0 +1,28 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// Closures returned by a factory that takes a vector, kept both in a
+// `Vec<func>` and in a local. Each carries its own vector, and each must be
+// released exactly once (#2013).
+
+func g(take v: Vec<i64>) -> func() -> i64 {
+    return || v[1]
+}
+
+test "one in a vector, one in a local" {
+    mut fs: Vec<func() -> i64> = Vec.new()
+    fs.push(g(Vec.from([1, 2])))
+    let h = g(Vec.from([5, 6]))
+    assert h() == 6
+    assert fs[0]() == 2
+}
+
+test "several pushed in a loop" {
+    mut fs: Vec<func() -> i64> = Vec.new()
+    for i in 0..3 {
+        fs.push(g(Vec.from([i, i * 10])))
+    }
+    let h = g(Vec.from([5, 6]))
+    assert h() == 6
+    assert fs[0]() == 0
+    assert fs[2]() == 20
+}

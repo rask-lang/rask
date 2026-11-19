@@ -1,0 +1,39 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A closure made from a string parameter that hands the string back. The
+// environment keeps the string for the next call, so each call has to give
+// the caller a reference of its own. It gave away the environment's only one,
+// and natively the second call read freed bytes. The environment then has to
+// give its reference back when the closure is dropped, which it skipped for a
+// borrowed parameter, so the string leaked as well.
+
+func g(s: string) -> func() -> string {
+    return || s
+}
+
+func size(s: string) -> func() -> u64 {
+    return || s.len()
+}
+
+test "a closure hands back its string on every call" {
+    let n = 3
+    let h = g("item-{n}-padding-padding-padding-padding")
+    assert h() == "item-3-padding-padding-padding-padding"
+    assert h() == "item-3-padding-padding-padding-padding"
+}
+
+test "closures in a vector, built in a loop" {
+    mut fs: Vec<func() -> string> = Vec.new()
+    for i in 0..3 {
+        fs.push(g("item-{i}-padding-padding-padding-padding"))
+    }
+    assert fs[0]() == "item-0-padding-padding-padding-padding"
+    assert fs[2]() == "item-2-padding-padding-padding-padding"
+    assert fs[2]() == "item-2-padding-padding-padding-padding"
+}
+
+test "a closure that only reads its string" {
+    let n = 4
+    let f = size("item-{n}-padding-padding-padding-padding")
+    assert f() == 38
+}

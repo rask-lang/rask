@@ -1360,16 +1360,6 @@ impl<'a> FunctionBuilder<'a> {
                 crate::closures::free_closure(builder, closure_val, *free_ref);
             }
 
-            MirStmtKind::ClosureRetain { closure, .. } => {
-                let closure_val = builder.use_var(*ctx.var_map.get(closure)
-                    .ok_or_else(|| CodegenError::UnsupportedFeature(
-                        "ClosureRetain closure variable not found".to_string()
-                    ))?);
-                let retain_ref = ctx.func_refs.get("rask_closure_retain")
-                    .ok_or_else(|| CodegenError::FunctionNotFound("rask_closure_retain".to_string()))?;
-                builder.ins().call(*retain_ref, &[closure_val]);
-            }
-
             MirStmtKind::GlobalRef { dst, name } => {
                 let gv = ctx.comptime_globals.get(name.as_str())
                     .ok_or_else(|| CodegenError::UnsupportedFeature(
@@ -2176,6 +2166,15 @@ impl<'a> FunctionBuilder<'a> {
                 Self::lower_operand_typed(builder, op, expected_ty, ctx)
             }
 
+            // The payload; `lower_assign` writes the tag around it.
+            MirRValue::WrapSome(op) => {
+                let payload = match dst_mir_ty {
+                    Some(MirType::Option(inner)) => Some(inner.as_ref()),
+                    _ => None,
+                };
+                Self::lower_rvalue(builder, &MirRValue::Use(op.clone()), expected_ty, payload, ctx)
+            }
+
             MirRValue::BinaryOp { op, left, right } => Self::lower_binary_op(builder, op, left, right, expected_ty, dst_mir_ty, ctx),
 
             MirRValue::UnaryOp { op, operand } => {
@@ -2449,21 +2448,9 @@ impl<'a> FunctionBuilder<'a> {
         // Which shape this assignment takes is decided by the destination type
         // and the rvalue alone — never by the lowered value — so it's settled
         // first. The value's type depends on it: a scalar being wrapped as a
-        // payload is typed by the payload, not by the container.
-
-        // When dest is Option(T) and the source is already Option-typed,
-        // copy the struct. When the source is a scalar, wrap as Some.
-        let src_option_ty = if let MirType::Option(_) = &dst_local.ty {
-            if let MirRValue::Use(MirOperand::Local(src_id)) = rvalue {
-                ctx.locals.iter().find(|l| l.id == *src_id)
-                    .map(|l| matches!(l.ty, MirType::Option(_)))
-                    .unwrap_or(false)
-            } else {
-                false
-            }
-        } else {
-            false
-        };
+        // payload is typed by the payload, not by the container. MIR says when
+        // an optional is built around a plain value (`WrapSome`, #1555), so
+        // every other assignment into an optional copies one.
 
         // Aggregate assignment: when the destination has a stack slot and
         // the rvalue produces a pointer to aggregate data, copy the data
@@ -2492,17 +2479,10 @@ impl<'a> FunctionBuilder<'a> {
             // external pointer for mutate-params).
             (MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_),
              MirRValue::Use(MirOperand::Local(_))) => true,
-            // Result/Option whole-aggregate copy: only when src and dst
-            // have the same general shape. Avoid clobbering layout when
-            // src is Result and dst is Option (different payload offsets).
-            (MirType::Result { .. }, MirRValue::Use(MirOperand::Local(src_id))) => {
-                ctx.locals.iter().find(|l| l.id == *src_id)
-                    .map_or(false, |l| matches!(l.ty, MirType::Result { .. }))
-            }
-            (MirType::Option(_), MirRValue::Use(MirOperand::Local(src_id))) => {
-                ctx.locals.iter().find(|l| l.id == *src_id)
-                    .map_or(false, |l| matches!(l.ty, MirType::Option(_)))
-            }
+            // A whole wrapper from another of the same shape: a wrapper built
+            // around a plain value is `WrapSome`, and a result from anything
+            // else is rejected before codegen (`assign_shapes`).
+            (MirType::Result { .. } | MirType::Option(_), MirRValue::Use(MirOperand::Local(_))) => true,
             // An array element that lives in its slot comes back as an address,
             // and for a wrapper element that address *is* a whole wrapper. Copy
             // it. Without this arm the wrap-as-Some path below claimed the
@@ -2517,8 +2497,6 @@ impl<'a> FunctionBuilder<'a> {
             // `try convert`/`try float to int` builds an Option slot and
             // returns its pointer — copy the 16-byte struct into dst.
             (MirType::Option(_), MirRValue::Convert { kind, .. }) => kind.is_optional(),
-            // Option(T) assigned from an Option-typed local: copy the 16-byte struct
-            (MirType::Option(_), _) if src_option_ty => true,
             _ => false,
         };
 
@@ -2543,8 +2521,7 @@ impl<'a> FunctionBuilder<'a> {
             None
         };
 
-        let wrap_as_some = matches!(&dst_local.ty, MirType::Option(_))
-            && !needs_copy
+        let wrap_as_some = matches!(rvalue, MirRValue::WrapSome(_))
             && (ctx.stack_slot_map.contains_key(dst) || borrowed_addr.is_some());
         // If the source is an aggregate and dst is Option<aggregate>,
         // we need full-aggregate wrap (tag + memcpy payload), not the
@@ -2555,8 +2532,8 @@ impl<'a> FunctionBuilder<'a> {
         // payload offset and reading the payload back handed out that slot's
         // address instead of the string (#613).
         let src_is_addressed = match rvalue {
-            MirRValue::Use(MirOperand::Local(_)) => true,
-            MirRValue::Use(MirOperand::Constant(c)) => c.static_buffer().is_some(),
+            MirRValue::WrapSome(MirOperand::Local(_)) => true,
+            MirRValue::WrapSome(MirOperand::Constant(c)) => c.static_buffer().is_some(),
             _ => false,
         };
         let wrap_as_some_aggregate = wrap_as_some
@@ -2593,7 +2570,7 @@ impl<'a> FunctionBuilder<'a> {
             // `u32` → `i64` (CV1a) would turn 3000000000 into a negative
             // (#326's family, reached by a new route).
             let src_mir = match rvalue {
-                MirRValue::Use(op) => Self::operand_mir_type(op, ctx.locals),
+                MirRValue::Use(op) | MirRValue::WrapSome(op) => Self::operand_mir_type(op, ctx.locals),
                 _ => None,
             };
             val = Self::convert_value(builder, val, val_ty, dst_ty, src_mir.as_ref());
@@ -2960,28 +2937,32 @@ impl<'a> FunctionBuilder<'a> {
             .ok_or_else(|| CodegenError::FunctionNotFound(func_name.clone()))?;
         let func_ptr = builder.ins().func_addr(types::I64, *func_ref);
 
+        // What the environment owns, as the header's entry list: the closure
+        // is dropped and cloned by whoever holds it, which is usually not this
+        // frame, so the block says it itself.
+        let (entries, count) = match crate::elem_offsets::env_owned_offsets(captures, ctx.shapes()) {
+            Some(offs) => {
+                let list = Self::element_offsets_global(builder, &offs, ctx).ok_or_else(|| {
+                    CodegenError::UnsupportedFeature(format!(
+                        "the owned-entry list of `{func_name}`'s environment was never registered"
+                    ))
+                })?;
+                (list, builder.ins().iconst(types::I64, offs.len() as i64))
+            }
+            None => {
+                let zero = builder.ins().iconst(types::I64, 0);
+                (zero, zero)
+            }
+        };
         let closure_ptr = if heap {
-            // Escaping closure: heap-allocate behind a size header, so
-            // whoever frees it can account for the bytes without knowing the
-            // capture layout.
             let alloc_ref = ctx.func_refs.get("rask_closure_alloc")
                 .ok_or_else(|| CodegenError::FunctionNotFound("rask_closure_alloc".to_string()))?;
-            // The environment's drop glue, when this closure owns a container
-            // it captured. `container_drop` generates the function and names it
-            // after the closure; the name is the whole agreement between the
-            // two sides (`ENV_DROP_SUFFIX`).
-            let glue_name = format!("{func_name}{}", rask_mir::ENV_DROP_SUFFIX);
-            let env_drop = match ctx.func_refs.get(glue_name.as_str()) {
-                Some(glue) => builder.ins().func_addr(types::I64, *glue),
-                None => builder.ins().iconst(types::I64, 0),
-            };
             crate::closures::allocate_closure_heap(
-                builder, func_ptr, &env_layout, ctx.var_map, *alloc_ref, env_drop, task_bound,
+                builder, func_ptr, &env_layout, ctx.var_map, *alloc_ref, entries, count, task_bound,
             )?
         } else {
-            // Non-escaping closure: stack-allocate
             crate::closures::allocate_closure_stack(
-                builder, func_ptr, &env_layout, ctx.var_map,
+                builder, func_ptr, &env_layout, ctx.var_map, entries, count, task_bound,
             )?
         };
 
@@ -6447,29 +6428,12 @@ impl<'a> FunctionBuilder<'a> {
         let Some(dst) = ctx.dst_param else {
             return Ok(produced);
         };
-        match produced {
-            Some(src) => {
-                let size = rask_layout::size_of(ctx.ret_ty, ctx.target());
-                Self::copy_aggregate_to_ptr(builder, src, dst, size);
-            }
-            // A bare `return` out of a `void or E` function. There is no value
-            // to copy and the answer is still Ok, so say so — leaving the
-            // destination untouched meant the caller read a tag nobody had
-            // written, and `try f()` on the success path branched on it
-            // (#1122). The old convention returned nothing and let the caller
-            // read whatever was in the return register, which was the same
-            // hole one register along.
-            None if rask_layout::wrapper_of(ctx.ret_ty, ctx.target()).is_some() => {
-                let tag = Self::tag_const(builder, crate::layouts::TAG_PRESENT);
-                builder.ins().store(MemFlags::new(), tag, dst, crate::layouts::TAG_OFFSET);
-                if matches!(ctx.ret_ty, MirType::Result { .. }) {
-                    let line = builder.ins().iconst(types::I32, 0);
-                    builder.ins().store(MemFlags::new(), line, dst, crate::layouts::ORIGIN_LINE_OFFSET);
-                    let file = builder.ins().iconst(types::I64, 0);
-                    builder.ins().store(MemFlags::new(), file, dst, crate::layouts::ORIGIN_FILE_OFFSET);
-                }
-            }
-            None => {}
+        // Lowering builds the whole answer, an Ok for a bare `return` out of
+        // a `void or E` function included, so there is always a value to copy
+        // when the caller supplied a destination.
+        if let Some(src) = produced {
+            let size = rask_layout::size_of(ctx.ret_ty, ctx.target());
+            Self::copy_aggregate_to_ptr(builder, src, dst, size);
         }
         // Nothing goes back in a register: the answer is already where the
         // caller asked for it, and Cranelift rejects a `StructReturn` signature
@@ -6495,43 +6459,10 @@ impl<'a> FunctionBuilder<'a> {
             return Ok(Some(addr));
         }
 
-        // A `T?` / `T or E` function returning a bare payload — `return 42`,
-        // `return DivError {}`, a struct local — builds the wrap here. Which
-        // side it is comes from the value's type: an error-typed value is the
-        // Err, anything else the Ok or Some. Without that, returning a struct
-        // error wrapped it as Ok and `is X` at the call site took the wrong
-        // branch (#259). A value that is already the wrapper goes back as is.
+        // A `T?` / `T or E` function's returns all hand back the wrapper:
+        // lowering builds it, and `assign_shapes` reports any return that
+        // doesn't (#1555).
         if rask_layout::wrapper_of(ctx.ret_ty, ctx.target()).is_some() {
-            let val_ty = value.and_then(|v| Self::operand_mir_type(v, ctx.locals));
-            let already_wrapped = val_ty
-                .as_ref()
-                .is_some_and(|t| t.wrapper_depth() >= ctx.ret_ty.wrapper_depth());
-            if !already_wrapped {
-                let wrapper = ctx.ret_ty.clone();
-                let is_err = Self::is_err_component(&wrapper, val_ty.as_ref());
-                let arm = Self::wrapper_arm(&wrapper, is_err).clone();
-                let ss = Self::wrapper_slot(builder, &wrapper, ctx.target());
-                let val = match value {
-                    Some(op) => {
-                        // A scalar payload is typed by the payload, not the
-                        // container: lowered at I64, `return 2.5` from an
-                        // `f32 or E` built an integer (#629). An aggregate
-                        // arrives as its address.
-                        let want = match mir_to_cranelift_type(&arm) {
-                            Ok(t) if !arm.passed_by_address() => t,
-                            _ => types::I64,
-                        };
-                        Self::lower_operand_typed(builder, op, Some(want), ctx)?
-                    }
-                    None => builder.ins().iconst(types::I64, 0),
-                };
-                match &wrapper {
-                    MirType::Option(_) => Self::build_some(builder, ss, &wrapper, val, ctx.target()),
-                    _ if is_err => Self::build_err(builder, ss, &wrapper, val, ctx.target()),
-                    _ => Self::build_ok(builder, ss, &wrapper, val, ctx.target()),
-                }
-                return Ok(Some(ss.addr(builder, 0)));
-            }
             return Self::plain_exit_value(builder, value, ctx);
         }
 
@@ -6794,10 +6725,10 @@ impl<'a> FunctionBuilder<'a> {
     /// dispatch — and a caller that disagrees with its callee writes through a
     /// pointer the other side never passed.
     ///
-    /// A `T?`, `T or E` or union always is, whatever its size. A `u8?` is two
-    /// bytes, and returned in a register it would look exactly like the bare
-    /// payload a `return 5` hands back for wrapping — the return path tells
-    /// the two apart by type, and the type is only there for a value in memory.
+    /// A `T?`, `T or E` or union always is, whatever its size. A wrapper
+    /// lives in memory on both sides of the call, so handing it back through
+    /// the caller's slot is one copy, where a register would be a load in the
+    /// callee and a store in the caller for every small one.
     pub(crate) fn returns_through_dst(ret_ty: &MirType, target: rask_ast::Target) -> bool {
         if matches!(ret_ty, MirType::Void) {
             return false;

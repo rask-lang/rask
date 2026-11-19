@@ -421,7 +421,7 @@ impl<'a> MirLowerer<'a> {
         self.closure_counter += 1;
         let field_ty = self.ctx.type_to_mir(&field.ty);
         let mut wb = crate::builder::BlockBuilder::new(name.clone(), MirType::Void);
-        let slot = wb.add_param("__slot".to_string(), MirType::Ptr);
+        let slot = wb.add_param("__slot".to_string(), MirType::Ptr, rask_ast::ty::ParamMode::Borrow);
         let value = wb.alloc_temp(field_ty.clone());
         wb.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(value),
@@ -579,11 +579,11 @@ impl<'a> MirLowerer<'a> {
         // An aggregate arrives as its own address; a word is read out of the
         // buffer the runtime points at.
         let src_param = if ty_mir.passed_by_address() {
-            wb.add_param("__src".to_string(), ty_mir.clone())
+            wb.add_param("__src".to_string(), ty_mir.clone(), rask_ast::ty::ParamMode::Borrow)
         } else {
-            wb.add_param("__src".to_string(), MirType::Ptr)
+            wb.add_param("__src".to_string(), MirType::Ptr, rask_ast::ty::ParamMode::Borrow)
         };
-        let out = wb.add_param("__out".to_string(), MirType::Ptr);
+        let out = wb.add_param("__out".to_string(), MirType::Ptr, rask_ast::ty::ParamMode::Borrow);
         let value = if ty_mir.passed_by_address() {
             src_param
         } else {
@@ -655,12 +655,16 @@ impl<'a> MirLowerer<'a> {
         // and hand `__dst` a local of the wire's type.
         // An aggregate arrives as its own address, the way any aggregate
         // parameter does; a word is read out of the buffer the runtime points at.
+        // An aggregate wire is the trampoline's to hand on: the runtime made it
+        // and gives it up here, and the adapter takes it. Left as a borrowed
+        // parameter, the adapter's release of its parts was dropped as the
+        // trampoline's problem, and a wire struct holding a `Vec` leaked it.
         let wire_param = if wire_mir.passed_by_address() {
-            wb.add_param("__wire".to_string(), wire_mir.clone())
+            wb.add_param("__wire".to_string(), wire_mir.clone(), ParamMode::Take)
         } else {
-            wb.add_param("__wire".to_string(), MirType::Ptr)
+            wb.add_param("__wire".to_string(), MirType::Ptr, rask_ast::ty::ParamMode::Borrow)
         };
-        let dst = wb.add_param("__dst".to_string(), MirType::Ptr);
+        let dst = wb.add_param("__dst".to_string(), MirType::Ptr, rask_ast::ty::ParamMode::Borrow);
         let wire = if wire_mir.passed_by_address() {
             wire_param
         } else {
@@ -730,16 +734,7 @@ impl<'a> MirLowerer<'a> {
         wb.terminate(MirTerminator::dummy(MirTerminatorKind::Return {
             value: Some(MirOperand::Constant(MirConst::Int(1))),
         }));
-        let mut trampoline = wb.finish();
-        // An aggregate wire is the trampoline's to hand on: the runtime made it
-        // and gives it up here, and the adapter takes it. Left as a borrowed
-        // parameter, the adapter's release of its parts was dropped as the
-        // trampoline's problem, and a wire struct holding a `Vec` leaked it.
-        trampoline.param_modes = vec![
-            if wire_mir.passed_by_address() { ParamMode::Take } else { ParamMode::Borrow },
-            ParamMode::Borrow,
-        ];
-        self.synthesized_functions.push(trampoline);
+        self.synthesized_functions.push(wb.finish());
 
         let addr = self.builder.alloc_temp(MirType::I64);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
@@ -767,7 +762,7 @@ impl<'a> MirLowerer<'a> {
         let name = format!("{}__claim_generate_{}", self.parent_name, self.closure_counter);
         self.closure_counter += 1;
         let mut wb = crate::builder::BlockBuilder::new(name.clone(), MirType::Void);
-        let slot = wb.add_param("__slot".to_string(), MirType::Ptr);
+        let slot = wb.add_param("__slot".to_string(), MirType::Ptr, rask_ast::ty::ParamMode::Borrow);
         let from = wb.alloc_temp(choices_mir);
         let value = wb.alloc_temp(ty_mir.clone());
         wb.push_stmt(MirStmt::dummy(MirStmtKind::Call {
