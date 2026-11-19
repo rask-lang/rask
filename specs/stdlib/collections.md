@@ -91,7 +91,7 @@ visit the entries in the same order.
 | **OM2: Order comes from a slot vector** | Entries live in a `Vec<(K, V)?>` in insertion order, with a `Map<K, usize>` from key to slot. The index's hash seed decides where buckets sit and nothing a program can observe, so the order is the same in every mode and on every machine, and `sim/SD1`'s hash-order stream doesn't reach it |
 | **OM3: Removal leaves a hole** | `remove` empties the slot and moves nothing. Once holes number at least 16 and outnumber live entries, the slots are packed in order and the index rewritten — `remove` is amortized O(1). When that happens depends only on the sequence of inserts and removes |
 | **OM4: Keys are stored twice** | Once in the slot, once in the index, so `insert` needs `K: Cloneable`. `string` and the integers are Copy and pay nothing |
-| **OM5: `get` needs a Copy value** | `get` hands the value out, which only a Copy value survives; other values go through `read`, `modify` or `get_clone`, as with `vec.get` |
+| **OM5: `get` needs a Copy value** | `get` is a Rask function, and a function can't hand back a view of what its receiver holds (mem.borrowing/S3). So it needs a Copy value; other values go through `read`, `modify` or `get_clone`. `vec.get` and `map.get` are the compiler's own and answer with a view |
 | **OM6: Order counts for `==`** | Two ordered maps are equal when they hold equal entries in the same order. Order is what this type promises, so unlike `Map` (C7a) it is part of the value |
 | **OM7: Written in Rask** | Over `Vec` and `Map`, like `Set` (C7), so both backends run one source. It's a stdlib type, imported like any other, not one of BI1's always-available names |
 
@@ -299,7 +299,7 @@ extend Vec<T> {
 ```rask
 vec[i].field              // Read field (inline access)
 vec[i].field = value      // Mutate field (in-place)
-let x = vec[i]          // Copy out (T: Copy only)
+let x = vec[i]          // Copy out when T is Copy, else a read-only view (V1)
 
 // Multi-statement access (mutable by default)
 with vec[i] as v {
@@ -473,8 +473,8 @@ users.sort_by(|a, b| b.score.compare(a.score))  // descending
 | Method | Signature | Interface Required | Notes |
 |--------|-----------|----------------|-------|
 | `vec.contains(item)` | `(T) -> bool` | `T: Equal` | Linear scan |
-| `vec.first()` | `() -> T?` | `T: Copy` | First element or `none`. On a `Vec<T?>` the result is `T??` — outer layer says "vec was empty", inner says "slot was empty" (`type.optionals/OPT28`) |
-| `vec.last()` | `() -> T?` | `T: Copy` | Last element or `none`. Same layering on a `Vec<T?>` |
+| `vec.first()` | `() -> T?` | none | First element or `none`, a view when `T` isn't Copy, like `get` (V3). On a `Vec<T?>` the result is `T??` — outer layer says "vec was empty", inner says "slot was empty" (`type.optionals/OPT28`) |
+| `vec.last()` | `() -> T?` | none | Last element or `none`, a view like `first`. Same layering on a `Vec<T?>` |
 | `vec.reverse()` | `(mutate self)` | none | In-place reversal |
 | `vec.remove_adjacent_duplicates()` | `(mutate self)` | `T: Equal` | The name says the limitation: only runs of equal neighbors collapse. Sort first for full dedup |
 

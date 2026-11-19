@@ -2210,10 +2210,12 @@ impl<'a> MirLowerer<'a> {
             }));
             return moved;
         };
-        self.read_array_element(moved, setup.collection, at, &elem);
         if elem.is_plain_scalar() {
+            self.read_array_element(moved, setup.collection, at, &elem);
             return moved;
         }
+        // `Field_take` copies the slot out and zeroes it, so the array's
+        // release skips it and the copy is the one owner.
         let size = rask_layout::size_of(elem.as_ref(), self.ctx.target());
         let offset = self.builder.alloc_temp(MirType::I64);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
@@ -2233,18 +2235,11 @@ impl<'a> MirLowerer<'a> {
                 right: MirOperand::Local(offset),
             },
         }));
-        let mut written = 0;
-        while written < size {
-            let width = if size - written >= 8 { 8 } else if size - written >= 4 { 4 } else { 1 };
-            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-                addr: slot,
-                offset: written,
-                value: MirOperand::Constant(MirConst::Int(0)),
-                store_size: width,
-                field: None,
-            }));
-            written += width;
-        }
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+            dst: Some(moved),
+            func: FunctionRef::like("Field_take", "Vec_remove"),
+            args: vec![MirOperand::Local(slot), MirOperand::Constant(MirConst::Int(size as i64))],
+        }));
         moved
     }
 

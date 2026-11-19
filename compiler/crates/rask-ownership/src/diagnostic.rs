@@ -184,6 +184,10 @@ impl ToDiagnostic for crate::OwnershipError {
                         format!("the closure would carry `{}`, which `{}` still holds", shown, root),
                         "the closure".to_string(),
                     ),
+                    Sink::WithValue { binding } => (
+                        format!("the `with` block would hand out `{}`, which ends with `{}`", path, binding),
+                        "the block's result".to_string(),
+                    ),
                 };
                 let fix = match bound {
                     Some((name, _)) => format!(
@@ -306,6 +310,7 @@ impl ToDiagnostic for crate::OwnershipError {
                     Sink::Heap => "a `Heap` holding it would be a second owner".to_string(),
                     Sink::TakeArg { callee } => format!("`{}` would take it as a second owner", callee),
                     Sink::Closure => "a closure carrying it would be a second owner".to_string(),
+                    Sink::WithValue { binding } => format!("the `with` block's result would go on reading it after `{}` ends", binding),
                 };
                 let primary = match into {
                     Sink::Return => format!("the signature promises an owned `{}`, and this path doesn't have one", payload_ty),
@@ -518,7 +523,19 @@ impl ToDiagnostic for crate::OwnershipError {
                     .with_why("`let old = p.f` followed by a refill of `p.f` in the same block is a move: from the read to the refill the field holds nothing, and what it held is the new binding's [mem.borrowing/S1, mem.parameters/PM7]".to_string())
             }
 
-            ViewOutlivedReplace { name, path, viewed_at } => {
+            ViewOutlivedReplace { name, path, viewed_at, element: true } => {
+                Diagnostic::error(format!("`{}` written while `{}` views one of its elements", path, name))
+                    .with_code("E0958")
+                    .with_primary(self.span, format!("this writes an element of `{}`, which may be the one `{}` reads", path, name))
+                    .with_secondary(*viewed_at, format!("`{}` views this element until its block ends", name))
+                    .with_fix(format!(
+                        "read the Copy fields you need straight from the element (`let n = {p}[i].field`) instead of binding all of it, end `{n}`'s block before this write, or bind a separate value with `.clone()`",
+                        p = path, n = name
+                    ))
+                    .with_why("a binding of an element that isn't Copy is a view: it reads the element where the collection keeps it. The checker doesn't tell one index from another, so a write to any element of the collection while the view lives could be a write under it [mem.borrowing/E4, S5]".to_string())
+            }
+
+            ViewOutlivedReplace { name, path, viewed_at, element: false } => {
                 Diagnostic::error(format!("`{}` written over while `{}` views it", path, name))
                     .with_code("E0958")
                     .with_primary(self.span, format!("this replaces `{}`, freeing what `{}` reads", path, name))

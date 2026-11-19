@@ -10,7 +10,7 @@ A view into `point.x` can't go stale — struct fields sit at fixed offsets. But
 
 **Fixed-layout sources** (struct fields, arrays) can't resize. Views persist until the block ends.
 
-**Growable sources** (Vec, Map) own heap buffers that can reallocate. A `let` of an element is still a view until the block ends, because it holds the element itself and not its address: a `push` that moves the buffer leaves it reading the same element. What a view can't survive is the element being freed, so the source can't remove, clear or write over it while the view lives. Writes go through inline access or `with`.
+**Growable sources** (Vec, Map) own heap buffers that can reallocate. A `let` of an element is still a view until the block ends, because it holds the element itself and not its address: a `push` that moves the buffer leaves it reading the same element. What a view can't survive is the element being freed or changed under it. The compiler doesn't tell one index from another, so while the view lives the collection's elements aren't written at all: no `remove`, `clear`, `replace`, assignment into an element, `for mutate` or `with` write. A `Map` can't `insert` either, because inserting a key that's already there frees its old value. Writes go through inline access or `with`, after the view's block ends.
 
 **A rack is neither.** `Rack<T>` never moves a node, so a `Link<T>` is a reference you keep and follow — it is not an access mode at all, and nothing below applies to it. That's what the type is for: see [racks.md](racks.md).
 
@@ -22,7 +22,7 @@ A view into `point.x` can't go stale — struct fields sit at fixed offsets. But
 | **B2: Growable = views + `with`** | Vec, Map | `let` views an element until the block ends (S1); writes go inline or through `with` | Heap buffer can reallocate, so a view holds the element, not its address |
 | **B5: String slices = inline only** | string | `s[i..j]` temporary for expression | Slice has no refcount; source could be freed |
 
-**The test:** can the source resize? Vec and Map own heap buffers that can reallocate, so a view of an element holds the element and the source may grow under it but not free it. Struct fields and arrays have fixed in-place layout. Strings are immutable but slices are temporary views (S2).
+**The test:** can the source resize? Vec and Map own heap buffers that can reallocate, so a view of an element holds the element and a `Vec` may grow under it, but nothing may change or free its elements. Struct fields and arrays have fixed in-place layout. Strings are immutable but slices are temporary views (S2).
 
 ## Parameter and Receiver Borrows
 
@@ -131,7 +131,7 @@ Single-expression access to collection elements works inline. The compiler creat
 | **E1: Expression duration** | Inline access valid only within the expression |
 | **E2: Chain calls OK** | `v[i].field.method()` is one expression |
 | **E3: Lvalue in-place** | `collection[key].field = value` is in-place mutation, not copy-modify-discard |
-| **E4: Rvalue copies or views** | `let x = collection[key]` copies if Copy and is a view of the element if not (B2, S1): it lasts until the block ends, can't be stored or returned (S3), and the collection can't remove, clear or write over the element while it lives (E0958). `rows.get(i)!` and a pick (`type.sequence/SEQ50`) give the same view. `mut x = collection[key]` of a non-Copy element is a compile error (E0871): a second writable name for the element. Change it inline or with `with` |
+| **E4: Rvalue copies or views** | `let x = collection[key]` copies if Copy and is a view of the element if not (B2, S1): it lasts until the block ends, can't be stored or returned (S3), and the collection's elements can't be written, removed or replaced while it lives (E0958, see B2). Holding the element costs a copy of its bytes, `size_of(T)`, and nothing on the heap; for a large inline element (`[u8; 4096]`), read the field you need instead. `rows.get(i)!` and a pick (`type.sequence/SEQ50`) give the same view. `mut x = collection[key]` of a non-Copy element is a compile error (E0871): a second writable name for the element. Change it inline or with `with` |
 | **E5: Sync inline access** | `shared.read().chain`, `shared.write().chain`, and `mutex.lock().chain` follow E1-E4 rules. Lock held for expression duration, released at expression end. Standalone `.read()`/`.write()`/`.lock()` without chaining is a compile error |
 
 <!-- test: skip -->

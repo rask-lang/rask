@@ -1043,7 +1043,7 @@ impl<'a> OwnershipChecker<'a> {
         if (is_vec || is_array)
             && matches!(
                 cur.kind,
-                ExprKind::Call { .. } | ExprKind::MethodCall { .. } | ExprKind::Array(_) | ExprKind::ArrayRepeat { .. }
+                ExprKind::Call { .. } | ExprKind::MethodCall { .. } | ExprKind::Array(_)
             )
             && !Self::chain_has_before(expr, cur, "enumerate")
         {
@@ -2996,6 +2996,7 @@ impl<'a> OwnershipChecker<'a> {
                     name,
                     path: view.path,
                     viewed_at: view.bound.map(|(_, s)| s).unwrap_or(at),
+                    element: view.lent,
                 },
                 span: at,
             });
@@ -3215,6 +3216,7 @@ impl<'a> OwnershipChecker<'a> {
             ExprKind::Field { object, field } => {
                 Some(format!("{}.{}", Self::render_place(object)?, field))
             }
+            ExprKind::Index { object, .. } => Some(format!("{}[…]", Self::render_place(object)?)),
             _ => None,
         }
     }
@@ -3476,6 +3478,13 @@ impl<'a> OwnershipChecker<'a> {
                 self.store_target = t_root.map(|r| (r, t_fields.unwrap_or_default()));
                 self.check_expr(value);
                 self.store_target = None;
+                // Only a `mut` name can be assigned, so `keep = rows[0]` is
+                // `mut keep = rows[0]` with the declaration further up.
+                if let ExprKind::Ident(name) = &target.kind {
+                    if !matches!(value.kind, ExprKind::Field { .. }) {
+                        self.check_element_binding(name, value, true);
+                    }
+                }
                 let lent_given = self.give_away_if_lent(value, None);
                 // `rest = *next` walks a list: the box `next` reads moves
                 // into the new `rest` rather than going with the old one. Only
@@ -3819,7 +3828,7 @@ impl<'a> OwnershipChecker<'a> {
                         && self.node_ty(&iter.id).is_some_and(|t| {
                             rask_check::receiver_name(t, &self.program.types).as_deref() == Some("Sequence")
                         }));
-                let held = if *mutate || walks_place { Self::held_source(iter) } else { None };
+                let held = if *mutate || walks_place { self.held_source(iter) } else { None };
                 let pushed = held.is_some();
                 if let Some((collection_name, root, fields)) = held {
                     self.active_for_mutates.push(ForMutateInfo {
@@ -5261,7 +5270,7 @@ impl<'a> OwnershipChecker<'a> {
                     self.check_expr(&binding.source);
                     // W2: Track binding info for structural mutation checking
                     if let ExprKind::Index { object, .. } = &binding.source.kind {
-                        if let Some((collection_name, root, fields)) = Self::held_source(object) {
+                        if let Some((collection_name, root, fields)) = self.held_source(object) {
                             self.active_with_bindings.push(WithBindingInfo {
                                 collection_name,
                                 root,
@@ -5302,6 +5311,7 @@ impl<'a> OwnershipChecker<'a> {
                     self.ptr_sources.remove(&b.name);
                 }
                 self.check_block(body);
+                self.check_with_value(bindings, body);
                 self.borrowed_with = saved_with;
                 self.binding_decl_blocks = saved_decls;
                 for (name, state, ty) in shadowed.into_iter().rev() {
@@ -6332,7 +6342,7 @@ impl<'a> OwnershipChecker<'a> {
     /// `Vec<i64>` out of `get` and one out of `Vec.new()` are the same type and
     /// different ownership, which is the whole bug.
     fn lent_value(&self, expr: &Expr) -> Option<LentValue> {
-        self.lent_value_where(expr, &|this, ty| this.lendable_payload(ty))
+        self.lent_value_where(expr, &Self::element_not_copy)
     }
 
     /// A terminal that answers with one of the items a collection lent it:
@@ -6396,6 +6406,10 @@ impl<'a> OwnershipChecker<'a> {
                     place: self.element_of(holder_expr),
                 })
             }
+            // A `with` block's value is its tail's. One rooted at the block's
+            // own binding can't leave it (`check_with_value`); one rooted
+            // outside is the same view a bare lookup would be.
+            ExprKind::WithAs { body, .. } => self.lent_value_where(Self::stmts_tail(body)?, payload_ok),
             // `rows[0]` is the same read `rows.get(0)` is, minus the `T?`.
             ExprKind::Index { object, .. } => {
                 let recv = self.node_ty(&object.id)?;
@@ -6501,6 +6515,31 @@ impl<'a> OwnershipChecker<'a> {
         });
     }
 
+    /// A `with` block's value outlives its bindings, so it can't be a view
+    /// into one: `with db.read() as d { d.users.get(id) }` handed out the
+    /// user the map still held, and a later removal freed it under the reader
+    /// (mem.borrowing/S3, W6).
+    fn check_with_value(&mut self, bindings: &[rask_ast::expr::WithBinding], body: &[Stmt]) {
+        let Some(tail) = Self::stmts_tail(body) else { return };
+        let Some(lent) = self.lent_value(tail) else { return };
+        let Some((root, _, _)) = &lent.place else { return };
+        if !bindings.iter().any(|b| &b.name == root) {
+            return;
+        }
+        self.errors.push(OwnershipError {
+            kind: OwnershipErrorKind::LentValueEscapes {
+                into: Sink::WithValue { binding: root.clone() },
+                call: lent.call,
+                holder: lent.holder,
+                lender: lent.lender,
+                payload_ty: lent.payload_ty,
+                clone_form: lent.clone_form,
+                lent_at: lent.span,
+            },
+            span: tail.span,
+        });
+    }
+
     /// The tail expression of a block's statements, when it has one.
     fn stmts_tail(stmts: &[Stmt]) -> Option<&Expr> {
         match stmts.last().map(|s| &s.kind) {
@@ -6508,37 +6547,6 @@ impl<'a> OwnershipChecker<'a> {
             Some(StmtKind::Return(Some(e))) => Some(e),
             _ => None,
         }
-    }
-
-    /// Is what came back a container the holder still owns?
-    ///
-    /// A `T?` around it is the usual shape — `get` answers with one — so the
-    /// question is about the payload.
-    ///
-    /// Containers only, deliberately. A `Vec` is one handle onto one buffer and
-    /// there is no second owner to be had, so a lookup's result can only be the
-    /// holder's. A string or an interface box out of the same lookup is a different
-    /// question with a different answer — those carry a count, and the fix for
-    /// them is to take a reference on the read (#1035), not to reject the
-    /// program.
-    ///
-    /// A container anywhere inside counts: a `Row { tags: Vec<string> }`
-    /// picked out of `rows` shares its `tags` buffer with the element, and so
-    /// does a tuple from `rows.enumerate().find(…)`.
-    fn lendable_payload(&self, ty: &Type) -> bool {
-        let ty = match ty {
-            Type::Result { ok, err } if **err == Type::None => ok.as_ref(),
-            other => other,
-        };
-        // A closure is move-only (mem.closures/CV1): the element the lookup
-        // reads is still the container's, so handing it out is a second owner
-        // exactly as a `Vec` element is. `return fs[0]` compiled, and the
-        // caller couldn't know whether to free it.
-        let leaf = |t: &Type| {
-            matches!(t, Type::Fn { .. })
-                || self.type_name_of(t).is_some_and(|n| matches!(n.as_str(), "Vec" | "Map" | "Set"))
-        };
-        self.type_holds(ty, &leaf, &mut Vec::new())
     }
 
     /// The element a holder lends, as a place: `rows` → `rows[…]`.
@@ -6880,8 +6888,7 @@ impl<'a> OwnershipChecker<'a> {
         while let ExprKind::Index { object, .. } = &place.kind {
             place = object;
         }
-        let (Some(root), fields) = Self::extract_root_and_fields(place) else { return };
-        let fields = fields.unwrap_or_default();
+        let Some((root, fields)) = self.place_of(place, true) else { return };
         let overlaps = |r: &str, f: &[String]| {
             r == root && (f.starts_with(&fields) || fields.starts_with(f))
         };
@@ -6916,7 +6923,7 @@ impl<'a> OwnershipChecker<'a> {
     /// The collection a `with` or `for mutate` holds a place in, as written
     /// and as a path: `rows`, `h.items`, and for a loop `items.iter()` is
     /// `items`. `None` for anything that isn't a name or a field chain.
-    fn held_source(expr: &Expr) -> Option<(String, String, Vec<String>)> {
+    fn held_source(&self, expr: &Expr) -> Option<(String, String, Vec<String>)> {
         let mut place = match &expr.kind {
             ExprKind::MethodCall { object, .. } => object,
             _ => expr,
@@ -6926,10 +6933,11 @@ impl<'a> OwnershipChecker<'a> {
         while let ExprKind::Index { object, .. } = &place.kind {
             place = object;
         }
-        let (root, fields) = Self::extract_root_and_fields(place);
-        let root = root?;
+        // Element steps inside the path (`rows[0].kids`) are kept as
+        // `replaces::ELEM`, the way a view's path spells them.
+        let (root, fields) = self.place_of(place, true)?;
         let shown = Self::render_place(place).unwrap_or_else(|| root.clone());
-        Some((shown, root, fields.unwrap_or_default()))
+        Some((shown, root, fields))
     }
 
     fn create_borrow_with_projection(

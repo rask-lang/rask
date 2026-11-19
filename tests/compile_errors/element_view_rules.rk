@@ -44,6 +44,39 @@ func reinserted(mutate m: Map<string, Vec<i64>>) {
     println(v.len())
 }
 
+// Assigning the view to a `mut` name declared earlier is `mut keep = r`.
+func kept(mutate rows: Vec<Row>) {
+    mut keep = Row(name: "k", tags: Vec.new())
+    let r = rows[0]
+    // ERROR: `keep` and `rows[…]` would be the same `Row`, both writable [E0871]
+    keep = r
+    keep.tags.push(1)
+}
+
+struct Tree {
+    kids: Vec<Vec<i64>>
+}
+
+// A `with` block's value outlives its binding.
+func escapes_with(mutate trees: Vec<Tree>) {
+    let found = with trees[0] as t {
+        // ERROR: the block's result would read what `t` holds after it ends [E0879]
+        t.kids.get(0)
+    }
+    println(found!.len())
+}
+
+// The view is two element steps down, and the write goes through a
+// `for mutate` over the field between them.
+func nested(mutate trees: Vec<Tree>) {
+    let k = trees[0].kids[0]
+    for mutate kid in trees[0].kids {
+        // ERROR: writes an element of `trees[…].kids` that `k` may read [E0958]
+        kid = Vec.new()
+    }
+    println(k.len())
+}
+
 // A write through a `with` binding reaches the element as surely as
 // `rows[0].tags = …` does. It went unchecked, and native read the freed
 // vector.

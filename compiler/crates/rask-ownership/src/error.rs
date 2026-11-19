@@ -333,6 +333,9 @@ pub enum OwnershipErrorKind {
         path: String,
         /// Where the view was bound.
         viewed_at: Span,
+        /// The view is of an element (`rows[i]`, `rows.get(i)!`, a pick),
+        /// and the write reaches some element of the same collection.
+        element: bool,
     },
 
     /// `let name = p.f` moved the field out, and this reads it (or the value
@@ -886,6 +889,8 @@ pub enum Sink {
     TakeArg { callee: String },
     /// A closure that outlives its frame, carrying the value (mem.closures/CM2).
     Closure,
+    /// The value of a `with` block, which outlives the binding it reads.
+    WithValue { binding: String },
 }
 
 /// What happened to the value a pointer points into (mem.unsafe/PT3).

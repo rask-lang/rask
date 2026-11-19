@@ -42,6 +42,15 @@ test "type.sequence/SEQ50 — a pick over an array literal answers with an owned
     assert missing == none
 }
 
+test "type.sequence/SEQ47 — an array of arrays hands each inner array over whole" {
+    let v = [[1, 2], [3, 4], [5, 6]].filter(|p| p[0] > 2).to_vec()
+    assert v.len() == 2
+    assert v[0][0] == 3
+    assert v[1][1] == 6
+    let top = [[1, 2], [5, 6], [3, 4]].max_by_key(|p| p[1])!
+    assert top[0] == 5
+}
+
 test "type.sequence/SEQ47 — take and skip over an array a call returned" {
     let middle = three().skip(1).take(1).to_vec()
     assert middle.len() == 1
