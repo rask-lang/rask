@@ -28,7 +28,7 @@ func strs() -> Sequence<string> {
 func keep_last() -> Vec<string> {
     mut keep: Vec<string> = []
     for v in vecs() {
-        keep = v
+        keep = v.clone()
     }
     return keep
 }
@@ -38,14 +38,15 @@ func keep_first() -> Vec<string> {
     mut kept = false
     for v in vecs() {
         if !kept {
-            keep = v
+            keep = v.clone()
             kept = true
         }
     }
     return keep
 }
 
-// #2008: a loop body that keeps the item it was handed.
+// #2008: a loop body that keeps a copy of the item it was handed (the item
+// itself is only lent, type.sequence/SEQ34).
 test "a sequence loop keeps the item it stores and frees the rest" {
     assert keep_last()[1] == long(6)
     assert keep_first()[0] == long(1)
@@ -55,7 +56,7 @@ func matching() -> Vec<Vec<string>> {
     mut out: Vec<Vec<string>> = Vec.new()
     for v in vecs() {
         for w in vecs() {
-            if w[0] == v[0] { out.push(w) }
+            if w[0] == v[0] { out.push(w.clone()) }
         }
     }
     return out
@@ -150,7 +151,7 @@ func captured_keep() -> Vec<string> {
     mut keep: Vec<string> = []
     for v in vecs() {
         let g = || v[0]
-        if g() == long(3) { keep = v }
+        if g() == long(3) { keep = v.clone() }
     }
     return keep
 }
@@ -159,7 +160,7 @@ func captured_push() -> Vec<Vec<string>> {
     mut out: Vec<Vec<string>> = Vec.new()
     for v in vecs() {
         let g = || v[0]
-        if g() != long(3) { out.push(v) }
+        if g() != long(3) { out.push(v.clone()) }
     }
     return out
 }

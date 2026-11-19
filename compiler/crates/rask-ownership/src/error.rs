@@ -602,8 +602,10 @@ pub enum OwnershipErrorKind {
     #[error("cannot give away `{name}` — the loop only lends it out of `{from}`")]
     ConsumeLoopItem {
         name: String,
-        /// The collection the loop walks.
+        /// The collection or sequence the loop walks.
         from: String,
+        /// `from` is a sequence: its yield lends the item for one call.
+        by_sequence: bool,
         /// The `for` statement.
         loop_at: Span,
         sink: Option<String>,

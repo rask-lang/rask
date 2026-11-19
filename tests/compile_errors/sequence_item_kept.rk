@@ -1,0 +1,74 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Rejects: a `for` body over a sequence keeping the item it was lent
+//
+// Spec: type.sequence (SEQ34)
+//
+// A yield lends its item for one call, whether the sequence walks a
+// collection or made the item itself. `keep = v` in the body compiled, and
+// natively the compiler made it work by cloning each item behind the
+// program's back; with a sequence over a vector's own elements it freed them
+// twice instead (#2041). The copy is the program's to write.
+//
+// One marker per rejection, on the line the compiler points at.
+
+import sequence.Sequence
+
+func from_list(take src: Vec<Vec<i64>>) -> Sequence<Vec<i64>> {
+    return |yield| {
+        for x in src {
+            if !yield(x) { return }
+        }
+    }
+}
+
+func fresh() -> Sequence<Vec<i64>> {
+    return |yield| {
+        if !yield([1, 2]) { return }
+        if !yield([3]) { return }
+    }
+}
+
+func keep_last(take src: Vec<Vec<i64>>) -> Vec<i64> {
+    mut keep: Vec<i64> = Vec.new()
+    for v in from_list(src) {
+        // ERROR: cannot give away `v` — `from_list()` only lends each item to the loop body [E0902]
+        keep = v
+    }
+    return keep
+}
+
+func push_all() -> Vec<Vec<i64>> {
+    mut out: Vec<Vec<i64>> = Vec.new()
+    for v in fresh() {
+        // ERROR: cannot give away `v` — `fresh()` only lends each item to the loop body [E0902]
+        out.push(v)
+    }
+    return out
+}
+
+func first_of(s: Sequence<Vec<i64>>) -> Vec<i64> {
+    for v in s {
+        // ERROR: cannot give away `v` — `s` only lends each item to the loop body [E0902]
+        return v
+    }
+    return Vec.new()
+}
+
+// A copy written out is fine, and so is reading the item in place.
+func keep_copy() -> Vec<i64> {
+    mut keep: Vec<i64> = Vec.new()
+    for v in fresh() {
+        keep = v.clone()
+    }
+    return keep
+}
+
+func total() -> i64 {
+    mut n = 0
+    for v in fresh() {
+        n += v[0]
+    }
+    return n
+}
+
+func main() {}

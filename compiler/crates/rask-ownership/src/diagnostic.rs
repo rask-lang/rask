@@ -1330,7 +1330,7 @@ impl ToDiagnostic for crate::OwnershipError {
                 )
             }
 
-            ConsumeLoopItem { name, from, loop_at, sink } => {
+            ConsumeLoopItem { name, from, by_sequence: false, loop_at, sink } => {
                 let label = match sink {
                     Some(s) => format!("`{}` takes ownership, and `{}` is still in `{}`", s, name, from),
                     None => format!("this takes ownership, and `{}` is still in `{}`", name, from),
@@ -1347,6 +1347,27 @@ impl ToDiagnostic for crate::OwnershipError {
                     "a `for` loop lends each element and `{}` keeps it, so giving `{}` away would leave two owners of one value. [ctrl.loops/LP6]",
                     from, name
                 ))
+            }
+
+            ConsumeLoopItem { name, from, by_sequence: true, loop_at, sink } => {
+                let label = match sink {
+                    Some(s) => format!("`{}` takes ownership of `{}`, which is only lent for this call", s, name),
+                    None => format!("this takes ownership of `{}`, which is only lent for this call", name),
+                };
+                Diagnostic::error(format!(
+                    "cannot give away `{}` — `{}` only lends each item to the loop body",
+                    name, from
+                ))
+                .with_code("E0902")
+                .with_primary(self.span, label)
+                .with_secondary(*loop_at, format!("each `{}` is lent by `{}` for one pass of the body", name, from))
+                .with_fix(format!("{}.clone()", name))
+                .with_why(
+                    "a sequence lends each item to the body and takes it back when the body ends, \
+                     whether it walks a collection or made the item itself. Keeping one is a copy, \
+                     and the copy is yours to write. [type.sequence/SEQ34]"
+                        .to_string(),
+                )
             }
 
             ConsumeWithBinding { name, from, with_at, sink } => {
