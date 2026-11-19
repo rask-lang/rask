@@ -83,6 +83,25 @@ func handed_over(take w: World) {
     w.destroy()
 }
 
+// --- inside a loop whose body is checked twice ---
+// A task that captures `seen` moves it, so the loop body is checked a second
+// time with `seen` already gone. The first check's reports were dropped and
+// its "already said that" notes kept, so the window error vanished.
+func window_in_a_rechecked_loop(take seen: Vec<i64>) {
+    using Multitasking {
+        loop {
+            let w = make_world()
+            // ERROR: the loop's second check still reports the window [E0882]
+            println("acquired {w.id}")
+            // ERROR: `seen` moved into the previous turn's task [E0813]
+            spawn {
+                ensure w.destroy()
+                println("{seen.len()}")
+            }.detach()
+        }
+    }
+}
+
 func main() {
     gap_before_ensure()
     inverted_order()

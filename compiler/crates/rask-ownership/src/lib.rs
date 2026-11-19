@@ -2103,6 +2103,7 @@ impl<'a> OwnershipChecker<'a> {
     ) {
         let pre_loop = self.bindings.clone();
         let saved_errors = self.errors.len();
+        let saved_reported = self.exit_reported.clone();
         self.loop_entry_resources.push(self.resource_bindings.clone());
         self.loop_exits.push((label.cloned(), None));
         self.loop_continues.push((label.cloned(), None));
@@ -2142,7 +2143,10 @@ impl<'a> OwnershipChecker<'a> {
         if !carried.is_empty() {
             // Pass 2: re-analyze with carried values pre-moved. Discard pass-1
             // errors — pass 2 sees a strict superset (stricter entry state).
+            // What pass 1 marked as reported goes with them, or pass 2 would
+            // skip those reports as duplicates and nothing would say them.
             self.errors.truncate(saved_errors);
+            self.exit_reported = saved_reported;
             self.bindings = pre_loop;
             if let Some(top) = self.loop_exits.last_mut() {
                 top.1 = None;
