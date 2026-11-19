@@ -3,8 +3,9 @@
 //! Closure environment support — allocation, capture storage, and indirect calls.
 //!
 //! Closure layout (same for heap and stack):
-//!   [0..8]  function pointer (address of the closure's compiled code)
-//!   [8..]   captured variables at known offsets
+//!   [-32..0] header: block size, owned entries, entry count, flags
+//!   [0..8]   function pointer (address of the closure's compiled code)
+//!   [8..]    captured variables at known offsets
 //!
 //! The closure value is a single i64 pointer to this block. When calling
 //! through a closure, (closure_ptr + 8) is passed as the environment
@@ -84,22 +85,28 @@ impl ClosureEnvLayout {
     }
 }
 
-/// Heap-allocate a closure: `[func_ptr | captures...]`, behind header words
-/// for the block's size, the glue that releases what it owns, a count, and
-/// flags.
+/// Header words in front of every closure value: block size, the owned-entry
+/// list, its length, and flags (`rask_closure_alloc` in alloc.c).
+pub const CLOSURE_HEADER_BYTES: i64 = 32;
+const CLOSURE_HEAP: i64 = 2;
+const CLOSURE_ALIGN_SHIFT: i64 = 8;
+
+/// Heap-allocate a closure: `[header | func_ptr | captures...]`.
 ///
-/// `rask_closure_alloc(8 + env_size, env_drop, flags, env_align)` writes them. Whoever
-/// frees the block is usually not the frame that built it, so neither the byte
-/// count nor the capture layout is available there; the header carries both.
-/// `env_drop` is zero for a closure that owns nothing. `task_bound` says it
+/// `rask_closure_alloc(8 + env_size, entries, count, flags, env_align)` writes
+/// the header. Whoever frees or clones the block is usually not the frame that
+/// built it, so the byte count and what the environment owns travel with it.
+/// `entries` is null for a closure that owns nothing. `task_bound` says it
 /// captured a link or a `Local` box, which `spawn` refuses (#1356).
+#[allow(clippy::too_many_arguments)]
 pub fn allocate_closure_heap(
     builder: &mut FunctionBuilder,
     func_ptr: Value,
     layout: &ClosureEnvLayout,
     var_map: &HashMap<LocalId, Variable>,
     alloc_func: FuncRef,
-    env_drop: Value,
+    entries: Value,
+    count: Value,
     task_bound: bool,
 ) -> CodegenResult<Value> {
     let total_size = 8 + layout.size as i64;
@@ -107,23 +114,26 @@ pub fn allocate_closure_heap(
     let size_val = builder.ins().iconst(types::I64, total_size);
     let flags = builder.ins().iconst(types::I64, task_bound as i64);
     let align = builder.ins().iconst(types::I64, i64::from(layout.align));
-    let call_inst = builder.ins().call(alloc_func, &[size_val, env_drop, flags, align]);
+    let call_inst = builder.ins().call(alloc_func, &[size_val, entries, count, flags, align]);
     let closure_ptr = builder.inst_results(call_inst)[0];
 
     store_closure_data(builder, closure_ptr, func_ptr, layout, var_map)
 }
 
-/// Stack-allocate a closure: `[func_ptr | captures...]`.
-///
-/// Creates a stack slot and stores func_ptr + captures.
-/// Used for non-escaping closures (only used locally via ClosureCall).
+/// Stack-allocate a closure: `[header | func_ptr | captures...]` in a frame
+/// slot, with the header written here and its heap flag clear. A `func` value
+/// can be either kind, so dropping or cloning one reads the same header.
 pub fn allocate_closure_stack(
     builder: &mut FunctionBuilder,
     func_ptr: Value,
     layout: &ClosureEnvLayout,
     var_map: &HashMap<LocalId, Variable>,
+    entries: Value,
+    count: Value,
+    task_bound: bool,
 ) -> CodegenResult<Value> {
     let total_size = 8 + layout.size;
+    let lead = CLOSURE_HEADER_BYTES as u32;
 
     // The environment is the block past the function pointer, so it's the
     // environment that has to land aligned. Past the frame's 16 the slot is
@@ -131,22 +141,35 @@ pub fn allocate_closure_stack(
     let closure_ptr = if layout.align <= 16 {
         let ss = builder.create_sized_stack_slot(StackSlotData::new(
             StackSlotKind::ExplicitSlot,
-            total_size + 8,
+            lead + total_size + 8,
             4,
         ));
-        builder.ins().stack_addr(types::I64, ss, 8)
+        builder.ins().stack_addr(types::I64, ss, (lead + 8) as i32)
     } else {
         let align = layout.align;
         let ss = builder.create_sized_stack_slot(StackSlotData::new(
             StackSlotKind::ExplicitSlot,
-            total_size + align,
+            lead + total_size + align,
             4,
         ));
-        let raw = builder.ins().stack_addr(types::I64, ss, 0);
+        let raw = builder.ins().stack_addr(types::I64, ss, lead as i32);
         let bumped = builder.ins().iadd_imm(raw, i64::from(align - 1) + CLOSURE_ENV_OFFSET);
         let env = builder.ins().band_imm(bumped, -i64::from(align));
         builder.ins().iadd_imm(env, -CLOSURE_ENV_OFFSET)
     };
+
+    let block = builder.ins().iconst(types::I64, i64::from(total_size) + CLOSURE_HEADER_BYTES);
+    let log2 = i64::from(layout.align.max(1).trailing_zeros());
+    let flags = builder.ins().iconst(
+        types::I64,
+        (task_bound as i64) | (log2 << CLOSURE_ALIGN_SHIFT),
+    );
+    debug_assert_eq!((task_bound as i64) & CLOSURE_HEAP, 0);
+    let header = -(CLOSURE_HEADER_BYTES as i32);
+    builder.ins().store(MemFlags::new(), block, closure_ptr, header);
+    builder.ins().store(MemFlags::new(), entries, closure_ptr, header + 8);
+    builder.ins().store(MemFlags::new(), count, closure_ptr, header + 16);
+    builder.ins().store(MemFlags::new(), flags, closure_ptr, header + 24);
 
     store_closure_data(builder, closure_ptr, func_ptr, layout, var_map)
 }
@@ -255,7 +278,8 @@ pub fn call_closure(
     builder.ins().call_indirect(sig_ref, func_ptr, &all_args)
 }
 
-/// Free a heap-allocated closure, header and all.
+/// Drop a closure: release what its environment owns, and the block too when
+/// it is a heap one.
 pub fn free_closure(
     builder: &mut FunctionBuilder,
     closure_ptr: Value,

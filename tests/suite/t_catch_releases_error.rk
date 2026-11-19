@@ -1,0 +1,58 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// `catch` on a call that returns `T or E` with a container on the success
+// side. The handler's new vector and the payload read out of the result meet
+// at the join, so the variable might hold part of the result, and the error
+// the handler caught was never released (#2003). The leak gate is what checks
+// these; the asserts only pin the values.
+
+enum Bad {
+    Other(string)
+}
+
+func make(n: i64) -> Vec<string> or Bad {
+    if n > 0 {
+        mut v: Vec<string> = Vec.new()
+        v.push("x{n}")
+        return v
+    }
+    return Bad.Other("no value for {n}, so it failed")
+}
+
+func discarded(n: i64) -> i64 {
+    let a = make(n) catch _ => Vec.new()
+    return a.len().to<i64>()!
+}
+
+func bound(n: i64) -> string {
+    let a = make(n) catch e => {
+        match e {
+            Bad.Other(m) => {
+                mut v: Vec<string> = Vec.new()
+                v.push(m)
+                v
+            }
+        }
+    }
+    return a[0]
+}
+
+func twice() -> string {
+    let b = make(0) catch _ => Vec.new()
+    let c = make(3) catch _ => Vec.new()
+    return "{b.len()} {c[0]}"
+}
+
+test "a discarded error is released" {
+    assert discarded(0) == 0
+    assert discarded(2) == 1
+}
+
+test "a bound error is released" {
+    assert bound(0) == "no value for 0, so it failed"
+    assert bound(4) == "x4"
+}
+
+test "two catches in one function" {
+    assert twice() == "0 x3"
+}

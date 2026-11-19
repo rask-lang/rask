@@ -126,6 +126,18 @@ pub fn owned_offsets(ty: &MirType, shapes: Shapes<'_>) -> Option<Vec<i32>> {
     (!out.is_empty()).then_some(out)
 }
 
+/// What a closure environment owns, and where: each capture the environment
+/// owns (`ClosureCapture::owns`) described at its slot. Offsets are from the
+/// environment's start, which is what `rask_closure_free` walks from.
+pub fn env_owned_offsets(captures: &[rask_mir::ClosureCapture], shapes: Shapes<'_>) -> Option<Vec<i32>> {
+    let mut out = Vec::new();
+    for c in captures {
+        let Some(ty) = &c.owns else { continue };
+        describe(ty, fit_offset(c.offset as i32)?, shapes, 0, None, &mut out)?;
+    }
+    (!out.is_empty()).then_some(out)
+}
+
 /// What a value of type `ty` at offset `base` owns, appended to `out`.
 ///
 /// `self_layout` is the payload a `Heap<T>` description is being built for,

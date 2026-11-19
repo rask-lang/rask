@@ -428,6 +428,7 @@ interface Cloneable {
 | Type | Cloneable Status |
 |------|------------------|
 | Primitives (i32, bool, f64) | Auto-derived (bitwise copy) |
+| Function value (`func(…) -> R`) | Cloneable: a carried capture is cloned, a pointed-at one pointed at again (`mem.closures/CV2`) |
 | Struct with all Cloneable fields | Auto-derived (deep copy) |
 | Struct with raw pointer | Auto-derived (address copy). One that owns what it points at is a `@resource`: no clone, no copy |
 | Array/Vec of Cloneable | Auto-derived (element-wise clone) |

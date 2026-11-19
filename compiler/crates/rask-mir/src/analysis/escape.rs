@@ -108,6 +108,7 @@ mod tests {
             is_extern_c: false,
             inline_hint: false,
             param_modes: Vec::new(),
+            item_mode_from_body: false,
             source_file: None,
         }
     }
@@ -176,6 +177,7 @@ mod tests {
                         by_ref: false,
                         copy: true,
                         lent: false,
+                        owns: None,
                     }],
                     heap: true,
                     task_bound: false,
@@ -203,6 +205,7 @@ mod tests {
                         by_ref: false,
                         copy: true,
                         lent: false,
+                        owns: None,
                     }],
                     heap: false,
                     task_bound: false,

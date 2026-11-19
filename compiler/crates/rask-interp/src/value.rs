@@ -1279,6 +1279,11 @@ pub enum Value {
         /// parameter. Shared even by a carrying closure, and still borrowed
         /// inside its body, so a closure built there shares them too (CM3).
         lent: std::collections::HashSet<String>,
+        /// The captures it holds copies of rather than the definer's storage
+        /// (CM1: it was returned, stored or handed to a `take`). Empty for a
+        /// closure that points at all of them. A clone copies these and
+        /// points at the rest again (CV2).
+        carried: Vec<String>,
         /// Captured a link or a `Local` box, so `spawn` refuses it (#1356).
         task_bound: bool,
         /// The type arguments of the generic body it was built in, for
@@ -1679,36 +1684,18 @@ impl Value {
 
     /// Deep clone a value — creates independent copies of reference-counted internals.
     pub fn deep_clone(&self) -> Value {
-        self.deep_clone_impl(false)
-    }
-
-    /// What a container's `clone` gives each element: a deep copy, except
-    /// that a closure is shared rather than detached, the way native's
-    /// cloned `Vec<func>` shares its closures.
-    ///
-    /// Not only a match for native. A closure's environment can hold the
-    /// container being cloned, so detaching it would lock that container
-    /// again from inside its own clone and hang.
-    pub fn clone_as_element(&self) -> Value {
-        self.deep_clone_impl(true)
-    }
-
-    fn deep_clone_impl(&self, share_closures: bool) -> Value {
         match self {
-            Value::Closure { .. } if share_closures => self.clone(),
             Value::String(s) => Value::String(Arc::new(Mutex::new(s.lock().unwrap().clone()))),
             Value::Vec(v) => {
                 let guard = v.lock().unwrap();
-                let deep: Vec<Value> = guard.iter().map(|val| val.deep_clone_impl(share_closures)).collect();
+                let deep: Vec<Value> = guard.iter().map(Value::deep_clone).collect();
                 if guard.array { Value::array(deep) } else { Value::vec(deep) }
             }
-            Value::Tuple(items) => {
-                Value::tuple(items.iter().map(|v| v.deep_clone_impl(share_closures)).collect())
-            }
+            Value::Tuple(items) => Value::tuple(items.iter().map(Value::deep_clone).collect()),
             Value::Struct(s) => {
                 let guard = s.lock().unwrap();
                 let deep_fields: IndexMap<String, Value> = guard.fields.iter()
-                    .map(|(k, v)| (k.clone(), v.deep_clone_impl(share_closures)))
+                    .map(|(k, v)| (k.clone(), v.deep_clone()))
                     .collect();
                 Value::new_struct(guard.name.clone(), deep_fields, guard.resource_id)
             }
@@ -1716,27 +1703,37 @@ impl Value {
                 Value::Enum {
                     name: name.clone(),
                     variant: variant.clone(),
-                    fields: fields.iter().map(|f| f.deep_clone_impl(share_closures)).collect(),
+                    fields: fields.iter().map(Value::deep_clone).collect(),
                     variant_index: *variant_index,
                     origin: origin.clone(),
                 }
             }
             Value::Cell(c) => {
-                let inner = c.lock().unwrap().deep_clone_impl(share_closures);
+                let inner = c.lock().unwrap().deep_clone();
                 Value::Cell(Arc::new(Mutex::new(inner)))
             }
-            Value::Closure { params, body, captured_env, task_bound, generics, wraps_ok, .. } => {
-                // Deep-cloning a closure detaches it from what it borrowed, so
-                // each capture gets storage of its own.
-                let deep_env: HashMap<String, crate::env::Slot> = captured_env.iter()
-                    .map(|(k, v)| (k.clone(), crate::env::slot(v.get().unwrap_or(Value::Unit).deep_clone_impl(share_closures))))
+            Value::Closure { params, body, captured_env, lent, carried, task_bound, generics, wraps_ok } => {
+                // CV2: a carried capture is copied, so writes one closure
+                // makes to its state don't show in the other. A pointed-at
+                // capture is the definer's storage, and the clone points at
+                // it again. A carried closure inside the environment is
+                // cloned the same way (CV3).
+                let env: HashMap<String, crate::env::Slot> = captured_env.iter()
+                    .map(|(k, v)| {
+                        let slot = if carried.contains(k) && !lent.contains(k) {
+                            crate::env::slot(v.get().unwrap_or(Value::Unit).deep_clone())
+                        } else {
+                            v.clone()
+                        };
+                        (k.clone(), slot)
+                    })
                     .collect();
                 Value::Closure {
                     params: params.clone(),
                     body: body.clone(),
-                    captured_env: deep_env,
-                    // Detached: nothing in it is borrowed any more.
-                    lent: Default::default(),
+                    captured_env: env,
+                    lent: lent.clone(),
+                    carried: carried.clone(),
                     task_bound: *task_bound,
                     generics: generics.clone(),
                     wraps_ok: *wraps_ok,
@@ -1745,18 +1742,19 @@ impl Value {
             Value::Map(m) => {
                 let map = m.lock().unwrap();
                 let deep: MapData = map.iter()
-                    .map(|(k, v)| (MapKey { value: k.value.deep_clone_impl(share_closures), hash: k.hash }, v.deep_clone_impl(share_closures)))
+                    .map(|(k, v)| (MapKey { value: k.value.deep_clone(), hash: k.hash }, v.deep_clone()))
                     .collect();
                 Value::Map(Arc::new(Mutex::new(deep)))
             }
             Value::RaskMutex(m) => {
                 let inner = m.lock().unwrap();
-                Value::RaskMutex(Arc::new(std::sync::Mutex::new(inner.deep_clone_impl(share_closures))))
+                Value::RaskMutex(Arc::new(std::sync::Mutex::new(inner.deep_clone())))
             }
             // Value types — regular clone is sufficient
             other => other.clone(),
         }
     }
+
 
     /// Extract u64 from Value::Int (for Duration constructors).
     pub fn as_int(&self) -> Result<i64, String> {

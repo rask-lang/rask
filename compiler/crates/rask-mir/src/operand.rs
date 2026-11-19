@@ -175,6 +175,11 @@ pub enum MirRValue {
     /// The address of a function, as a bare C function pointer — for the
     /// runtime, which calls it with the C ABI. A closure is `ClosureCreate`.
     FuncAddr(String),
+    /// A present optional around a plain value: the tag, then the value as
+    /// the payload. Only `assign_shapes` writes it, after the passes, so an
+    /// assignment into an optional says whether it wraps instead of leaving
+    /// codegen to work that out from the two sides' types.
+    WrapSome(MirOperand),
 }
 
 #[derive(Debug, Clone, Copy)]

@@ -290,7 +290,7 @@ fn rename_rvalue(rv: &mut MirRValue, version_stack: &[Vec<LocalId>], num_orig_lo
         MirRValue::Use(op) => rename_operand(op, version_stack, num_orig_locals),
         MirRValue::Ref(id) => *id = current_version(*id, version_stack, num_orig_locals),
         MirRValue::FuncAddr(_) => {}
-        MirRValue::Deref(op) => rename_operand(op, version_stack, num_orig_locals),
+        MirRValue::Deref(op) | MirRValue::WrapSome(op) => rename_operand(op, version_stack, num_orig_locals),
         MirRValue::BinaryOp { left, right, .. } => {
             rename_operand(left, version_stack, num_orig_locals);
             rename_operand(right, version_stack, num_orig_locals);
@@ -399,7 +399,7 @@ fn rename_stmt(
                 return Some(orig);
             }
         }
-        MirStmtKind::ClosureDrop { closure, .. } | MirStmtKind::ClosureRetain { closure, .. } => {
+        MirStmtKind::ClosureDrop { closure, .. } => {
             *closure = current_version(*closure, version_stack, num_orig_locals);
         }
         MirStmtKind::ResourceRegister { dst, .. } => {
@@ -814,6 +814,7 @@ mod tests {
             is_extern_c: false,
             inline_hint: false,
             param_modes: Vec::new(),
+            item_mode_from_body: false,
             source_file: None,
         }
     }
@@ -1003,6 +1004,7 @@ mod tests {
             is_extern_c: false,
             inline_hint: false,
             param_modes: Vec::new(),
+            item_mode_from_body: false,
             source_file: None,
         };
         construct(&mut func);

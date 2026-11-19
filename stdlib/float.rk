@@ -37,6 +37,22 @@ extend f64 {
 // registers those for every float and lowers them to instructions.
 
 extend Float {
+    // Numeric's constructors (type.primitives/NT1): what `T.zero()` calls
+    // under `T: Numeric`, and what a newtype over a float delegates to.
+
+    public func zero() -> Self {
+        return 0.0
+    }
+
+    public func one() -> Self {
+        return 1.0
+    }
+
+    /// `n` rounded to the nearest value of this width.
+    public func from_int(n: i64) -> Self {
+        return n.round<Self>()
+    }
+
     @native("fabs")
     public func abs(self) -> Self {}
 

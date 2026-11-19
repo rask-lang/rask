@@ -1,0 +1,171 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A closure variable written from a sequence loop body. The body is a function
+// of its own, so the variable lives in a cell both frames reach. Each of these
+// crashed, leaked or freed a stack closure natively.
+import sequence.Sequence
+
+func vecs() -> Sequence<Vec<i64>> {
+    return |yield| {
+        if !yield([1, 2, 3]) { return }
+        if !yield([4, 5, 6]) { return }
+    }
+}
+
+func last_third() -> func() -> i64 {
+    mut f: func() -> i64 = || 0
+    for v in vecs() { f = || v[2] }
+    return f
+}
+
+func keep_each() -> i64 {
+    mut fs: Vec<func() -> i64> = Vec.new()
+    mut g: func() -> i64 = || 1
+    for v in vecs() {
+        fs.push(g)
+        g = || 7
+    }
+    return fs[0]() + fs[1]() + g()
+}
+
+func early() -> func() -> i64 {
+    mut g: func() -> i64 = || 1
+    for v in vecs() { g = || 7 }
+    let r = g
+    g = || 3
+    return r
+}
+
+func gather() -> i64 {
+    mut fs: Vec<func() -> i64> = Vec.new()
+    let g: func() -> i64 = || 3
+    for v in vecs() { fs.push(g.clone()) }
+    return fs[0]() + fs[1]()
+}
+
+func swap() -> i64 {
+    let h: func() -> i64 = || 5
+    mut g: func() -> i64 = || 1
+    for v in vecs() { g = h.clone() }
+    return g() + h()
+}
+
+func nested() -> i64 {
+    mut g: func() -> i64 = || 1
+    for v in vecs() {
+        for w in vecs() { g = || 40 }
+    }
+    return g()
+}
+
+// Both bodies write the variable. The outer body hands the cell on to the
+// inner one, and took that for owning it: it freed the cell on its way out.
+func written_in_both_bodies() -> i64 {
+    mut g: func() -> i64 = || 1
+    mut t = 0
+    for v in vecs() {
+        for w in vecs() {
+            t += g()
+            g = || 2
+        }
+        g = || 3
+    }
+    return t * 10 + g()
+}
+
+func run(h: func() -> i64, xs: Vec<func() -> i64>) -> i64 {
+    mut g: func() -> i64 = h.clone()
+    mut t = 0
+    for v in vecs() {
+        t += g()
+        g = || 7
+    }
+    t += g()
+    for f in xs { g = f.clone() }
+    t += g()
+    g = h.clone()
+    return t + g()
+}
+
+// A closure read into a local before the variable is overwritten.
+func read_then_overwrite() -> i64 {
+    mut g: func() -> i64 = || 1
+    for v in vecs() {
+        let r = g
+        g = || 4
+        if r() != 1 && r() != 4 { return -1 }
+    }
+    let r = g
+    g = || 3
+    return r() * 10 + g()
+}
+
+// The variable's first write isn't in its lowest-numbered block.
+func written_under_an_if(n: i64) -> i64 {
+    mut g: func() -> i64 = || 1
+    if n > 3 { g = || 11 }
+    for v in vecs() {
+        if v[0] == 4 { g = || 12 }
+    }
+    return g()
+}
+
+// A body's `return` hands back a closure while the variable holds another.
+func returned_from_the_body(n: i64) -> func() -> i64 {
+    mut g: func() -> i64 = || 1
+    for v in vecs() {
+        g = || 9
+        if n == 1 { return || 2 }
+    }
+    return g
+}
+
+test "the closure the last iteration stored is the one returned" {
+    let f = last_third()
+    assert f() == 6
+}
+
+test "a closure pushed before the variable is overwritten stays alive" {
+    assert keep_each() == 15
+}
+
+test "a closure read out before an overwrite is returned intact" {
+    assert early()() == 7
+}
+
+test "one closure pushed from every iteration" {
+    assert gather() == 6
+}
+
+test "a closure variable assigned another captured closure" {
+    assert swap() == 10
+}
+
+test "nested loop bodies write the outer function's variable" {
+    assert nested() == 40
+}
+
+test "inner and outer loop bodies both write the variable" {
+    assert written_in_both_bodies() == 83
+}
+
+test "a parameter and a vector's closures stored in the variable" {
+    let base = 30
+    mut fs: Vec<func() -> i64> = Vec.new()
+    fs.push(|| 100)
+    assert run(|| base + 2, fs) == 32 + 7 + 7 + 100 + 32
+}
+
+test "a closure read into a local survives the variable's next write" {
+    assert read_then_overwrite() == 43
+}
+
+test "a variable first written before an if that writes it again" {
+    assert written_under_an_if(5) == 12
+    assert written_under_an_if(1) == 12
+}
+
+test "a closure returned from inside the body, and the variable's after" {
+    assert returned_from_the_body(1)() == 2
+    assert returned_from_the_body(0)() == 9
+}

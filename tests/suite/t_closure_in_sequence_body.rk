@@ -1,0 +1,67 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A closure written inside the body of a `for` over a user sequence. The body
+// is compiled as the yield closure, where `return` leaves the enclosing
+// function; a closure inside it kept that redirect, so its own `return` jumped
+// into a block of the loop body and native code panicked or read garbage
+// (#2010).
+
+import sequence.Sequence
+
+func vecs() -> Sequence<Vec<i64>> {
+    return |yield| {
+        if !yield([1, 2, 3]) { return }
+        if !yield([4, 5, 6]) { return }
+        if !yield([7, 8, 9]) { return }
+    }
+}
+
+func with_return() -> Vec<Vec<i64>> {
+    mut out: Vec<Vec<i64>> = Vec.new()
+    for v in vecs() {
+        let g = |take w: Vec<i64>| -> i64 { return w.len().to<i64>()! }
+        out.push([v[0], g([1])])
+    }
+    return out
+}
+
+func returns_early(n: i64) -> i64 {
+    mut total = 0
+    for v in vecs() {
+        let pick = |i: i64| -> i64 {
+            if i > 1 {
+                return 100
+            }
+            return v[i]
+        }
+        total = total + pick(n)
+    }
+    return total
+}
+
+func loop_still_returns() -> i64 {
+    for v in vecs() {
+        let first = |w: Vec<i64>| -> i64 { return w[0] }
+        if first(v) == 4 {
+            return v[2]
+        }
+    }
+    return 0
+}
+
+test "a closure's return answers the closure" {
+    let r = with_return()
+    assert r.len() == 3
+    assert r[1][0] == 4
+    assert r[2][1] == 1
+}
+
+test "a closure with two returns in a sequence body" {
+    assert returns_early(0) == 12
+    assert returns_early(1) == 15
+    assert returns_early(2) == 300
+}
+
+test "the loop body's own return still leaves the function" {
+    assert loop_still_returns() == 6
+}

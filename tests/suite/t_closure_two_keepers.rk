@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 
-// A closure value is Copy, so one closure the frame owns can be handed to two
-// keepers, or to a keeper and then called. Natively the first keeper took the
-// frame's only reference to the block, and whoever freed it second freed a
-// dead block: `spawn { c() }` twice read garbage, `fs.push(c)` twice crashed at
-// exit (#1411).
+// One closure going to two keepers: every keeper but the last gets a
+// `.clone()`, which copies what the closure carries (mem.closures/CV1, CV2).
+// Each keeper then frees its own block. Natively, before closures moved, the
+// first keeper took the frame's only reference to a block both used, and
+// whoever freed it second freed a dead block (#1411).
 
 func keep_i(x: i64) -> func() -> i64 {
     let tags: Vec<i64> = [x, x]
@@ -23,7 +23,7 @@ func run_on_a_task(f: func() -> i64) -> i64 {
 func shared(x: i64) -> i64 {
     let c = keep_i(x)
     mut fs: Vec<func() -> i64> = Vec.new()
-    fs.push(c)
+    fs.push(c.clone())
     return c() + fs[0]()
 }
 
@@ -35,7 +35,8 @@ func alone(x: i64) -> i64 {
 test "spawned twice" {
     using Multitasking {
         let c = keep_i(1)
-        let a = spawn { c() }.join()!
+        let d = c.clone()
+        let a = spawn { d() }.join()!
         let b = spawn { c() }.join()!
         assert a == 3
         assert b == 3
@@ -45,7 +46,7 @@ test "spawned twice" {
 test "pushed twice" {
     let c = keep_i(1)
     mut fs: Vec<func() -> i64> = Vec.new()
-    fs.push(c)
+    fs.push(c.clone())
     fs.push(c)
     assert fs[0]() == 3
     assert fs[1]() == 3
@@ -54,7 +55,7 @@ test "pushed twice" {
 test "pushed, then called" {
     let c = keep_i(2)
     mut fs: Vec<func() -> i64> = Vec.new()
-    fs.push(c)
+    fs.push(c.clone())
     assert c() == 4
     assert fs[0]() == 4
 }
@@ -69,7 +70,7 @@ test "pushed on every turn of a loop" {
     let c = keep_i(1)
     mut fs: Vec<func() -> i64> = Vec.new()
     for _ in 0..3 {
-        fs.push(c)
+        fs.push(c.clone())
     }
     assert fs.len() == 3
     assert fs[2]() == 3

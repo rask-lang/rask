@@ -890,10 +890,11 @@ impl CodeGenerator {
             self.func_ids.insert("rask_free".to_string(), id);
         }
 
-        // rask_closure_alloc(block_size: i64, env_drop: i64, flags: i64,
-        // env_align: i64) -> i64 (pointer past the header words)
+        // rask_closure_alloc(block_size: i64, entries: i64, count: i64,
+        // flags: i64, env_align: i64) -> i64 (pointer past the header words)
         {
             let mut sig = self.module.make_signature();
+            sig.params.push(AbiParam::new(types::I64));
             sig.params.push(AbiParam::new(types::I64));
             sig.params.push(AbiParam::new(types::I64));
             sig.params.push(AbiParam::new(types::I64));
@@ -929,14 +930,15 @@ impl CodeGenerator {
             self.func_ids.insert("rask_closure_free".to_string(), id);
         }
 
-        // rask_closure_retain(ptr: i64) -> void
+        // rask_closure_clone(ptr: i64) -> i64
         {
             let mut sig = self.module.make_signature();
             sig.params.push(AbiParam::new(types::I64));
+            sig.returns.push(AbiParam::new(types::I64));
             let id = self.module
-                .declare_function("rask_closure_retain", Linkage::Import, &sig)
+                .declare_function("rask_closure_clone", Linkage::Import, &sig)
                 .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
-            self.func_ids.insert("rask_closure_retain".to_string(), id);
+            self.func_ids.insert("rask_closure_clone".to_string(), id);
         }
 
         // rask_box_alloc(vtable: i64) -> ptr — an interface object's block,
@@ -2639,6 +2641,12 @@ fn collect_element_offsets(
                     .find(|l| l.id == *local)
                     .map(|l| l.ty.clone());
                 if let Some(offs) = ty.and_then(|t| crate::elem_offsets::owned_offsets(&t, shapes)) {
+                    lists.push(offs);
+                }
+                continue;
+            }
+            if let rask_mir::MirStmtKind::ClosureCreate { captures, .. } = &stmt.kind {
+                if let Some(offs) = crate::elem_offsets::env_owned_offsets(captures, shapes) {
                     lists.push(offs);
                 }
                 continue;

@@ -24,7 +24,7 @@ use crate::{
 };
 
 /// The suffix of the function that releases what a frame's record holds.
-/// Codegen looks it up by name, the way it finds `__env_drop` glue.
+/// Codegen looks it up by name.
 pub const UNWIND_SUFFIX: &str = "__unwind";
 
 /// Bytes ahead of the first slot: the record's link and its `run` pointer
@@ -357,7 +357,8 @@ fn unwind_glue(func: &MirFunction, target: rask_ast::Target) -> Option<MirFuncti
         entry_block: check(0),
         is_extern_c: false,
         inline_hint: false,
-        param_modes: Vec::new(),
+        param_modes: vec![rask_ast::ty::ParamMode::Borrow],
+        item_mode_from_body: false,
         source_file: func.source_file.clone(),
     })
 }

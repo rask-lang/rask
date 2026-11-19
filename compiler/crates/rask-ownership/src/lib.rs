@@ -45,6 +45,10 @@ pub struct OwnershipResult {
     /// and the interpreter read this to decide whether a capture is the value
     /// or a pointer to it.
     pub escaping_closures: HashSet<rask_ast::NodeId>,
+    /// What each closure literal captures, by name: the free variables of its
+    /// body. A carrying closure holds these and nothing else, and its clone
+    /// copies these (mem.closures/CV2).
+    pub closure_captures: HashMap<rask_ast::NodeId, Vec<String>>,
     /// What each `return` moves, keyed by the returned expression: the
     /// bindings its value takes. See `ReturnMoves`.
     pub return_moves: ReturnMoves,
@@ -144,6 +148,19 @@ struct SideAccess {
     path: Vec<String>,
     write: bool,
     span: Span,
+}
+
+/// Where a name was declared: the block, and whether it is a parameter.
+#[derive(Clone, Copy, Debug)]
+struct Declared {
+    block: u32,
+    param: bool,
+}
+
+impl Declared {
+    fn local(block: u32) -> Self {
+        Declared { block, param: false }
+    }
 }
 
 pub struct OwnershipChecker<'a> {
@@ -362,8 +379,9 @@ pub struct OwnershipChecker<'a> {
     /// SL1: Bindings created by `const` from non-copy expressions (block-scoped borrows).
     /// Maps binding name → block_id where the borrow was created.
     borrow_bindings: HashMap<String, u32>,
-    /// Block where each binding was declared (first introduced via let/const).
-    binding_decl_blocks: HashMap<String, u32>,
+    /// The innermost declaration of each name in scope: its block, and whether
+    /// it is a parameter. Saved and restored wherever a scope ends.
+    binding_decl_blocks: HashMap<String, Declared>,
     /// SL1: Bindings that hold scope-limited closures.
     /// Maps binding name → (borrow_block, binding_block).
     /// borrow_block: the block where the captured borrow lives.
@@ -384,6 +402,11 @@ pub struct OwnershipChecker<'a> {
     /// a Vec was enough to reject the whole thing (#869). Keyed by node, a
     /// binding asks about its own initializer and the body can't answer for it.
     closure_scope_limits: HashMap<rask_ast::NodeId, u32>,
+    /// The capture that set a closure literal's limit, when it is a local the
+    /// closure points at, and the same for a name holding such a closure. The
+    /// error names it: the closure outlives that variable.
+    closure_points_at: HashMap<rask_ast::NodeId, String>,
+    limited_points_at: HashMap<String, (String, Span)>,
     /// Closure literals bound to a name, so a task block that calls one —
     /// `let f = || { … }` then `spawn { f() }` — is checked for the writes the
     /// closure makes as well as its own. Only the literal case is in here — a
@@ -411,6 +434,11 @@ pub struct OwnershipChecker<'a> {
     /// carry their captures instead of pointing at them. Collected before any
     /// body is walked — see `collect_escaping_closures`.
     escaping_closures: HashSet<rask_ast::NodeId>,
+    /// The `mutate` parameters of the function `collect_escaping_closures` is
+    /// walking: assigning one writes the caller's variable, not a local.
+    mutate_params_in_walk: HashSet<String>,
+    /// See `OwnershipResult::closure_captures`.
+    closure_captures: HashMap<rask_ast::NodeId, Vec<String>>,
     /// Which parameters each function and method can resize (`resize.rs`).
     fn_resizes: resize::FnResizes,
     /// What each function and method may write over under its `mutate`
@@ -709,6 +737,8 @@ impl<'a> OwnershipChecker<'a> {
             scope_limited_closures: HashMap::new(),
             module_consts: std::collections::HashSet::new(),
             closure_scope_limits: HashMap::new(),
+            closure_points_at: HashMap::new(),
+            limited_points_at: HashMap::new(),
             task_bodies: HashSet::new(),
             borrowing_spawns: HashSet::new(),
             borrowing_bodies: HashMap::new(),
@@ -717,6 +747,8 @@ impl<'a> OwnershipChecker<'a> {
             named_fn_values: HashMap::new(),
             fn_name_bindings: HashMap::new(),
             escaping_closures: HashSet::new(),
+            mutate_params_in_walk: HashSet::new(),
+            closure_captures: HashMap::new(),
             task_bound_closures: HashSet::new(),
             lent_captures: HashMap::new(),
             refills_after_move: HashSet::new(),
@@ -994,6 +1026,7 @@ impl<'a> OwnershipChecker<'a> {
         OwnershipResult {
             errors: self.errors,
             escaping_closures: self.escaping_closures,
+            closure_captures: self.closure_captures,
             return_moves: self.return_moves,
             task_bound_closures: self.task_bound_closures,
             generic_closure_captures: self.generic_closure_captures,
@@ -1621,6 +1654,8 @@ impl<'a> OwnershipChecker<'a> {
         self.active_for_mutates.clear();
         self.scope_limited_closures.clear();
         self.closure_scope_limits.clear();
+        self.closure_points_at.clear();
+        self.limited_points_at.clear();
         // Keyed by name too, so an `f` in one body would otherwise answer for
         // the next body's `f`.
         self.closure_literals.clear();
@@ -1735,6 +1770,8 @@ impl<'a> OwnershipChecker<'a> {
         self.borrowed_params.clear();
         self.mutate_params.clear();
         for param in &fn_decl.params {
+            // Block 0: a parameter outlives the whole body.
+            self.binding_decl_blocks.insert(param.name.clone(), Declared { block: 0, param: true });
             if param.is_mutate {
                 // "Resource types must be consumed exactly once. Only `take`
                 // parameters can consume them" (mem.parameters). A resource behind
@@ -1846,9 +1883,13 @@ impl<'a> OwnershipChecker<'a> {
         // A `let` in the block may reuse a part's name (`parts`); the part is
         // back once the block's own names are gone.
         let parts_on_entry = self.parts.clone();
+        // A name's block is the innermost declaration in scope: an inner `let k`
+        // ends with its block and must not stand for an outer `k` after it.
+        let decls_on_entry = self.binding_decl_blocks.clone();
         self.check_block_body(stmts);
         self.shadowed_holds = shadowed_on_entry;
         self.parts = parts_on_entry;
+        self.binding_decl_blocks = decls_on_entry;
         if self.instance.is_none() {
             self.check_borrowing_tasks(stmts);
         }
@@ -1936,11 +1977,18 @@ impl<'a> OwnershipChecker<'a> {
             .collect();
         for name in &escaping {
             if matches!(self.bindings.get(name), Some(BindingState::Owned)) {
+                // Where the closure that points at a local was put in `name`,
+                // when that is the limit; the block's end otherwise.
+                let at = self.limited_points_at.get(name).cloned();
                 self.errors.push(OwnershipError {
+                    span: at
+                        .as_ref()
+                        .map(|(_, sp)| *sp)
+                        .unwrap_or_else(|| stmts.last().map(|s| s.span).unwrap_or(Span::new(0, 0))),
                     kind: OwnershipErrorKind::ScopeLimitedClosureEscapes {
                         name: name.clone(),
+                        points_at: at.map(|(t, _)| t),
                     },
-                    span: stmts.last().map(|s| s.span).unwrap_or(Span::new(0, 0)),
                 });
             }
             self.scope_limited_closures.remove(name);
@@ -2260,11 +2308,11 @@ impl<'a> OwnershipChecker<'a> {
             Sink::Place { place, root } if place != root => {}
             _ => return false,
         }
-        let Some((_, name)) = self.frame_limit_of(expr) else { return false };
+        let Some((_, name, points_at)) = self.frame_limit_and_target(expr) else { return false };
         // Reported here, so the block exit doesn't report it again.
         self.scope_limited_closures.remove(&name);
         self.errors.push(OwnershipError {
-            kind: OwnershipErrorKind::ScopeLimitedClosureEscapes { name },
+            kind: OwnershipErrorKind::ScopeLimitedClosureEscapes { name, points_at },
             span: expr.span,
         });
         true
@@ -2275,31 +2323,40 @@ impl<'a> OwnershipChecker<'a> {
     /// of a tracked name (`pair.0`, `h.callback`) whose type can hold one.
     /// Looks through branches and through the aggregates built here.
     fn frame_limit_of(&self, expr: &Expr) -> Option<(u32, String)> {
+        self.frame_limit_and_target(expr).map(|(limit, name, _)| (limit, name))
+    }
+
+    /// `frame_limit_of`, plus the local the limiting closure points at when
+    /// that is what limits it (`closure_points_at`).
+    fn frame_limit_and_target(&self, expr: &Expr) -> Option<(u32, String, Option<String>)> {
         let mut values = Vec::new();
         self.values_reaching(expr, true, &mut values);
-        let mut found: Option<(u32, String)> = None;
+        let mut found: Option<(u32, String, Option<String>)> = None;
         for value in values {
             let hit = match &value.kind {
                 ExprKind::Ident(name) => self
                     .scope_limited_closures
                     .get(name)
-                    .map(|&(limit, _)| (limit, name.clone())),
+                    .map(|&(limit, _)| (limit, name.clone(), self.limited_points_at.get(name).map(|(t, _)| t.clone()))),
                 _ => None,
             }
             .or_else(|| {
-                self.closure_scope_limits.get(&value.id).map(|&limit| (limit, "<closure>".to_string()))
+                self.closure_scope_limits.get(&value.id).map(|&limit| {
+                    (limit, "<closure>".to_string(), self.closure_points_at.get(&value.id).cloned())
+                })
             })
             .or_else(|| {
                 let root = Self::projection_root(value)?;
                 let &(limit, _) = self.scope_limited_closures.get(root)?;
                 let ty = self.node_ty(&value.id)?;
                 let shown = Self::render_place(value).unwrap_or_else(|| root.to_string());
-                self.type_holds_callable(ty, &mut Vec::new()).then_some((limit, shown))
+                self.type_holds_callable(ty, &mut Vec::new())
+                    .then(|| (limit, shown, self.limited_points_at.get(root).map(|(t, _)| t.clone())))
             });
-            if let Some((limit, name)) = hit {
+            if let Some(hit) = hit {
                 found = Some(match found {
-                    Some((l, n)) if l >= limit => (l, n),
-                    _ => (limit, name),
+                    Some(f) if f.0 >= hit.0 => f,
+                    _ => hit,
                 });
             }
         }
@@ -2384,7 +2441,7 @@ impl<'a> OwnershipChecker<'a> {
     fn inherit_frame_limit(&mut self, names: &[String], from: &Expr, binding_block: u32) {
         // PT1: and the pointers it holds, by the same route.
         self.inherit_pointer_sources(names, from);
-        let Some((limit, _)) = self.frame_limit_of(from) else { return };
+        let Some((limit, _, target)) = self.frame_limit_and_target(from) else { return };
         for name in names {
             let holds = self
                 .binding_types
@@ -2393,6 +2450,10 @@ impl<'a> OwnershipChecker<'a> {
                 .is_some_and(|ty| self.type_holds_callable(&ty, &mut Vec::new()));
             if holds {
                 self.scope_limited_closures.insert(name.clone(), (limit, binding_block));
+                match &target {
+                    Some(t) => self.limited_points_at.insert(name.clone(), (t.clone(), from.span)),
+                    None => self.limited_points_at.remove(name),
+                };
             }
         }
     }
@@ -2881,7 +2942,7 @@ impl<'a> OwnershipChecker<'a> {
                 self.handle_assignment(init, stmt.span, true);
                 self.bindings.insert(name.clone(), BindingState::Owned);
                 self.borrowed_captures.remove(name);
-                self.binding_decl_blocks.insert(name.clone(), self.current_block);
+                self.binding_decl_blocks.insert(name.clone(), Declared::local(self.current_block));
                 self.record_lent_binding(name, init);
                 self.record_field_view(name, init);
                 if let Some(t) = self.node_ty(&init.id).cloned() {
@@ -2942,6 +3003,7 @@ impl<'a> OwnershipChecker<'a> {
                 };
                 for (i, name) in names.iter().enumerate() {
                     self.bindings.insert(name.to_string(), BindingState::Owned);
+                    self.binding_decl_blocks.insert(name.to_string(), Declared::local(self.current_block));
                     if let Some(ref elems) = elem_types {
                         if let Some(elem_ty) = elems.get(i) {
                             self.binding_types.insert(name.to_string(), elem_ty.clone());
@@ -2967,7 +3029,7 @@ impl<'a> OwnershipChecker<'a> {
                 self.handle_assignment(init, stmt.span, false);
                 self.bindings.insert(name.clone(), BindingState::Owned);
                 self.borrowed_captures.remove(name);
-                self.binding_decl_blocks.insert(name.clone(), self.current_block);
+                self.binding_decl_blocks.insert(name.clone(), Declared::local(self.current_block));
                 self.record_lent_binding(name, init);
                 self.record_field_view(name, init);
                 // What the name holds is its declared type, not the initializer's
@@ -3051,7 +3113,7 @@ impl<'a> OwnershipChecker<'a> {
                 }
                 for name in rask_ast::stmt::pattern_binding_names(pattern) {
                     self.bindings.insert(name.clone(), BindingState::Owned);
-                    self.binding_decl_blocks.insert(name, self.current_block);
+                    self.binding_decl_blocks.insert(name, Declared::local(self.current_block));
                 }
                 // SL1: a field bound by name takes the type the struct gives
                 // it, and with it any limit the struct carries.
@@ -3082,6 +3144,7 @@ impl<'a> OwnershipChecker<'a> {
                 };
                 for (i, name) in names.iter().enumerate() {
                     self.bindings.insert(name.to_string(), BindingState::Owned);
+                    self.binding_decl_blocks.insert(name.to_string(), Declared::local(self.current_block));
                     if let Some(ref elems) = elem_types {
                         if let Some(elem_ty) = elems.get(i) {
                             self.binding_types.insert(name.to_string(), elem_ty.clone());
@@ -3146,7 +3209,7 @@ impl<'a> OwnershipChecker<'a> {
                 // it: `n` reads nothing from here on.
                 if let Some((at, part)) = taken_over {
                     self.parts.end(&part, at);
-                    self.bindings.insert(part, BindingState::Moved { at: stmt.span });
+                    self.mark_moved(part, stmt.span);
                 }
                 // W2/LP14: replacing what a `with` or `for mutate` holds a
                 // place in frees the buffer that place is in.
@@ -3301,7 +3364,7 @@ impl<'a> OwnershipChecker<'a> {
                 // index, `check_flow` has already refused it.
                 if let ExprKind::Ident(target_name) = &target.kind {
                     let decl_block = self.binding_decl_blocks
-                        .get(target_name).copied()
+                        .get(target_name).map(|d| d.block)
                         .unwrap_or(self.current_block);
                     self.inherit_frame_limit(std::slice::from_ref(target_name), value, decl_block);
                 } else if let Some(root) = Self::assign_root(target) {
@@ -3350,6 +3413,7 @@ impl<'a> OwnershipChecker<'a> {
             StmtKind::While { label, cond, body } => {
                 // `while it? as v` binds `v` for the body, as `if` does.
                 let saved_parts = self.parts.clone();
+                let saved_decls = self.binding_decl_blocks.clone();
                 self.check_expr(cond);
                 // `v` is a new value each time round. Carried like a binding
                 // from before the loop, the first pass's move made every later
@@ -3366,11 +3430,13 @@ impl<'a> OwnershipChecker<'a> {
                     self.check_present_binding_consumed(binding, span);
                 }
                 self.parts = saved_parts;
+                self.binding_decl_blocks = saved_decls;
             }
             StmtKind::WhileLet { label, pattern, expr, body } => {
                 self.check_expr(expr);
                 let scrutinee_ty = self.node_ty(&expr.id).cloned();
                 let saved_parts = self.parts.clone();
+                let saved_decls = self.binding_decl_blocks.clone();
                 let part_of = self.pattern_part_source(expr);
                 self.register_pattern_bindings_typed(
                     pattern,
@@ -3389,6 +3455,7 @@ impl<'a> OwnershipChecker<'a> {
                 Self::collect_pattern_binding_names(pattern, &mut bound);
                 self.check_loop_body(body, &bound, label.as_ref(), false);
                 self.parts = saved_parts;
+                self.binding_decl_blocks = saved_decls;
             }
             StmtKind::For { label, binding, mutate, iter, body, .. } => {
                 self.check_expr(iter);
@@ -3408,15 +3475,11 @@ impl<'a> OwnershipChecker<'a> {
                     });
                 }
                 let binding_names: Vec<String> = binding.names().iter().map(|s| s.to_string()).collect();
-                match binding {
-                    ForBinding::Single(name) => {
-                        self.bindings.insert(name.clone(), BindingState::Owned);
-                    }
-                    ForBinding::Tuple(names) => {
-                        for name in names {
-                            self.bindings.insert(String::clone(name), BindingState::Owned);
-                        }
-                    }
+                let saved_decls = self.binding_decl_blocks.clone();
+                for name in &binding_names {
+                    self.bindings.insert(name.clone(), BindingState::Owned);
+                    // Each iteration's value ends with the body.
+                    self.binding_decl_blocks.insert(name.clone(), Declared::local(self.current_block + 1));
                 }
                 let iterates_rack = self.rack_iteration_elem(iter);
                 if let Some(elem) = iterates_rack {
@@ -3483,6 +3546,7 @@ impl<'a> OwnershipChecker<'a> {
                 self.check_loop_body(body, &binding_names, label.as_ref(), false);
                 self.borrowed_loop_items = saved_items;
                 self.parts = saved_parts;
+                self.binding_decl_blocks = saved_decls;
                 if pushed {
                     self.active_for_mutates.pop();
                 }
@@ -3853,8 +3917,7 @@ impl<'a> OwnershipChecker<'a> {
                             // `consume_arg` rightly leaves a Copy value alone.
                             // Killing it here says what is actually true: the
                             // node is gone, so every name for it is dead.
-                            self.bindings
-                                .insert(name.clone(), BindingState::Moved { at: expr.span });
+                            self.mark_moved(name.clone(), expr.span);
                             // The unnamed kill above counted it among the
                             // possibly-deleted; it's the one that certainly was.
                             self.link_revoked.remove(&(name.clone(), expr.span));
@@ -4090,6 +4153,9 @@ impl<'a> OwnershipChecker<'a> {
                 let mut captures = Vec::new();
                 let mut capture_projections: HashMap<String, Option<Vec<String>>> = HashMap::new();
                 self.collect_free_vars_with_projections(body, &param_names, &mut captures, &mut capture_projections);
+                if self.instance.is_none() {
+                    self.closure_captures.insert(expr.id, captures.clone());
+                }
 
                 // A capture is a use of the outer binding where the closure is
                 // made: `let w = v; let f = || v.len()` gave the closure the
@@ -4118,8 +4184,20 @@ impl<'a> OwnershipChecker<'a> {
                 if self.instance.is_none() {
                     self.check_task_crossing(expr.id, body, &captures, is_task);
                 }
-                // CM3: what a carrying closure holds without owning.
-                if carries && !is_task {
+                // CM2: a carried capture moves into the environment, which then
+                // owns it. A view (`let src = p.run`) is still its owner's, so
+                // carrying one is the second owner S1 forbids; it has to be
+                // cloned first, the way a struct field built from it does.
+                if carries {
+                    for name in &captures {
+                        let read = Expr { id: expr.id, span: expr.span, kind: ExprKind::Ident(name.clone()) };
+                        self.check_flow_second_owner(&read, &Sink::Closure);
+                    }
+                }
+                // CM3: what a carrying closure or a task holds without owning.
+                // A task frees what it was given (S6), so one that frees a
+                // borrowed parameter frees the caller's.
+                if carries || is_task {
                     let lent: Vec<String> =
                         captures.iter().filter(|n| self.outlives_this_call(n)).cloned().collect();
                     if !lent.is_empty() {
@@ -4160,7 +4238,41 @@ impl<'a> OwnershipChecker<'a> {
                             let ty = self.binding_types.get(name).map(|t| self.program.types.resolve_type_names(t).to_string());
                             stranded.push((name.clone(), ty));
                         }
-                        self.bindings.insert(name.clone(), BindingState::Moved { at: expr.span });
+                        self.mark_moved(name.clone(), expr.span);
+                    }
+                }
+
+                // CV4: what a closure carries, a clone of it copies, so a
+                // carried capture has to be Cloneable. A resource capture
+                // already failed above, and a task block is no closure value:
+                // nothing clones it.
+                //
+                // The type is the checker's at the capture's first use, the
+                // same read the task-crossing check makes. One that mentions a
+                // type parameter is asked again in each instance, where it
+                // is the substituted type.
+                if carries && !is_task {
+                    for name in &captures {
+                        if resource_captures.contains(name) || self.outlives_this_call(name) {
+                            continue;
+                        }
+                        let Some(at) = Self::first_use(body, name) else { continue };
+                        let generic = self.program.node_types.get(&at.id).is_some_and(|t| {
+                            t.mentions_type_param(&|n| self.type_params_in_scope.iter().any(|p| p == n))
+                        });
+                        if generic != self.instance.is_some() {
+                            continue;
+                        }
+                        let Some(ty) = self.node_ty(&at.id).cloned() else { continue };
+                        if !rask_check::implements_interface(&self.program.types, &ty, "Cloneable") {
+                            self.errors.push(OwnershipError {
+                                kind: OwnershipErrorKind::CarriesUncloneable {
+                                    captured: name.clone(),
+                                    ty: self.program.types.resolve_type_names(&ty).to_string(),
+                                },
+                                span: expr.span,
+                            });
+                        }
                     }
                 }
 
@@ -4196,32 +4308,30 @@ impl<'a> OwnershipChecker<'a> {
                                         self.consume_binding(name, expr.span, None);
                                         continue;
                                     }
-                                    self.bindings.insert(name.clone(), BindingState::Moved { at: expr.span });
+                                    self.mark_moved(name.clone(), expr.span);
                                 }
                             }
                         }
                     }
                 } else {
-                    // A closure that stays in its frame borrows its captures.
-                    // Any such closure with non-resource captures is
-                    // scope-limited to its creation block —
-                    // returning or storing it past that scope would dangle the borrow.
-                    // A Copy capture is copied into the closure env (MIR captures
-                    // by value), so it can't dangle — only a non-Copy borrow can
-                    // outlive its scope. This mirrors the carrying-closure path above,
-                    // which already leaves Copy captures in place. Without this a
-                    // closure capturing an f64/i64 local was wrongly scope-limited,
-                    // so `v.iter().filter(|x| x >= budget).count()` failed SL2 even
-                    // though the closure never escapes the expression.
+                    // A closure that stays in its frame points at its captures
+                    // (mem.closures: the slot holds the variable's address), so
+                    // it can't outlive the shortest-lived of them (MC3). A Copy
+                    // value is no exception: the closure holds its address, not
+                    // a copy, and a closure kept in an outer variable past the
+                    // block of a `let k` it read pointed at a dead slot (#2014).
+                    // A parameter outlives the whole body, so it sets no limit,
+                    // which is what keeps `v.iter().filter(|x| x >= budget)` fine.
                     let mut scope_limit: Option<u32> = None;
-                    let has_escaping_captures = captures.iter().any(|name| {
-                        !resource_captures.contains(name)
-                            && !self.outlives_this_call(name)
-                            && self.bindings.contains_key(name)
-                            && !self.capture_is_copy(name)
-                    });
-                    if has_escaping_captures {
-                        scope_limit = Some(self.current_block);
+                    for name in &captures {
+                        if resource_captures.contains(name) || !self.bindings.contains_key(name) {
+                            continue;
+                        }
+                        let Some(block) = self.body_local_block(name) else { continue };
+                        if scope_limit.map_or(true, |l| block > l) {
+                            scope_limit = Some(block);
+                            self.closure_points_at.insert(expr.id, name.clone());
+                        }
                     }
                     // Tighten further if any capture is itself scope-limited (borrow binding
                     // or persistent borrow): the closure inherits the inner constraint.
@@ -4294,10 +4404,13 @@ impl<'a> OwnershipChecker<'a> {
                 let saved_mutate_params = self.mutate_params.clone();
                 let saved_closure_params = self.closure_params.clone();
                 let saved_parts = self.parts.clone();
+                let saved_decls = self.binding_decl_blocks.clone();
                 for p in params {
                     // A parameter is a new name, whatever an outer `n` was.
                     self.parts.remove(&p.name);
                     self.bindings.insert(p.name.clone(), BindingState::Owned);
+                    self.binding_decl_blocks
+                        .insert(p.name.clone(), Declared { block: self.current_block + 1, param: true });
                     self.closure_params.insert(p.name.clone());
                     self.borrowed_params.remove(&p.name);
                     self.mutate_params.remove(&p.name);
@@ -4444,6 +4557,7 @@ impl<'a> OwnershipChecker<'a> {
                 self.mutate_params = saved_mutate_params;
                 self.closure_params = saved_closure_params;
                 self.parts = saved_parts;
+                self.binding_decl_blocks = saved_decls;
 
                 // A carrying closure took the resource, so the outer scope
                 // stops owing it. A borrowing one still owes what it lent.
@@ -4463,6 +4577,7 @@ impl<'a> OwnershipChecker<'a> {
             ExprKind::If { cond, then_branch, else_branch, .. } => {
                 // A payload `cond` binds lives in the then-branch only.
                 let saved_parts = self.parts.clone();
+                let saved_decls = self.binding_decl_blocks.clone();
                 self.check_expr(cond);
                 // OPT19: `if x? as c` reads the payload out of `x`. For a linear
                 // payload "read out" can only mean moved — a resource can't be
@@ -4475,6 +4590,7 @@ impl<'a> OwnershipChecker<'a> {
                 self.check_expr(then_branch);
                 self.move_branch_value(then_branch);
                 self.parts = saved_parts;
+                self.binding_decl_blocks = saved_decls;
                 if let Some(ref binding) = present_resource {
                     self.check_present_binding_consumed(binding, then_branch.span);
                 }
@@ -4509,6 +4625,7 @@ impl<'a> OwnershipChecker<'a> {
                 let pre_branch = self.bindings.clone();
                 let scrutinee_ty = self.node_ty(&scrutinee.id).cloned();
                 let saved_parts = self.parts.clone();
+                let saved_decls = self.binding_decl_blocks.clone();
                 let part_of = self.pattern_part_source(scrutinee);
                 let resources_before = self.resource_bindings.clone();
                 self.register_pattern_bindings_typed(
@@ -4538,6 +4655,7 @@ impl<'a> OwnershipChecker<'a> {
                 self.end_pattern_views(pattern_views);
                 self.move_branch_value(then_branch);
                 self.parts = saved_parts;
+                self.binding_decl_blocks = saved_decls;
                 for binding in &pattern_bound {
                     self.check_present_binding_consumed(binding, then_branch.span);
                 }
@@ -4584,10 +4702,7 @@ impl<'a> OwnershipChecker<'a> {
                         .as_ref()
                         .map_or(false, |ty| !self.is_copy(ty));
                     if owned && needs_move {
-                        self.bindings.insert(
-                            name.clone(),
-                            BindingState::Moved { at: scrutinee.span },
-                        );
+                        self.mark_moved(name.clone(), scrutinee.span);
                     }
                 }
                 // Arms are alternatives, not sequential code: each is checked
@@ -4598,8 +4713,10 @@ impl<'a> OwnershipChecker<'a> {
                 let mut merged: Option<HashMap<String, BindingState>> = None;
                 let part_of = self.pattern_part_source(scrutinee);
                 let saved_parts = self.parts.clone();
+                let saved_decls = self.binding_decl_blocks.clone();
                 for arm in arms {
                     self.parts = saved_parts.clone();
+                    self.binding_decl_blocks = saved_decls.clone();
                     self.bindings = pre_arms.clone();
                     // A pattern's bindings belong to their own arm. Left on the
                     // books they were still owed while the *next* arm was being
@@ -4642,6 +4759,7 @@ impl<'a> OwnershipChecker<'a> {
                     });
                 }
                 self.parts = saved_parts;
+                self.binding_decl_blocks = saved_decls;
                 // All arms diverge → code after is unreachable; keep pre-match.
                 self.bindings = merged.unwrap_or(pre_arms);
             }
@@ -4695,6 +4813,7 @@ impl<'a> OwnershipChecker<'a> {
                             }
                         }
                         self.bindings.insert(name.clone(), BindingState::Owned);
+                        self.binding_decl_blocks.insert(name.clone(), Declared::local(self.current_block + 1));
                         if self.type_is_resource(&narrowed) && !self.parts.contains_key(name) {
                             self.resource_bindings.insert(name.clone());
                         } else {
@@ -4761,10 +4880,12 @@ impl<'a> OwnershipChecker<'a> {
                 // be left unregistered, so `as b` read the state of whatever
                 // `b` was in scope: an earlier `b` that had been moved made
                 // every use of the new one a use after move.
+                let saved_decls = self.binding_decl_blocks.clone();
                 let shadowed: Vec<(String, Option<BindingState>, Option<Type>)> = bindings
                     .iter()
                     .map(|b| {
                         let state = self.bindings.insert(b.name.clone(), BindingState::Owned);
+                        self.binding_decl_blocks.insert(b.name.clone(), Declared::local(self.current_block + 1));
                         let ty = self.binding_types.remove(&b.name);
                         (b.name.clone(), state, ty)
                     })
@@ -4786,6 +4907,7 @@ impl<'a> OwnershipChecker<'a> {
                 }
                 self.check_block(body);
                 self.borrowed_with = saved_with;
+                self.binding_decl_blocks = saved_decls;
                 for (name, state, ty) in shadowed.into_iter().rev() {
                     match state {
                         Some(s) => self.bindings.insert(name.clone(), s),
@@ -5182,13 +5304,13 @@ impl<'a> OwnershipChecker<'a> {
         if self.param_types.contains_key(&rack) {
             return false;
         }
-        let Some(&rack_block) = self.binding_decl_blocks.get(&rack) else { return false };
+        let Some(rack_block) = self.binding_decl_blocks.get(&rack).map(|d| d.block) else { return false };
         let escapes = match &via {
             LinkEscape::Return => true,
             LinkEscape::Assignment { target } => self
                 .binding_decl_blocks
                 .get(target)
-                .is_some_and(|&target_block| rack_block > target_block),
+                .is_some_and(|d| rack_block > d.block),
         };
         if !escapes {
             return false;
@@ -5261,7 +5383,7 @@ impl<'a> OwnershipChecker<'a> {
             .map(|(name, _)| name.clone())
             .collect();
         for name in dead {
-            self.bindings.insert(name.clone(), BindingState::Moved { at: span });
+            self.mark_moved(name.clone(), span);
             self.link_revoked.insert((name, span));
         }
     }
@@ -5423,7 +5545,7 @@ impl<'a> OwnershipChecker<'a> {
             match &victim {
                 Some(name) => {
                     self.kill_derived_links_into_rack(&rack, span);
-                    self.bindings.insert(name.clone(), BindingState::Moved { at: span });
+                    self.mark_moved(name.clone(), span);
                 }
                 None => self.kill_links_into_rack(&rack, span),
             }
@@ -5504,7 +5626,7 @@ impl<'a> OwnershipChecker<'a> {
             .map(|(name, _)| name.clone())
             .collect();
         for name in dead {
-            self.bindings.insert(name.clone(), BindingState::Moved { at: span });
+            self.mark_moved(name.clone(), span);
             self.link_revoked.insert((name, span));
         }
         self.link_delete_spans.insert(span);
@@ -5613,7 +5735,7 @@ impl<'a> OwnershipChecker<'a> {
             .map(|(name, _)| name.clone())
             .collect();
         for name in dead {
-            self.bindings.insert(name.clone(), BindingState::Moved { at: span });
+            self.mark_moved(name.clone(), span);
             self.link_revoked.insert((name, span));
         }
     }
@@ -5622,6 +5744,15 @@ impl<'a> OwnershipChecker<'a> {
     /// `handle_assignment`'s rule: a whole variable of a type that isn't Copy,
     /// or an `Owned` box whatever its payload. A field or an element borrows
     /// instead, and a Copy value is copied.
+    /// `name` was moved at `at`. Only a binding can be: a declared
+    /// function's name is a fresh value at each mention (`mem.closures/CV1`),
+    /// so `keep(add)` twice moves nothing.
+    fn mark_moved(&mut self, name: String, at: Span) {
+        if self.bindings.contains_key(&name) {
+            self.bindings.insert(name, BindingState::Moved { at });
+        }
+    }
+
     fn moved_whole(&self, expr: &Expr) -> Option<String> {
         let ExprKind::Ident(name) = &expr.kind else { return None };
         let ty = self.node_ty(&expr.id)?;
@@ -5729,7 +5860,7 @@ impl<'a> OwnershipChecker<'a> {
                         }
                     }
                     self.report_part_owner_changed(&source_name, &[], source_name.clone(), "move", span, None);
-                    self.bindings.insert(source_name, BindingState::Moved { at: span });
+                    self.mark_moved(source_name, span);
                 }
             }
         }
@@ -5915,6 +6046,11 @@ impl<'a> OwnershipChecker<'a> {
     fn lendable_payload(&self, ty: &Type) -> bool {
         match ty {
             Type::Result { ok, err } if **err == Type::None => self.lendable_payload(ok),
+            // A closure is move-only (mem.closures/CV1): the element the
+            // lookup reads is still the container's, so handing it out is a
+            // second owner exactly as a `Vec` element is. `return fs[0]`
+            // compiled, and the caller couldn't know whether to free it.
+            Type::Fn { .. } => true,
             other => self
                 .type_name_of(other)
                 .is_some_and(|n| matches!(n.as_str(), "Vec" | "Map" | "Set")),
@@ -6808,6 +6944,8 @@ impl<'a> OwnershipChecker<'a> {
                     return;
                 }
                 self.bindings.insert(name.clone(), BindingState::Owned);
+                // A pattern's names live in the arm or branch it guards.
+                self.binding_decl_blocks.insert(name.clone(), Declared::local(self.current_block + 1));
                 let part = part_of.filter(|of| {
                     !of.held || scrutinee_ty.is_some_and(|ty| self.pattern_payload_is_borrowed(ty))
                 });
@@ -6924,6 +7062,7 @@ impl<'a> OwnershipChecker<'a> {
             PatternKind::TypePat { ty, binding } => {
                 if let Some(name) = binding {
                     self.bindings.insert(name.clone(), BindingState::Owned);
+                    self.binding_decl_blocks.insert(name.clone(), Declared::local(self.current_block + 1));
                     match part_of.filter(|of| !of.held) {
                         Some(of) => {
                             self.parts.insert(name.clone(), (pattern_span, of.clone()));
@@ -6989,15 +7128,15 @@ impl<'a> OwnershipChecker<'a> {
     fn collect_escaping_closures(&mut self, decls: &[Decl]) {
         for decl in decls {
             match &decl.kind {
-                DeclKind::Fn(f) => self.escapes_in_body(&f.body),
+                DeclKind::Fn(f) => self.escapes_in_fn(f),
                 DeclKind::Struct(s) => {
-                    for m in &s.methods { self.escapes_in_body(&m.body); }
+                    for m in &s.methods { self.escapes_in_fn(m); }
                 }
                 DeclKind::Enum(e) => {
-                    for m in &e.methods { self.escapes_in_body(&m.body); }
+                    for m in &e.methods { self.escapes_in_fn(m); }
                 }
                 DeclKind::Impl(i) => {
-                    for m in &i.methods { self.escapes_in_body(&m.body); }
+                    for m in &i.methods { self.escapes_in_fn(m); }
                 }
                 // `test` and `benchmark` bodies are function bodies, and the
                 // task tests live in them.
@@ -7041,6 +7180,12 @@ impl<'a> OwnershipChecker<'a> {
         out
     }
 
+    fn escapes_in_fn(&mut self, f: &FnDecl) {
+        self.mutate_params_in_walk = f.params.iter().filter(|p| p.is_mutate).map(|p| p.name.clone()).collect();
+        self.escapes_in_body(&f.body);
+        self.mutate_params_in_walk.clear();
+    }
+
     fn escapes_in_body(&mut self, body: &[Stmt]) {
         let mut named: HashMap<String, Vec<rask_ast::NodeId>> = HashMap::new();
         self.escapes_in_stmts(body, &mut named);
@@ -7062,6 +7207,7 @@ impl<'a> OwnershipChecker<'a> {
     fn escapes_in_stmt(&mut self, stmt: &Stmt, named: &mut HashMap<String, Vec<rask_ast::NodeId>>) {
         match &stmt.kind {
             StmtKind::Let { name, init, .. } | StmtKind::Mut { name, init, .. } => {
+                self.mutate_params_in_walk.remove(name);
                 self.escapes_in_expr(init, named);
                 let carried = self.closure_ids_of(init, named);
                 if carried.is_empty() { named.remove(name); }
@@ -7071,8 +7217,14 @@ impl<'a> OwnershipChecker<'a> {
                 self.escapes_in_expr(value, named);
                 self.escapes_in_expr(target, named);
                 // Through a field or an index the closure lands in something
-                // that outlives the assignment; a plain name is just a rebind.
-                if let ExprKind::Ident(name) = &target.kind {
+                // that outlives the assignment; a plain name is just a rebind,
+                // unless it is a `mutate` parameter: that writes the caller's
+                // variable, which outlives this frame.
+                let local = match &target.kind {
+                    ExprKind::Ident(name) if !self.mutate_params_in_walk.contains(name) => Some(name),
+                    _ => None,
+                };
+                if let Some(name) = local {
                     let carried = self.closure_ids_of(value, named);
                     if carried.is_empty() { named.remove(name); }
                     else { named.insert(name.clone(), carried); }
@@ -9075,10 +9227,10 @@ impl<'a> OwnershipChecker<'a> {
                 // result is limited to the local's block. A parameter needs no
                 // entry: it outlives the whole body already.
                 .or_else(|| {
-                    if self.outlives_this_call(name) || self.capture_is_copy(name) {
+                    if self.capture_is_copy(name) {
                         return None;
                     }
-                    self.binding_decl_blocks.get(name).map(|&b| (b, name.clone()))
+                    self.body_local_block(name).map(|b| (b, name.clone()))
                 }),
             ExprKind::Closure { .. } if self.is_borrowing_closure(arg) => self
                 .closure_scope_limits
@@ -9103,7 +9255,15 @@ impl<'a> OwnershipChecker<'a> {
                 || self.is_borrowing_closure(arg)
             {
                 self.errors.push(OwnershipError {
-                    kind: OwnershipErrorKind::ScopeLimitedClosureEscapes { name: name.clone() },
+                    kind: OwnershipErrorKind::ScopeLimitedClosureEscapes {
+                        name: name.clone(),
+                        points_at: self
+                            .limited_points_at
+                            .get(&name)
+                            .map(|(t, _)| t)
+                            .or_else(|| self.closure_points_at.get(&arg.id))
+                            .cloned(),
+                    },
                     span: arg.span,
                 });
                 self.scope_limited_closures.remove(&name);
@@ -9153,8 +9313,17 @@ impl<'a> OwnershipChecker<'a> {
     /// owns it and the frame is going away. Those still scope-limit the
     /// closure, and handing it to a `take` parameter (so it carries them) is
     /// the fix.
+    /// The block that declared `name`, when the body did; `None` for a
+    /// parameter, which outlives the whole body. The innermost declaration in
+    /// scope wins, so a `let k` shadowing parameter `k` is the body's.
+    fn body_local_block(&self, name: &str) -> Option<u32> {
+        self.binding_decl_blocks.get(name).filter(|d| !d.param).map(|d| d.block)
+    }
+
+    /// A borrowed or `mutate` parameter, not shadowed by a local of the same name.
     fn outlives_this_call(&self, name: &str) -> bool {
-        self.borrowed_params.contains_key(name) || self.mutate_params.contains_key(name)
+        (self.borrowed_params.contains_key(name) || self.mutate_params.contains_key(name))
+            && self.binding_decl_blocks.get(name).map_or(true, |d| d.param)
     }
 
     /// A scrutinee is read, not stored. `match (a, b)` builds a tuple only to
@@ -9368,7 +9537,7 @@ impl<'a> OwnershipChecker<'a> {
             });
             return;
         }
-        self.bindings.insert(name.to_string(), BindingState::Moved { at: span });
+        self.mark_moved(name.to_string(), span);
     }
 
     /// Name of the type a receiver expression evaluates to. Handles resolved
@@ -9805,7 +9974,7 @@ impl<'a> OwnershipChecker<'a> {
                 if self.resource_bindings.contains(name)
                     && matches!(self.bindings.get(name), Some(BindingState::Owned | BindingState::PointerDead { .. }))
                 {
-                    self.bindings.insert(name.clone(), BindingState::Moved { at: expr.span });
+                    self.mark_moved(name.clone(), expr.span);
                 }
             }
             ExprKind::Tuple(elems) | ExprKind::Array(elems) => {
@@ -10133,10 +10302,11 @@ impl<'a> OwnershipChecker<'a> {
         // charge in the first place.
         if let ExprKind::Ident(source) = &inner.kind {
             if self.resource_bindings.contains(source) {
-                self.bindings.insert(source.clone(), BindingState::Moved { at: cond.span });
+                self.mark_moved(source.clone(), cond.span);
             }
         }
         self.bindings.insert(name.clone(), BindingState::Owned);
+        self.binding_decl_blocks.insert(name.clone(), Declared::local(self.current_block + 1));
         self.binding_types.insert(name.clone(), payload);
         self.resource_bindings.insert(name.clone());
         Some(name.clone())
@@ -10447,9 +10617,15 @@ pub fn check_ownership_with_stdlib(
     stdlib.collect_signatures(decls);
     stdlib.collect_signatures(stdlib_decls);
     stdlib.infer_replaces(&[decls, stdlib_decls]);
+    // CM1 holds in the stdlib too: `Sequence.map` returns a closure that
+    // outlives its frame and carries what it captures. Left unmarked, it was
+    // lowered as one that borrows and moved to the heap later owning nothing,
+    // so the `walk()` it carried was never freed.
+    stdlib.collect_escaping_closures(stdlib_decls);
     for decl in stdlib_decls {
         stdlib.check_decl(decl);
     }
+    result.escaping_closures.extend(stdlib.escaping_closures);
     result.return_moves.extend(stdlib.return_moves);
     // A stdlib closure crosses to a task the same way a program's does.
     result.task_bound_closures.extend(stdlib.task_bound_closures);

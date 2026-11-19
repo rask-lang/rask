@@ -41,7 +41,7 @@ pub enum Named<'a> {
 /// Visit everything an rvalue reads.
 fn visit_rvalue_named<'a>(rv: &'a MirRValue, f: &mut impl FnMut(Named<'a>)) {
     match rv {
-        MirRValue::Use(o) | MirRValue::Deref(o) => f(Named::Operand(o)),
+        MirRValue::Use(o) | MirRValue::Deref(o) | MirRValue::WrapSome(o) => f(Named::Operand(o)),
         MirRValue::Ref(id) => f(Named::Local(*id)),
         MirRValue::FuncAddr(_) => {}
         MirRValue::BinaryOp { left, right, .. } => {
@@ -102,7 +102,7 @@ fn visit_stmt_named<'a>(stmt: &'a MirStmt, f: &mut impl FnMut(Named<'a>)) {
         }
         MirStmtKind::LoadCapture { env_ptr, .. } => f(Named::Local(*env_ptr)),
         MirStmtKind::BindPlace { addr, .. } => f(Named::Local(*addr)),
-        MirStmtKind::ClosureDrop { closure, .. } | MirStmtKind::ClosureRetain { closure, .. } => f(Named::Local(*closure)),
+        MirStmtKind::ClosureDrop { closure, .. } => f(Named::Local(*closure)),
         MirStmtKind::ResourceConsume { resource_id } => f(Named::Local(*resource_id)),
         MirStmtKind::ArrayStore { base, index, value, .. } => {
             f(Named::Local(*base));
@@ -191,7 +191,7 @@ fn visit_operand_local_mut(op: &mut MirOperand, f: &mut impl FnMut(&mut LocalId,
 
 fn visit_rvalue_locals_mut(rv: &mut MirRValue, f: &mut impl FnMut(&mut LocalId, UseKind)) {
     match rv {
-        MirRValue::Use(o) | MirRValue::Deref(o) => visit_operand_local_mut(o, f),
+        MirRValue::Use(o) | MirRValue::Deref(o) | MirRValue::WrapSome(o) => visit_operand_local_mut(o, f),
         MirRValue::Ref(id) => f(id, UseKind::AddressOf),
         MirRValue::FuncAddr(_) => {}
         MirRValue::BinaryOp { left, right, .. } => {
@@ -242,7 +242,7 @@ pub fn visit_stmt_use_locals_mut(
         }
         MirStmtKind::LoadCapture { env_ptr, .. } => f(env_ptr, UseKind::Value),
         MirStmtKind::BindPlace { addr, .. } => f(addr, UseKind::Value),
-        MirStmtKind::ClosureDrop { closure, .. } | MirStmtKind::ClosureRetain { closure, .. } => {
+        MirStmtKind::ClosureDrop { closure, .. } => {
             f(closure, UseKind::Value)
         }
         MirStmtKind::ResourceConsume { resource_id } => f(resource_id, UseKind::Value),

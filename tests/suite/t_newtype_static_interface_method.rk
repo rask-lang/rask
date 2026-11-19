@@ -1,0 +1,63 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// The static methods of `Numeric` (`zero`, `one`, `from_int`): on a primitive,
+// through a `T: Numeric` bound, and inherited by a nominal newtype. None of
+// the primitives had them, so `T.zero()` named a function nothing emitted, and
+// `Money.zero()` was typed as whatever the context wanted and failed on both
+// backends (#2004).
+
+type Money = i64 implements Numeric, Equal
+type Ratio = f64 implements Numeric
+
+extend Money {
+    func cents() -> Money {
+        return Money(100)
+    }
+}
+
+func total<T: Numeric>(items: Vec<T>) -> T {
+    mut sum = T.zero()
+    for x in items {
+        sum = sum.add(x)
+    }
+    return sum
+}
+
+func unit<T: Numeric>() -> T {
+    return T.one()
+}
+
+test "a primitive's zero, one and from_int" {
+    assert i64.zero() == 0
+    assert u8.one() == 1
+    assert i32.from_int(-7) == -7
+    assert f64.one() == 1.0
+    assert f32.from_int(3) == 3.0
+}
+
+test "through a Numeric bound" {
+    let ints: Vec<i64> = Vec.from([1, 2, 3])
+    assert total(ints) == 6
+    let floats: Vec<f64> = Vec.from([0.5, 0.25])
+    assert total(floats) == 0.75
+    let u: u16 = unit()
+    assert u == 1
+}
+
+test "a newtype's inherited static methods answer the newtype" {
+    let z = Money.zero()
+    let o = Money.one()
+    let n = Money.from_int(42)
+    assert z.value == 0
+    assert o.value == 1
+    assert n.value == 42
+    assert Money.cents().value == 100
+    assert Ratio.one().value == 1.0
+}
+
+test "an inherited instance method answers the newtype too" {
+    let a = Money(5)
+    let b = Money.one().add(a)
+    assert b.value == 6
+    assert b == Money(6)
+}

@@ -83,9 +83,8 @@ pub fn insert_interface_drops(fns: &mut [MirFunction]) {
 
 /// Functions whose return value is a fresh interface box the caller now owns.
 ///
-/// The same question `closures::functions_handing_back_a_closure` asks, and a
-/// fixed point for the same reason: handing one back is transitive, so a
-/// wrapper that just forwards what it called joins the set on a later pass.
+/// A fixed point, because handing one back is transitive: a wrapper that just
+/// forwards what it called joins the set on a later pass.
 fn functions_handing_back_a_interface_box(fns: &[MirFunction]) -> HashSet<String> {
     let targets = crate::closure_targets::ClosureTargets::build(fns);
     let mut names: HashSet<String> = HashSet::new();
@@ -811,6 +810,7 @@ mod tests {
             is_extern_c: false,
             inline_hint: false,
             param_modes: Vec::new(),
+            item_mode_from_body: false,
             source_file: None,
         }
     }

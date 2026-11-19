@@ -187,6 +187,18 @@ pub fn lower(input: &BackEnd, entry: &Entry) -> Result<Lowered, Vec<String>> {
     if matches!(entry, Entry::Claims(_)) {
         rask_mir::transform::claim_steps::instrument(&mut functions);
     }
+    // Last, so every pass before it reads `dst = src` as the copy it reasons
+    // about; from here an assignment says whether it wraps.
+    let shape_mismatches = rask_mir::assign_shapes::make_wraps_explicit(&mut functions);
+    if !shape_mismatches.is_empty() {
+        return Err(shape_mismatches
+            .iter()
+            .map(|m| format!(
+                "MIR assignment in {m} — this is a compiler bug, not something \
+                 the program did; please report it with the source that produced it"
+            ))
+            .collect());
+    }
 
     // Every layout id has to name the layout it claims. One that doesn't sends
     // codegen walking another type's fields — the error then names a type the

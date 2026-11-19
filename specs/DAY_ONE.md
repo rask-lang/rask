@@ -10,7 +10,7 @@ This page is a budget. If it stops fitting on a page, the language got bigger �
 
 ## The thirteen
 
-1. **Values are owned.** Assignment moves big values, copies small ones (≤16 bytes, all-Copy fields). `.clone()` keeps both — the visible cost. Use a moved value and the compiler names what moved and why.
+1. **Values are owned.** Assignment moves big values, copies small ones (≤16 bytes, all-Copy fields). Closures always move. `.clone()` keeps both — the visible cost. Use a moved value and the compiler names what moved and why.
 
 2. **`let` and `mut`.** Immutable and mutable bindings. Newlines end statements.
 

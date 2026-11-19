@@ -1490,10 +1490,46 @@ impl TypeTable {
             }
             methods.iter().filter(|m| m.name == name).find_map(|m| m.decl)
         };
-        match method {
+        let own = match method {
             "to_string" | "__fmt" => body_of("to_string").or_else(|| body_of("message")),
             _ => body_of(method),
+        };
+        own.or_else(|| self.inherited_body(id, method))
+    }
+
+    /// The type a method call on `ty` dispatches on. A newtype that doesn't
+    /// write the method runs its underlying type's, layer by layer:
+    /// `Nums.clone()` with `type Nums = Vec<i64>` is `Vec<i64>.clone()`.
+    /// Generic code asks the same question per instance, with `T` bound to
+    /// the newtype (#2019).
+    pub fn dispatch_receiver(&self, ty: &Type, method: &str) -> Type {
+        let mut ty = ty.clone();
+        while let Type::Named(id) = &ty {
+            match self.get(*id) {
+                Some(TypeDef::NominalAlias { methods, underlying, .. }) if !methods.iter().any(|m| m.name == method) => {
+                    ty = underlying.clone();
+                }
+                _ => break,
+            }
         }
+        ty
+    }
+
+    /// A newtype's method that one of its `implements` interfaces declares
+    /// and it doesn't write itself runs the underlying type's body:
+    /// `Money.zero()` is `i64.zero()`, and through a newtype over a newtype it
+    /// goes down until a type has one. Generic code reaches it here, with `T`
+    /// bound to `Money` (#2004).
+    fn inherited_body(&self, id: TypeId, method: &str) -> Option<NodeId> {
+        let Some(TypeDef::NominalAlias { underlying, with_interfaces, .. }) = self.get(id) else { return None };
+        let checker = crate::interfaces::InterfaceChecker::new(self);
+        let declared = with_interfaces
+            .iter()
+            .any(|i| checker.interface_methods_written(i).iter().any(|m| m.name == method));
+        if !declared {
+            return None;
+        }
+        self.method_body(underlying, method, None)
     }
 
     /// XC3: is any conformance on this type declared more than once?

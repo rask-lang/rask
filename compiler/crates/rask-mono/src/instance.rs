@@ -81,6 +81,7 @@ impl<'a> Instance<'a> {
             // declares for it.
             rask_check::Callee::Method { recv, method, package, body: None } => {
                 let body = self.typed.types.method_body(&recv, &method, package.as_deref());
+                let recv = self.typed.types.dispatch_receiver(&recv, &method);
                 rask_check::Callee::Method { recv, method, package, body }
             }
             callee => callee,

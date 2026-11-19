@@ -1620,6 +1620,7 @@ dependencies = [
  "rask-check",
  "rask-layout",
  "rask-mir",
+ "rask-stdlib",
 ]
 
 [[package]]
