@@ -85,16 +85,17 @@ TYPES = {
         show="42", read="{{{e}.0}}"),
 
     # A closure literal. Captures nothing, so it is legal wherever a function
-    # value is; the capturing case is the `closure` carrier's job.
+    # value is; the capturing case is the `closure` carrier's job. Every
+    # function value moves (mem.closures/CV1), so it is owned like a Vec.
     "closure": dict(
         decl="func(i64) -> i64", val="|n| { return n + 40 }",
-        val2="|n| { return n + 5 }", show="42", read="{{{e}(2)}}"),
+        val2="|n| { return n + 5 }", show="42", read="{{{e}(2)}}", owned=True),
 
     # A named function used as a value — same type as `closure`, different
     # thing underneath (no environment).
     "funcref": dict(
         decl="func(i64) -> i64", val="add_forty", val2="add_five",
-        show="42", read="{{{e}(2)}}",
+        show="42", read="{{{e}(2)}}", owned=True,
         decls="""\
 func add_forty(n: i64) -> i64 {
     return n + 40
@@ -122,7 +123,7 @@ func add_five(n: i64) -> i64 {
     # A Sequence — a function value wearing a nominal type (type.sequence/SEQ1).
     "sequence": dict(
         decl="Sequence<i64>", val="two_items()", val2="one_item()",
-        show="42", read="{{{e}.to_vec()[1]}}",
+        show="42", read="{{{e}.to_vec()[1]}}", owned=True,
         imports=["sequence.Sequence"],
         decls="""\
 func two_items() -> Sequence<i64> {
@@ -482,7 +483,7 @@ def skips():
     # std.collections/C4: no linear resource in a Vec or a Map. The Map half is
     # enforced; the Vec half isn't yet (#1245), and both are skipped because
     # neither cell could ever go green — C4 says the program shouldn't compile.
-    return {
+    rules = {
         ("vec_index", "heap"): "std.collections/C4 — no linear resource in a Vec",
         ("map_value", "heap"): "std.collections/C4 — no linear resource in a Map",
         # Both of these reach the payload through a `Vec`, so C4 rules them out
@@ -527,6 +528,17 @@ def skips():
         ("escaping_closure", "heap"):
             "mem.closures/CM4 — a linear value can't be carried into a closure (E0913)",
     }
+    # A function value moves (mem.closures/CV1), so it meets the same three
+    # rules as a Vec: a closure can't hand out what it borrowed or captured.
+    # `closure_take_param` is the spelling that can.
+    for payload in ("closure", "funcref", "sequence"):
+        rules[("closure", payload)] = \
+            "mem.closures/CM1 — a borrowing closure can't hand out what it borrowed (E0907)"
+        rules[("closure_param", payload)] = \
+            "mem.closures/CP1 — a closure can't return the parameter it borrowed (E0872)"
+        rules[("escaping_closure", payload)] = \
+            "mem.closures/CM4 — a closure can't return what it captured (E0907)"
+    return rules
 
 
 SKIPS = skips()

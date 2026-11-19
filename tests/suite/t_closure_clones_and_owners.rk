@@ -9,9 +9,15 @@
 // writes never reached the variable. A closure a call handed back, stored
 // through a `mutate` parameter or kept in a variable another closure borrows,
 // was never released. A closure couldn't carry a `Sender` at all, because
-// `Sender` didn't say it was Cloneable.
+// `Sender` didn't say it was Cloneable, nor a `Shared`, which is what a
+// closure is meant to carry instead of what it can't clone. A closure
+// handed to another closure's `take` parameter and handed back was freed
+// by both frames.
 
 import async.Sender
+import sequence.Sequence
+import sync.Shared
+import sync.Local
 
 struct Btn {
     name: string
@@ -132,6 +138,35 @@ func callback_carries_a_sender() -> i64 {
     return a + b
 }
 
+func pairs() -> Sequence<i64> {
+    return |yield| {
+        if !yield(7) { return }
+        if !yield(42) { return }
+    }
+}
+
+func through_a_taking_closure() -> i64 {
+    let pass = |take p: Sequence<i64>| {
+        return p
+    }
+    let s = pairs()
+    let back = pass(s)
+    return back.to_vec()[1]
+}
+
+func eaten_by_a_taking_closure() -> i64 {
+    let eat = |take p: func() -> i64| {
+        return p()
+    }
+    let total = counter()
+    return eat(total)
+}
+
+func carries_a_box() -> func() -> i64 {
+    let b: Shared<i64, Local> = Shared.local(42)
+    return || b.get()
+}
+
 test "a struct's clone clones its closure field" {
     assert struct_clone_has_its_own_counter() == "1 1 2"
 }
@@ -162,4 +197,17 @@ test "a closure variable another closure borrows, in a loop" {
 
 test "a callback carries a sender" {
     assert callback_carries_a_sender() == 3
+}
+
+test "a closure handed through a closure's take parameter" {
+    assert through_a_taking_closure() == 42
+}
+
+test "a closure a taking closure uses up" {
+    assert eaten_by_a_taking_closure() == 1
+}
+
+test "a closure carries a shared box" {
+    let f = carries_a_box()
+    assert f() == 42
 }

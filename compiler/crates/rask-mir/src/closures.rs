@@ -284,10 +284,20 @@ pub fn insert_all_closure_drops(fns: &mut [MirFunction]) {
     // `let tick = counter()` is the caller receiving a block nobody else will
     // free.
     let hands_back = functions_handing_back_a_closure(fns);
+    let targets = crate::closure_targets::ClosureTargets::build(fns);
+    let reach = crate::closure_reach::ClosureReach::build(fns);
+    let through = ThroughClosures { targets: &targets, reach: &reach };
 
     for func in fns.iter_mut() {
-        insert_drops(func, &callee_escapes, &hands_back);
+        insert_drops(func, &callee_escapes, &hands_back, &through);
     }
+}
+
+/// Which bodies a call through a closure can reach, to ask what each does
+/// with its arguments.
+struct ThroughClosures<'a> {
+    targets: &'a crate::closure_targets::ClosureTargets,
+    reach: &'a crate::closure_reach::ClosureReach,
 }
 
 /// Does a call keep argument `i`? A callee with no body of its own keeps what
@@ -679,6 +689,7 @@ fn insert_drops(
     func: &mut MirFunction,
     callee_escapes: &HashMap<String, Vec<bool>>,
     hands_back: &HashSet<String>,
+    through: &ThroughClosures,
 ) {
     let mut owned: HashMap<LocalId, bool> =
         retain_loads_handed_on(func, callee_escapes).into_iter().map(|l| (l, true)).collect();
@@ -734,7 +745,7 @@ fn insert_drops(
     }
 
     let aliases = closure_aliases(func, &owned);
-    let facts = closure_facts(func, &owned, &aliases, callee_escapes);
+    let facts = closure_facts(func, &owned, &aliases, callee_escapes, through);
     let plan = crate::analysis::ownership::plan(
         func,
         &facts,
@@ -1016,6 +1027,7 @@ fn closure_facts(
     made: &HashMap<LocalId, bool>,
     aliases: &ClosureAliases,
     callee_escapes: &HashMap<String, Vec<bool>>,
+    through: &ThroughClosures,
 ) -> crate::analysis::ownership::Facts {
     use crate::analysis::ownership::Event;
     let tracked: std::collections::BTreeSet<LocalId> = aliases.map.keys().copied().collect();
@@ -1052,6 +1064,20 @@ fn closure_facts(
                     for (i, arg) in args.iter().enumerate() {
                         let Some(id) = uses::operand_local(arg) else { continue };
                         if callee_keeps(callee_escapes, callee, i) {
+                            give(&mut ev, id);
+                        }
+                    }
+                }
+                // A closure handed to a `take` parameter of a closure is
+                // that body's, the same as through a named call: `f(x)` with
+                // `f = |take p| p` hands `x` back as the result, and freeing
+                // `x` here as well freed the one environment twice.
+                MirStmtKind::ClosureCall { closure, args, .. } => {
+                    for (i, arg) in args.iter().enumerate() {
+                        let Some(id) = uses::operand_local(arg) else { continue };
+                        if crate::container_drop::closure_call_keeps_argument(
+                            through.targets, through.reach, callee_escapes, &func.name, *closure, i, args.len(),
+                        ) {
                             give(&mut ev, id);
                         }
                     }
@@ -2511,7 +2537,10 @@ mod tests {
         };
         let mut fns = vec![func];
         let escapes = HashMap::from([("keep_nothing".to_string(), vec![false])]);
-        insert_drops(&mut fns[0], &escapes, &HashSet::new());
+        let targets = crate::closure_targets::ClosureTargets::build(&fns);
+        let reach = crate::closure_reach::ClosureReach::build(&fns);
+        let through = ThroughClosures { targets: &targets, reach: &reach };
+        insert_drops(&mut fns[0], &escapes, &HashSet::new(), &through);
         let made: Vec<Option<LocalId>> = fns[0].blocks[0]
             .statements
             .iter()

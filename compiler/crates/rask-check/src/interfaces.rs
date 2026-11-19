@@ -1644,6 +1644,15 @@ pub(crate) fn shape_of(types: &TypeTable, ty: &Type) -> Option<Shape> {
         Type::UnresolvedGeneric { name, .. } if name == "Link" => {
             Some(Shape { conformances: THROUGH_PARTS, parts: Vec::new() })
         }
+        // A box clones as another handle to the same value, so nothing is
+        // asked of the payload (mem.closures/CV4 names it as what to carry
+        // instead). A box over a linear payload has one handle and no clone
+        // (conc.sync/SH9).
+        _ if types.shared_payload(ty).is_some() => {
+            let conformances: &'static [&'static str] =
+                if types.is_linear_value(ty) { &[] } else { &["Cloneable"] };
+            Some(Shape { conformances, parts: Vec::new() })
+        }
         _ => None,
     }
 }
