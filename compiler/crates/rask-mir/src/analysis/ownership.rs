@@ -33,7 +33,7 @@
 //! feeds back into it: whether a store into a slot that already holds a value
 //! is the next field of that value or a new value written over it (`Fill`).
 
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use crate::analysis::cfg;
 use crate::analysis::dominators::DominatorTree;
@@ -1439,6 +1439,14 @@ fn fields_moved_out(
 
 /// The `Carry` events that hand over an owned value, or part of one, that
 /// nothing else reads afterwards, against the settled state.
+///
+/// An `ensure` body that names the value still reads it on paths where the
+/// ensure runs, and liveness can't tell those from this one. When the same
+/// block cancels that ensure after the hand-over (`resource_consume` on the
+/// token registered for the value), the body won't run here, and nothing else
+/// may read a value once it's given away. Counting its read kept
+/// `ensure t.finish()` then `spawn { eat(t) }` from giving the task's
+/// environment the struct, and its string was released by nobody.
 fn carried_outright(
     func: &MirFunction,
     facts: &Facts,
@@ -1447,6 +1455,21 @@ fn carried_outright(
     kills: &Kills,
     disjoint: &dyn Fn(LocalId, LocalId) -> bool,
 ) -> Carried {
+    let registered: HashMap<LocalId, LocalId> = func
+        .blocks
+        .iter()
+        .flat_map(|b| b.statements.iter())
+        .filter_map(|st| match &st.kind {
+            MirStmtKind::ResourceRegister { dst, slot: Some(slot), .. } => Some((*dst, *slot)),
+            _ => None,
+        })
+        .collect();
+    let ensure_cancelled_after = |bi: usize, si: usize, n: LocalId| {
+        func.blocks[bi].statements[si + 1..].iter().any(|st| {
+            matches!(&st.kind, MirStmtKind::ResourceConsume { resource_id }
+                if registered.get(resource_id) == Some(&n))
+        })
+    };
     let mut out = Carried::new();
     for bi in 0..func.blocks.len() {
         let Some(entry) = &entries[bi] else { continue };
@@ -1481,7 +1504,7 @@ fn carried_outright(
                 let read_later = live.at[bi][si + 1]
                     .iter()
                     .any(|m| !defined.contains(m) && st.mentions(*m, v) && !disjoint(*n, *m));
-                if !read_later {
+                if !read_later || ensure_cancelled_after(bi, si, *n) {
                     out.insert((bi, si, *n));
                 }
             }

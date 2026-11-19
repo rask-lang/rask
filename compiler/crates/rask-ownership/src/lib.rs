@@ -94,6 +94,10 @@ pub struct OwnershipResult {
     /// cancels. Lowering and the interpreter cancel from this rather than
     /// working out for themselves which calls take what.
     pub ensure_cancels: EnsureCancels,
+    /// ctrl.ensure/C6: each `ensure` whose cleanup consumes one binding, with
+    /// that binding's name. What lowering registers the ensure's resource
+    /// against, so the exits know which value is gone when it's cancelled.
+    pub ensure_subjects: HashMap<rask_ast::NodeId, String>,
 }
 
 /// Consuming expression → the `ensure` statements it cancels.
@@ -326,6 +330,7 @@ pub struct OwnershipChecker<'a> {
     /// `ensure p.a.close()` learns `eat(p.a)` happened.
     fields_consumed: Vec<(String, Vec<String>, Option<u32>)>,
     ensure_cancels: EnsureCancels,
+    ensure_subjects: HashMap<rask_ast::NodeId, String>,
     /// Active `with` block bindings for W2 checking.
     active_with_bindings: Vec<WithBindingInfo>,
     /// LP14/LP16: Active `for mutate` loops for structural mutation checking.
@@ -744,6 +749,7 @@ impl<'a> OwnershipChecker<'a> {
             watch_recorded: HashMap::new(),
             fields_consumed: Vec::new(),
             ensure_cancels: HashMap::new(),
+            ensure_subjects: HashMap::new(),
             active_with_bindings: Vec::new(),
             active_for_mutates: Vec::new(),
             shadowed_holds: HashSet::new(),
@@ -1068,6 +1074,7 @@ impl<'a> OwnershipChecker<'a> {
             consuming_tasks: self.consuming_tasks,
             quiet_loops: self.quiet_loops,
             ensure_cancels: self.ensure_cancels,
+            ensure_subjects: self.ensure_subjects,
         }
     }
 
@@ -9938,6 +9945,9 @@ impl<'a> OwnershipChecker<'a> {
                 None => subjects.push((root, path)),
             }
         }
+        if let [(root, _)] = subjects.as_slice() {
+            self.ensure_subjects.insert(stmt.id, root.clone());
+        }
         // Every place the body reads, keyed by the name at its root: the
         // longest field chain off each identifier, `[]` for a bare one.
         let mut chains: HashMap<rask_ast::NodeId, Vec<String>> = HashMap::new();
@@ -10846,6 +10856,7 @@ pub fn check_ownership_with_stdlib(
     result.generic_closure_captures.extend(stdlib.generic_closure_captures);
     result.quiet_loops.extend(stdlib.quiet_loops);
     result.ensure_cancels.extend(stdlib.ensure_cancels);
+    result.ensure_subjects.extend(stdlib.ensure_subjects);
     result
 }
 

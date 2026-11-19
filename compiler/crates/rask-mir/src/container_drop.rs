@@ -2861,8 +2861,9 @@ fn follow_copies(func: &MirFunction, fresh: &mut HashMap<LocalId, &'static str>)
 /// container, and calling that one this frame's would free something somebody
 /// else still holds.
 ///
-/// And only for a load this frame *returns*. The question this answers is
-/// "does this frame hand the caller a container to free" — nothing else. A load
+/// And only for a load this frame hands away: returns, or moves into a heap
+/// closure. The question this answers is "does this frame give somebody else a
+/// container to free" — nothing else. A load
 /// the frame goes on to use itself is already handled, and calling it fresh
 /// changed answers it had no business changing: `let count = || items.len()`
 /// reads `items` out of its cell three times, and putting all three in one
@@ -2897,7 +2898,24 @@ fn fresh_through_cells(
             _ => None,
         })
         .collect();
-    if returned.is_empty() {
+    // Or moved into a heap closure's environment, which then owns it and frees
+    // it in its glue. `ensure sinkv(v)` puts `v` in a cell the hook reads, and
+    // `out.push(|| v[0])` takes it from there: the frame rightly stopped freeing
+    // the cell once the load escaped, and the glue, asking only about this
+    // frame's own containers, didn't free it either.
+    let captured: HashSet<LocalId> = func
+        .blocks
+        .iter()
+        .flat_map(|b| b.statements.iter())
+        .filter_map(|st| match &st.kind {
+            MirStmtKind::ClosureCreate { captures, heap: true, .. } => Some(captures),
+            _ => None,
+        })
+        .flatten()
+        .filter(|c| !c.by_ref && !c.lent)
+        .map(|c| c.local_id)
+        .collect();
+    if returned.is_empty() && captured.is_empty() {
         return Vec::new();
     }
 
@@ -2929,7 +2947,9 @@ fn fresh_through_cells(
                     rvalue: MirRValue::Deref(MirOperand::Local(addr)),
                 } = &stmt.kind
                 {
-                    if addr == cell && (returned.contains(dst) || wrapped.contains(dst)) {
+                    if addr == cell
+                        && (returned.contains(dst) || wrapped.contains(dst) || captured.contains(dst))
+                    {
                         out.push((*dst, free));
                     }
                 }

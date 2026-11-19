@@ -1560,7 +1560,7 @@ impl<'a> MirLowerer<'a> {
                 // C1/C2: an ensure the ownership pass found something to
                 // cancel gets a flag, set where that happens.
                 let flag = if self.ctx.ensure_cancels.values().any(|es| es.contains(&stmt.id)) {
-                    let receiver = Self::extract_ensure_receiver(body);
+                    let receiver = self.ctx.ensure_subjects.get(&stmt.id).cloned();
                     let slot = receiver.as_ref().and_then(|n| self.locals.get(n)).map(|(id, _)| *id);
                     let flag = self.builder.alloc_local(format!("__ensure_res_{}", cleanup_block.0), MirType::I64);
                     self.builder.push_stmt(MirStmt::dummy(MirStmtKind::ResourceRegister {

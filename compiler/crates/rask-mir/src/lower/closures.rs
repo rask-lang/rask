@@ -327,6 +327,27 @@ impl<'a> MirLowerer<'a> {
         closure_id: Option<NodeId>,
         task: TaskRole,
     ) -> Result<TypedOperand, LoweringError> {
+        let lowered =
+            self.lower_closure_built(params, ret_ty, body, carries, expected_param_tys, closure_id, task)?;
+        // What the closure captures it takes here. A closure handed straight
+        // to a call or a spawn's block never passes through `lower_expr`,
+        // so this is where the ensures its captures cancel get told.
+        if let Some(id) = closure_id {
+            self.mark_consumed_at(id);
+        }
+        Ok(lowered)
+    }
+
+    fn lower_closure_built(
+        &mut self,
+        params: &[rask_ast::expr::ClosureParam],
+        ret_ty: Option<&TypeExpr>,
+        body: &Expr,
+        carries: bool,
+        expected_param_tys: &[MirType],
+        closure_id: Option<NodeId>,
+        task: TaskRole,
+    ) -> Result<TypedOperand, LoweringError> {
         let for_spawn = task != TaskRole::NotTask;
         // 1. Collect free variables (captures from enclosing scope)
         let free_vars = self.collect_free_vars(body, params);
@@ -979,9 +1000,6 @@ impl<'a> MirLowerer<'a> {
         let (task, _) = self.lower_closure_expecting(
             params, ret_ty.as_ref(), block, !borrows, &[], Some(body.id), role,
         )?;
-        // The checker records a task's captures against the block, which
-        // lowering never routes through `lower_expr`.
-        self.mark_consumed_by(body);
         let boxes_result = self.spawn_result_boxed;
         let entry = match target {
             rask_ast::expr::SpawnTarget::Green => crate::TASK_ENTRIES[0],

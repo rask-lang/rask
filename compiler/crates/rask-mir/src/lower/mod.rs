@@ -549,6 +549,7 @@ impl<'a> MirContext<'a> {
             quiet_loops: &records.quiet_loops,
             return_moves: &records.return_moves,
             ensure_cancels: &records.ensure_cancels,
+            ensure_subjects: &records.ensure_subjects,
             task_bound_closures: NodeSet::of(&records.task_bound_closures),
             type_names,
             handle_releases: rask_mono::drop_names::handle_releases(&typed.types),
@@ -761,6 +762,9 @@ pub struct MirContext<'a> {
     /// Consuming expression → the `ensure` statements it cancels
     /// (ownership, ctrl.ensure/C1).
     pub ensure_cancels: &'a std::collections::HashMap<NodeId, Vec<NodeId>>,
+    /// `ensure` statement → the binding its cleanup consumes (ownership,
+    /// ctrl.ensure/C6): what its resource is registered against.
+    pub ensure_subjects: &'a std::collections::HashMap<NodeId, String>,
     /// Closures that captured a link or a `Local` box (#1356).
     pub task_bound_closures: NodeSet<'a>,
     /// ER16a: `try` node → the postfix-chain step it attaches to. The branch
@@ -1064,6 +1068,8 @@ impl<'a> MirContext<'a> {
             std::sync::LazyLock::new(std::collections::HashMap::new);
         static EMPTY_ENSURE_CANCELS: std::sync::LazyLock<std::collections::HashMap<NodeId, Vec<NodeId>>> =
             std::sync::LazyLock::new(std::collections::HashMap::new);
+        static EMPTY_ENSURE_SUBJECTS: std::sync::LazyLock<std::collections::HashMap<NodeId, String>> =
+            std::sync::LazyLock::new(std::collections::HashMap::new);
         static EMPTY_LENT: std::sync::LazyLock<std::collections::HashMap<NodeId, Vec<String>>> =
             std::sync::LazyLock::new(std::collections::HashMap::new);
         static EMPTY_ESCAPING: std::sync::LazyLock<std::collections::HashSet<NodeId>> =
@@ -1110,6 +1116,7 @@ impl<'a> MirContext<'a> {
             quiet_loops: &EMPTY_ESCAPING,
             return_moves: &EMPTY_RETURN_MOVES,
             ensure_cancels: &EMPTY_ENSURE_CANCELS,
+            ensure_subjects: &EMPTY_ENSURE_SUBJECTS,
             task_bound_closures: NodeSet::of(&EMPTY_ESCAPING),
             try_chain_placement: &EMPTY_TRY_PLACEMENT,
             map_key_fns: CallMap::of(empty::map_key_fns()),
@@ -3684,35 +3691,19 @@ impl<'a> MirLowerer<'a> {
     /// through a function value (#1989), the root of `w.take().close()`
     /// (#1992) and any value that isn't a resource (#1978).
     pub(super) fn mark_consumed_by(&mut self, expr: &rask_ast::expr::Expr) {
-        let Some(ensures) = self.ctx.ensure_cancels.get(&expr.id) else { return };
+        // A closure is marked where it is built, whichever way it got there.
+        if matches!(expr.kind, rask_ast::expr::ExprKind::Closure { .. }) {
+            return;
+        }
+        self.mark_consumed_at(expr.id);
+    }
+
+    pub(super) fn mark_consumed_at(&mut self, id: rask_ast::NodeId) {
+        let Some(ensures) = self.ctx.ensure_cancels.get(&id) else { return };
         for ensure in ensures {
             if let Some(flag) = self.ensure_flags.get(ensure) {
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::ResourceConsume { resource_id: *flag }));
             }
-        }
-    }
-
-    /// The variable an `ensure`'s cleanup acts on, for
-    /// `ResourceRegister::slot`: the root of the receiver chain of
-    /// `ensure X.method()` or `ensure X.take().close()`, or `X` in
-    /// `ensure drop(X)` (`Heap<T>`'s whole cleanup vocabulary).
-    fn extract_ensure_receiver(body: &[rask_ast::stmt::Stmt]) -> Option<String> {
-        use rask_ast::expr::ExprKind;
-        use rask_ast::stmt::StmtKind;
-        let StmtKind::Expr(expr) = &body.first()?.kind else { return None };
-        let mut receiver = match &expr.kind {
-            ExprKind::MethodCall { object, .. } => object.as_ref(),
-            ExprKind::Call { func, args, .. } if matches!(&func.kind, ExprKind::Ident(n) if n == "drop") => {
-                &args.first()?.expr
-            }
-            _ => return None,
-        };
-        while let ExprKind::MethodCall { object, .. } = &receiver.kind {
-            receiver = object;
-        }
-        match &receiver.kind {
-            ExprKind::Ident(name) => Some(name.clone()),
-            _ => None,
         }
     }
 
@@ -7794,6 +7785,7 @@ mod tests {
         let empty_lent = std::collections::HashMap::new();
         let empty_return_moves = std::collections::HashMap::new();
         let empty_ensure_cancels = std::collections::HashMap::new();
+        let empty_ensure_subjects = std::collections::HashMap::new();
         let empty_try_placement = HashMap::new();
         let empty_targets = HashMap::new();
         let empty_operator_targets = HashMap::new();
@@ -7831,6 +7823,7 @@ mod tests {
             quiet_loops: &empty_escaping,
             return_moves: &empty_return_moves,
             ensure_cancels: &empty_ensure_cancels,
+            ensure_subjects: &empty_ensure_subjects,
             task_bound_closures: NodeSet::of(&empty_escaping),
             try_chain_placement: &empty_try_placement,
             map_key_fns: CallMap::of(empty::map_key_fns()),
@@ -7900,6 +7893,7 @@ mod tests {
         let empty_lent = std::collections::HashMap::new();
         let empty_return_moves = std::collections::HashMap::new();
         let empty_ensure_cancels = std::collections::HashMap::new();
+        let empty_ensure_subjects = std::collections::HashMap::new();
         let empty_try_placement = HashMap::new();
         let empty_targets = HashMap::new();
         let empty_operator_targets = HashMap::new();
@@ -7937,6 +7931,7 @@ mod tests {
             quiet_loops: &empty_escaping,
             return_moves: &empty_return_moves,
             ensure_cancels: &empty_ensure_cancels,
+            ensure_subjects: &empty_ensure_subjects,
             task_bound_closures: NodeSet::of(&empty_escaping),
             try_chain_placement: &empty_try_placement,
             map_key_fns: CallMap::of(empty::map_key_fns()),
@@ -8013,6 +8008,7 @@ mod tests {
         let empty_lent = std::collections::HashMap::new();
         let empty_return_moves = std::collections::HashMap::new();
         let empty_ensure_cancels = std::collections::HashMap::new();
+        let empty_ensure_subjects = std::collections::HashMap::new();
         let empty_try_placement = HashMap::new();
         let empty_targets = HashMap::new();
         let empty_operator_targets = HashMap::new();
@@ -8050,6 +8046,7 @@ mod tests {
             quiet_loops: &empty_escaping,
             return_moves: &empty_return_moves,
             ensure_cancels: &empty_ensure_cancels,
+            ensure_subjects: &empty_ensure_subjects,
             task_bound_closures: NodeSet::of(&empty_escaping),
             try_chain_placement: &empty_try_placement,
             map_key_fns: CallMap::of(empty::map_key_fns()),
