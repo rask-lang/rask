@@ -168,6 +168,7 @@ extend Sequence<T> {
     /// them is a compile error pointing at the clone you meant to write:
     /// `map` is the ownership boundary, so `.map(|u| u.clone()).to_vec()`
     /// clones exactly once, at the call site that asked for it.
+    @keeps_items
     public func to_vec(self) -> Vec<T> {
         mut out: Vec<T> = Vec<T>.new()
         for x in self {
@@ -186,6 +187,7 @@ extend Sequence<T> {
     }
 
     /// Reduce without one. `none` on an empty sequence.
+    @keeps_items
     public func reduce(self, f: func(T, T) -> T) -> T? {
         mut acc: T? = none
         for x in self {
@@ -210,6 +212,7 @@ extend Sequence<T> {
     /// Smallest by comparator. The comparator answers with an `Ordering`, the
     /// same as `Vec.sort_by` — `|a, b| a - b` is a type error, not a subtraction
     /// trick that happens to work.
+    @picks_item
     public func min_by(self, cmp: func(T, T) -> Ordering) -> T? {
         mut best: T? = none
         for x in self {
@@ -225,6 +228,7 @@ extend Sequence<T> {
     }
 
     /// Largest by comparator.
+    @picks_item
     public func max_by(self, cmp: func(T, T) -> Ordering) -> T? {
         mut best: T? = none
         for x in self {
@@ -240,6 +244,7 @@ extend Sequence<T> {
     }
 
     /// Smallest by extracted key. Ties keep the first item seen.
+    @picks_item
     public func min_by_key<K: Comparable>(self, key: func(T) -> K) -> T? {
         mut best: T? = none
         mut best_key: K? = none
@@ -259,6 +264,7 @@ extend Sequence<T> {
     }
 
     /// Largest by extracted key. Ties keep the first item seen.
+    @picks_item
     public func max_by_key<K: Comparable>(self, key: func(T) -> K) -> T? {
         mut best: T? = none
         mut best_key: K? = none
@@ -294,6 +300,7 @@ extend Sequence<T> {
     }
 
     /// The first item satisfying `pred`, or `none`. Stops there.
+    @picks_item
     public func find(self, pred: func(T) -> bool) -> T? {
         for x in self {
             if pred(x) { return x }
@@ -353,6 +360,7 @@ extend Sequence<T> where T: Comparable {
     /// "expected 1 argument, found 2". `Vec.min` never had the problem only
     /// because `collections.rk` already loaded first. `sequence.rk` loads
     /// before builtins now, so both spellings work (#1046).
+    @picks_item
     public func min(self) -> T? {
         mut best: T? = none
         for x in self {
@@ -368,6 +376,7 @@ extend Sequence<T> where T: Comparable {
     }
 
     /// Largest item, or `none` if empty.
+    @picks_item
     public func max(self) -> T? {
         mut best: T? = none
         for x in self {
@@ -454,6 +463,7 @@ extend Sequence<Sequence<U>> {
 extend Sequence<(K, V)> {
     /// Collect a sequence of pairs into a Map. Later keys overwrite earlier
     /// ones, exactly like repeated `insert`.
+    @keeps_items
     public func to_map(self) -> Map<K, V> {
         mut out: Map<K, V> = Map<K, V>.new()
         for (k, v) in self {

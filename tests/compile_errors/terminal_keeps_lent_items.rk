@@ -57,6 +57,12 @@ func biggest(m: Map<string, Vec<i64>>) -> u64 {
     return (b ?? ("", Vec.new())).1.len()
 }
 
+func pairs(s: Set<(string, string)>) -> u64 {
+    // A set's walk lends its keys the way a map's lends its pairs.
+    // ERROR: `to_vec` has nothing it may keep — `(string, string)` is lent, not owned [E0905]
+    return s.to_vec().len()
+}
+
 // Picking over a vector reads the element where it sits; a `map` makes items
 // the chain owns; a Copy item copies.
 func legal(rows: Vec<Vec<i64>>) -> u64 {

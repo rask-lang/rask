@@ -419,6 +419,7 @@ extend Vec<T> {
     /// Reduce without initial value. Returns none if empty.
     @native
     @copies_elements
+    @keeps_items
     public func reduce(self, f: func(T, T) -> T) -> Option<T> {}
 
     /// Zip with another vector into pairs.
@@ -446,6 +447,7 @@ extend Vec<T> {
     /// Find the first element matching the predicate.
     @native
     @copies_elements
+    @picks_item
     public func find(self, f: func(T) -> bool) -> Option<T> {}
 
     /// Find the index of the first element matching the predicate.
@@ -564,6 +566,7 @@ extend Vec<T> where T: Comparable {
     /// The loop keeps an index rather than the element: the elements are
     /// `self`'s, and the answer is handed out the way `get` hands one out.
     @copies_elements
+    @picks_item
     public func min(self) -> T? {
         let i = self.extreme_index(Ordering.Less)
         if i < 0 {
@@ -574,6 +577,7 @@ extend Vec<T> where T: Comparable {
 
     /// Maximum element. The first of several equal ones.
     @copies_elements
+    @picks_item
     public func max(self) -> T? {
         let i = self.extreme_index(Ordering.Greater)
         if i < 0 {
@@ -1060,6 +1064,7 @@ extend Set<T> {
     /// The values, as a `Vec`.
     ///
     /// Named for what it builds, not for what you do with it (SEQ31).
+    @keeps_items
     public func to_vec(self) -> Vec<T> {
         return self.entries.keys().to_vec()
     }

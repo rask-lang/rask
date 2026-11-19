@@ -565,6 +565,14 @@ pub struct OwnershipChecker<'a> {
     /// (type, method) -> (is the receiver `deleting`, which parameters are). Built
     /// here rather than carried on `MethodSig`, which has 46 construction sites.
     method_deleting: HashMap<(String, String), (bool, Vec<bool>)>,
+    /// The yield parameters of the sequence literals being checked (SEQ44).
+    yield_params: HashSet<String>,
+    /// The sequence terminals that keep items, by host type and method,
+    /// from the stdlib's `@keeps_items` and `@picks_item`.
+    item_terminals: HashMap<(String, String), Terminal>,
+    /// The body being checked is such a terminal: its callers hand it only
+    /// items the chain owns (SEQ47), so it may keep its receiver's.
+    keeps_own_items: bool,
     /// MC2: closure bindings that hold a mutable capture, and what they hold.
     /// `(binding, variables, where the closure was written, last statement that
     /// mentions the binding)` — the record dies at that statement, so reading
@@ -708,6 +716,7 @@ struct ViewPlace {
 /// A value a container lent out, carried from wherever the walk found it to
 /// the `return` that hands it on.
 /// Who a chain's items belong to (`chain_head`).
+#[derive(Debug)]
 enum ChainHead {
     /// A `map` made them: the chain's own to give.
     Owns,
@@ -866,6 +875,9 @@ impl<'a> OwnershipChecker<'a> {
             fn_take_params: HashMap::new(),
             fn_deleting_params: HashMap::new(),
             method_deleting: HashMap::new(),
+            yield_params: HashSet::new(),
+            item_terminals: HashMap::new(),
+            keeps_own_items: false,
             errors: Vec::new(),
         }
     }
@@ -884,8 +896,9 @@ impl<'a> OwnershipChecker<'a> {
     /// work by cloning each item behind the program's back (#1415 was the
     /// double free before that). A `map` in front is the copy written out.
     fn check_terminal_keeps_owned_items(&mut self, expr: &Expr, object: &Expr, method: &str) {
-        let picks = Self::PICKS.contains(&method);
-        if !picks && !matches!(method, "to_vec" | "to_map" | "reduce") {
+        let Some(terminal) = self.item_terminal(object, method) else { return };
+        let picks = terminal == Terminal::Picks;
+        if self.keeps_own_items && Self::rooted_at_self(self.chain_source(object)) {
             return;
         }
         let ChainHead::Lends { head, collection } = self.chain_head(object) else { return };
@@ -896,9 +909,9 @@ impl<'a> OwnershipChecker<'a> {
         // The item as the terminal sees it: a `T?` for the pickers and
         // `reduce`, a `Vec<T>` for `to_vec`, and for `to_map` the key and
         // the value, either of which may be the lent one.
-        let mut items: Vec<Type> = match method {
-            "to_vec" => Self::vec_elem(result).into_iter().collect(),
-            "to_map" => match result {
+        let mut items: Vec<Type> = match self.type_name_of(result).as_deref() {
+            Some("Vec") => Self::vec_elem(result).into_iter().collect(),
+            Some("Map") => match result {
                 Type::Generic { args, .. } | Type::UnresolvedGeneric { args, .. } => args
                     .iter()
                     .filter_map(|a| match a {
@@ -974,9 +987,26 @@ impl<'a> OwnershipChecker<'a> {
         }
     }
 
-    /// The terminals that answer with one of the items they're handed.
-    const PICKS: &'static [&'static str] =
-        &["find", "min", "max", "min_by", "max_by", "min_by_key", "max_by_key"];
+    /// What `object.method(…)` does with the items it's handed, if it's a
+    /// terminal that keeps any. An array walks as a sequence.
+    fn item_terminal(&self, object: &Expr, method: &str) -> Option<Terminal> {
+        let ty = self.node_ty(&object.id)?;
+        let host = match ty {
+            Type::Array { .. } => "Sequence".to_string(),
+            other => self.type_name_of(other)?,
+        };
+        self.item_terminals.get(&(host, method.to_string())).copied()
+    }
+
+    /// `self`, or a place inside it (`self.entries`).
+    fn rooted_at_self(expr: &Expr) -> bool {
+        match &expr.kind {
+            ExprKind::Ident(n) => n == "self",
+            ExprKind::Field { object, .. } | ExprKind::Index { object, .. } => Self::rooted_at_self(object),
+            ExprKind::MethodCall { object, .. } => Self::rooted_at_self(object),
+            _ => false,
+        }
+    }
 
     /// Adapters that hand on what they were given. `enumerate` hands on each
     /// item too, paired with its index; `as_sequence` is the collection's own
@@ -1021,7 +1051,7 @@ impl<'a> OwnershipChecker<'a> {
         if is_vec || matches!(ty, Type::Array { .. }) {
             return ChainHead::Lends { head, collection: Self::is_place(cur) };
         }
-        if matches!(self.type_name_of(ty).as_deref(), Some("Map" | "Sequence")) {
+        if matches!(self.type_name_of(ty).as_deref(), Some("Map" | "Set" | "Sequence")) {
             return ChainHead::Lends { head, collection: false };
         }
         ChainHead::Unknown
@@ -1167,6 +1197,16 @@ impl<'a> OwnershipChecker<'a> {
             if let DeclKind::Impl(impl_decl) = &decl.kind {
                 let ty = impl_decl.target_ty.name().unwrap_or_default();
                 for m in &impl_decl.methods {
+                    let terminal = if rask_ast::attr::has(&m.attrs, "picks_item") {
+                        Some(Terminal::Picks)
+                    } else if rask_ast::attr::has(&m.attrs, "keeps_items") {
+                        Some(Terminal::KeepsAll)
+                    } else {
+                        None
+                    };
+                    if let Some(t) = terminal {
+                        self.item_terminals.insert((ty.clone(), m.name.clone()), t);
+                    }
                     self.method_params.insert(
                         (ty.clone(), m.name.clone()),
                         m.params.iter().map(|p| p.name.clone()).collect(),
@@ -1914,6 +1954,9 @@ impl<'a> OwnershipChecker<'a> {
             .collect();
 
         self.current_params = fn_decl.params.iter().map(|p| p.name.clone()).collect();
+        self.keeps_own_items = ["keeps_items", "picks_item"]
+            .iter()
+            .any(|a| rask_ast::attr::has(&fn_decl.attrs, a));
         self.current_param_spans = fn_decl.params.iter().map(|p| p.name_span).collect();
         for param in &fn_decl.params {
             if param.is_take && is_written_link(&param.ty) {
@@ -3770,7 +3813,11 @@ impl<'a> OwnershipChecker<'a> {
                 for name in &binding_names {
                     self.parts.remove(name);
                 }
-                let lender = if *mutate { None } else { self.loop_lender(iter) };
+                let lender = if *mutate || (self.keeps_own_items && Self::rooted_at_self(iter)) {
+                    None
+                } else {
+                    self.loop_lender(iter)
+                };
                 // PT1: a pointer into an item points into the collection.
                 let lends = *mutate || lender.is_some();
                 self.record_loop_item(&binding_names, iter, lends);
@@ -3995,8 +4042,15 @@ impl<'a> OwnershipChecker<'a> {
                 };
                 let mut deleting_args: Vec<Expr> = Vec::new();
                 let rack_args = self.rack_arg_roots(args);
+                let is_yield = func.name().is_some_and(|n| self.yield_params.contains(n));
                 for (i, arg) in args.iter().enumerate() {
-                    self.check_expr(&arg.expr);
+                    // A yield lends what it's handed for one call, and a
+                    // tuple built for it carries that loan without keeping
+                    // its parts: `enumerate`'s `yield((i, x))` (SEQ44).
+                    match &arg.expr.kind {
+                        ExprKind::Tuple(parts) if is_yield => parts.iter().for_each(|p| self.check_expr(p)),
+                        _ => self.check_expr(&arg.expr),
+                    }
                     let known_mode = callee_takes.as_ref().and_then(|t| t.get(i)).copied();
                     let is_take_param = known_mode.unwrap_or(false);
                     // SL4: a scope-limited closure handed to a *borrow*
@@ -4749,8 +4803,28 @@ impl<'a> OwnershipChecker<'a> {
                     }
                 }
 
+                // A sequence literal's one parameter is its yield. Any other
+                // closure's parameters shadow an outer yield of the same name.
+                let saved_yields = self.yield_params.clone();
+                for p in params {
+                    self.yield_params.remove(&p.name);
+                }
+                // A closure of the shape a sequence is written as,
+                // `func(func(T) -> bool)`, fills a Sequence slot (SEQ36).
+                let is_sequence = matches!(
+                    self.node_ty(&expr.id),
+                    Some(Type::Fn { params: outer, ret })
+                        if matches!(**ret, Type::Unit)
+                            && matches!(outer.as_slice(), [p] if matches!(&p.ty, Type::Fn { params: inner, ret } if inner.len() == 1 && matches!(**ret, Type::Bool)))
+                );
+                if let [p] = params.as_slice() {
+                    if is_sequence {
+                        self.yield_params.insert(p.name.clone());
+                    }
+                }
                 let errors_before_body = self.errors.len();
                 self.check_expr(body);
+                self.yield_params = saved_yields;
                 // PM2 for the closure's own `mutate` parameters: the caller's
                 // slot is still there when the call returns. `|mutate v| { keep
                 // = v }` handed `keep` the caller's vector and left the caller
@@ -6249,7 +6323,7 @@ impl<'a> OwnershipChecker<'a> {
     /// that lends, nothing holds the item once the walk moves on, and
     /// `check_terminal_keeps_owned_items` rejects the pick outright.
     fn picks_lent_item<'e>(&self, object: &'e Expr, method: &str) -> Option<&'e Expr> {
-        if !Self::PICKS.contains(&method) {
+        if self.item_terminal(object, method) != Some(Terminal::Picks) {
             return None;
         }
         match self.chain_head(object) {
@@ -11308,6 +11382,15 @@ fn grow_carrying(carrying: &mut HashSet<rask_ast::NodeId>, result: &OwnershipRes
 }
 
 /// Ownership analysis that can also read the stdlib's parameter modes.
+/// What a sequence terminal keeps of the items it's handed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Terminal {
+    /// Every one (`to_vec`, `reduce`).
+    KeepsAll,
+    /// The one it answers with (`find`, `max_by_key`).
+    Picks,
+}
+
 pub fn check_ownership_with_stdlib(
     program: &TypedProgram,
     decls: &[Decl],
