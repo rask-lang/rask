@@ -2518,9 +2518,15 @@ impl<'a> OwnershipChecker<'a> {
                     self.values_reaching(e, through_parts, out);
                 }
             }
-            ExprKind::Match { arms, .. } => {
+            ExprKind::Match { scrutinee, arms } => {
                 for arm in arms {
                     self.values_reaching(&arm.body, through_parts, out);
+                    // `y => y ?? fallback` hands on the scrutinee itself.
+                    if let PatternKind::Ident(name) = &arm.pattern.kind {
+                        if Self::yields_name(&arm.body, name) {
+                            self.values_reaching(scrutinee, through_parts, out);
+                        }
+                    }
                 }
             }
             ExprKind::Block(stmts) | ExprKind::Unsafe { body: stmts } => {
@@ -4482,6 +4488,17 @@ impl<'a> OwnershipChecker<'a> {
 
                 let errors_before_body = self.errors.len();
                 self.check_expr(body);
+                // PM2 for the closure's own `mutate` parameters: the caller's
+                // slot is still there when the call returns. `|mutate v| { keep
+                // = v }` handed `keep` the caller's vector and left the caller
+                // a hole, where a named function is refused (E0836).
+                {
+                    let in_scope_mutate = self.mutate_params.clone();
+                    self.mutate_params.retain(|n, _| params.iter().any(|p| p.is_mutate && p.name == *n));
+                    let end = Span::new(body.span.end.saturating_sub(1), body.span.end);
+                    self.check_mutate_params_refilled(end);
+                    self.mutate_params = in_scope_mutate;
+                }
                 for (name, ty) in stranded {
                     let consumed_in_body = self.errors[errors_before_body..].iter().any(|e| {
                         matches!(&e.kind, OwnershipErrorKind::ConsumeBorrowedCapture { name: n, .. } if *n == name)
@@ -4739,10 +4756,19 @@ impl<'a> OwnershipChecker<'a> {
                         self.inherit_frame_limit(&bound, scrutinee, self.current_block);
                     }
                     let arm_views = self.record_pattern_views(&arm.pattern, scrutinee);
+                    // `x => out.push(x)` hands on what the scrutinee lent.
+                    let saved_lent = self.lent_locals.clone();
+                    for name in arm.pattern.bound_names() {
+                        self.lent_locals.remove(name);
+                    }
+                    if let PatternKind::Ident(name) = &arm.pattern.kind {
+                        self.record_lent_binding(name, scrutinee);
+                    }
                     if let Some(guard) = &arm.guard {
                         self.check_expr(guard);
                     }
                     self.check_expr(&arm.body);
+                    self.lent_locals = saved_lent;
                     self.end_pattern_views(arm_views);
                     self.move_branch_value(&arm.body);
                     let terminal = Self::is_terminal_expr(&arm.body);
@@ -5818,6 +5844,14 @@ impl<'a> OwnershipChecker<'a> {
                         self.consume_binding(&source_name, span, None);
                         return;
                     }
+                    // A closure's capture moved into another variable is the
+                    // capture given away, as `out.push(v)` gives it (CM4).
+                    // Only the push was asked: `|| { keep = v }` compiled, and
+                    // natively both `v`'s owner and `keep` freed the vector.
+                    if self.borrowed_captures.contains_key(&source_name) {
+                        self.consume_binding(&source_name, span, None);
+                        return;
+                    }
                     // Whole-variable assignment: move source regardless of const/mut
                     if let Some(state) = self.bindings.get(&source_name) {
                         match state {
@@ -5949,8 +5983,9 @@ impl<'a> OwnershipChecker<'a> {
     fn picks_lent_item<'e>(&self, object: &'e Expr, method: &str) -> Option<&'e Expr> {
         const PICKS: &[&str] =
             &["find", "min", "max", "min_by", "max_by", "min_by_key", "max_by_key"];
+        // `enumerate` hands on each item too, paired with its index.
         const LENDS: &[&str] =
-            &["filter", "take", "skip", "take_while", "skip_while", "as_sequence"];
+            &["filter", "take", "skip", "take_while", "skip_while", "as_sequence", "enumerate"];
         if !PICKS.contains(&method) {
             return None;
         }
@@ -6034,10 +6069,47 @@ impl<'a> OwnershipChecker<'a> {
             ExprKind::Block(stmts) => {
                 Self::stmts_tail(stmts).and_then(|e| self.lent_value_where(e, payload_ok))
             }
-            ExprKind::Match { arms, .. } => {
-                arms.iter().find_map(|arm| self.lent_value_where(&arm.body, payload_ok))
+            // A part of a lent pair sits in the holder too: `p.1` of the pair
+            // `enumerate().find(…)` picked. Tuples only: a field of a lent
+            // struct is a question for the struct rules.
+            ExprKind::Field { object, .. }
+                if matches!(self.node_ty(&object.id), Some(Type::Tuple(_))) =>
+            {
+                let ty = self.node_ty(&expr.id)?;
+                if !payload_ok(self, ty) {
+                    return None;
+                }
+                let lent = self.lent_value_where(object, &|_, _| true)?;
+                Some(LentValue { payload_ty: self.lent_payload_display(ty), span: expr.span, ..lent })
             }
+            // An arm that names the whole scrutinee hands on what it lent.
+            ExprKind::Match { scrutinee, arms } => arms.iter().find_map(|arm| {
+                self.lent_value_where(&arm.body, payload_ok).or_else(|| match &arm.pattern.kind {
+                    PatternKind::Ident(name) if Self::yields_name(&arm.body, name) => {
+                        self.lent_value_where(scrutinee, payload_ok)
+                    }
+                    _ => None,
+                })
+            }),
             _ => None,
+        }
+    }
+
+    /// Does `expr` evaluate to `name` on some path, through the forms
+    /// `lent_value_where` follows?
+    fn yields_name(expr: &Expr, name: &str) -> bool {
+        match &expr.kind {
+            ExprKind::Ident(n) => n == name,
+            ExprKind::NullCoalesce { value, .. } => Self::yields_name(value, name),
+            ExprKind::Try { expr } | ExprKind::Unwrap { expr, .. } => Self::yields_name(expr, name),
+            ExprKind::Field { object, .. } => Self::yields_name(object, name),
+            ExprKind::If { then_branch, else_branch, .. } => {
+                Self::yields_name(then_branch, name)
+                    || else_branch.as_ref().is_some_and(|b| Self::yields_name(b, name))
+            }
+            ExprKind::Block(stmts) => Self::stmts_tail(stmts).is_some_and(|e| Self::yields_name(e, name)),
+            ExprKind::Match { arms, .. } => arms.iter().any(|a| Self::yields_name(&a.body, name)),
+            _ => false,
         }
     }
 
@@ -6096,6 +6168,9 @@ impl<'a> OwnershipChecker<'a> {
             // second owner exactly as a `Vec` element is. `return fs[0]`
             // compiled, and the caller couldn't know whether to free it.
             Type::Fn { .. } => true,
+            // `rows.enumerate().find(…)` answers with an index and the
+            // element where it sits.
+            Type::Tuple(elems) => elems.iter().any(|t| self.lendable_payload(t)),
             other => self
                 .type_name_of(other)
                 .is_some_and(|n| matches!(n.as_str(), "Vec" | "Map" | "Set")),
