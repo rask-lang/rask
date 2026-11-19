@@ -21,7 +21,7 @@ test "empty vec and empty slot are different answers" {
 // --- helpers ---
 
 // Generic accessor: instantiating it at T = i64? is what produces i64??.
-func head<T>(v: Vec<T>) -> T? {
+func head<T: Copy>(v: Vec<T>) -> T? {
     return v.first()
 }
 

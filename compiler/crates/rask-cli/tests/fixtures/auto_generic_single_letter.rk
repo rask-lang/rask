@@ -6,7 +6,7 @@ func swap(take a: T, take b: T) -> (T, T) {
     return (b, a)
 }
 
-func first(items: Vec<T>) -> T {
+func first(items: Vec<T>) -> T where T: Copy {
     return items[0]
 }
 
