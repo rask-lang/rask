@@ -280,20 +280,13 @@ impl KeptThroughCalls {
 pub fn insert_all_closure_drops(fns: &mut [MirFunction]) {
     let callee_escapes = build_callee_escape_map(fns, CaptureRule::HeapClosure);
 
-    // A function that hands a heap closure back makes its caller the owner —
+    // A function that hands a closure back makes its caller the owner —
     // `let tick = counter()` is the caller receiving a block nobody else will
-    // free. Which functions those are can only be read off the finished
-    // allocation decisions, so it waits for every function to have one.
-    // Which bodies a call *through* a closure can reach, so the same question
-    // can be asked of a callback. `flat_map(|x| upto(x))` builds a sequence per
-    // element and hands it back through a `ClosureCall`, which has no name to
-    // look up — so nothing owned any of them and each element leaked its
-    // environment (#1045).
-    let targets = crate::closure_targets::ClosureTargets::build(fns);
-    let hands_back = functions_handing_back_a_closure(fns, &targets);
+    // free.
+    let hands_back = functions_handing_back_a_closure(fns);
 
     for func in fns.iter_mut() {
-        insert_drops(func, &callee_escapes, &hands_back, &targets);
+        insert_drops(func, &callee_escapes, &hands_back);
     }
 }
 
@@ -683,7 +676,6 @@ fn insert_drops(
     func: &mut MirFunction,
     callee_escapes: &HashMap<String, Vec<bool>>,
     hands_back: &HashSet<String>,
-    targets: &crate::closure_targets::ClosureTargets,
 ) {
     let mut owned: HashMap<LocalId, bool> =
         retain_loads_handed_on(func, callee_escapes).into_iter().map(|l| (l, true)).collect();
@@ -722,16 +714,12 @@ fn insert_drops(
                     owned.insert(*dst, true);
                 }
                 // A third way: take one back from a call *through* a closure.
-                // Same rule as the named case, asked of every body the call can
-                // reach — one that hands back somebody else's closure is the
-                // whole set's answer, the way `flat_map(|k| SHARED_SEQ)` would
-                // be.
-                MirStmtKind::ClosureCall { dst: Some(dst), closure, .. } => {
-                    if let Some(bodies) = targets.known(&func.name, *closure) {
-                        if bodies.iter().all(|b| hands_back.contains(b)) {
-                            owned.insert(*dst, true);
-                        }
-                    }
+                // Same rule as the named case, and it needs no body to ask:
+                // whatever `flat_map(|x| upto(x))` calls hands back its own.
+                MirStmtKind::ClosureCall { dst: Some(dst), .. }
+                    if matches!(func.local_ty(*dst), Some(crate::MirType::FuncPtr(_))) =>
+                {
+                    owned.insert(*dst, true);
                 }
                 _ => {}
             }
@@ -1116,40 +1104,6 @@ fn closure_facts(
     facts
 }
 
-/// Closures a function reads out of a join's result and returns.
-///
-/// A task that ends in a closure hands it over through the join as a boxed
-/// payload, and the joiner is the only one left holding it: the task's frame is
-/// gone and the handle was consumed. `return h.join()!` reads it out of the
-/// result wrapper with a field read, which no other rule saw as a source, so a
-/// function written that way didn't count as handing a closure back and its
-/// caller never freed the one it got.
-fn closures_out_of_joins(func: &MirFunction) -> Vec<LocalId> {
-    let mut joined: HashSet<LocalId> = HashSet::new();
-    let mut out = Vec::new();
-    for block in &func.blocks {
-        for stmt in &block.statements {
-            match &stmt.kind {
-                MirStmtKind::Call { dst: Some(dst), func: callee, .. }
-                    if matches!(callee.name.as_str(), "Handle_join" | "Handle_cancel") =>
-                {
-                    joined.insert(*dst);
-                }
-                MirStmtKind::Assign {
-                    dst,
-                    rvalue: crate::MirRValue::Field { base: MirOperand::Local(base), .. },
-                } if joined.contains(base)
-                    && matches!(func.local_ty(*dst), Some(crate::MirType::FuncPtr(_))) =>
-                {
-                    out.push(*dst);
-                }
-                _ => {}
-            }
-        }
-    }
-    out
-}
-
 /// The `ClosureCreate` destinations in a function.
 fn created_closures(func: &MirFunction) -> HashMap<LocalId, bool> {
     let mut found = HashMap::new();
@@ -1163,107 +1117,23 @@ fn created_closures(func: &MirFunction) -> HashMap<LocalId, bool> {
     found
 }
 
-/// Functions whose return value is a heap closure the caller now owns.
-fn functions_handing_back_a_closure(
-    fns: &[MirFunction],
-    targets: &crate::closure_targets::ClosureTargets,
-) -> HashSet<String> {
-    let mut names = HashSet::new();
-    // A fixed point, because handing one back is transitive. `|x| upto(x)`
-    // creates no closure of its own — it calls `upto` and returns what came
-    // back — so a single pass left it out, and `flat_map` over it owned nothing
-    // and freed nothing. One environment per element (#1045).
-    loop {
-        let before = names.len();
-        for func in fns {
-            if names.contains(&func.name) {
-                continue;
-            }
-            let mut owned: HashMap<LocalId, bool> = created_closures(func)
-                .into_iter()
-                .filter(|(_, heap)| *heap)
-                .collect();
-            for stmt in func.blocks.iter().flat_map(|b| b.statements.iter()) {
-                match &stmt.kind {
-                    MirStmtKind::Call { dst: Some(dst), func: callee, .. }
-                        if names.contains(&callee.name) =>
-                    {
-                        owned.insert(*dst, true);
-                    }
-                    MirStmtKind::ClosureCall { dst: Some(dst), closure, .. } => {
-                        if let Some(bodies) = targets.known(&func.name, *closure) {
-                            if bodies.iter().all(|b| names.contains(b)) {
-                                owned.insert(*dst, true);
-                            }
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            for id in closures_out_of_joins(func) {
-                owned.insert(id, true);
-            }
-            if owned.is_empty() {
-                continue;
-            }
-            // A read out of a cell holding one of them holds it too, and so
-            // does every copy of the read: `let r = g; …; return r`.
-            let loads = loads_from_closure_cells(func, &closure_aliases(func, &owned));
-            owned.extend(loads.into_iter().map(|dst| (dst, true)));
-            let aliases = closure_aliases(func, &owned);
-            for block in &func.blocks {
-                let returned = match &block.terminator.kind {
-                    MirTerminatorKind::Return { value: Some(MirOperand::Local(id)) }
-                    | MirTerminatorKind::CleanupReturn { value: Some(MirOperand::Local(id)), .. } => {
-                        *id
-                    }
-                    _ => continue,
-                };
-                if aliases.holds_closure(&returned) {
-                    names.insert(func.name.clone());
-                }
-            }
-        }
-        if names.len() == before {
-            return names;
-        }
-    }
-}
-
-/// Loads out of a variable that lives in memory because a closure body assigns
-/// it, where the variable holds closures made here.
+/// Functions that hand back a closure: the caller owns it.
 ///
-/// `mut f = || 0; for v in seq { f = || v[2] }; return f` keeps `f` in a cell
-/// the loop body writes through, and `return f` is `tmp = *cell; return tmp`.
-/// Every closure that lands in such a cell is a heap one, and a read that is
-/// handed on takes a reference of its own (`retain_loads_handed_on`), so the
-/// one read back out at the return is handed back. Not seeing it, the caller
-/// never freed it.
-fn loads_from_closure_cells(func: &MirFunction, aliases: &ClosureAliases) -> Vec<LocalId> {
-    let held: HashSet<LocalId> = func
-        .blocks
-        .iter()
-        .flat_map(|b| b.statements.iter())
-        .filter_map(|stmt| match &stmt.kind {
-            MirStmtKind::Store { addr, offset: 0, value: MirOperand::Local(v), .. }
-                if matches!(func.local_ty(*addr), Some(crate::MirType::FuncPtr(_))) && aliases.holds_closure(v) =>
-            {
-                Some(*addr)
-            }
-            _ => None,
-        })
-        .collect();
-    func.blocks
-        .iter()
-        .flat_map(|b| b.statements.iter())
-        .filter_map(|stmt| match &stmt.kind {
-            MirStmtKind::Assign { dst, rvalue: crate::MirRValue::Deref(MirOperand::Local(cell)) }
-                if held.contains(cell) =>
-            {
-                Some(*dst)
-            }
-            _ => None,
-        })
+/// The type says so. A closure is move-only (mem.closures/CV1), and the
+/// checker refuses every return that would hand out a second name for one: a
+/// lent parameter (E0872, or lowering clones it), a capture (E0907), an
+/// element a container still holds (E0879). What's left is made here, taken
+/// out of something this frame owned, or handed back by a call, and each is
+/// the caller's.
+///
+/// This used to be worked out from the body, one source at a time: made here,
+/// read out of a join, loaded from a cell. Each missed source was a leak, and
+/// a call through a callback had no body to look at, so `map(|f| f.clone())`
+/// leaked every closure it built.
+fn functions_handing_back_a_closure(fns: &[MirFunction]) -> HashSet<String> {
+    fns.iter()
+        .filter(|f| !f.is_extern_c && matches!(f.ret_ty, crate::MirType::FuncPtr(_)))
+        .map(|f| f.name.clone())
         .collect()
 }
 
@@ -1430,23 +1300,15 @@ fn param_escapes_from(
                     }
                 }
                 // Passed on. Whether that gives it away is the callee's
-                // answer, in the same position — the map being built. A callee
-                // with no body of its own (a runtime helper) has no answer, and
-                // "unaccounted for" has to mean "might keep it"; the ones that
-                // demonstrably don't are written down.
+                // answer, in the same position — the map being built, or for
+                // a callee with no body, its declared shape. This asks what
+                // `callee_keeps` asks: when the two disagreed, a function
+                // cloning its lent closure for a task (`rask_closure_clone`
+                // borrows) read here as keeping it, so its caller skipped the
+                // drop the clone left it owing.
                 MirStmtKind::Call { func: callee, args, .. } => {
                     for (arg_idx, arg) in args.iter().enumerate() {
-                        if !names.iter().any(|n| uses::operand_reads(arg, *n)) {
-                            continue;
-                        }
-                        let borrows = known
-                            .get(&callee.name)
-                            .and_then(|e| e.get(arg_idx))
-                            .map(|escapes| !escapes)
-                            .unwrap_or_else(|| {
-                                uses_up_callback(callee)
-                            });
-                        if !borrows {
+                        if names.iter().any(|n| uses::operand_reads(arg, *n)) && callee_keeps(known, callee, arg_idx) {
                             return true;
                         }
                     }
@@ -2619,7 +2481,7 @@ mod tests {
         };
         let mut fns = vec![func];
         let escapes = HashMap::from([("keep_nothing".to_string(), vec![false])]);
-        insert_drops(&mut fns[0], &escapes, &HashSet::new(), &crate::closure_targets::ClosureTargets::build(&[]));
+        insert_drops(&mut fns[0], &escapes, &HashSet::new());
         let made: Vec<Option<LocalId>> = fns[0].blocks[0]
             .statements
             .iter()

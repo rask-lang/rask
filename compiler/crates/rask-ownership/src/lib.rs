@@ -6042,6 +6042,11 @@ impl<'a> OwnershipChecker<'a> {
     fn lendable_payload(&self, ty: &Type) -> bool {
         match ty {
             Type::Result { ok, err } if **err == Type::None => self.lendable_payload(ok),
+            // A closure is move-only (mem.closures/CV1): the element the
+            // lookup reads is still the container's, so handing it out is a
+            // second owner exactly as a `Vec` element is. `return fs[0]`
+            // compiled, and the caller couldn't know whether to free it.
+            Type::Fn { .. } => true,
             other => self
                 .type_name_of(other)
                 .is_some_and(|n| matches!(n.as_str(), "Vec" | "Map" | "Set")),

@@ -238,6 +238,11 @@ impl ClosureTargets {
                             }
                         }
                         MirStmtKind::Call { func: fref, args, dst } => {
+                            if let Some((d, src)) = clone_of(stmt) {
+                                if let Some(flow) = locals.get(&(name.clone(), src)).cloned() {
+                                    grew |= merge_into(&mut locals, (name.clone(), d), &flow);
+                                }
+                            }
                             if follow_returns {
                                 if let (Some(d), Some(flow)) = (dst, returns.get(&fref.name).cloned()) {
                                     grew |= merge_into(&mut locals, (name.clone(), *d), &flow);
@@ -490,7 +495,22 @@ fn modelled_def(func: &MirFunction, stmt: &crate::MirStmt) -> bool {
                 || (is_closure(func, *dst) && struct_field_read(func, rvalue).is_some())
         }
         MirStmtKind::Phi { .. } => true,
-        _ => false,
+        _ => clone_of(stmt).is_some(),
+    }
+}
+
+/// `dst = rask_closure_clone(src)`: a copy of the environment, running the
+/// same body (mem.closures/CV2). `let src = p.run.clone()` hid which closure
+/// `src()` called, so its result had no owner.
+fn clone_of(stmt: &crate::MirStmt) -> Option<(LocalId, LocalId)> {
+    match &stmt.kind {
+        MirStmtKind::Call { dst: Some(d), func, args } if func.name == "rask_closure_clone" => {
+            match args.first() {
+                Some(MirOperand::Local(src)) => Some((*d, *src)),
+                _ => None,
+            }
+        }
+        _ => None,
     }
 }
 
