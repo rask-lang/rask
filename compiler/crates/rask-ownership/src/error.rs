@@ -175,16 +175,15 @@ pub enum OwnershipErrorKind {
         clone_form: Option<String>,
     },
 
-    /// mem.borrowing/E4: `let x = collection[key]` on an element that isn't
-    /// Copy. Indexing hands the element back in place, so the binding is a
-    /// second name for storage the collection still owns.
-    #[error("`{elem_ty}` isn't Copy, so `{binding}` would be a second name for the same element")]
-    NonCopyElementCopiedOut {
+    /// mem.borrowing/E4, S5: `mut x = collection[key]` (or a lookup or pick)
+    /// on an element that isn't Copy. The binding would be a second writable
+    /// name for storage the collection still owns.
+    #[error("`{binding}` and `{call}` would be the same `{elem_ty}`, both writable")]
+    MutableElementView {
         binding: String,
         elem_ty: String,
-        /// The collection being indexed, when it has a printable name.
-        /// Not called `source`: `thiserror` reads that name as the error cause.
-        collection: Option<String>,
+        /// `rows[…]`, `rows.get(…)`: the read that lent the element.
+        call: String,
     },
 
     /// mem.ownership/O11: a `const` can't be given away.

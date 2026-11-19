@@ -231,9 +231,9 @@ let users = Map.from([
 
 | Rule | Description |
 |------|-------------|
-| **V1: Copy out** | `vec[i]` copies T when T: Copy. Panics on OOB |
+| **V1: Copy out or view** | `vec[i]` copies T when T: Copy; bound with `let`, a non-Copy element is a view of it until the block ends (`mem.borrowing/E4`). Panics on OOB |
 | **V2: Expression borrow** | `vec[i].field` borrows for expression, released at `;` |
-| **V3: Safe get** | `vec.get(i)` returns `T?` (T: Copy), no panic |
+| **V3: Safe get** | `vec.get(i)` returns `T?`, no panic: a copy when T: Copy, else a view of the element, as `vec[i]` gives |
 | **V8: Integer index** | The index is **any integer type** (no `as usize`). Checked at compile time — a non-integer index is a compile error (`type.operators/IX1`, `E0819`). The value is range-checked at access; negative or too-large panics, no wraparound |
 | **V9: A count is unsigned** | `len()`, `capacity()` and every count answer `usize`. Accumulate them into `usize`/`u64`, not `i64` — that needs a policy (CV1a) and the cast proves nothing |
 
@@ -261,9 +261,9 @@ first place is the bug that error is pointing at.
 
 | Method | Returns | Constraint | Panics |
 |--------|---------|------------|--------|
-| `vec[i]` | `T` | `T: Copy` | Yes (OOB) |
+| `vec[i]` | `T` (a view when not Copy) | none | Yes (OOB) |
 | `vec[i].field` | inline access (expression-scoped) | none | Yes (OOB) |
-| `vec.get(i)` | `T?` | `T: Copy` | No |
+| `vec.get(i)` | `T?` (a view when not Copy) | none | No |
 | `vec.get_clone(i)` | `T?` | `T: Cloneable` | No |
 | `with vec[i] as v { ... }` | block value (mutable) | none | Yes (OOB) |
 | `vec.insert(i, x)` | `()` | none | Yes (OOB or alloc) |
@@ -325,9 +325,9 @@ let name = with vec[i] as v { v.name.clone() }
 
 | Method | Returns | Semantics |
 |--------|---------|-----------|
-| `map[k]` | `V` | Panics if missing (V: Copy) |
+| `map[k]` | `V` | Copy out (V: Copy), else a view. Panics if missing |
 | `map[k].field` | inline access (expression-scoped) | Panics if missing |
-| `map.get(k)` | `V?` | Copy out (V: Copy) |
+| `map.get(k)` | `V?` | Copy out (V: Copy), else a view |
 | `map.get_clone(k)` | `V?` | Clone out (V: Cloneable) |
 | `with map[k] as v { ... }` | block value (mutable) | Panics if missing |
 | `map.remove(k)` | `V?` | Remove and return |

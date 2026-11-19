@@ -170,6 +170,8 @@ struct WithBindingInfo {
     fields: Vec<String>,
     /// Span of the `with` binding for error messages
     span: Span,
+    /// The `as` name: the element itself for the length of the block.
+    binding: String,
 }
 
 /// LP14/LP16: Tracks the collection being iterated in a `for mutate` loop.
@@ -1031,13 +1033,18 @@ impl<'a> OwnershipChecker<'a> {
         }
         let Some(ty) = self.node_ty(&cur.id) else { return ChainHead::Unknown };
         let is_vec = matches!(self.type_name_of(ty).as_deref(), Some("Vec"));
-        // A vector made for the chain (`load().find(p)`, `v.take_all()`) is
-        // nobody else's, so its elements are the chain's to give: a call's
-        // result is its caller's (mem.borrowing/S3), and a lookup that lends
-        // answers an option, never a bare `Vec`. An `enumerate` pair is built
-        // around the element, and nothing moves it out of the vector first.
-        if is_vec
-            && matches!(cur.kind, ExprKind::Call { .. } | ExprKind::MethodCall { .. })
+        let is_array = matches!(ty, Type::Array { .. });
+        // A vector or array made for the chain (`load().find(p)`,
+        // `v.take_all()`, `[a, b]`) is nobody else's, so its elements are the
+        // chain's to give: a call's result is its caller's (mem.borrowing/S3),
+        // a literal is a temporary that owns what was put in it, and a lookup
+        // that lends answers an option, never a bare `Vec`. An `enumerate`
+        // pair is built around the element, and nothing moves it out first.
+        if (is_vec || is_array)
+            && matches!(
+                cur.kind,
+                ExprKind::Call { .. } | ExprKind::MethodCall { .. } | ExprKind::Array(_) | ExprKind::ArrayRepeat { .. }
+            )
             && !Self::chain_has_before(expr, cur, "enumerate")
         {
             return ChainHead::Owns;
@@ -1048,7 +1055,7 @@ impl<'a> OwnershipChecker<'a> {
         // A vector or an array held in a place holds its elements where a
         // pick can answer with one (mem.borrowing/B1). A map's pairs are made
         // by the walk, so they lend like any sequence's items.
-        if is_vec || matches!(ty, Type::Array { .. }) {
+        if is_vec || is_array {
             return ChainHead::Lends { head, collection: Self::is_place(cur) };
         }
         if matches!(self.type_name_of(ty).as_deref(), Some("Map" | "Set" | "Sequence")) {
@@ -2427,46 +2434,47 @@ impl<'a> OwnershipChecker<'a> {
         edges[i].1 = Some(joined);
     }
 
-    /// E4: `let x = collection[key]` copies when the element is Copy and is a
-    /// compile error when it isn't.
+    /// `mut x = rows[i]`, `mut x = rows.get(i)!` or a pick, of an element that
+    /// isn't Copy.
     ///
-    /// Indexing hands back the element in place, so a non-Copy binding is a
-    /// second name for storage the collection still owns — writing through
-    /// either writes both, on both backends. `with` is the form that says the
-    /// access is scoped; `.clone()` is the form that says a second value is
-    /// wanted and pays for it.
-    ///
-    /// A field projection is a different rule and stays allowed: a view into a
-    /// struct field lives until the block ends (S1), and the field's owner is
-    /// right there in the same scope.
-    fn check_index_binding(&mut self, name: &str, init: &Expr, is_mut: bool) {
+    /// Under `let` the binding is a view of the element where it sits: it
+    /// lasts until the block ends, the collection can't change under it, and
+    /// it can't be stored or returned (mem.borrowing/B2, S1, S3, S5).
+    /// `record_field_view` keeps track of it like a field view. `mut` asks for
+    /// a second writable name for the same element, which S5 rules out the
+    /// same way it rules out `mut x = value.field`: a write through either
+    /// would be a write through both. `with` scopes the exclusive access;
+    /// `.clone()` asks for a separate value.
+    fn check_element_binding(&mut self, name: &str, init: &Expr, is_mut: bool) {
         if let ExprKind::Field { .. } = &init.kind {
             self.check_mutable_field_view(name, init, is_mut);
             return;
         }
-        if !matches!(init.kind, ExprKind::Index { .. }) {
+        if !is_mut {
             return;
         }
-        let Some(ty) = self.node_ty(&init.id).cloned() else {
+        let Some(lent) = self.lent_value_where(init, &Self::element_not_copy) else {
             return;
-        };
-        // Nothing asks again per instantiation here, so an unbounded `T` is
-        // the move G1a says it is.
-        if self.copy_verdict_params_move(&ty) != CopyVerdict::Move {
-            return;
-        }
-        let collection = match &init.kind {
-            ExprKind::Index { object, .. } => Self::render_place(object),
-            _ => None,
         };
         self.errors.push(OwnershipError {
-            kind: OwnershipErrorKind::NonCopyElementCopiedOut {
+            kind: OwnershipErrorKind::MutableElementView {
                 binding: name.to_string(),
-                elem_ty: self.resource_type_display(&ty),
-                collection,
+                elem_ty: lent.payload_ty,
+                call: lent.call,
             },
             span: init.span,
         });
+    }
+
+    /// An element a collection lends that isn't Copy, so a binding of it is a
+    /// view rather than a copy. Nothing asks again per instantiation here, so
+    /// an unbounded `T` is the move G1a says it is.
+    fn element_not_copy(&self, ty: &Type) -> bool {
+        let ty = match ty {
+            Type::Result { ok, err } if **err == Type::None => ok.as_ref(),
+            other => other,
+        };
+        self.copy_verdict_params_move(ty) == CopyVerdict::Move
     }
 
     /// S5: `mut x = value.field` on a field that isn't Copy.
@@ -2530,7 +2538,13 @@ impl<'a> OwnershipChecker<'a> {
         self.values_reaching(expr, false, &mut values);
         let mut hit = false;
         for value in values {
-            hit |= self.check_lent_escape(value, into);
+            // An element a lookup lent is also a part of whatever holds it,
+            // often a borrowed parameter. The lookup's message names the
+            // call; one complaint per value.
+            if self.check_lent_escape(value, into) {
+                hit = true;
+                continue;
+            }
             hit |= match into {
                 Sink::Return if self.check_held_part_returned(value) => true,
                 Sink::Return => {
@@ -2932,6 +2946,15 @@ impl<'a> OwnershipChecker<'a> {
             fields = through;
             root = fm.root.clone();
             sym = None;
+        } else if let Some(w) = self.active_with_bindings.iter().rev().find(|w| w.binding == root) {
+            // So is a `with rows[i] as w` binding: `w.tags = …` writes over
+            // the field of the element a view outside the block may read.
+            let mut through = w.fields.clone();
+            through.push(replaces::ELEM.to_string());
+            through.extend(fields);
+            fields = through;
+            root = w.root.clone();
+            sym = None;
         }
         fields.extend(under.iter().cloned());
         let hits = |name: &str, view: &FieldView| {
@@ -3207,7 +3230,7 @@ impl<'a> OwnershipChecker<'a> {
                 // `mut` is what makes a rack's nodes writable here.
                 self.writable_racks.insert(name.clone());
                 self.check_expr(init);
-                self.check_index_binding(name, init, true);
+                self.check_element_binding(name, init, true);
                 // let: Copy types are copied (source stays valid),
                 // non-Copy types are moved (source invalidated)
                 self.handle_assignment(init, stmt.span, true);
@@ -3295,7 +3318,7 @@ impl<'a> OwnershipChecker<'a> {
                     self.shadowed_holds.insert(name.clone());
                 }
                 self.check_expr(init);
-                self.check_index_binding(name, init, false);
+                self.check_element_binding(name, init, false);
                 // non-Copy types are moved (O3); field/index projections create borrows.
                 self.handle_assignment(init, stmt.span, false);
                 self.bindings.insert(name.clone(), BindingState::Owned);
@@ -5244,6 +5267,7 @@ impl<'a> OwnershipChecker<'a> {
                                 root,
                                 fields,
                                 span: binding.source.span,
+                                binding: binding.name.clone(),
                             });
                         }
                     }
@@ -6373,7 +6397,6 @@ impl<'a> OwnershipChecker<'a> {
                 })
             }
             // `rows[0]` is the same read `rows.get(0)` is, minus the `T?`.
-            // Binding one is already E0871; this is the return.
             ExprKind::Index { object, .. } => {
                 let recv = self.node_ty(&object.id)?;
                 let head = self.type_name_of(recv)?;
@@ -6542,11 +6565,7 @@ impl<'a> OwnershipChecker<'a> {
                 ..v
             });
         }
-        let not_copy = |this: &Self, ty: &Type| match ty {
-            Type::Result { ok, err } if **err == Type::None => !this.is_copy(ok),
-            other => !this.is_copy(other),
-        };
-        let lent = self.lent_value_where(init, &not_copy)?;
+        let lent = self.lent_value_where(init, &Self::element_not_copy)?;
         let (root, steps, root_sym) = lent.place?;
         Some(FieldView {
             path: lent.holder,

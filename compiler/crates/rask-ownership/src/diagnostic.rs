@@ -354,32 +354,25 @@ impl ToDiagnostic for crate::OwnershipError {
                 ))
             }
 
-            NonCopyElementCopiedOut { binding, elem_ty, collection } => {
-                let from = collection
-                    .as_deref()
-                    .map(|c| format!("`{}`", c))
-                    .unwrap_or_else(|| "the collection".to_string());
+            MutableElementView { binding, elem_ty, call } => {
                 Diagnostic::error(format!(
-                    "`{}` isn't Copy, so `{}` would be a second name for the same element",
-                    elem_ty, binding
+                    "`{}` and `{}` would be the same `{}`, both writable",
+                    binding, call, elem_ty
                 ))
                 .with_code("E0871")
-                .with_primary(
-                    self.span,
-                    format!("this element stays owned by {}", from),
-                )
+                .with_primary(self.span, "this element stays where the collection keeps it")
                 .with_fix(format!(
-                    "scope the access — `with {}[…] as {} {{ … }}` — or ask for a \
-                     separate value with `.clone()`",
-                    collection.as_deref().unwrap_or("collection"),
-                    binding
+                    "write `let {b}` for a read-only view, scope the writes with \
+                     `with {c} as {b} {{ … }}`, or ask for a separate value with `.clone()`",
+                    b = binding,
+                    c = call
                 ))
                 .with_why(
-                    "indexing hands the element back where it lives rather than \
-                     copying it out, so a binding of a non-Copy element is a second \
-                     name for storage the collection still owns — a write through \
-                     either one is a write through both. A Copy element is copied \
-                     and has no such tie [mem.borrowing/E4]"
+                    "a `let` of an element that isn't Copy is a view of it where it sits, and \
+                     a read-only one sits fine beside the collection. `mut` asks for exclusive \
+                     access instead, and a plain binding can't say for how long, so both names \
+                     stay live and a write through either is a write through both \
+                     [mem.borrowing/E4, S5]"
                         .to_string(),
                 )
             }

@@ -1,0 +1,77 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// `let r = rows[i]` of an element that isn't Copy is a view of it until the
+// block ends, like `rows.get(i)!` and a pick (mem.borrowing/B2, E4). The view
+// holds the element, so `rows.push` may move the buffer under it. What it
+// can't survive is the element being freed, and a writable second name for it.
+
+struct Row {
+    name: string
+    tags: Vec<i64>
+}
+
+func writable(mutate rows: Vec<Row>) {
+    // ERROR: `r` and `rows[…]` would be the same `Row`, both writable [E0871]
+    mut r = rows[0]
+    r.tags.push(1)
+}
+
+func writable_lookup(mutate rows: Vec<Row>) {
+    // ERROR: `r` and `rows.get(…)` would be the same `Row`, both writable [E0871]
+    mut r = rows.get(0)!
+    r.tags.push(1)
+}
+
+func removed(mutate rows: Vec<Row>) {
+    let r = rows[0]
+    // ERROR: `remove` frees the element `r` views [E0958]
+    rows.remove(0)
+    println(r.name)
+}
+
+// `replace` hands the old element back, and `Map.insert` does the same when
+// the key is already there. Either way the view's element is gone.
+func replaced(mutate rows: Vec<Row>) {
+    let r = rows[0]
+    // ERROR: `replace` takes out the element `r` views [E0958]
+    rows.replace(0, Row(name: "y", tags: Vec.new()))
+    println(r.name)
+}
+
+func reinserted(mutate m: Map<string, Vec<i64>>) {
+    let v = m["a"]
+    // ERROR: inserting over `"a"` frees the vector `v` views [E0958]
+    m.insert("a", Vec.new())
+    println(v.len())
+}
+
+// A write through a `with` binding reaches the element as surely as
+// `rows[0].tags = …` does. It went unchecked, and native read the freed
+// vector.
+func written_in_with(mutate rows: Vec<Row>) {
+    let r = rows.get(0)!
+    with rows[0] as w {
+        // ERROR: `w.tags = …` frees the vector `r.tags` reads [E0958]
+        w.tags = Vec.new()
+    }
+    println(r.tags.len())
+}
+
+func returned(rows: Vec<Row>) -> Row {
+    let r = rows[0]
+    // ERROR: the view can't leave the function [E0879]
+    return r
+}
+
+// Fine: reading through the view while the vector grows.
+func grows(mutate rows: Vec<Row>) {
+    let r = rows[0]
+    rows.push(Row(name: "z", tags: Vec.new()))
+    rows[0].tags.push(4)
+    println("{r.name} {r.tags.len()}")
+}
+
+func main() {
+    mut rows: Vec<Row> = Vec.new()
+    rows.push(Row(name: "a", tags: Vec.new()))
+    grows(mutate rows)
+}

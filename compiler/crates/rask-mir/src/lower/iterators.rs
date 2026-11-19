@@ -941,11 +941,23 @@ impl<'a> MirLowerer<'a> {
             _ => (None, None),
         };
 
-        let collection = self.builder.alloc_temp(source_ty.clone());
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-            dst: collection,
-            rvalue: MirRValue::Use(source_op),
-        }));
+        // An array the chain owns is walked where it is: a move out zeroes
+        // its slot, and the array's release has to see that, not a copy's.
+        let in_place = match &source_op {
+            MirOperand::Local(l) if array_len.is_some() && self.chain_owns_items(chain) => Some(*l),
+            _ => None,
+        };
+        let collection = match in_place {
+            Some(l) => l,
+            None => {
+                let collection = self.builder.alloc_temp(source_ty.clone());
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                    dst: collection,
+                    rvalue: MirRValue::Use(source_op),
+                }));
+                collection
+            }
+        };
 
         // len
         let len_local = self.builder.alloc_temp(MirType::I64);
@@ -2140,22 +2152,26 @@ impl<'a> MirLowerer<'a> {
         Ok((MirOperand::Local(acc), opt_ty))
     }
 
-    /// A chain over a vector made for it (`load().find(p)`,
-    /// `v.take_all().to_vec()`) owns its items: nothing else holds that
-    /// vector, so a terminal that keeps an item moves it out and the vector's
-    /// free releases the rest (type.sequence/SEQ47). Only through adapters
-    /// that hand on the element itself; an `enumerate` pair or a `map`'s value
-    /// is built around it.
+    /// A chain over a vector or array made for it (`load().find(p)`,
+    /// `v.take_all().to_vec()`, `[a, b].to_vec()`) owns its items: nothing
+    /// else holds that storage, so a terminal that keeps an item moves it out
+    /// and the storage's release frees the rest (type.sequence/SEQ47). Only
+    /// through adapters that hand on the element itself; an `enumerate` pair
+    /// or a `map`'s value is built around it.
     ///
-    /// A function's result is its caller's (mem.borrowing/S3), and a lookup
-    /// that lends (`rows.get(i)`) answers an option, never a bare `Vec`, so a
-    /// call typed `Vec` is a vector made for the chain.
+    /// A function's result is its caller's (mem.borrowing/S3), a literal is a
+    /// temporary that owns what was put in it, and a lookup that lends
+    /// (`rows.get(i)`) answers an option, never a bare `Vec`, so a call typed
+    /// `Vec` or an array is storage made for the chain.
     pub(super) fn chain_owns_items(&self, chain: &super::IterChain<'_>) -> bool {
-        matches!(chain.source.kind, ExprKind::Call { .. } | ExprKind::MethodCall { .. })
-            && self
-                .checked_type_of(chain.source)
-                .is_some_and(|t| self.generic_head(&t).is_some_and(|(name, _)| name == "Vec"))
-            && chain.adapters.iter().all(|a| matches!(
+        let made = match &chain.source.kind {
+            ExprKind::Array(_) => true,
+            ExprKind::Call { .. } | ExprKind::MethodCall { .. } => self.checked_type_of(chain.source).is_some_and(|t| {
+                matches!(t, Type::Array { .. }) || self.generic_head(&t).is_some_and(|(name, _)| name == "Vec")
+            }),
+            _ => false,
+        };
+        made && chain.adapters.iter().all(|a| matches!(
                 a,
                 super::IterAdapter::Filter { .. }
                     | super::IterAdapter::Skip { .. }
@@ -2165,7 +2181,7 @@ impl<'a> MirLowerer<'a> {
             ))
     }
 
-    /// The item a keeping terminal stores: moved out of the vector when the
+    /// The item a keeping terminal stores: moved out of the storage when the
     /// chain owns its items, else `item` as the chain yields it.
     fn owned_item(
         &mut self,
@@ -2177,13 +2193,59 @@ impl<'a> MirLowerer<'a> {
         if !self.chain_owns_items(chain) {
             return item;
         }
-        let moved = self.builder.alloc_temp(self.handed_over_elem(chain.source, item_ty.clone()));
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-            dst: Some(moved),
-            func: FunctionRef::like("Vec_move_out", "Vec_remove"),
-            args: vec![MirOperand::Local(setup.collection), MirOperand::Local(setup.idx)],
+        let ty = self.handed_over_elem(chain.source, item_ty.clone());
+        MirOperand::Local(self.move_out_element(setup, setup.idx, ty))
+    }
+
+    /// Element `at` of the chain's storage, handed over: the slot is zeroed,
+    /// so the storage's release frees only what nothing took. Every release
+    /// reads an all-zero element as owning nothing (`rask_vec_move_out`).
+    fn move_out_element(&mut self, setup: &IterLoopSetup, at: LocalId, ty: MirType) -> LocalId {
+        let moved = self.builder.alloc_temp(ty);
+        let Some(MirType::Array { elem, .. }) = self.builder.local_type(setup.collection) else {
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                dst: Some(moved),
+                func: FunctionRef::like("Vec_move_out", "Vec_remove"),
+                args: vec![MirOperand::Local(setup.collection), MirOperand::Local(at)],
+            }));
+            return moved;
+        };
+        self.read_array_element(moved, setup.collection, at, &elem);
+        if elem.is_plain_scalar() {
+            return moved;
+        }
+        let size = rask_layout::size_of(elem.as_ref(), self.ctx.target());
+        let offset = self.builder.alloc_temp(MirType::I64);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: offset,
+            rvalue: MirRValue::BinaryOp {
+                op: crate::operand::BinOp::Mul,
+                left: MirOperand::Local(at),
+                right: MirOperand::Constant(MirConst::Int(size as i64)),
+            },
         }));
-        MirOperand::Local(moved)
+        let slot = self.builder.alloc_temp(MirType::Ptr);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: slot,
+            rvalue: MirRValue::BinaryOp {
+                op: crate::operand::BinOp::Add,
+                left: MirOperand::Local(setup.collection),
+                right: MirOperand::Local(offset),
+            },
+        }));
+        let mut written = 0;
+        while written < size {
+            let width = if size - written >= 8 { 8 } else if size - written >= 4 { 4 } else { 1 };
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+                addr: slot,
+                offset: written,
+                value: MirOperand::Constant(MirConst::Int(0)),
+                store_size: width,
+                field: None,
+            }));
+            written += width;
+        }
+        moved
     }
 
     /// A pick (`find`, `min`/`max`, `_by`, `_by_key`) over a vector held in a
@@ -2443,13 +2505,7 @@ impl<'a> MirLowerer<'a> {
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: done_block }));
         self.builder.switch_to_block(some_block);
         let value = if takes {
-            let moved = self.builder.alloc_temp(payload_ty);
-            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                dst: Some(moved),
-                func: FunctionRef::like("Vec_move_out", "Vec_remove"),
-                args: vec![MirOperand::Local(setup.collection), MirOperand::Local(found)],
-            }));
-            MirOperand::Local(moved)
+            MirOperand::Local(self.move_out_element(setup, found, payload_ty))
         } else {
             self.pick_winner(setup, found, found_pos, enumerated)
         };
