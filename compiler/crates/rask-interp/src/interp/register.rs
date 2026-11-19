@@ -461,7 +461,7 @@ impl Interpreter {
     pub(super) fn run_single_test(&mut self, name: &str, body: &[Stmt]) -> TestResult {
         let start = crate::Stopwatch::start();
         let mut errors: Vec<String> = Vec::new();
-        let mut ensures: Vec<&Stmt> = Vec::new();
+        let mut ensures: Vec<super::call::Scheduled> = Vec::new();
         let mut skipped: Option<String> = None;
         let mut expect_fail = false;
 
@@ -474,7 +474,7 @@ impl Interpreter {
 
         for stmt in body {
             if matches!(&stmt.kind, StmtKind::Ensure { .. }) {
-                ensures.push(stmt);
+                ensures.push(self.schedule_ensure(stmt));
             } else {
                 match self.exec_stmt(stmt) {
                     Ok(_) => {}

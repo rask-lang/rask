@@ -128,6 +128,8 @@ pub struct NodeRecords {
     pub quiet_loops: HashSet<NodeId>,
     /// The bindings each `return` moves (ownership).
     pub return_moves: HashMap<NodeId, Vec<String>>,
+    pub ensure_cancels: HashMap<NodeId, Vec<NodeId>>,
+    pub ensure_subjects: HashMap<NodeId, String>,
     /// Closure literals that may not reach another task (#1356).
     pub task_bound_closures: HashSet<NodeId>,
 }
@@ -147,6 +149,8 @@ impl NodeRecords {
             field_reuses: typed.field_reuses.clone(),
             quiet_loops: typed.quiet_loops.clone(),
             return_moves: typed.return_moves.clone(),
+            ensure_cancels: typed.ensure_cancels.clone(),
+            ensure_subjects: typed.ensure_subjects.clone(),
             task_bound_closures: typed.task_bound_closures.clone(),
         }
     }
@@ -1136,6 +1140,8 @@ mod tests {
             field_reuses: std::collections::HashSet::new(),
             quiet_loops: std::collections::HashSet::new(),
             return_moves: std::collections::HashMap::new(),
+            ensure_cancels: std::collections::HashMap::new(),
+            ensure_subjects: std::collections::HashMap::new(),
             task_bound_closures: std::collections::HashSet::new(),
             generic_closure_captures: std::collections::HashMap::new(),
             try_chain_placement: std::collections::HashMap::new(),

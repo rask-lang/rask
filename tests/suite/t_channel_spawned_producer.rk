@@ -144,14 +144,16 @@ test "concurrency.channels — a spawned producer that closes its end" {
     assert spawned_sum(5) == 15
 }
 
-// Many tasks sharing one sender. #1139: `own` copies the handle without taking
-// a reference, so this leaks the copies rather than closing the channel early.
+// Many tasks sharing one channel. A detached task moves what it captures
+// (conc.async/S5), so each one carries a clone of the sender; capturing `tx`
+// itself on every turn is a use after move (#2023).
 func fan_in(tasks: i64) -> i64 {
     using Multitasking {
         let (tx, rx) = Channel<i64>.buffered(8)
         for id in 0..tasks {
+            let mine = tx.clone()
             spawn {
-                tx.send(id + 1)
+                mine.send(id + 1)
             }.detach()
         }
         mut total = 0

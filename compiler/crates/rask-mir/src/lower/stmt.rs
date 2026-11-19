@@ -637,7 +637,7 @@ impl<'a> MirLowerer<'a> {
                 // `value.(name)` before, it doesn't now.
                 self.comptime_strings.remove(name);
                 let r = self.lower_binding(name, ty.as_ref().map(|_| stmt.id), init);
-                self.check_resource_moved(init);
+                self.mark_consumed_by(init);
                 r
             }
 
@@ -655,7 +655,7 @@ impl<'a> MirLowerer<'a> {
                     _ => { self.comptime_strings.remove(name); }
                 }
                 let r = self.lower_binding(name, ty.as_ref().map(|_| stmt.id), init);
-                self.check_resource_moved(init);
+                self.mark_consumed_by(init);
                 r
             }
 
@@ -685,7 +685,7 @@ impl<'a> MirLowerer<'a> {
                     // ensure is cancelled before the cleanup chain runs —
                     // without it the cleanup ran as part of returning and the
                     // caller was given a closed handle.
-                    self.check_resource_moved(e);
+                    self.mark_consumed_by(e);
                     returned_ty = Some(op_ty.clone());
                     // Wrap a bare value into whatever the return type asks for:
                     // `func -> User? { return User { ... } }` needs one layer,
@@ -799,7 +799,7 @@ impl<'a> MirLowerer<'a> {
                 // Before any widening into `T?`: a link stored into a slot is
                 // registered as the link, not as the optional around it.
                 let unwrapped_val = val_op.clone();
-                self.check_resource_moved(value);
+                self.mark_consumed_by(value);
                 // OPT6/#380: widen a bare `T` into `Some(T)` when the lvalue is an
                 // `Option<T>` place (reassignment or index/field store). The checker
                 // accepts the widening; without the wrap the bare value lands in the
@@ -1560,34 +1560,29 @@ impl<'a> MirLowerer<'a> {
                 // Marker for MIRI/analysis
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::EnsurePush { cleanup_block }));
 
-                // C1/C2: extract receiver variable from body (e.g. `ensure tx.rollback()` → "tx").
-                // Register a resource_id so consumption can be tracked at runtime.
-                let receiver_name = Self::extract_ensure_receiver(body);
-                if let Some(ref name) = receiver_name {
-                    if let Some((local_id, _)) = self.locals.get(name) {
-                        let resource_id = self.builder.alloc_local(
-                            format!("__ensure_res_{}", cleanup_block.0),
-                            MirType::I64,
-                        );
-                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::ResourceRegister {
-                            dst: resource_id,
-                            type_name: name.clone(),
-                            slot: Some(*local_id),
-                        }));
-                        self.ensure_receivers.insert(cleanup_block, (name.clone(), resource_id));
-                        // Store resource_id in local_meta so method calls on this
-                        // receiver can find it for ResourceConsume.
-                        self.meta_mut(name).resource_id = Some(resource_id);
-                    }
-                }
+                // C1/C2: an ensure the ownership pass found something to
+                // cancel gets a flag, set where that happens.
+                let flag = if self.ctx.ensure_cancels.values().any(|es| es.contains(&stmt.id)) {
+                    let receiver = self.ctx.ensure_subjects.get(&stmt.id).cloned();
+                    let slot = receiver.as_ref().and_then(|n| self.locals.get(n)).map(|(id, _)| *id);
+                    let flag = self.builder.alloc_local(format!("__ensure_res_{}", cleanup_block.0), MirType::I64);
+                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::ResourceRegister {
+                        dst: flag,
+                        type_name: receiver.unwrap_or_else(|| "ensure".to_string()),
+                        slot,
+                    }));
+                    self.ensure_flags.insert(stmt.id, flag);
+                    Some(flag)
+                } else {
+                    None
+                };
                 self.ensure_stack.push(cleanup_block);
 
                 // Reify a runtime hook so the body also runs if the scope unwinds
                 // on a native panic (ctrl.panic/U1). Registered in the main flow at
                 // schedule time; popped by the inline cleanup on a normal exit, so
                 // only a panic reaches it via rask_ensure_run_all.
-                let hook_resource = self.ensure_receivers.get(&cleanup_block).map(|(_, id)| *id);
-                let hook = self.try_reify_ensure_hook(body, else_handler, hook_resource);
+                let hook = self.try_reify_ensure_hook(body, else_handler, flag);
                 if let Some((thunk, captures)) = &hook {
                     self.builder.push_stmt(MirStmt::dummy(MirStmtKind::EnsureHookRegister {
                         thunk: thunk.clone(),
@@ -1607,10 +1602,7 @@ impl<'a> MirLowerer<'a> {
                     let kept = captures.iter().filter(|c| c.by_ref).map(|c| c.local_id).collect();
                     self.builder.push_stmt(MirStmt::dummy(MirStmtKind::EnsureHookPop { kept }));
                 }
-                if let Some((_, resource_id)) = receiver_name
-                    .as_ref()
-                    .and_then(|_name| self.ensure_receivers.get(&cleanup_block).cloned())
-                {
+                if let Some(resource_id) = flag {
                     // Check if resource was consumed → skip cleanup
                     let consumed = self.builder.alloc_temp(MirType::I64);
                     self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
@@ -3400,7 +3392,7 @@ impl<'a> MirLowerer<'a> {
             // `break a` carries the resource out of the loop, so the loop's own
             // `ensure` must not still close it on the way past. Emitted before
             // `emit_scope_cleanup` below, which is the chain that would.
-            self.check_resource_moved(val_expr);
+            self.mark_consumed_by(val_expr);
             if let Some(result) = result_local {
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                     dst: result,

@@ -303,19 +303,20 @@ fn elide_local_only(func: &mut MirFunction, own: &HashSet<String>) -> usize {
                     keep_retain_only.insert(l);
                 }
             }
-        } else if crosses_container && !group.iter().any(|l| phi_dsts.contains(l)) {
+        } else if crosses_container {
             // A copy of a view holds a reference of its own, taken at the copy
             // and given back at its last use. The slot it was read from can be
             // written over in between — `let w = words[0]` then `words[0] =
             // "z"` releases what the slot held — and a copy with no reference
             // was left pointing at the freed buffer.
             //
-            // Only where the group is the view and its copies. Through a join,
-            // a copy's reference moves into the phi, whose release this pass
-            // doesn't keep for a group that touches a container, so the retain
-            // would be the only op left and leak.
+            // Through a join, the copy's reference moves into the phi and the
+            // phi's release gives it back, so both stay. Dropping both left
+            // only a retain after the join, too late when the arm freed the
+            // container on its way out: `match k { 0 => { let v = mk(); v[0] } }`
+            // read the string out of a freed vector.
             for l in group {
-                if plain_copies.contains(&l) {
+                if plain_copies.contains(&l) || phi_dsts.contains(&l) {
                     keep.insert(l);
                 }
             }

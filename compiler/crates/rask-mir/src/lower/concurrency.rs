@@ -570,13 +570,20 @@ impl<'a> MirLowerer<'a> {
         // a channel closing mid-wait is noticed.
         let any_open = self.builder.alloc_temp(MirType::Bool);
         // `T or SelectError` when the select can wait; the checker's type.
-        let wrapped = match (default_arm, self.lookup_expr_type(expr)) {
-            (None, Some(ty @ MirType::Result { .. })) => Some(ty),
+        let select_ty = self.lookup_expr_type(expr);
+        let wrapped = match (default_arm, &select_ty) {
+            (None, Some(ty @ MirType::Result { .. })) => Some(ty.clone()),
             _ => None,
         };
-        let result_local = self
-            .builder
-            .alloc_temp(wrapped.clone().unwrap_or(MirType::I64));
+        // The checker's type, so a string an arm hands out is held by a
+        // string local. Typed `i64`, the copy into it took no reference and
+        // the arm's release freed what the select returned (#1983).
+        let result_ty = select_ty.unwrap_or(MirType::Void);
+        let result_local = self.builder.alloc_temp(if matches!(result_ty, MirType::Void) {
+            MirType::I64
+        } else {
+            result_ty.clone()
+        });
         // How many arms this round has probed — the cycle stops once every
         // arm's had exactly one turn, wherever it started.
         let visited = self.builder.alloc_temp(MirType::I64);
@@ -786,30 +793,35 @@ impl<'a> MirLowerer<'a> {
         }
 
         // Arm bodies. A receive arm binds its value from the probe's buffer.
-        let mut result_ty = MirType::Void;
         for (i, arm) in arms.iter().enumerate() {
             self.builder.switch_to_block(arm_blocks[i]);
             if let Some(Probe::Recv { buf, elem, binding, .. }) =
                 probes.iter().find(|p| matches!(p, Probe::Recv { arm, .. } if *arm == i))
             {
-                let bound = self.builder.alloc_local(binding.clone(), elem.clone());
+                // The value left the channel: the binding owns it, the way
+                // `v.remove(i)` owns what it took. Read as a plain index, it
+                // was a view of the buffer and nothing ever released it
+                // (#1983).
+                let addr = self.builder.alloc_temp(MirType::Ptr);
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                    dst: bound,
-                    rvalue: MirRValue::ArrayIndex {
-                        base: MirOperand::Local(*buf),
-                        index: MirOperand::Constant(MirConst::Int(0)),
-                        elem_size: rask_layout::size_of(elem, self.ctx.target()),
-                    },
+                    dst: addr,
+                    rvalue: MirRValue::Ref(*buf),
+                }));
+                let bound = self.builder.alloc_local(binding.clone(), elem.clone());
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                    dst: Some(bound),
+                    func: FunctionRef::like("Field_take", "Vec_remove"),
+                    args: vec![
+                        MirOperand::Local(addr),
+                        MirOperand::Constant(MirConst::Int(rask_layout::size_of(elem, self.ctx.target()) as i64)),
+                    ],
                 }));
                 self.locals.insert(binding.clone(), (bound, elem.clone()));
             }
             let (arm_val, arm_ty) = self.lower_expr(&arm.body)?;
             if wrapped.is_some() {
                 self.store_result_arm(result_local, 0, arm_val, &arm_ty);
-            } else {
-                if !matches!(arm_ty, MirType::Void) {
-                    result_ty = arm_ty;
-                }
+            } else if !matches!(result_ty, MirType::Void) {
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                     dst: result_local,
                     rvalue: MirRValue::Use(arm_val),

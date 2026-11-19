@@ -46,3 +46,18 @@ func spawn_carries_its_capture() {
         h.detach()
     }
 }
+
+// S5 (#2023): a detached task moves what it names, so the second iteration
+// would hand the task a value the first one already took.
+func detached_in_loop(take v: Vec<i64>) {
+    using Multitasking {
+        mut i = 0
+        while i < 3 {
+            // ERROR: `v` moved into the first iteration's task
+            spawn {
+                println("{v.len()}")
+            }.detach()
+            i += 1
+        }
+    }
+}

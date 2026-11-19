@@ -1,0 +1,96 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A value that travels through a channel has one owner at a time: the sender
+// until `send`, the channel until `receive`, the receiver after. Each case here
+// leaked or freed twice on native because one hop of that hand-off was missed.
+// The leak and memcheck gates are what catch a regression; the asserts only
+// keep the values alive long enough to be read.
+
+import async.{Channel, Receiver}
+import fs
+
+func make(n: i64) -> string {
+    return "msg-{n}-wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+}
+
+// #1986: `receive` hands its result to the caller, which owns it from then on.
+test "a received string is the receiver's to free" {
+    using Multitasking {
+        let (tx, rx) = Channel<string>.buffered(1)
+        let n = 2
+        tx.send("first-{n}-padded-past-sso-length")!
+        let got = rx.receive()!
+        assert got == "first-2-padded-past-sso-length"
+    }
+}
+
+// #1983: a `select` arm binds the received value; it is moved out of the
+// result, not copied and then freed with it.
+test "a select arm owns what it received" {
+    using Multitasking {
+        let (tx, rx) = Channel<string>.buffered(4)
+        let _ = tx.send(make(3))
+        let r = select {
+            rx -> v: "got {v}",
+            _: "none",
+        }
+        assert r == "got msg-3-wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
+    }
+}
+
+func pipe<T>(take x: T) -> T {
+    let (tx, rx) = Channel<T>.buffered(2)
+    tx.send(x) catch _ => panic("send")
+    let got = rx.receive() catch _ => panic("recv")
+    return got
+}
+
+// #2000: a generic payload arrives wrapped in a Result; the payload moves out.
+test "a generic payload survives the round trip" {
+    let h = pipe(Vec.from(["vec-in-chan-long-string-a"]))
+    assert h[0] == "vec-in-chan-long-string-a"
+}
+
+// #2005: the sender a task captures reached its name through a copy
+// (`tx0.clone()` optimises into one), and the task still gets a reference of
+// its own.
+func fan() -> i64 {
+    using Multitasking {
+        let (tx0, rx) = Channel<i64>.buffered(8)
+        let tx = tx0.clone()
+        spawn {
+            tx.send(1)
+        }.detach()
+        mut total = 0
+        if rx.receive()? as v {
+            total = total + v
+        }
+        return total
+    }
+}
+
+test "a copied sender captured by a detached task" {
+    assert fan() == 1
+}
+
+// #2002: a task that borrows a sender runs beside the receiver, or an
+// unbuffered send never meets its receive.
+test "a borrowing task sends on an unbuffered channel" {
+    let (t2, r2) = Channel.unbuffered()
+    using Multitasking {
+        let h = spawn {
+            t2.send(2.5f32) catch _ => panic("s")
+        }
+        let v: f32 = r2.receive() catch _ => panic("r")
+        assert v == 2.5f32
+        h.join() catch _ => panic("j")
+    }
+}
+
+// #2003: the Err path of `catch` built a fresh Vec while the Ok path kept the
+// callee's; the join of the two lost track of which one to free.
+test "a catch fallback joins the callee's value" {
+    let a = fs.read_dir("/nonexistent/dir/for/rask/tests") catch _ => Vec.new()
+    assert a.len() == 0
+}
+
+func main() {}

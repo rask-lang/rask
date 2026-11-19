@@ -1,0 +1,47 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// An arm's value read out of a vector the arm itself frees on the way out.
+// The copy takes its reference before the free, and the join gives it back;
+// natively both used to be optimized away, leaving only a retain after the
+// join, so `{ let v = mk(); v[0] }` as a match or select arm handed back a
+// string out of freed memory.
+
+import async.Channel
+
+func s(n: i64) -> string {
+    return "string number {n} padded long enough to be on the heap"
+}
+
+func mk(n: i64) -> Vec<string> {
+    return Vec.from([s(n)])
+}
+
+func from_match(k: i64) -> string {
+    let r = match k {
+        0 => {
+            let v = mk(1)
+            v[0]
+        },
+        _ => "none",
+    }
+    return r
+}
+
+func from_select() -> string {
+    let (tx, rx) = Channel<Vec<string>>.buffered(2)
+    tx.send(mk(2)) catch _ => panic("send")
+    let r = select {
+        rx -> v: v[0],
+        _: "none",
+    }
+    return r
+}
+
+test "a view out of an arm's own vector outlives the vector" {
+    assert from_match(0) == s(1)
+    assert from_match(1) == "none"
+    using Multitasking {
+        assert from_select() == s(2)
+    }
+}
+
+func main() {}
