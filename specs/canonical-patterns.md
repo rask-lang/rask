@@ -346,8 +346,9 @@ for item in collection {
     process(item)
 }
 
-// Search
-let found = users.find(|u| u.name == target)
+// Search: `find` on Copy items, `position` when you keep a non-Copy one
+let big = sizes.find(|n| n > 1000)
+let at = users.position(|u| u.name == target)
 
 // Transform
 let names = users.map(|u| u.name).to_vec()

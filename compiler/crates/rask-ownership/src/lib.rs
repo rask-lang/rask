@@ -819,6 +819,54 @@ impl<'a> OwnershipChecker<'a> {
         });
     }
 
+    /// type.sequence/SEQ47 for the terminals that answer with one of the
+    /// items (`find`, `reduce`, `min_by_key`, …). Over a Vec, or a chain that
+    /// only lends, that item is still the source's, so for a type that isn't
+    /// Copy the answer would be a second owner of it.
+    ///
+    /// Unchecked, `vv.find(|v| v.len() == 1)` over `Vec<Vec<i64>>` handed back
+    /// the inner vector `vv` still held, and natively both freed it (#2028).
+    fn check_pick_has_owned_item(&mut self, expr: &Expr, object: &Expr, terminal: &str) {
+        let on_vec = self
+            .node_ty(&object.id)
+            .and_then(|t| self.type_name_of(t))
+            .is_some_and(|n| n == "Vec");
+        if !on_vec && Self::lending_adapter(object).is_none() {
+            return;
+        }
+        let mut elem = match self.node_ty(&expr.id) {
+            Some(Type::Result { ok, err }) if **err == Type::None => (**ok).clone(),
+            _ => return,
+        };
+        if Self::chain_has(object, "enumerate") {
+            if let Type::Tuple(parts) = &elem {
+                if let [_, lent] = parts.as_slice() {
+                    elem = lent.clone();
+                }
+            }
+        }
+        // A type parameter is the instantiation's to judge, as in E0872.
+        if matches!(elem, Type::Var(_) | Type::UnresolvedNamed(_))
+            || self.is_copy(&elem)
+            || Self::is_boxed_interface(&elem)
+        {
+            return;
+        }
+        let mut source = object;
+        while let ExprKind::MethodCall { object, .. } = &source.kind {
+            source = object;
+        }
+        self.errors.push(OwnershipError {
+            kind: OwnershipErrorKind::PickOfLentItem {
+                terminal: terminal.to_string(),
+                elem: format!("{}", self.program.types.resolve_type_names(&elem)),
+                holder: Self::render_place(source),
+                on_vec,
+            },
+            span: expr.span,
+        });
+    }
+
     /// type.sequence/SEQ47 for `Vec.zip`: it borrows both vectors and builds
     /// pairs that own what they hold, so each side has to be something a
     /// copy can produce. For a vector of vectors nothing could: the pairs and
@@ -3816,6 +3864,13 @@ impl<'a> OwnershipChecker<'a> {
                 if method == "to_vec" && args.is_empty() {
                     self.check_to_vec_has_owned_items(expr, object);
                 }
+                if matches!(
+                    method.as_str(),
+                    "find" | "reduce" | "min" | "max" | "min_by" | "max_by" | "min_by_key" | "max_by_key"
+                ) && args.len() <= 1
+                {
+                    self.check_pick_has_owned_item(expr, object, method);
+                }
                 if method == "zip" && args.len() == 1 {
                     self.check_zip_items_copy(expr);
                 }
@@ -5798,20 +5853,21 @@ impl<'a> OwnershipChecker<'a> {
                     let mode = if is_mutable { BorrowMode::Exclusive } else { BorrowMode::Shared };
                     self.create_borrow_with_projection(source_name, mode, span, projection);
                 } else {
+                    // A borrowed *parameter* being moved out of is PM6 — giving
+                    // away something the caller still owns. Reporting it as a
+                    // borrow conflict named the wrong event: nothing is being
+                    // mutated in `o.only = next`, and neither the message nor
+                    // the fix said `take next` (#818). Asked of the parameter
+                    // list, not the binding state: a closure's parameters are
+                    // bound as owned, so `keep = v` in `|v: Vec<string>|`
+                    // moved the caller's vector into a capture (#2030).
+                    if self.borrowed_params.contains_key(&source_name) {
+                        self.consume_binding(&source_name, span, None);
+                        return;
+                    }
                     // Whole-variable assignment: move source regardless of const/mut
                     if let Some(state) = self.bindings.get(&source_name) {
                         match state {
-                            // A borrowed *parameter* being moved out of is PM6 —
-                            // giving away something the caller still owns. Reporting
-                            // it as a borrow conflict named the wrong event: nothing
-                            // is being mutated in `o.only = next`, and neither the
-                            // message nor the fix said `take next` (#818).
-                            BindingState::Borrowed { .. }
-                                if self.borrowed_params.contains_key(&source_name) =>
-                            {
-                                self.consume_binding(&source_name, span, None);
-                                return;
-                            }
                             BindingState::Borrowed { .. } => {
                                 self.errors.push(OwnershipError {
                                     kind: OwnershipErrorKind::MutateWhileBorrowed {

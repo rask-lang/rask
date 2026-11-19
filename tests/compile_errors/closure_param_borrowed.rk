@@ -6,7 +6,8 @@
 // could return its parameter whole: `|p: Vec<i64>| { return p }` handed the
 // caller its own vector back under a second name, and a push through the
 // result grew the caller's `let` (#1458). Giving one to a `take` parameter
-// went through the same way.
+// went through the same way. Assigning one over another variable did too, and
+// natively the caller freed the vector the capture still held (#2030).
 
 struct Bag {
     items: Vec<string>
@@ -33,6 +34,19 @@ func main() {
     // ERROR: a `mutate` parameter is exclusive access, still not ownership [E0872]
     let m = |mutate p: Vec<i64>| {
         return p
+    }
+
+    // ERROR: stored over a captured variable [E0835]
+    mut keep: Vec<i64> = Vec.new()
+    let s = |p: Vec<i64>| {
+        keep = p
+    }
+
+    // ERROR: stored over one of its own locals [E0835]
+    let t = |p: Vec<i64>| {
+        mut mine: Vec<i64> = Vec.new()
+        mine = p
+        println(mine.len())
     }
 
     // A copy is the closure's to hand out, and a Copy value copies.
