@@ -5,7 +5,7 @@
 
 func keep<T>(x: T) -> func() -> i64 {
     return || {
-        let y = x
+        look(x)
         return 1
     }
 }
@@ -17,3 +17,6 @@ func main() {
         println("{t1.join()!}")
     }
 }
+
+// Reads its argument without keeping it, so the closure captures it.
+func look<T>(x: T) {}
