@@ -2,11 +2,9 @@
 //! Function calling and ensure blocks.
 
 use rask_ast::decl::FnDecl;
-use rask_ast::expr::ExprKind;
 use rask_ast::stmt::{Stmt, StmtKind};
 use rask_ast::Span;
 use rask_ast::ty::TypeExpr;
-use std::collections::HashSet;
 
 use crate::value::{GenericFrame, Value};
 
@@ -317,12 +315,12 @@ impl Interpreter {
     pub(super) fn exec_stmts(&mut self, stmts: &[Stmt]) -> Result<Value, RuntimeDiagnostic> {
         crate::preempt_point();
         let mut last_value = Value::Unit;
-        let mut ensures: Vec<&Stmt> = Vec::new();
+        let mut ensures: Vec<Scheduled> = Vec::new();
         let mut exit_error: Option<RuntimeDiagnostic> = None;
 
         for stmt in stmts {
             if matches!(&stmt.kind, StmtKind::Ensure { .. }) {
-                ensures.push(stmt);
+                ensures.push(self.schedule_ensure(stmt));
             } else {
                 match self.exec_stmt(stmt) {
                     Ok(v) => last_value = v,
@@ -345,24 +343,7 @@ impl Interpreter {
         // A panic exiting the body means we're already unwinding; ensure-body
         // panics during that unwind are secondary (ctrl.panic/E3).
         let body_panicked = matches!(&exit_error, Some(d) if matches!(d.error, RuntimeError::Panic(_)));
-        // L6: carrying a linear value out of this scope is consuming it, so the
-        // `ensure` scheduled here is cancelled — whoever catches the value owes
-        // the consumption now. Without this the ensure ran on the way out and
-        // closed what was about to be handed over, so `let a = open(); ensure
-        // a.close(); return a` gave back a closed handle. Native was doing the
-        // same thing and saying nothing, because it has no tracker to notice a
-        // second consume; `check_resource_moved` in the lowering is that half.
-        //
-        // `break a` counts for the same reason: it leaves the loop body carrying
-        // the resource, and the loop's own ensure is on this block.
-        let handed_back = match &exit_error {
-            Some(d) => match &d.error {
-                RuntimeError::Return(v) | RuntimeError::Break(v, _) => self.resource_ids_in(v),
-                _ => HashSet::new(),
-            },
-            None => self.resource_ids_in(&last_value),
-        };
-        let ensure_fatal = self.run_ensures_except(&ensures, body_panicked, &handed_back);
+        let ensure_fatal = self.run_ensures(&ensures, body_panicked);
 
         match (exit_error, ensure_fatal) {
             // os.exit() inside an ensure terminates immediately, no matter what (P5).
@@ -380,38 +361,62 @@ impl Interpreter {
         }
     }
 
+    /// Note that `stmt`'s ensure is scheduled. Keeps the storage of each name
+    /// it reads as bound here: a later `let` of the same name shadows it for
+    /// the code that follows, not for the ensure (#2026).
+    pub(super) fn schedule_ensure<'s>(&mut self, stmt: &'s Stmt) -> Scheduled<'s> {
+        let mut names: Vec<&str> = Vec::new();
+        rask_ast::visit::walk_stmt(stmt, &mut |e| {
+            if let rask_ast::expr::ExprKind::Ident(name) = &e.kind {
+                if !names.contains(&name.as_str()) {
+                    names.push(name);
+                }
+            }
+        });
+        let reads = names
+            .into_iter()
+            .filter_map(|n| self.env.binding(n).map(|(slot, lent)| (n.to_string(), slot, lent)))
+            .collect();
+        Scheduled { stmt, was_cancelled: self.cancelled_ensures.remove(&stmt.id), reads }
+    }
+
     /// Runs ensures in LIFO order. Every scheduled ensure runs even if an earlier
     /// one panics (E2). Returns the first ensure-body panic (E3) — or an `Exit`,
     /// which stops the remaining ensures (P5). Later panics, and every ensure
     /// panic when already unwinding from a prior panic, are reported to stderr as
-    /// secondary panics. Skips ensures whose receiver was already consumed.
-    pub(super) fn run_ensures(&mut self, ensures: &[&Stmt], unwinding: bool) -> Option<RuntimeDiagnostic> {
-        self.run_ensures_except(ensures, unwinding, &HashSet::new())
+    /// secondary panics. Skips the ensures something consumed their value since
+    /// they were scheduled (C1); the ownership pass says which expressions do.
+    pub(super) fn run_ensures(&mut self, ensures: &[Scheduled], unwinding: bool) -> Option<RuntimeDiagnostic> {
+        let outcome = self.run_scheduled(ensures, unwinding);
+        for e in ensures {
+            if e.was_cancelled {
+                self.cancelled_ensures.insert(e.stmt.id);
+            } else {
+                self.cancelled_ensures.remove(&e.stmt.id);
+            }
+        }
+        outcome
     }
 
-    /// `run_ensures`, skipping the ones whose receiver is being handed to the
-    /// caller.
-    pub(super) fn run_ensures_except(
-        &mut self,
-        ensures: &[&Stmt],
-        unwinding: bool,
-        handed_back: &HashSet<u64>,
-    ) -> Option<RuntimeDiagnostic> {
+    fn run_scheduled(&mut self, ensures: &[Scheduled], unwinding: bool) -> Option<RuntimeDiagnostic> {
         let mut first_panic: Option<RuntimeDiagnostic> = None;
-        for ensure_stmt in ensures.iter().rev() {
+        for scheduled in ensures.iter().rev() {
+            let ensure_stmt = scheduled.stmt;
             if let StmtKind::Ensure { body, else_handler } = &ensure_stmt.kind {
-                // Explicit consumption cancels ensure.
-                if self.ensure_receiver_consumed(body) {
-                    continue;
-                }
-                if self
-                    .ensure_receiver_id(body)
-                    .is_some_and(|id| handed_back.contains(&id))
-                {
+                if self.cancelled_ensures.contains(&ensure_stmt.id) {
                     continue;
                 }
 
+                self.env.push_scope();
+                for (name, slot, lent) in &scheduled.reads {
+                    if *lent {
+                        self.env.define_lent(name.clone(), slot.clone());
+                    } else {
+                        self.env.define_slot(name.clone(), slot.clone());
+                    }
+                }
                 let result = self.exec_ensure_body(body);
+                self.env.pop_scope();
 
                 match result {
                     Ok(value) => {
@@ -466,97 +471,17 @@ impl Interpreter {
         }
     }
 
-    /// Has the thing this ensure would consume already been consumed?
-    fn ensure_receiver_consumed(&self, body: &[Stmt]) -> bool {
-        self.ensure_receiver_id(body)
-            .is_some_and(|id| self.resource_tracker.is_consumed(id))
-    }
-
-    /// The resource this ensure body would consume.
-    ///
-    /// Three spellings reach here: `ensure c.close()`, `ensure w.conn.close()`
-    /// where the receiver is a field of a holder, and `ensure drop(p)` — which
-    /// is the whole cleanup vocabulary of `Heap<T>`, and a call rather than a
-    /// method, so reading only the method form found no receiver and ran the
-    /// cleanup a second time.
-    fn ensure_receiver_id(&self, body: &[Stmt]) -> Option<u64> {
-        let StmtKind::Expr(expr) = &body.first()?.kind else {
-            return None;
-        };
-        let receiver = match &expr.kind {
-            ExprKind::MethodCall { object, .. } => object.as_ref(),
-            ExprKind::Call { func, args } => {
-                match &func.kind {
-                    ExprKind::Ident(n) if n == "drop" => &args.first()?.expr,
-                    _ => return None,
-                }
-            }
-            _ => return None,
-        };
-        let value = self.resolve_place(receiver)?;
-        self.get_resource_id(&value)
-    }
-
-    /// Read an `a` or an `a.b.c` without evaluating anything that could run.
-    fn resolve_place(&self, expr: &rask_ast::expr::Expr) -> Option<Value> {
-        match &expr.kind {
-            ExprKind::Ident(name) => self.env.get(name),
-            ExprKind::Field { object, field } => {
-                let base = self.resolve_place(object)?;
-                match base {
-                    Value::Struct(ref s) => s.lock().unwrap().fields.get(field).cloned(),
-                    _ => None,
-                }
-            }
-            _ => None,
-        }
-    }
-
-    /// Every linear value inside a value, however deeply nested.
-    fn resource_ids_in(&self, value: &Value) -> HashSet<u64> {
-        let mut out = HashSet::new();
-        if !self.resource_tracker.is_empty() {
-            self.collect_resource_ids(value, &mut out);
-        }
-        out
-    }
-
-    fn collect_resource_ids(&self, value: &Value, out: &mut HashSet<u64>) {
-        if let Some(id) = self.get_resource_id(value) {
-            out.insert(id);
-        }
-        match value {
-            Value::Struct(ref s) => {
-                let fields: Vec<Value> = s.lock().unwrap().fields.values().cloned().collect();
-                for f in &fields {
-                    self.collect_resource_ids(f, out);
-                }
-            }
-            Value::Enum { fields, .. } => {
-                for f in fields {
-                    self.collect_resource_ids(f, out);
-                }
-            }
-            Value::Tuple(items) => {
-                for item in items.iter() {
-                    self.collect_resource_ids(item, out);
-                }
-            }
-            _ => {}
-        }
-    }
-
     /// An ensure body is a block like any other (ctrl.ensure/EN1): an `ensure`
     /// inside it is scheduled where it stands and runs when the body ends, on
     /// the way out of an error as much as on the way out of the last statement.
     /// It used to evaluate to nothing, so the inner cleanup never ran (#1915).
     fn exec_ensure_body(&mut self, body: &[Stmt]) -> Result<Value, RuntimeDiagnostic> {
         let mut last_value = Value::Unit;
-        let mut nested: Vec<&Stmt> = Vec::new();
+        let mut nested: Vec<Scheduled> = Vec::new();
         let mut failure: Option<RuntimeDiagnostic> = None;
         for stmt in body {
             if matches!(&stmt.kind, StmtKind::Ensure { .. }) {
-                nested.push(stmt);
+                nested.push(self.schedule_ensure(stmt));
                 continue;
             }
             match self.exec_stmt(stmt) {
@@ -674,4 +599,16 @@ impl Interpreter {
             .find(|(bound, _)| bound.iter().all(|b| frame.get(&b.param) == Some(&b.ty)))
             .map(|(_, copy)| copy.clone())
     }
+}
+
+/// A scheduled `ensure`.
+pub(super) struct Scheduled<'s> {
+    stmt: &'s Stmt,
+    /// An earlier activation of the same ensure (a recursive call, an outer
+    /// iteration still unwinding) had it cancelled; `run_ensures` puts that
+    /// back once this activation is done.
+    was_cancelled: bool,
+    /// The names the body reads, bound to the storage they named where the
+    /// ensure was written, and whether that storage was lent.
+    reads: Vec<(String, crate::env::Slot, bool)>,
 }

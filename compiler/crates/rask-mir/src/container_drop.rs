@@ -1948,7 +1948,9 @@ fn containers_and_makers(
                         Some(MirType::Container(kind)) => {
                             fresh.insert(*dst, container_free(kind));
                         }
-                        Some(MirType::Option(inner)) => {
+                        // `rx.receive()` hands its element over inside a
+                        // `T or ReceiveError` (#2000).
+                        Some(MirType::Option(inner)) | Some(MirType::Result { ok: inner, .. }) => {
                             if let MirType::Container(kind) = *inner {
                                 unwrap_for.insert(*dst, container_free(kind));
                             }

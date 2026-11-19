@@ -1,0 +1,53 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A newtype offers `.value` or `Name(...)` only against the type it wraps.
+//
+// Any mismatch with a newtype on one side used to say "use `.value` to extract
+// the underlying `Board` from `Money`", even when `Money` wraps `i64`. Following
+// the hint got you a second error. Against an unrelated type it is a plain
+// mismatch now.
+//
+// "Is the other side the wrapped type" has to be asked by unifying, not by
+// `==`: `Vec.new()` is still `Vec<_>`, and a newtype declared above the struct
+// it wraps holds that struct by name. Both lost the hint on the first try.
+
+type Money = i64
+type Meters = i64
+
+struct Board {
+    n: i64
+}
+
+struct Big {
+    a: i64
+}
+
+type Wrapped = Big
+
+type Names = Vec<string>
+
+type Ahead = Later
+
+struct Later {
+    a: i64
+}
+
+type Opt = i64?
+
+func main() {
+    // ERROR: a newtype against an unrelated struct is a plain mismatch [E0308]
+    let b: Board = Money(3)
+    // ERROR: two newtypes over the same type are still different types [E0308]
+    let m: Meters = Money(3)
+    // ERROR: a literal the wrapped struct can't take gets no wrap hint [E0308]
+    let w: Wrapped = 5
+    // ERROR: against the wrapped type, unwrap with `.value` [E0392]
+    let x: i64 = Money(3)
+    // ERROR: and wrap the other way [E0392]
+    let y: Money = x
+    // ERROR: an empty vector still needs wrapping [E0392]
+    let n: Names = Vec.new()
+    // ERROR: a newtype declared above the struct it wraps [E0392]
+    let a: Ahead = Later(a: 1)
+    // ERROR: a newtype over an optional unwraps to the whole optional [E0392]
+    let o: i64? = Opt(none)
+}

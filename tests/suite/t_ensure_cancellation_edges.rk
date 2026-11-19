@@ -1,0 +1,208 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// ctrl.ensure/C1 at the edges of "consumed": which binding was consumed, which
+// part of it, and whether the hand-over happened at all. Each of these once
+// ran an ensure on a value already gone (a double close, or a read of freed
+// memory natively) or skipped one that was owed.
+
+import sync.Atomic
+
+const BY_ENSURE: Atomic<i64> = Atomic<i64>.new(0)
+
+@resource
+struct Conn {
+    id: i64
+}
+
+extend Conn {
+    func close(take self, by_ensure: bool) -> i64 {
+        if by_ensure {
+            BY_ENSURE.fetch_add(1)
+        }
+        return self.id
+    }
+}
+
+func eat(take c: Conn) -> i64 {
+    return c.close(false)
+}
+
+func filled(s: string) -> Vec<string> {
+    mut v: Vec<string> = Vec.new()
+    v.push("{s} heap string long enough to allocate somewhere")
+    return v
+}
+
+// A `let` that shadows the name is a different binding: giving it away
+// leaves the outer one, and the outer ensure, alone.
+func shadowed_in_block() -> i64 {
+    let c = Conn(id: 1)
+    ensure c.close(true)
+    {
+        let c = Conn(id: 8)
+        eat(c)
+    }
+    return 0
+}
+
+func shadowed_in_scope() -> i64 {
+    let c = Conn(id: 1)
+    ensure c.close(true)
+    let c = Conn(id: 2)
+    ensure c.close(true)
+    return eat(c)
+}
+
+// `break c` carries `c` out as the loop's value.
+func broken_out() -> Conn {
+    let r = loop {
+        let c = Conn(id: 3)
+        ensure c.close(true)
+        break c
+    }
+    return r
+}
+
+// Giving away `p.a` cancels the ensure on `p.a`, not the one on `p.b`.
+struct Pair {
+    a: Conn,
+    b: Conn,
+}
+
+func field_given_away() -> i64 {
+    let p = Pair(a: Conn(id: 4), b: Conn(id: 5))
+    ensure p.a.close(true)
+    ensure p.b.close(true)
+    return eat(p.a)
+}
+
+func field_closed() -> i64 {
+    let p = Pair(a: Conn(id: 6), b: Conn(id: 7))
+    ensure p.a.close(true)
+    ensure p.b.close(true)
+    return p.a.close(false)
+}
+
+// A `try` in an argument leaves before the call takes `v`, so the ensure is
+// still owed.
+enum Oops {
+    Bad
+}
+
+extend Oops {
+    func message(self) -> string {
+        return "bad"
+    }
+}
+
+func maybe(fail: bool) -> i64 or Oops {
+    if fail {
+        return Oops.Bad
+    }
+    return 5
+}
+
+func eat_plus(take c: Conn, n: i64) -> i64 {
+    return c.close(false) + n
+}
+
+func try_in_argument(fail: bool) -> i64 or Oops {
+    let c = Conn(id: 9)
+    ensure c.close(true)
+    return eat_plus(c, try maybe(fail))
+}
+
+// A task that captures `c` takes it.
+func captured_by_task() -> i64 {
+    let c = Conn(id: 10)
+    ensure c.close(true)
+    let h = spawn {
+        return eat(c)
+    }
+    return h.join()!
+}
+
+// So does returning it.
+func returned() -> Conn {
+    let c = Conn(id: 11)
+    ensure c.close(true)
+    return c
+}
+
+// The cleanup is what it consumes, not the call's receiver: giving away
+// `latch` cancels `ensure log.record(latch.close(true))`.
+struct Log {
+    seen: Vec<i64>,
+}
+
+extend Log {
+    func record(mutate self, id: i64) {
+        self.seen.push(id)
+    }
+}
+
+func consumed_not_receiver() -> i64 {
+    mut log = Log(seen: Vec.new())
+    let latch = Conn(id: 12)
+    ensure log.record(latch.close(true))
+    return eat(latch)
+}
+
+// A value the cleanup only reads stays put; reading it is fine.
+func read_by_cleanup() -> i64 {
+    let v = filled("read")
+    let c = Conn(id: 13)
+    ensure c.close(v.len() == 1)
+    return v.len().to<i64>()!
+}
+
+test "ctrl.ensure/C1 — consuming a shadowing binding leaves the outer ensure owed" {
+    BY_ENSURE.store(0)
+    shadowed_in_block()
+    assert BY_ENSURE.load() == 1
+    BY_ENSURE.store(0)
+    assert shadowed_in_scope() == 2
+    assert BY_ENSURE.load() == 1
+}
+
+test "ctrl.ensure/C1 — break carries the value out and cancels its ensure" {
+    BY_ENSURE.store(0)
+    assert broken_out().close(false) == 3
+    assert BY_ENSURE.load() == 0
+}
+
+test "ctrl.ensure/C1 — consuming a field cancels only that field's ensure" {
+    BY_ENSURE.store(0)
+    assert field_given_away() == 4
+    assert BY_ENSURE.load() == 1
+    BY_ENSURE.store(0)
+    assert field_closed() == 6
+    assert BY_ENSURE.load() == 1
+}
+
+test "ctrl.ensure/C1 — a try that leaves before the call leaves the ensure owed" {
+    BY_ENSURE.store(0)
+    assert (try_in_argument(true) is Oops)
+    assert BY_ENSURE.load() == 1
+    BY_ENSURE.store(0)
+    assert try_in_argument(false)! == 14
+    assert BY_ENSURE.load() == 0
+}
+
+test "ctrl.ensure/C1 — a task capture and a return both consume" {
+    BY_ENSURE.store(0)
+    using Multitasking {
+        assert captured_by_task() == 10
+    }
+    assert returned().close(false) == 11
+    assert BY_ENSURE.load() == 0
+}
+
+test "ctrl.ensure/C6 — what the cleanup consumes cancels it, what it reads stays" {
+    BY_ENSURE.store(0)
+    assert consumed_not_receiver() == 12
+    assert BY_ENSURE.load() == 0
+    assert read_by_cleanup() == 1
+    assert BY_ENSURE.load() == 1
+}
+
+func main() {}

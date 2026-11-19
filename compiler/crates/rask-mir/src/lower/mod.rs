@@ -548,6 +548,8 @@ impl<'a> MirContext<'a> {
             field_reuses: &records.field_reuses,
             quiet_loops: &records.quiet_loops,
             return_moves: &records.return_moves,
+            ensure_cancels: &records.ensure_cancels,
+            ensure_subjects: &records.ensure_subjects,
             task_bound_closures: NodeSet::of(&records.task_bound_closures),
             type_names,
             handle_releases: rask_mono::drop_names::handle_releases(&typed.types),
@@ -757,6 +759,12 @@ pub struct MirContext<'a> {
     /// (ownership). A `for` body over a sequence returns from inside a
     /// closure, and the frame learns from this what left on that exit.
     pub return_moves: &'a std::collections::HashMap<NodeId, Vec<String>>,
+    /// Consuming expression → the `ensure` statements it cancels
+    /// (ownership, ctrl.ensure/C1).
+    pub ensure_cancels: &'a std::collections::HashMap<NodeId, Vec<NodeId>>,
+    /// `ensure` statement → the binding its cleanup consumes (ownership,
+    /// ctrl.ensure/C6): what its resource is registered against.
+    pub ensure_subjects: &'a std::collections::HashMap<NodeId, String>,
     /// Closures that captured a link or a `Local` box (#1356).
     pub task_bound_closures: NodeSet<'a>,
     /// ER16a: `try` node → the postfix-chain step it attaches to. The branch
@@ -1058,6 +1066,10 @@ impl<'a> MirContext<'a> {
             std::sync::LazyLock::new(std::collections::HashSet::new);
         static EMPTY_RETURN_MOVES: std::sync::LazyLock<std::collections::HashMap<NodeId, Vec<String>>> =
             std::sync::LazyLock::new(std::collections::HashMap::new);
+        static EMPTY_ENSURE_CANCELS: std::sync::LazyLock<std::collections::HashMap<NodeId, Vec<NodeId>>> =
+            std::sync::LazyLock::new(std::collections::HashMap::new);
+        static EMPTY_ENSURE_SUBJECTS: std::sync::LazyLock<std::collections::HashMap<NodeId, String>> =
+            std::sync::LazyLock::new(std::collections::HashMap::new);
         static EMPTY_LENT: std::sync::LazyLock<std::collections::HashMap<NodeId, Vec<String>>> =
             std::sync::LazyLock::new(std::collections::HashMap::new);
         static EMPTY_ESCAPING: std::sync::LazyLock<std::collections::HashSet<NodeId>> =
@@ -1103,6 +1115,8 @@ impl<'a> MirContext<'a> {
             field_reuses: &EMPTY_ESCAPING,
             quiet_loops: &EMPTY_ESCAPING,
             return_moves: &EMPTY_RETURN_MOVES,
+            ensure_cancels: &EMPTY_ENSURE_CANCELS,
+            ensure_subjects: &EMPTY_ENSURE_SUBJECTS,
             task_bound_closures: NodeSet::of(&EMPTY_ESCAPING),
             try_chain_placement: &EMPTY_TRY_PLACEMENT,
             map_key_fns: CallMap::of(empty::map_key_fns()),
@@ -2194,9 +2208,6 @@ pub(crate) struct LocalMeta {
     /// binding's from its statement or initializer. Where a later use of the
     /// name has no type of its own recorded, this is the answer.
     pub checked_type: Option<Type>,
-    /// C1/C2: resource_id local for consumption cancellation.
-    /// Set when an ensure registers this variable as its receiver.
-    pub resource_id: Option<LocalId>,
     /// The name stands for a place this frame doesn't own: a `mutate`
     /// parameter (mem.borrowing/M-rules), or a `with` binding on a box whose
     /// payload is bound by address. Whole-value reassignment has to land in
@@ -2302,13 +2313,10 @@ pub struct MirLowerer<'a> {
     /// parameter would write into that copy, so it gets a pointer to the real
     /// element instead, held across exactly the one call.
     elem_writebacks: Vec<ElemWriteback>,
-    /// Lowering an `ensure` body into its own thunk function, where a consuming
-    /// call cancels nothing and the resource slot isn't in this frame.
-    in_ensure_thunk: bool,
-    /// For each ensure cleanup block, the receiver variable name and its
-    /// resource_id local. Used for consumption cancellation (C1/C2):
-    /// if the receiver was consumed before scope exit, skip the ensure.
-    ensure_receivers: HashMap<BlockId, (String, LocalId)>,
+    /// C1/C2: the flag of each `ensure` in this function that something can
+    /// cancel, by statement. Set by the expressions `MirContext::ensure_cancels`
+    /// names; the cleanup reads it and stands down.
+    ensure_flags: HashMap<rask_ast::NodeId, LocalId>,
     /// Module-level consts with a non-literal initializer, by name, waiting to
     /// be materialized on first reference in this function.
     ///
@@ -3707,189 +3715,37 @@ impl<'a> MirLowerer<'a> {
     /// Copies statements from ensures registered after `depth` in LIFO order.
     /// For simple ensures (Unreachable terminator): copies statements inline.
     /// For branching ensures (else handler): creates block copies at the exit point.
-    /// C1/C2: `expr` has just been lowered. If it is the call (or aggregate)
-    /// that consumes an ensure's value, mark the value consumed now, so the
-    /// ensure stands down.
+    /// C1/C2: `expr` has just been lowered. If it consumes a binding an
+    /// `ensure` in scope names, the ownership pass said so
+    /// (`MirContext::ensure_cancels`): set that ensure's flag now, so it
+    /// stands down.
     ///
     /// Now, and not when the enclosing statement ends. A consuming call owns
     /// its receiver from the moment it is made, whatever it returns, and code
     /// can leave between the call and the end of the statement: `let v =
     /// h.join() catch e => { return -1 }` returns from the catch arm with the
-    /// handle already freed by `join`. The mark used to be emitted after the
-    /// whole statement, so that return ran `ensure h.detach()` on a freed
-    /// handle, and `!`, `try` and a `match` arm did the same. Hooking every
-    /// lowered expression also retires the old statement-level walk and its
-    /// list of shapes to look inside, which had been one spelling behind the
-    /// AST four times (#1216, #1224, #1231).
+    /// handle already freed by `join`.
     ///
-    /// An ensure body *is* the deferred consumption, so a consuming call in it
-    /// cancels nothing — and the resource's slot belongs to the function that
-    /// registered it, not to the thunk.
+    /// Which expressions consume is the ownership pass's answer, not this
+    /// one's. Lowering used to work it out again from the callee's declared
+    /// signature and a list of shapes, which missed a `take` argument passed
+    /// through a function value (#1989), the root of `w.take().close()`
+    /// (#1992) and any value that isn't a resource (#1978).
     pub(super) fn mark_consumed_by(&mut self, expr: &rask_ast::expr::Expr) {
-        if self.in_ensure_thunk {
+        // A closure is marked where it is built, whichever way it got there.
+        if matches!(expr.kind, rask_ast::expr::ExprKind::Closure { .. }) {
             return;
         }
-        self.emit_resource_consume(expr);
+        self.mark_consumed_at(expr.id);
     }
 
-    /// This whole expression is being moved somewhere else, so a bare name in
-    /// it is a consumption (mem.linear/L5) and cancels the `ensure` scheduled
-    /// for it.
-    ///
-    /// Separate from the walk above because position is what decides: `return a`
-    /// hands `a` away, `a.id()` does not, and both arrive as an `Ident` under
-    /// some node. Only the callers that *are* a move — `return`, `break`, a
-    /// binding, an assignment — ask this one.
-    pub(super) fn check_resource_moved(&mut self, expr: &rask_ast::expr::Expr) {
-        use rask_ast::expr::ExprKind;
-        if self.in_ensure_thunk {
-            return;
-        }
-        let mut expr = expr;
-        loop {
-            expr = match &expr.kind {
-                ExprKind::Try { expr: inner } | ExprKind::Unwrap { expr: inner, .. } => inner,
-                _ => break,
-            };
-        }
-        if let ExprKind::Ident(name) = &expr.kind {
-            if let Some(res_id) = self.meta(name).and_then(|m| m.resource_id) {
-                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::ResourceConsume {
-                    resource_id: res_id,
-                }));
+    pub(super) fn mark_consumed_at(&mut self, id: rask_ast::NodeId) {
+        let Some(ensures) = self.ctx.ensure_cancels.get(&id) else { return };
+        for ensure in ensures {
+            if let Some(flag) = self.ensure_flags.get(ensure) {
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::ResourceConsume { resource_id: *flag }));
             }
         }
-    }
-
-    /// One expression, no recursion: is *this* the consuming call?
-    fn emit_resource_consume(&mut self, expr: &rask_ast::expr::Expr) {
-        use rask_ast::expr::ExprKind;
-        // Storing a linear value in an aggregate moves it in — the aggregate's
-        // release frees it from then on. The `ensure` that was scheduled at
-        // acquisition has to be cancelled by that move exactly as a `close()`
-        // cancels it, or the block is freed twice. The ownership pass already
-        // reads the move this way (`consume_owned_into_aggregate`); this is the
-        // same walk on the lowering side.
-        if matches!(
-            expr.kind,
-            ExprKind::StructLit { .. } | ExprKind::Tuple(_) | ExprKind::Array(_)
-        ) {
-            self.consume_resources_moved_into_aggregate(expr);
-            return;
-        }
-        // `drop(p)` is a call, not a method call, so the arm below never saw it
-        // and the `ensure drop(p)` it was meant to cancel ran anyway — a second
-        // free of the same block, which glibc reports as a double free rather
-        // than as anything to do with the two lines that caused it. Native only:
-        // the interpreter tracks consumption by value.
-        if let ExprKind::Call { func, args, .. } = &expr.kind {
-            if matches!(&func.kind, ExprKind::Ident(n) if n == "drop") {
-                if let Some(ExprKind::Ident(name)) = args.first().map(|a| &a.expr.kind) {
-                    if let Some(res_id) = self.meta(name).and_then(|m| m.resource_id) {
-                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::ResourceConsume {
-                            resource_id: res_id,
-                        }));
-                    }
-                }
-            }
-            self.consume_take_arguments(expr.id, args);
-            return;
-        }
-        if let ExprKind::MethodCall { object, args, .. } = &expr.kind {
-            self.consume_take_arguments(expr.id, args);
-            // A receiver an `ensure` registered, handed to a `take self` method.
-            let resource_id = object.name().and_then(|n| self.meta(n)).and_then(|m| m.resource_id);
-            if let Some(res_id) = resource_id {
-                if self.callee_sig(expr.id).is_some_and(|s| s.take_self) {
-                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::ResourceConsume {
-                        resource_id: res_id,
-                    }));
-                }
-            }
-        }
-    }
-
-    /// Cancel the `ensure` on any linear value this call takes ownership of.
-    ///
-    /// Only the positions the callee declares `take`: a parameter without it is
-    /// the caller's value on loan (mem.parameters/PM1), and cancelling there
-    /// would leave nothing to close it.
-    fn consume_take_arguments(&mut self, call: rask_ast::NodeId, args: &[rask_ast::expr::CallArg]) {
-        use rask_ast::expr::ExprKind;
-        let Some(positions) = self.callee_sig(call).map(|s| s.takes.clone()) else {
-            return;
-        };
-        for i in positions {
-            let Some(arg) = args.get(i) else { continue };
-            if let ExprKind::Ident(name) = &arg.expr.kind {
-                if let Some(res_id) = self.meta(name).and_then(|m| m.resource_id) {
-                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::ResourceConsume {
-                        resource_id: res_id,
-                    }));
-                }
-            }
-        }
-    }
-
-    /// Emit `ResourceConsume` for every linear binding this aggregate takes in.
-    fn consume_resources_moved_into_aggregate(&mut self, expr: &rask_ast::expr::Expr) {
-        use rask_ast::expr::ExprKind;
-        match &expr.kind {
-            ExprKind::Ident(name) => {
-                if let Some(res_id) = self.meta(name).and_then(|m| m.resource_id) {
-                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::ResourceConsume {
-                        resource_id: res_id,
-                    }));
-                }
-            }
-            ExprKind::Tuple(elems) | ExprKind::Array(elems) => {
-                for e in elems {
-                    self.consume_resources_moved_into_aggregate(e);
-                }
-            }
-            ExprKind::StructLit { fields, spread, .. } => {
-                for f in fields {
-                    self.consume_resources_moved_into_aggregate(&f.value);
-                }
-                if let Some(sp) = spread {
-                    self.consume_resources_moved_into_aggregate(sp);
-                }
-            }
-            _ => {}
-        }
-    }
-
-    /// Extract the receiver variable name from an ensure body.
-    /// For `ensure X.method()` and `ensure drop(X)`, returns Some("X").
-    ///
-    /// `drop` is the whole cleanup vocabulary of `Heap<T>` — there is no
-    /// `take self` method to name — so leaving the call form out meant a boxed
-    /// value's ensure had no receiver, and nothing could cancel it.
-    fn extract_ensure_receiver(body: &[rask_ast::stmt::Stmt]) -> Option<String> {
-        use rask_ast::expr::ExprKind;
-        use rask_ast::stmt::StmtKind;
-        if let Some(first) = body.first() {
-            if let StmtKind::Expr(expr) = &first.kind {
-                match &expr.kind {
-                    ExprKind::MethodCall { object, .. } => {
-                        if let Some(name) = object.name() {
-                            return Some(name.to_string());
-                        }
-                    }
-                    ExprKind::Call { func, args, .. } => {
-                        if matches!(&func.kind, ExprKind::Ident(n) if n == "drop") {
-                            if let Some(ExprKind::Ident(name)) =
-                                args.first().map(|a| &a.expr.kind)
-                            {
-                                return Some(name.clone());
-                            }
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
-        None
     }
 
     /// True for types whose MIR value is a single 8-byte pointer to the live
@@ -4443,11 +4299,11 @@ impl<'a> MirLowerer<'a> {
         let saved_pending = self.pending_module_consts.clone();
         let saved_loop_stack = std::mem::take(&mut self.loop_stack);
         let saved_ensure_stack = std::mem::take(&mut self.ensure_stack);
+        let saved_ensure_flags = std::mem::take(&mut self.ensure_flags);
         // The thunk's own bindings must not leave their metadata behind: a `let`
         // inside the body would otherwise mark an outer `mut` of the same name
         // immutable, and a later ensure would snapshot it.
         let saved_meta = self.local_meta.clone();
-        let saved_in_thunk = std::mem::replace(&mut self.in_ensure_thunk, true);
         // A write to a by-reference capture replaces what the frame's cell
         // holds, and the body that runs from the hook on a panic is the only
         // thing left to release the old value (#1895). The value is still the
@@ -4456,12 +4312,12 @@ impl<'a> MirLowerer<'a> {
         let saved_addressed = std::mem::replace(&mut self.addressed_locals, thunk_addressed);
         let body_result = self.lower_ensure_body(body, else_handler);
         self.addressed_locals = saved_addressed;
-        self.in_ensure_thunk = saved_in_thunk;
         thunk_builder = std::mem::replace(&mut self.builder, saved_builder);
         self.locals = saved_locals;
         self.pending_module_consts = saved_pending;
         self.loop_stack = saved_loop_stack;
         self.ensure_stack = saved_ensure_stack;
+        self.ensure_flags = saved_ensure_flags;
         self.local_meta = saved_meta;
 
         if body_result.is_err() {
@@ -4798,8 +4654,7 @@ impl<'a> MirLowerer<'a> {
             inline_return_taken: None,
             ensure_stack: Vec::new(),
             elem_writebacks: Vec::new(),
-            in_ensure_thunk: false,
-            ensure_receivers: HashMap::new(),
+            ensure_flags: HashMap::new(),
             pending_module_consts: HashMap::new(),
             const_facts: HashMap::new(),
             const_slots: HashMap::new(),
@@ -7943,6 +7798,8 @@ mod tests {
         let empty_escaping = std::collections::HashSet::new();
         let empty_lent = std::collections::HashMap::new();
         let empty_return_moves = std::collections::HashMap::new();
+        let empty_ensure_cancels = std::collections::HashMap::new();
+        let empty_ensure_subjects = std::collections::HashMap::new();
         let empty_try_placement = HashMap::new();
         let empty_targets = HashMap::new();
         let empty_operator_targets = HashMap::new();
@@ -7979,6 +7836,8 @@ mod tests {
             field_reuses: &empty_escaping,
             quiet_loops: &empty_escaping,
             return_moves: &empty_return_moves,
+            ensure_cancels: &empty_ensure_cancels,
+            ensure_subjects: &empty_ensure_subjects,
             task_bound_closures: NodeSet::of(&empty_escaping),
             try_chain_placement: &empty_try_placement,
             map_key_fns: CallMap::of(empty::map_key_fns()),
@@ -8047,6 +7906,8 @@ mod tests {
         let empty_escaping = std::collections::HashSet::new();
         let empty_lent = std::collections::HashMap::new();
         let empty_return_moves = std::collections::HashMap::new();
+        let empty_ensure_cancels = std::collections::HashMap::new();
+        let empty_ensure_subjects = std::collections::HashMap::new();
         let empty_try_placement = HashMap::new();
         let empty_targets = HashMap::new();
         let empty_operator_targets = HashMap::new();
@@ -8083,6 +7944,8 @@ mod tests {
             field_reuses: &empty_escaping,
             quiet_loops: &empty_escaping,
             return_moves: &empty_return_moves,
+            ensure_cancels: &empty_ensure_cancels,
+            ensure_subjects: &empty_ensure_subjects,
             task_bound_closures: NodeSet::of(&empty_escaping),
             try_chain_placement: &empty_try_placement,
             map_key_fns: CallMap::of(empty::map_key_fns()),
@@ -8158,6 +8021,8 @@ mod tests {
         let empty_escaping = std::collections::HashSet::new();
         let empty_lent = std::collections::HashMap::new();
         let empty_return_moves = std::collections::HashMap::new();
+        let empty_ensure_cancels = std::collections::HashMap::new();
+        let empty_ensure_subjects = std::collections::HashMap::new();
         let empty_try_placement = HashMap::new();
         let empty_targets = HashMap::new();
         let empty_operator_targets = HashMap::new();
@@ -8194,6 +8059,8 @@ mod tests {
             field_reuses: &empty_escaping,
             quiet_loops: &empty_escaping,
             return_moves: &empty_return_moves,
+            ensure_cancels: &empty_ensure_cancels,
+            ensure_subjects: &empty_ensure_subjects,
             task_bound_closures: NodeSet::of(&empty_escaping),
             try_chain_placement: &empty_try_placement,
             map_key_fns: CallMap::of(empty::map_key_fns()),

@@ -855,6 +855,28 @@ impl Interpreter {
     }
 
     pub(crate) fn eval_expr(&mut self, expr: &Expr) -> Result<Value, RuntimeDiagnostic> {
+        let result = self.eval_expr_steps(expr);
+        // ctrl.ensure/C1: this expression consumed what an ensure names, so
+        // that ensure doesn't run. A panic still counts: the value was handed
+        // over before it unwound. A `try`, `return` or `break` that left
+        // from inside, an argument's say, left before the hand-over.
+        let left_early = matches!(
+            &result,
+            Err(d) if matches!(
+                d.error,
+                RuntimeError::TryError(_) | RuntimeError::Return(_)
+                    | RuntimeError::Break(..) | RuntimeError::Continue(_)
+            )
+        );
+        if !left_early {
+            if let Some(ensures) = self.ensure_cancels.get(&expr.id) {
+                self.cancelled_ensures.extend(ensures.iter().copied());
+            }
+        }
+        result
+    }
+
+    fn eval_expr_steps(&mut self, expr: &Expr) -> Result<Value, RuntimeDiagnostic> {
         // ER16a: this is the chain step an enclosing `try` attached to. Evaluate
         // it, then propagate here — the rest of the chain works on the payload,
         // which is what `(try read_file(p)).len()` means.
@@ -2644,12 +2666,12 @@ impl Interpreter {
             // underneath, and hand that to the task.
             ExprKind::Spawn { target, args, body, .. } => {
                 let closure = self.eval_expr(body)?;
-                // A task that borrows its frame (conc.async/S5) runs right
-                // here, now. The checker made sure nothing beside it touches
-                // what it writes, so running it first gives the answer every
-                // schedule gives, and the interpreter is the reference.
+                // A task that borrows its frame (conc.async/S5) runs beside
+                // it, like any other. Run to the end before the frame went on,
+                // a task that waits on the frame never finished: an unbuffered
+                // send blocked for a receive the frame hadn't reached (#2002).
                 if !self.escaping_closures.contains(&body.id) {
-                    return self.run_task_in_place(closure).map_err(|e| RuntimeDiagnostic::new(e, expr.span));
+                    return self.spawn_borrowing_task(closure).map_err(|e| RuntimeDiagnostic::new(e, expr.span));
                 }
                 // `requires_pool: false` with no pool runs here too (S2).
                 if *target == rask_ast::expr::SpawnTarget::Pool && !self.in_thread_pool() {

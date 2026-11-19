@@ -55,4 +55,21 @@ func maybe_consume_nested(fast: bool) {
     let done = 1
 }
 
+func sink(take v: Vec<string>) -> u64 {
+    return v.len()
+}
+
+// --- An ordinary value moved on one path, read by the ensure (C6) ---
+// The ensure consumes nothing, so nothing cancels it, and moving what it
+// reads is refused on any path (#1978).
+// ERROR: `v` is given away while the ensure still reads it
+func maybe_move_plain(fast: bool) {
+    mut v: Vec<string> = Vec.new()
+    v.push("x")
+    ensure println("{v.len()}")
+    if fast {
+        sink(v)
+    }
+}
+
 func main() {}

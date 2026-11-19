@@ -234,6 +234,11 @@ impl Environment {
         self.scopes.get(index)?.bindings.get(name)
     }
 
+    /// The storage a name is bound to, and whether it is borrowed.
+    pub fn binding(&self, name: &str) -> Option<(Slot, bool)> {
+        Some((self.slot_of(name)?.clone(), self.is_lent(name)))
+    }
+
     /// Assign to an existing variable, in place.
     pub fn assign(&mut self, name: &str, value: Value) -> bool {
         self.slot_of(name).is_some_and(|cell| cell.set(value))

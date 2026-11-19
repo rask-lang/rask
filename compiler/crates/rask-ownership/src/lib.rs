@@ -21,7 +21,7 @@ pub use field_reuse::field_reuses;
 
 pub use state::{BindingState, BorrowMode, BorrowScope, ActiveBorrow};
 pub use error::{
-    AccessKind, LinearDiscardPosition, LinkEscape, MoveReason, OwnershipError, OwnershipErrorKind,
+    AccessKind, EnsureHold, LinearDiscardPosition, LinkEscape, MoveReason, OwnershipError, OwnershipErrorKind,
     PointerLoss, PointerSink, Sink,
 };
 
@@ -93,6 +93,55 @@ pub struct OwnershipResult {
     /// delete anything, so lowering walks the list without recording it with
     /// its rack or keeping a cursor (mem.racks/RK16).
     pub quiet_loops: HashSet<rask_ast::NodeId>,
+    /// ctrl.ensure/C1: the expressions that consume a binding an `ensure` in
+    /// scope names, each with the `ensure` statements that consumption
+    /// cancels. Lowering and the interpreter cancel from this rather than
+    /// working out for themselves which calls take what.
+    pub ensure_cancels: EnsureCancels,
+    /// ctrl.ensure/C6: each `ensure` whose cleanup consumes one binding, with
+    /// that binding's name. What lowering registers the ensure's resource
+    /// against, so the exits know which value is gone when it's cancelled.
+    pub ensure_subjects: HashMap<rask_ast::NodeId, String>,
+}
+
+/// Consuming expression → the `ensure` statements it cancels.
+pub type EnsureCancels = HashMap<rask_ast::NodeId, Vec<rask_ast::NodeId>>;
+
+/// An `ensure` in scope and one binding its body names.
+#[derive(Debug, Clone)]
+struct EnsureWatch {
+    name: String,
+    /// The declaration `name` resolved to in the ensure body. A later `let`
+    /// of the same name is a different binding, and moving it cancels
+    /// nothing.
+    symbol: Option<u32>,
+    /// The part of `name` the body consumes, when it consumes some:
+    /// `["a"]` for `ensure p.a.close()`, empty for the whole binding.
+    /// `None` when the body only reads `name` (`tag` in
+    /// `ensure c.close(tag.len())`): giving it away can't cancel the
+    /// cleanup, which still runs and reads it.
+    subject: Option<Vec<String>>,
+    /// The places under `name` the body reads, as field paths (empty for
+    /// the whole binding).
+    reads: Vec<Vec<String>>,
+    /// The other bindings the body consumes. Giving away one of several
+    /// can't cancel the cleanup without skipping the rest.
+    also_cleans: Vec<String>,
+    ensure: rask_ast::NodeId,
+    ensure_span: Span,
+}
+
+/// What giving a watched place away does to its ensure.
+enum WatchVerdict {
+    Cancels,
+    Refused(EnsureHold),
+}
+
+/// What the watched bindings looked like before a walk.
+struct WatchSnapshot {
+    epoch: u64,
+    given_away: Vec<bool>,
+    fields_consumed: usize,
 }
 
 /// The bindings each `return` hands to the caller, keyed by the returned
@@ -284,6 +333,21 @@ pub struct OwnershipChecker<'a> {
     /// The `ensure` statement whose body is being walked. A consume in there
     /// runs at scope exit, so it commits the value instead of moving it.
     ensure_at: Option<Span>,
+    /// The places the `ensure` body being walked consumes, as (root, path).
+    ensure_consumes: Vec<(String, Vec<String>)>,
+    /// The `ensure`s in scope and the bindings their bodies name, innermost
+    /// last. Consuming one of those bindings cancels the `ensure` (C1).
+    ensure_watch: Vec<EnsureWatch>,
+    /// Bumped at each consumption recorded in `ensure_cancels`, so an
+    /// enclosing expression doesn't record the one its operand already did.
+    watch_epoch: u64,
+    watch_recorded: HashMap<(rask_ast::NodeId, String), u64>,
+    /// Every field place given away so far, as (root, path, root's
+    /// declaration). A field move leaves its root bound, so this is how an
+    /// `ensure p.a.close()` learns `eat(p.a)` happened.
+    fields_consumed: Vec<(String, Vec<String>, Option<u32>)>,
+    ensure_cancels: EnsureCancels,
+    ensure_subjects: HashMap<rask_ast::NodeId, String>,
     /// Active `with` block bindings for W2 checking.
     active_with_bindings: Vec<WithBindingInfo>,
     /// LP14/LP16: Active `for mutate` loops for structural mutation checking.
@@ -707,6 +771,13 @@ impl<'a> OwnershipChecker<'a> {
             ensure_registered: HashSet::new(),
             ensure_spans: HashMap::new(),
             ensure_at: None,
+            ensure_watch: Vec::new(),
+            ensure_consumes: Vec::new(),
+            watch_epoch: 0,
+            watch_recorded: HashMap::new(),
+            fields_consumed: Vec::new(),
+            ensure_cancels: HashMap::new(),
+            ensure_subjects: HashMap::new(),
             active_with_bindings: Vec::new(),
             active_for_mutates: Vec::new(),
             shadowed_holds: HashSet::new(),
@@ -1035,6 +1106,8 @@ impl<'a> OwnershipChecker<'a> {
             mutate_param_moves: self.mutate_param_moves,
             consuming_tasks: self.consuming_tasks,
             quiet_loops: self.quiet_loops,
+            ensure_cancels: self.ensure_cancels,
+            ensure_subjects: self.ensure_subjects,
         }
     }
 
@@ -1650,6 +1723,9 @@ impl<'a> OwnershipChecker<'a> {
         self.ensure_registered.clear();
         self.ensure_spans.clear();
         self.ensure_at = None;
+        self.ensure_watch.clear();
+        self.watch_recorded.clear();
+        self.fields_consumed.clear();
         self.active_with_bindings.clear();
         self.active_for_mutates.clear();
         self.scope_limited_closures.clear();
@@ -1912,6 +1988,7 @@ impl<'a> OwnershipChecker<'a> {
         let block_id = self.current_block;
         self.current_block += 1;
         let resources_on_entry: HashSet<String> = self.resource_bindings.clone();
+        let watch_on_entry = self.ensure_watch.len();
 
         // MC2 needs to know where each name is mentioned for the last time, so
         // a mutable capture can stop being exclusive once the closure holding
@@ -1927,7 +2004,11 @@ impl<'a> OwnershipChecker<'a> {
             let owed_before = self.resource_bindings.len();
             let pending_before = self.commit_state();
             let errors_before = self.errors.len();
+            let watch_before = self.watch_snapshot();
             self.check_stmt(stmt);
+            if let Some(at) = Self::moving_operand(stmt) {
+                self.watch_record(watch_before, at);
+            }
             // Where each obligation started, for a diagnostic about a later
             // statement to point back at. One place rather than at each of the
             // ten registration sites, and it reads the same: whatever statement
@@ -1963,6 +2044,9 @@ impl<'a> OwnershipChecker<'a> {
             &resources_on_entry,
             stmts.last().map(|s| s.span).unwrap_or(Span::new(0, 0)),
         );
+        // So do the `ensure`s it scheduled.
+        self.check_watch_definite(watch_on_entry, stmts.last().map(|s| s.span).unwrap_or(Span::new(0, 0)));
+        self.ensure_watch.truncate(watch_on_entry);
 
         // SL2: Check if any scope-limited closures would escape this block.
         // A closure escapes if its borrow_block is inside the block being exited
@@ -2067,6 +2151,7 @@ impl<'a> OwnershipChecker<'a> {
     ) {
         let pre_loop = self.bindings.clone();
         let saved_errors = self.errors.len();
+        let saved_reported = self.exit_reported.clone();
         self.loop_entry_resources.push(self.resource_bindings.clone());
         self.loop_exits.push((label.cloned(), None));
         self.loop_continues.push((label.cloned(), None));
@@ -2106,7 +2191,10 @@ impl<'a> OwnershipChecker<'a> {
         if !carried.is_empty() {
             // Pass 2: re-analyze with carried values pre-moved. Discard pass-1
             // errors — pass 2 sees a strict superset (stricter entry state).
+            // What pass 1 marked as reported goes with them, or pass 2 would
+            // skip those reports as duplicates and nothing would say them.
             self.errors.truncate(saved_errors);
+            self.exit_reported = saved_reported;
             self.bindings = pre_loop;
             if let Some(top) = self.loop_exits.last_mut() {
                 top.1 = None;
@@ -3390,8 +3478,7 @@ impl<'a> OwnershipChecker<'a> {
                     self.check_expr(expr);
                     // What the value took on the way (a constructor's fields),
                     // and the variable itself when the value *is* one: the
-                    // move `handle_assignment` makes for `let y = x`, which a
-                    // return doesn't record because the function ends there.
+                    // move `handle_assignment` makes for `let y = x`.
                     let whole = self.moved_whole(expr);
                     let mut moved: Vec<String> = held
                         .into_iter()
@@ -3406,6 +3493,14 @@ impl<'a> OwnershipChecker<'a> {
                     }
                     self.consume_returned_resources(expr);
                     self.give_away_if_lent(expr, "return");
+                    // The value leaves with the return, before the scope's
+                    // ensures run: one that reads it is cancelled (C1), as
+                    // after any other move.
+                    if let Some(name) = whole {
+                        if matches!(self.bindings.get(&name), Some(BindingState::Owned)) {
+                            self.bindings.insert(name, BindingState::Moved { at: expr.span });
+                        }
+                    }
                     self.check_flow(expr, Sink::Return, stmt.span);
                     // Control leaves here, so this is an exit like any other. The
                     // end-of-body check alone misses an early return that skips a
@@ -3566,6 +3661,18 @@ impl<'a> OwnershipChecker<'a> {
             StmtKind::Break { label, value } => {
                 if let Some(v) = value {
                     self.check_expr(v);
+                    // `break c` carries `c` out as the loop's value: a move,
+                    // as `let d = c` is. Left owned, an `ensure` on `c` ran
+                    // and closed what the loop handed out.
+                    if let Some(name) = self.moved_whole(v) {
+                        if self.bindings.get(&name).is_some_and(Self::is_available) {
+                            self.give_away_if_lent(v, "break");
+                            self.consume_returned_resources(v);
+                            self.bindings.insert(name, BindingState::Moved { at: v.span });
+                        }
+                    } else {
+                        self.consume_returned_resources(v);
+                    }
                 }
                 self.check_loop_exit_obligations(stmt.span);
                 self.record_loop_exit(label.as_ref());
@@ -3580,11 +3687,14 @@ impl<'a> OwnershipChecker<'a> {
                 // body instead saw `ensure latch.release()` but not
                 // `ensure log.set(latch.release())` (#1301).
                 let prev = self.ensure_at.replace(stmt.span);
+                let outer = std::mem::take(&mut self.ensure_consumes);
                 self.check_block(body);
+                let consumed = std::mem::replace(&mut self.ensure_consumes, outer);
                 self.ensure_at = prev;
                 if let Some((_name, handler)) = else_handler {
                     self.check_block(handler);
                 }
+                self.watch_ensure(stmt, consumed);
             }
             StmtKind::Comptime(body) => {
                 self.check_block(body);
@@ -3611,6 +3721,12 @@ impl<'a> OwnershipChecker<'a> {
     }
 
     fn check_expr(&mut self, expr: &Expr) {
+        let before = self.watch_snapshot();
+        self.check_expr_inner(expr);
+        self.watch_record(before, expr);
+    }
+
+    fn check_expr_inner(&mut self, expr: &Expr) {
         match &expr.kind {
             ExprKind::Ident(name) if !self.field_path_checked && self.taken_fields.iter().any(|(r, ..)| r == name) => {
                 self.check_taken_read(expr);
@@ -4023,6 +4139,7 @@ impl<'a> OwnershipChecker<'a> {
                         // discharging the whole holder is how `p.a.close()` came
                         // to silently cover `p.b` (#828).
                         ExprKind::Field { .. } => {
+                            self.note_field_consumed(object);
                             let (root, path) = Self::extract_root_and_fields(object);
                             // A field of a borrowed parameter isn't the body's
                             // to consume: `o.bag.finish()` on a plain `o`
@@ -4166,8 +4283,11 @@ impl<'a> OwnershipChecker<'a> {
                 // A capture is a use of the outer binding where the closure is
                 // made: `let w = v; let f = || v.len()` gave the closure the
                 // vector `w` now owned.
+                //
+                // Maybe-moved too: a task spawned in a loop moved the value in
+                // on the turn before (#2023).
                 for name in &captures {
-                    if matches!(self.bindings.get(name), Some(BindingState::Moved { .. })) {
+                    if matches!(self.bindings.get(name), Some(BindingState::Moved { .. } | BindingState::MaybeMoved { .. })) {
                         let read = Expr { id: expr.id, span: expr.span, kind: ExprKind::Ident(name.clone()) };
                         self.check_expr(&read);
                     }
@@ -4396,6 +4516,11 @@ impl<'a> OwnershipChecker<'a> {
                 let saved_borrows = self.borrows.clone();
                 let saved_resources = self.resource_bindings.clone();
                 let saved_ensure = self.ensure_registered.clone();
+                // The closure's body runs in a frame of its own: a capture it
+                // gives away is the closure's, not the enclosing binding the
+                // `ensure` out here names. Creating the closure is where that
+                // binding moved, and that was recorded out here.
+                let saved_watch = std::mem::take(&mut self.ensure_watch);
 
                 self.resource_bindings.clear();
                 self.ensure_registered.clear();
@@ -4571,6 +4696,7 @@ impl<'a> OwnershipChecker<'a> {
                 self.borrows = saved_borrows;
                 self.resource_bindings = saved_resources;
                 self.ensure_registered = saved_ensure;
+                self.ensure_watch = saved_watch;
                 self.borrowed_captures = saved_borrowed_captures;
                 self.borrowed_params = saved_borrowed_params;
                 self.mutate_params = saved_mutate_params;
@@ -4870,14 +4996,14 @@ impl<'a> OwnershipChecker<'a> {
             }
             ExprKind::GuardPattern { expr, pattern: _, else_branch } => {
                 self.check_expr(expr);
-                self.check_expr(else_branch);
+                self.check_fallback(else_branch);
             }
             ExprKind::IsPattern { expr, pattern: _ } => {
                 self.check_scrutinee(expr);
             }
             ExprKind::NullCoalesce { value, default } => {
                 self.check_expr(value);
-                self.check_expr(default);
+                self.check_fallback(default);
             }
             ExprKind::Cast { expr: inner, ty: _ } => {
                 self.check_expr(inner);
@@ -9071,6 +9197,7 @@ impl<'a> OwnershipChecker<'a> {
     /// see it.
     fn check_exit_obligations(&mut self, span: Span) {
         self.check_resource_consumption(span);
+        self.check_watch_definite(0, span);
         self.check_mutate_params_refilled(span);
     }
 
@@ -10067,6 +10194,276 @@ impl<'a> OwnershipChecker<'a> {
         }
     }
 
+    /// A branch that runs on one path only: a guard's `else`, the default
+    /// of `??`. One that leaves (`?? return out`) hands nothing on to the
+    /// code after it; one that falls through leaves its moves maybe-done,
+    /// as an `if` without an `else` does.
+    fn check_fallback(&mut self, branch: &Expr) {
+        let before = self.bindings.clone();
+        self.check_expr(branch);
+        let after = std::mem::replace(&mut self.bindings, before);
+        if !Self::is_terminal_expr(branch) {
+            self.merge_branch_bindings(&after);
+        }
+    }
+
+    /// ctrl.ensure/C6: what this `ensure` cleans up and what it reads,
+    /// watched from here to the end of its block.
+    ///
+    /// What the body consumes is what it cleans up (mem.linear/L4), found by
+    /// the walk that just checked it: `latch` in
+    /// `ensure log.record(latch.release())`, `w` in `ensure w.take().close()`
+    /// (#1992), `c` in `ensure close_with(c, why)`. Giving that away before
+    /// the exit cancels the ensure. Anything else the body reads still has to
+    /// be there when it runs, so giving it away is an error, and a body that
+    /// consumes nothing (`ensure println(v.len())`) has nothing that cancels
+    /// it (#1978).
+    ///
+    /// A binding that only ever copies (an `i64`, a `string`) never moves,
+    /// so it never cancels.
+    fn watch_ensure(&mut self, stmt: &Stmt, consumed: Vec<(String, Vec<String>)>) {
+        // A cleanup on something that isn't a local (a module constant) has
+        // no binding to watch.
+        let mut subjects: Vec<(String, Vec<String>)> = Vec::new();
+        for (root, path) in consumed {
+            if !self.bindings.contains_key(&root) {
+                continue;
+            }
+            // Two parts of one binding: the ensure cleans up what holds both.
+            match subjects.iter_mut().find(|(r, _)| *r == root) {
+                Some((_, p)) => {
+                    let common = p.iter().zip(&path).take_while(|(a, b)| a == b).count();
+                    p.truncate(common);
+                }
+                None => subjects.push((root, path)),
+            }
+        }
+        if let [(root, _)] = subjects.as_slice() {
+            self.ensure_subjects.insert(stmt.id, root.clone());
+        }
+        // Every place the body reads, keyed by the name at its root: the
+        // longest field chain off each identifier, `[]` for a bare one.
+        let mut chains: HashMap<rask_ast::NodeId, Vec<String>> = HashMap::new();
+        rask_ast::visit::walk_stmt(stmt, &mut |e| {
+            if !matches!(e.kind, ExprKind::Field { .. }) {
+                return;
+            }
+            let mut path = Vec::new();
+            let mut place = e;
+            while let ExprKind::Field { object, field } = &place.kind {
+                path.push(field.clone());
+                place = object;
+            }
+            if matches!(place.kind, ExprKind::Ident(_)) {
+                path.reverse();
+                let slot = chains.entry(place.id).or_default();
+                if path.len() > slot.len() {
+                    *slot = path;
+                }
+            }
+        });
+        let mut seen: Vec<(String, Option<u32>, Vec<Vec<String>>)> = Vec::new();
+        rask_ast::visit::walk_stmt(stmt, &mut |e| {
+            if let ExprKind::Ident(name) = &e.kind {
+                let symbol = self.program.resolutions.get(&e.id).map(|s| s.0);
+                let read = chains.get(&e.id).cloned().unwrap_or_default();
+                match seen.iter_mut().find(|(n, s, _)| n == name && *s == symbol) {
+                    Some((_, _, reads)) => {
+                        if !reads.contains(&read) {
+                            reads.push(read);
+                        }
+                    }
+                    None => seen.push((name.clone(), symbol, vec![read])),
+                }
+            }
+        });
+        seen.sort();
+        for (name, symbol, reads) in seen {
+            let live = matches!(
+                self.bindings.get(&name),
+                Some(s) if !matches!(
+                    s,
+                    BindingState::Moved { .. } | BindingState::MaybeMoved { .. } | BindingState::Discarded { .. }
+                )
+            );
+            if !live {
+                continue;
+            }
+            let subject = subjects.iter().find(|(r, _)| *r == name).map(|(_, p)| p.clone());
+            let also_cleans = match subject {
+                Some(_) => subjects.iter().filter(|(r, _)| *r != name).map(|(r, _)| r.clone()).collect(),
+                None => Vec::new(),
+            };
+            self.ensure_watch.push(EnsureWatch {
+                name,
+                symbol,
+                subject,
+                reads,
+                also_cleans,
+                ensure: stmt.id,
+                ensure_span: stmt.span,
+            });
+        }
+    }
+
+    fn is_given_away(&self, name: &str) -> bool {
+        matches!(self.bindings.get(name), Some(BindingState::Moved { .. } | BindingState::MaybeMoved { .. }))
+    }
+
+    /// Note a field place given away, for an `ensure` on it.
+    fn note_field_consumed(&mut self, expr: &Expr) {
+        let place = match &expr.kind {
+            ExprKind::Take { place } => place.as_ref(),
+            _ => expr,
+        };
+        if !matches!(place.kind, ExprKind::Field { .. }) || self.ensure_at.is_some() {
+            return;
+        }
+        if let (Some(root), Some(path)) = Self::extract_root_and_fields(place) {
+            let symbol = self.root_symbol(place);
+            self.fields_consumed.push((root, path, symbol));
+        }
+    }
+
+    /// Which watched bindings were still ours before a walk.
+    fn watch_snapshot(&self) -> Option<WatchSnapshot> {
+        if self.ensure_watch.is_empty() {
+            return None;
+        }
+        Some(WatchSnapshot {
+            epoch: self.watch_epoch,
+            given_away: self.ensure_watch.iter().map(|w| self.is_given_away(&w.name)).collect(),
+            fields_consumed: self.fields_consumed.len(),
+        })
+    }
+
+    /// Does `expr` name the binding `name` resolved to `symbol`?
+    fn names_binding(&self, expr: &Expr, name: &str, symbol: Option<u32>) -> bool {
+        let mut found = false;
+        rask_ast::visit::walk_expr(expr, &mut |e| {
+            if let ExprKind::Ident(n) = &e.kind {
+                if n == name && Self::same_root(symbol, self.program.resolutions.get(&e.id).map(|s| s.0)) {
+                    found = true;
+                }
+            }
+        });
+        found
+    }
+
+    /// After walking `at`: a watched binding it gave away is consumed by
+    /// `at`, unless an operand inside it already said so.
+    fn watch_record(&mut self, before: Option<WatchSnapshot>, at: &Expr) {
+        let Some(before) = before else { return };
+        let watched = before.given_away.len().min(self.ensure_watch.len());
+        let fields: Vec<(String, Vec<String>, Option<u32>)> =
+            self.fields_consumed[before.fields_consumed.min(self.fields_consumed.len())..].to_vec();
+        let mut hits: Vec<(usize, String, WatchVerdict)> = Vec::new();
+        for i in 0..watched {
+            let w = &self.ensure_watch[i];
+            if self.watch_recorded.get(&(w.ensure, w.name.clone())).is_some_and(|e| *e > before.epoch) {
+                continue;
+            }
+            let whole = !before.given_away[i]
+                && self.is_given_away(&w.name)
+                && self.names_binding(at, &w.name, w.symbol);
+            if whole {
+                if let Some(verdict) = Self::watch_verdict(w, None) {
+                    hits.push((i, w.name.clone(), verdict));
+                }
+                continue;
+            }
+            // A field given away: what the ensure cleans up goes with it when
+            // the field holds it, and a part it still needs or reads is gone.
+            let field = fields.iter().find_map(|(root, path, symbol)| {
+                if *root != w.name || !Self::same_root(*symbol, w.symbol) {
+                    return None;
+                }
+                let verdict = Self::watch_verdict(w, Some(path))?;
+                Some((format!("{}.{}", root, path.join(".")), verdict))
+            });
+            if let Some((place, verdict)) = field {
+                hits.push((i, place, verdict));
+            }
+        }
+        if hits.is_empty() {
+            return;
+        }
+        self.watch_epoch += 1;
+        for (i, place, verdict) in hits {
+            let w = self.ensure_watch[i].clone();
+            self.watch_recorded.insert((w.ensure, w.name.clone()), self.watch_epoch);
+            match verdict {
+                WatchVerdict::Cancels => {
+                    let entry = self.ensure_cancels.entry(at.id).or_default();
+                    if !entry.contains(&w.ensure) {
+                        entry.push(w.ensure);
+                    }
+                }
+                WatchVerdict::Refused(why) => self.errors.push(OwnershipError {
+                    kind: OwnershipErrorKind::EnsureReadsMoved { name: place, why, ensure_at: w.ensure_span },
+                    span: at.span,
+                }),
+            }
+        }
+    }
+
+    /// What giving away `w`'s binding (`moved` is `None`) or the field at
+    /// `moved` does to its ensure. `None`: nothing the ensure touches.
+    fn watch_verdict(w: &EnsureWatch, moved: Option<&Vec<String>>) -> Option<WatchVerdict> {
+        let overlaps = |a: &Vec<String>, b: &Vec<String>| a.starts_with(b) || b.starts_with(a);
+        let whole: Vec<String> = Vec::new();
+        let moved = moved.unwrap_or(&whole);
+        match &w.subject {
+            Some(path) if path.starts_with(moved) => Some(match w.also_cleans.first() {
+                None => WatchVerdict::Cancels,
+                Some(other) => WatchVerdict::Refused(EnsureHold::AlsoCleans(other.clone())),
+            }),
+            Some(path) if moved.starts_with(path) => {
+                let subject = std::iter::once(w.name.clone()).chain(path.iter().cloned()).collect::<Vec<_>>().join(".");
+                Some(WatchVerdict::Refused(EnsureHold::PartOf(subject)))
+            }
+            _ => w.reads.iter().any(|r| overlaps(r, moved)).then_some(WatchVerdict::Refused(EnsureHold::Reads)),
+        }
+    }
+
+    /// The expression a statement hands its value from, where a move the
+    /// statement itself makes (`return v`, `let (a, b) = t`) is recorded.
+    fn moving_operand(stmt: &Stmt) -> Option<&Expr> {
+        match &stmt.kind {
+            StmtKind::Let { init, .. }
+            | StmtKind::Mut { init, .. }
+            | StmtKind::LetTuple { init, .. }
+            | StmtKind::MutTuple { init, .. }
+            | StmtKind::LetStruct { init, .. } => Some(init),
+            StmtKind::Return(Some(e)) | StmtKind::Expr(e) => Some(e),
+            StmtKind::Assign { value, .. } => Some(value),
+            StmtKind::Break { value: Some(e), .. } => Some(e),
+            _ => None,
+        }
+    }
+
+    /// C3/C4: at an exit, a binding a scheduled `ensure` names is consumed on
+    /// every path here or on none. From `from` on in `ensure_watch`; a
+    /// resource's own receiver is judged with the resource.
+    fn check_watch_definite(&mut self, from: usize, span: Span) {
+        let watched: Vec<EnsureWatch> = self.ensure_watch[from.min(self.ensure_watch.len())..].to_vec();
+        for w in watched {
+            // A field's cleanup is judged with its holder's debts.
+            if w.subject.as_ref().is_none_or(|p| !p.is_empty()) || self.ensure_registered.contains(&w.name) {
+                continue;
+            }
+            let Some(BindingState::MaybeMoved { at }) = self.bindings.get(&w.name) else { continue };
+            let consumed_at = *at;
+            if !self.exit_reported.insert(format!("ensure:{}", w.name)) {
+                continue;
+            }
+            self.errors.push(OwnershipError {
+                kind: OwnershipErrorKind::EnsureMaybeConsumed { name: w.name.clone(), ensure_at: w.ensure_span, consumed_at },
+                span,
+            });
+        }
+    }
+
     /// Register a resource as ensure-committed, recording where.
     fn register_ensure(&mut self, name: &str, ensure_span: Span) {
         self.ensure_registered.insert(name.to_string());
@@ -10150,6 +10547,9 @@ impl<'a> OwnershipChecker<'a> {
     /// A consume inside an `ensure` body. The call runs at scope exit, so the
     /// value stays the frame's until then and is committed now (mem.linear/L4).
     fn commit_in_ensure(&mut self, consumed: &Expr, ensure_at: Span) {
+        if let (Some(root), path) = Self::extract_root_and_fields(consumed) {
+            self.ensure_consumes.push((root, path.unwrap_or_default()));
+        }
         match &consumed.kind {
             ExprKind::Ident(name) => {
                 // An `ensure` gives the value away as surely as the call does,
@@ -10554,6 +10954,7 @@ impl<'a> OwnershipChecker<'a> {
         if let ExprKind::Take { place } = &expr.kind {
             return self.pay_moved_field(place);
         }
+        self.note_field_consumed(expr);
         if !matches!(expr.kind, ExprKind::Field { .. }) {
             return false;
         }
@@ -10754,6 +11155,8 @@ pub fn check_ownership_with_stdlib(
     result.mutate_param_moves.extend(stdlib.mutate_param_moves);
     result.generic_closure_captures.extend(stdlib.generic_closure_captures);
     result.quiet_loops.extend(stdlib.quiet_loops);
+    result.ensure_cancels.extend(stdlib.ensure_cancels);
+    result.ensure_subjects.extend(stdlib.ensure_subjects);
     result
 }
 

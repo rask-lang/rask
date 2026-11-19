@@ -651,6 +651,13 @@ pub struct TypedProgram {
     /// The bindings each `return` moves, keyed by the returned expression
     /// (`rask_ownership::ReturnMoves`). Written back by the ownership pass.
     pub return_moves: std::collections::HashMap<NodeId, Vec<String>>,
+    /// Consuming expression → the `ensure` statements it cancels
+    /// (`rask_ownership::EnsureCancels`, ctrl.ensure/C1). Written back by the
+    /// ownership pass.
+    pub ensure_cancels: std::collections::HashMap<NodeId, Vec<NodeId>>,
+    /// `ensure` statement → the binding its cleanup consumes
+    /// (ctrl.ensure/C6). Written back by the ownership pass.
+    pub ensure_subjects: std::collections::HashMap<NodeId, String>,
     /// Closure literals that capture a link or a `Local` box, so they may not
     /// reach another task (mem.ownership/T2, conc.sync/SH7). A task block that
     /// names one of these by itself is rejected at compile time; one that

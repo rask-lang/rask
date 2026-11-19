@@ -1,18 +1,34 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 //
-// A sender cloned into a local and captured by tasks spawned in a loop. The
-// clone of a sender is a copy of the handle, so the local looked like a plain
-// alias of `tx0` rather than a handle of its own; each task then moved it
-// instead of retaining it, and the channel was never released (#2005). The
-// leak gate checks the release; the asserts pin the values.
+// A sender cloned into a local and captured by a task. `tx0` is dead after
+// the clone, so clone elision turns it into a plain copy and `tx` reached
+// the task by assignment rather than from a call; the pass that gives each
+// task its own reference to a handle didn't know it, and the channel was
+// never released (#2005). The leak gate checks the release; the asserts pin
+// the values.
+//
+// A detached task moves what it names (conc.async/S5), so tasks spawned in a
+// loop each take a clone of their own.
+
+func one() -> i64 {
+    using Multitasking {
+        let (tx0, rx) = Channel<i64>.buffered(1)
+        let tx = tx0.clone()
+        spawn {
+            tx.send(7)
+        }.detach()
+        return rx.receive()!
+    }
+}
 
 func fan(tasks: i64) -> i64 {
     using Multitasking {
         let (tx0, rx) = Channel<i64>.buffered(8)
         let tx = tx0.clone()
         for id in 0..tasks {
+            let mine = tx.clone()
             spawn {
-                tx.send(id + 1)
+                mine.send(id + 1)
             }.detach()
         }
         mut total = 0
@@ -27,10 +43,11 @@ func fan(tasks: i64) -> i64 {
     }
 }
 
-test "one task" {
-    assert fan(1) == 1
+test "one task takes the cloned local" {
+    assert one() == 7
 }
 
-test "several tasks" {
+test "tasks in a loop each take a clone" {
+    assert fan(1) == 1
     assert fan(4) == 10
 }
