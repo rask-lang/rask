@@ -8353,8 +8353,22 @@ mod tests {
 /// demand. The end is the caller's, released as its declared type says: one
 /// sender or one receiver fewer, and the channel goes with the last of them.
 pub(crate) fn channel_half(extract: &'static str) -> FunctionRef {
+    FunctionRef::reading(extract).handing_back(channel_half_release(extract))
+}
+
+/// The MIR type of a channel end: a handle that frees itself by its declared
+/// release. A plain `i64` here said nothing about freeing it, so a closure
+/// environment carrying a `Sender` never gave it back.
+pub(crate) fn channel_half_ty(extract: &'static str) -> MirType {
+    let release = channel_half_release(extract);
+    MirType::Container(
+        crate::ContainerKind::handle(release)
+            .unwrap_or_else(|| panic!("`{release}` is not a declared handle release")),
+    )
+}
+
+fn channel_half_release(extract: &'static str) -> &'static str {
     let end = if extract == "channel_tx" { "Sender" } else { "Receiver" };
-    let release = rask_stdlib::handles::declared_release(end)
-        .unwrap_or_else(|| panic!("stdlib/async.rk declares no release for `{end}`"));
-    FunctionRef::reading(extract).handing_back(release)
+    rask_stdlib::handles::declared_release(end)
+        .unwrap_or_else(|| panic!("stdlib/async.rk declares no release for `{end}`"))
 }

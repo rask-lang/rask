@@ -2393,8 +2393,7 @@ impl<'a> MirLowerer<'a> {
 
         for (i, name) in names.iter().enumerate() {
             let elem_ty = if is_channel_create {
-                // Channel tx/rx handles are opaque i64 pointers
-                MirType::I64
+                super::channel_half_ty(if i == 0 { "channel_tx" } else { "channel_rx" })
             } else {
                 mir_elem_types.as_ref()
                     .and_then(|elems| elems.get(i).cloned())

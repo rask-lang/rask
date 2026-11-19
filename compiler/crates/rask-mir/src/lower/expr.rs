@@ -3079,13 +3079,14 @@ impl<'a> MirLowerer<'a> {
             // build its own handle is what removed it, and this is the read
             // that has to come along.
             if let Some(extract) = self.channel_half_extractor(object, field) {
-                let dst = self.builder.alloc_temp(MirType::I64);
+                let ty = super::channel_half_ty(extract);
+                let dst = self.builder.alloc_temp(ty.clone());
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                     dst: Some(dst),
                     func: super::channel_half(extract),
                     args: vec![obj_op],
                 }));
-                return Ok((MirOperand::Local(dst), MirType::I64));
+                return Ok((MirOperand::Local(dst), ty));
             }
 
             // Resolve field index, type, and byte offset from struct layout.

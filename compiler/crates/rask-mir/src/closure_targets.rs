@@ -377,7 +377,11 @@ impl ClosureTargets {
                                 unknown_arities.insert(args.len());
                             }
                         },
-                        MirStmtKind::Call { func: callee, args, .. } if !with_body.contains(callee.name.as_str()) => {
+                        // A clone neither calls nor keeps its source: the
+                        // copy is followed as a closure of its own.
+                        MirStmtKind::Call { func: callee, args, .. }
+                            if !with_body.contains(callee.name.as_str()) && clone_of(st).is_none() =>
+                        {
                             for arg in args {
                                 let MirOperand::Local(a) = arg else { continue };
                                 if !matches!(func.local_ty(*a), Some(MirType::FuncPtr(_))) {
