@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 // Compile Error: something an ensure still needs is given away while the
-// ensure is owed (E0976, ctrl.ensure/C6).
+// ensure is owed (E0977, ctrl.ensure/C6).
 //
 // An ensure is cancelled by giving away what its body consumes, the thing it
 // cleans up. Anything else it reads has to still be there when it runs, so

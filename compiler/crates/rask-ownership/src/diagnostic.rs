@@ -1437,7 +1437,7 @@ impl ToDiagnostic for crate::OwnershipError {
                     ),
                 };
                 Diagnostic::error(title)
-                    .with_code("E0976")
+                    .with_code("E0977")
                     .with_primary(self.span, format!("`{}` is given away here", name))
                     .with_secondary(*ensure_at, label)
                     .with_help(help)

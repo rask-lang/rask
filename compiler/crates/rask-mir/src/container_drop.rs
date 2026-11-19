@@ -107,24 +107,6 @@ fn retain_handle_captures(func: &mut MirFunction) {
             }
         }
     }
-    // And every plain copy of one: `let tx = tx0.clone()` with `tx0` dead
-    // after it is a move, so the capture's name is a copy of the end the
-    // constructor made. Missed, the task in a loop shared one reference with
-    // the frame and every other task (#2005).
-    let mut changed = !made.is_empty();
-    while changed {
-        changed = false;
-        for stmt in func.blocks.iter().flat_map(|b| b.statements.iter()) {
-            if let MirStmtKind::Assign { dst, rvalue: MirRValue::Use(MirOperand::Local(src)) } = &stmt.kind {
-                if let Some(free) = made.get(src).copied() {
-                    if !made.contains_key(dst) {
-                        made.insert(*dst, free);
-                        changed = true;
-                    }
-                }
-            }
-        }
-    }
     if made.is_empty() {
         return;
     }
