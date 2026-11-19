@@ -45,7 +45,7 @@ impl<'a> MirLowerer<'a> {
         self.closure_counter += 1;
         {
             let mut wb = BlockBuilder::new(wrapper_name.clone(), ret_ty.clone());
-            wb.add_param("__env".to_string(), MirType::Ptr);
+            wb.add_param("__env".to_string(), MirType::Ptr, rask_ast::ty::ParamMode::Borrow);
 
             let mut args = Vec::new();
             for (i, ty_str) in param_tys.iter().enumerate() {
@@ -59,7 +59,7 @@ impl<'a> MirLowerer<'a> {
                         .map(|t| self.ctx.type_to_mir(t))
                         .unwrap_or_else(|| crate::fallback::unknown_type("lower/closures:fnval_param"))
                 };
-                let id = wb.add_param(format!("__a{}", i), ty);
+                let id = wb.add_param(format!("__a{}", i), ty, modes.get(i).copied().unwrap_or(rask_ast::ty::ParamMode::Borrow));
                 args.push(MirOperand::Local(id));
             }
 
@@ -77,14 +77,7 @@ impl<'a> MirLowerer<'a> {
                 value: call_dst.map(MirOperand::Local),
             }));
 
-            // The function's own modes, after the environment: a `take`
-            // argument is the wrapper's to hand on or release, the same as
-            // the function's once its body is inlined here.
-            let mut wrapper = wb.finish();
-            if !modes.is_empty() {
-                wrapper.param_modes = std::iter::once(rask_ast::ty::ParamMode::Borrow).chain(modes).collect();
-            }
-            self.synthesized_functions.push(wrapper);
+            self.synthesized_functions.push(wb.finish());
         }
 
         let result_local = self.builder.alloc_temp(MirType::FuncPtr(crate::types::SignatureId(0)));
@@ -123,7 +116,7 @@ impl<'a> MirLowerer<'a> {
         self.closure_counter += 1;
         {
             let mut wb = BlockBuilder::new(wrapper_name.clone(), MirType::I64);
-            wb.add_param("__env".to_string(), MirType::Ptr);
+            wb.add_param("__env".to_string(), MirType::Ptr, rask_ast::ty::ParamMode::Borrow);
 
             let mut args = Vec::new();
             for (i, ty_str) in param_tys.iter().enumerate() {
@@ -131,7 +124,7 @@ impl<'a> MirLowerer<'a> {
                     .as_ref()
                     .map(|t| self.ctx.type_to_mir(t))
                     .unwrap_or_else(|| crate::fallback::unknown_type("lower/closures:cmp_param"));
-                let id = wb.add_param(format!("__c{}", i), ty);
+                let id = wb.add_param(format!("__c{}", i), ty, rask_ast::ty::ParamMode::Borrow);
                 args.push(MirOperand::Local(id));
             }
 
@@ -216,9 +209,9 @@ impl<'a> MirLowerer<'a> {
         let mut args = Vec::new();
         for i in 0..(if is_eq { 2 } else { 1 }) {
             if by_address {
-                args.push(MirOperand::Local(wb.add_param(format!("__k{i}"), key_ty.clone())));
+                args.push(MirOperand::Local(wb.add_param(format!("__k{i}"), key_ty.clone(), rask_ast::ty::ParamMode::Borrow)));
             } else {
-                let slot = wb.add_param(format!("__k{i}"), MirType::Ptr);
+                let slot = wb.add_param(format!("__k{i}"), MirType::Ptr, rask_ast::ty::ParamMode::Borrow);
                 let key = wb.alloc_temp(key_ty.clone());
                 wb.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                     dst: key,
@@ -227,7 +220,7 @@ impl<'a> MirLowerer<'a> {
                 args.push(MirOperand::Local(key));
             }
         }
-        wb.add_param("__size".to_string(), MirType::I64);
+        wb.add_param("__size".to_string(), MirType::I64, rask_ast::ty::ParamMode::Borrow);
         let answer = wb.alloc_temp(if is_eq { MirType::Bool } else { MirType::U64 });
         wb.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(answer),
@@ -404,6 +397,23 @@ impl<'a> MirLowerer<'a> {
                 cap.lent = lent.iter().any(|l| l == name);
             }
         }
+        // What the environment owns: everything carried in by value (CM2), and
+        // a task's copies (conc.async/S6). A lent parameter stays the caller's,
+        // except a copy: a string, or a Copy struct holding strings, whose slot
+        // holds references taken at the create (`rc_insert`) rather than the
+        // caller's own. `keeper(l: Line) -> || l` leaked its string otherwise.
+        for (cap, (_, _, ty, _)) in captures.iter_mut().zip(free_vars.iter()) {
+            if cap.by_ref {
+                continue;
+            }
+            cap.owns = if !cap.lent || cap.copy {
+                Some(ty.clone())
+            } else if *ty == MirType::Buffer {
+                Some(MirType::Buffer)
+            } else {
+                None
+            };
+        }
 
         // 4. Synthesize a MIR function for the closure body.
         //
@@ -441,7 +451,7 @@ impl<'a> MirLowerer<'a> {
         // A C callback is called with exactly the C arguments, and captured
         // nothing that would need an environment (CB2).
         let c_abi = std::mem::take(&mut self.c_callback);
-        let env_param_id = if c_abi { None } else { Some(closure_builder.add_param("__env".to_string(), MirType::Ptr)) };
+        let env_param_id = if c_abi { None } else { Some(closure_builder.add_param("__env".to_string(), MirType::Ptr, rask_ast::ty::ParamMode::Borrow)) };
 
         // The checker's parameter list for this closure, for a parameter that
         // was neither annotated nor pinned by the callee's signature.
@@ -478,7 +488,7 @@ impl<'a> MirLowerer<'a> {
             let mode = rask_ast::ty::ParamMode::from_flags(param.is_take, param.is_mutate);
             let (scalar_mutate, _) = super::mutate_param_passing(mode, &param.name, &param_ty);
             let local_ty = if scalar_mutate.is_some() { MirType::Ptr } else { param_ty.clone() };
-            let param_id = closure_builder.add_param(param.name.clone(), local_ty.clone());
+            let param_id = closure_builder.add_param(param.name.clone(), local_ty.clone(), mode);
             closure_locals.insert(param.name.clone(), (param_id, local_ty));
             if param.is_mutate {
                 self.meta_mut(&param.name).assigns_through = true;
@@ -520,19 +530,26 @@ impl<'a> MirLowerer<'a> {
             // A closure is its own frame with its own return, so a `try` in it
             // leaves the closure even when the closure sits in a `test` block.
             let saved_in_test = std::mem::replace(&mut self.in_test_body, false);
+            // So is a closure written inside a loop over a sequence, or inside
+            // an inlined callback: its `return` answers the closure, not the
+            // enclosing function, and what it moves stays its own. Kept, the
+            // redirect sent the closure's `return` to a block id of the loop
+            // body's function (#2010).
+            let saved_inline = self.inline_return_target.take();
+            let saved_moved = self.seq_moved_names.take();
 
             // The tag read has to be emitted while the closure's own builder is
             // still installed, so it lands inside the closure body. An explicit
             // `return` in the body is converted by `terminate_return` instead.
-            // A closure whose type returns `T or E` with a body of type `T` (a
-            // consumer that can't fail, filling a fallible slot) hands back the
-            // success side, as a function declared that way does.
+            // A closure whose type returns `T or E` or `T?` with a body of
+            // type `T` (`|x| x * 2` in a `func(i64) -> i64?` slot) hands back
+            // the success side, as a function declared that way does. Lowering
+            // builds that wrapper; codegen no longer adds it.
             let body_result = self.lower_expr(body).map(|(op, ty)| {
                 if self.is_ordering_ty(&ty) && closure_ret == MirType::I64 {
                     let tag = self.emit_ordering_tag_i64(op);
                     (MirOperand::Local(tag), MirType::I64)
-                } else if matches!(closure_ret, MirType::Result { .. })
-                    && !matches!(ty, MirType::Result { .. })
+                } else if matches!(closure_ret, MirType::Result { .. } | MirType::Option(_))
                     && self.builder.current_block_unterminated()
                 {
                     let wrapped = self.coerce_into_wrapper(
@@ -554,6 +571,8 @@ impl<'a> MirLowerer<'a> {
             self.ensure_stack = saved_ensure_stack;
             self.ensure_flags = saved_ensure_flags;
             self.in_test_body = saved_in_test;
+            self.inline_return_target = saved_inline;
+            self.seq_moved_names = saved_moved;
             self.restore_names(outer_param_names);
 
             let (body_val, _body_ty) = body_result?;
@@ -568,12 +587,6 @@ impl<'a> MirLowerer<'a> {
 
         let mut closure_fn = closure_builder.finish();
         closure_fn.is_extern_c = c_abi;
-        // Same meaning as a declared function's; the environment is borrowed.
-        closure_fn.param_modes = env_param_id
-            .map(|_| rask_ast::ty::ParamMode::Borrow)
-            .into_iter()
-            .chain(params.iter().map(|p| rask_ast::ty::ParamMode::from_flags(p.is_take, p.is_mutate)))
-            .collect();
 
 
         self.synthesized_functions.push(closure_fn);
@@ -613,6 +626,23 @@ impl<'a> MirLowerer<'a> {
         // 5. In the parent function, emit ClosureCreate.
         // Own closures may escape — start heap-allocated so escape analysis can
         // decide whether to downgrade. Scope-limited closures never escape; stack only.
+        // A task that captures a lent closure gets a clone of it (CV2), the
+        // way a lent string gets a count of its own. A carrying closure can
+        // point at the caller's, since SL4 keeps the caller's alive as long;
+        // nothing bounds a task's life that way.
+        let mut captures = captures;
+        for cap in captures.iter_mut().filter(|c| for_spawn && c.lent && !c.by_ref) {
+            let Some(ty @ MirType::FuncPtr(_)) = self.builder.local_type(cap.local_id) else { continue };
+            let copy = self.builder.alloc_temp(ty.clone());
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                dst: Some(copy),
+                func: crate::FunctionRef::borrowing("rask_closure_clone"),
+                args: vec![MirOperand::Local(cap.local_id)],
+            }));
+            cap.local_id = copy;
+            cap.lent = false;
+            cap.owns = Some(ty);
+        }
         let result_local = self.builder.alloc_temp(MirType::FuncPtr(crate::types::SignatureId(0)));
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::ClosureCreate {
             dst: result_local,
@@ -750,8 +780,29 @@ impl<'a> MirLowerer<'a> {
         );
 
         let mut yb = BlockBuilder::new(closure_name.clone(), MirType::Bool);
-        let env_param = yb.add_param("__env".to_string(), MirType::Ptr);
-        let item_param = yb.add_param(param_name.clone(), elem_ty.clone());
+        let env_param = yb.add_param("__env".to_string(), MirType::Ptr, rask_ast::ty::ParamMode::Borrow);
+        // A yield lends its item (type.sequence/SEQ34): the sequence that
+        // called it releases what it made once the call returns, as `map`'s
+        // does after `yield(f(x))`. For an item that owns only counted things
+        // (a tuple or struct of strings and numbers) the body borrows it too:
+        // it releases nothing, and one it keeps — `find` returning the hit —
+        // is a copy with references of its own. Unmarked, the body counted as
+        // the item's owner: it freed a miss and handed a hit on without a
+        // reference, and the string inside came back freed (#1871).
+        //
+        // An item that owns a container can only be kept by moving it, so
+        // a body that keeps one (`out.push(x)` in `to_vec`, `return x`,
+        // `keep = x`) takes it: the sequence hands over an item the chain
+        // owns, and a copy of one it was lent (SEQ47). Which bodies do is read
+        // off this body once the whole program is lowered, since a call in it
+        // may keep the item only through another body
+        // (`container_drop::settle_loop_item_modes`).
+        let counted_aggregate = matches!(
+            elem_ty,
+            MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_) | MirType::Option(_)
+                | MirType::Result { .. } | MirType::Array { .. }
+        ) && self.ctx.mir_owns_only_counted(&elem_ty, 0);
+        let item_param = yb.add_param(param_name.clone(), elem_ty.clone(), rask_ast::ty::ParamMode::Borrow);
 
         let mut yield_locals = std::collections::HashMap::new();
         if matches!(binding, ForBinding::Single(_)) {
@@ -894,27 +945,8 @@ impl<'a> MirLowerer<'a> {
             value: Some(MirOperand::Constant(crate::operand::MirConst::Int(0))),
         }));
 
-        // A yield lends its item (type.sequence/SEQ34): the sequence that
-        // called it releases what it made once the call returns, as `map`'s
-        // does after `yield(f(x))`. For an item that owns only counted things
-        // (a tuple or struct of strings and numbers) the body borrows it too:
-        // it releases nothing, and one it keeps — `find` returning the hit —
-        // is a copy with references of its own. Unmarked, the body counted as
-        // the item's owner: it freed a miss and handed a hit on without a
-        // reference, and the string inside came back freed (#1871).
-        //
-        // An item that owns a container is the other protocol: the body keeps
-        // it by moving it, and the sequence hands it over instead of releasing
-        // it, which a copy can't stand in for.
         let mut yield_fn = yb.finish();
-        let counted_aggregate = matches!(
-            elem_ty,
-            MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_) | MirType::Option(_)
-                | MirType::Result { .. } | MirType::Array { .. }
-        ) && self.ctx.mir_owns_only_counted(&elem_ty, 0);
-        if counted_aggregate {
-            yield_fn.param_modes = vec![rask_ast::ty::ParamMode::Borrow, rask_ast::ty::ParamMode::Borrow];
-        }
+        yield_fn.item_mode_from_body = !counted_aggregate;
         self.synthesized_functions.push(yield_fn);
 
         // Build the closure and hand it to the sequence.
@@ -930,7 +962,7 @@ impl<'a> MirLowerer<'a> {
             dst: None,
             closure: seq_local,
             args: vec![MirOperand::Local(closure_local)],
-            taken: Vec::new(),
+            modes: vec![rask_ast::ty::ParamMode::Borrow],
         }));
 
         // SEQ8: the body asked to leave the enclosing function. Test the flag
@@ -1081,7 +1113,7 @@ impl<'a> MirLowerer<'a> {
     fn synthesize_spawn_box_thunk(&mut self, closure_name: &str, ret: &MirType) -> String {
         let thunk_name = format!("{closure_name}__spawn_box");
         let mut b = BlockBuilder::new(thunk_name.clone(), MirType::I64);
-        let env = b.add_param("__env".to_string(), MirType::Ptr);
+        let env = b.add_param("__env".to_string(), MirType::Ptr, rask_ast::ty::ParamMode::Borrow);
 
         let value = b.alloc_local("__value".to_string(), ret.clone());
         b.push_stmt(MirStmt::dummy(MirStmtKind::Call {

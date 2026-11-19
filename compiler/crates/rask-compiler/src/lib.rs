@@ -655,6 +655,7 @@ fn check_loaded_scoped(
     // CM1: which closures outlive their frame is ownership's to work out, and
     // lowering and the interpreter both need the same answer.
     typed.escaping_closures = ownership_result.escaping_closures.clone();
+    typed.closure_captures = ownership_result.closure_captures.clone();
     typed.return_moves = ownership_result.return_moves.clone();
     typed.ensure_cancels = ownership_result.ensure_cancels.clone();
     typed.ensure_subjects = ownership_result.ensure_subjects.clone();
@@ -1185,6 +1186,7 @@ fn check_package_scoped(
     typed.template_copies =
         rounds.copies_of.iter().map(|(copy, of)| (*copy, (of.template, of.type_args.clone()))).collect();
     typed.escaping_closures = ownership_result.escaping_closures.clone();
+    typed.closure_captures = ownership_result.closure_captures.clone();
     typed.return_moves = ownership_result.return_moves.clone();
     typed.ensure_cancels = ownership_result.ensure_cancels.clone();
     typed.ensure_subjects = ownership_result.ensure_subjects.clone();

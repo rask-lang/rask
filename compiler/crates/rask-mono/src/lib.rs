@@ -1135,6 +1135,7 @@ mod tests {
             fallback_keeps_shape: std::collections::HashSet::new(),
             err_returns: std::collections::HashSet::new(),
             escaping_closures: std::collections::HashSet::new(),
+            closure_captures: std::collections::HashMap::new(),
             lent_captures: std::collections::HashMap::new(),
             field_reuses: std::collections::HashSet::new(),
             quiet_loops: std::collections::HashSet::new(),

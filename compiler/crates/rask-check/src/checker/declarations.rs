@@ -3091,6 +3091,11 @@ impl TypeChecker {
                     None => false,
                 }
             }
+            // A closure's clone copies its environment (mem.closures/CV2),
+            // and everything it carries can be cloned (CV4). Without this a
+            // struct with a closure field had no derived `clone`, and native
+            // copied it in place: two structs, one environment, freed twice.
+            Type::Fn { .. } => method == "clone",
             _ => false,
         }
     }

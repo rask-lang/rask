@@ -1,0 +1,137 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// An optional vector, unwrapped with `if best? as b`, and an element of it
+// returned straight away. `b[1]` reads the element where it sits, so the
+// release pass took returning it for returning the vector, and nothing ever
+// released the optional. For a number that was simply wrong: the element is
+// copied out. For a string the return takes its own reference first, so the
+// optional is still the frame's to release after that. The same holds when
+// the reference was taken earlier, at a `let`, or when the element is a struct
+// or an optional that gets its references the same way.
+
+import sequence.Sequence
+
+func long(i: i64) -> string {
+    return "item-{i}-padding-padding-padding-padding"
+}
+
+func numbers() -> Sequence<Vec<i64>> {
+    return |yield| {
+        if !yield(Vec.from([1, 2])) { return }
+        if !yield(Vec.from([3, 4])) { return }
+    }
+}
+
+func names() -> Sequence<Vec<string>> {
+    return |yield| {
+        if !yield(Vec.from([long(1)])) { return }
+        if !yield(Vec.from([long(2)])) { return }
+    }
+}
+
+func first_number() -> i64 {
+    mut best: Vec<i64>? = none
+    for v in numbers() {
+        if best is none {
+            best = v
+        }
+    }
+    if best? as b {
+        return b[1]
+    }
+    return 0
+}
+
+func set_by_closure(n: i64) -> i64 {
+    mut best: Vec<i64>? = none
+    let set = |x: i64| {
+        best = Vec.from([x, x + 1])
+    }
+    set(n)
+    if best? as b {
+        return b[1]
+    }
+    return 0
+}
+
+func first_name() -> string {
+    mut best: Vec<string>? = none
+    for v in names() {
+        if best is none {
+            best = v
+        }
+    }
+    if best? as b {
+        return b[0]
+    }
+    return "none"
+}
+
+struct One {
+    s: string
+}
+
+func bound_then_returned(n: i64) -> string {
+    // Recursive, so it stays a call of its own: inlined, the caller's
+    // releases covered the leak.
+    if n > 100 {
+        return bound_then_returned(n - 1)
+    }
+    mut best: Vec<string>? = none
+    best = Vec.from([long(n)])
+    if best? as b {
+        let s = b[0]
+        if n > 0 {
+            return s
+        }
+    }
+    return "none"
+}
+
+func struct_element(n: i64) -> One {
+    // Recursive, so it stays a call of its own: inlined, the caller's
+    // releases covered the leak.
+    if n > 100 {
+        return struct_element(n - 1)
+    }
+    mut best: Vec<One>? = none
+    best = Vec.from([One(s: long(n))])
+    if best? as b {
+        return b[0]
+    }
+    return One(s: "none")
+}
+
+func optional_element(n: i64) -> string? {
+    // Recursive, so it stays a call of its own: inlined, the caller's
+    // releases covered the leak.
+    if n > 100 {
+        return optional_element(n - 1)
+    }
+    mut best: Vec<string?>? = none
+    best = Vec.new()
+    best!.push(long(n))
+    if best? as b {
+        return b[0]
+    }
+    return none
+}
+
+test "a number returned out of an optional vector" {
+    assert first_number() == 2
+    assert set_by_closure(4) == 5
+}
+
+test "a string returned out of an optional vector" {
+    assert first_name() == long(1)
+}
+
+test "an element retained before the block that returns it" {
+    assert bound_then_returned(3) == long(3)
+    assert bound_then_returned(0) == "none"
+}
+
+test "a struct or optional element returned out of an optional vector" {
+    assert struct_element(4).s == long(4)
+    assert optional_element(5) ?? "x" == long(5)
+}

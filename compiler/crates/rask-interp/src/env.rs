@@ -281,10 +281,25 @@ impl Environment {
     /// Borrowed storage is the exception. A `mutate` parameter is the caller's
     /// variable, so the closure borrows it like the frame did (CM3); copying it
     /// sent every write the closure made later to a copy nobody reads (#1324).
-    pub fn capture_snapshot(&self) -> HashMap<String, Slot> {
+    ///
+    /// Only `names`, the closure's own captures: a clone copies every value
+    /// the closure holds (CV2), so holding anything else would copy it too.
+    ///
+    /// The root scope is the program's globals and builtins (`println`), not
+    /// a frame's variables. Nothing captures those, and a task running the
+    /// closure on another interpreter still has to find them, so they come
+    /// along shared.
+    pub fn capture_snapshot(&self, names: &[String]) -> HashMap<String, Slot> {
         let mut captured = HashMap::new();
-        for scope in &self.scopes {
+        for (depth, scope) in self.scopes.iter().enumerate() {
             for (name, cell) in &scope.bindings {
+                if depth == 0 && !names.contains(name) {
+                    captured.insert(name.clone(), cell.clone());
+                    continue;
+                }
+                if !names.contains(name) {
+                    continue;
+                }
                 let cell = if scope.lent.contains(name) {
                     cell.clone()
                 } else {
@@ -404,7 +419,7 @@ mod tests {
     fn a_snapshot_capture_leaves_the_definer_alone() {
         let mut env = Environment::new();
         env.define("a".into(), int(1));
-        let captured = env.capture_snapshot();
+        let captured = env.capture_snapshot(&["a".to_string()]);
 
         env.push_scope();
         for (name, cell) in &captured {
@@ -425,7 +440,7 @@ mod tests {
         env.define_lent("a".into(), caller.clone());
         env.define("b".into(), int(1));
         assert_eq!(env.lent_names(), HashSet::from(["a".to_string()]));
-        let captured = env.capture_snapshot();
+        let captured = env.capture_snapshot(&["a".to_string(), "b".to_string()]);
         captured["a"].set(int(5));
         captured["b"].set(int(5));
         assert_eq!(as_int(caller.get()), Some(5));

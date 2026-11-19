@@ -70,6 +70,14 @@ pub enum OwnershipErrorKind {
         captured: String,
     },
 
+    /// mem.closures/CV4: a carrying closure holds a value that can't be
+    /// cloned, so the closure itself couldn't be.
+    #[error("a closure that carries its captures can't hold `{captured}`: `{ty}` isn't Cloneable")]
+    CarriesUncloneable {
+        captured: String,
+        ty: String,
+    },
+
     /// mem.borrowing/S5: `mut x = value.field` on a non-Copy field — a second,
     /// writable name for storage the source still holds.
     #[error("`{binding}` and `{path}` would be the same `{field_ty}`, both writable")]
@@ -763,10 +771,13 @@ pub enum OwnershipErrorKind {
         name: String,
     },
 
-    /// SL2: scope-limited closure escapes its scope
-    #[error("closure `{name}` captures scoped borrow and cannot escape")]
+    /// SL2 / MC3: a closure that points at what it captured outlives one of
+    /// those. `points_at` is the local it points at, when a local's block is
+    /// what limits it; otherwise the limit is a borrow it captured.
+    #[error("closure `{name}` outlives what it points at")]
     ScopeLimitedClosureEscapes {
         name: String,
+        points_at: Option<String>,
     },
 
     /// A spawned task writes a capture nothing reads back. The task works on a
@@ -867,6 +878,8 @@ pub enum Sink {
     Heap,
     /// A `take` parameter: `eat(…)`, `out.push(…)`, a channel send.
     TakeArg { callee: String },
+    /// A closure that outlives its frame, carrying the value (mem.closures/CM2).
+    Closure,
 }
 
 /// What happened to the value a pointer points into (mem.unsafe/PT3).

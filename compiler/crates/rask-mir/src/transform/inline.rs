@@ -648,6 +648,7 @@ fn remap_rvalue(rv: &MirRValue, local_map: &HashMap<LocalId, LocalId>) -> MirRVa
         MirRValue::Ref(id) => MirRValue::Ref(local_map.get(id).copied().unwrap_or(*id)),
         MirRValue::Deref(op) => MirRValue::Deref(remap_operand(op, local_map)),
         MirRValue::FuncAddr(name) => MirRValue::FuncAddr(name.clone()),
+        MirRValue::WrapSome(op) => MirRValue::WrapSome(remap_operand(op, local_map)),
         MirRValue::BinaryOp { op, left, right } => MirRValue::BinaryOp {
             op: *op,
             left: remap_operand(left, local_map),
@@ -761,15 +762,16 @@ fn remap_stmt(
                     by_ref: c.by_ref,
                     copy: c.copy,
                     lent: c.lent,
+                    owns: c.owns.clone(),
                 })
                 .collect(),
             heap: *heap,
         },
-        MirStmtKind::ClosureCall { dst, closure, args, taken } => MirStmtKind::ClosureCall {
+        MirStmtKind::ClosureCall { dst, closure, args, modes } => MirStmtKind::ClosureCall {
             dst: dst.map(|d| local_map.get(&d).copied().unwrap_or(d)),
             closure: local_map.get(closure).copied().unwrap_or(*closure),
             args: args.iter().map(|a| remap_operand(a, local_map)).collect(),
-            taken: taken.clone(),
+            modes: modes.clone(),
         },
         MirStmtKind::BindPlace { dst, addr } => MirStmtKind::BindPlace {
             dst: local_map.get(dst).copied().unwrap_or(*dst),
@@ -787,10 +789,6 @@ fn remap_stmt(
             access: *access,
         },
         MirStmtKind::ClosureDrop { closure, made } => MirStmtKind::ClosureDrop {
-            closure: local_map.get(closure).copied().unwrap_or(*closure),
-            made: made.map(|m| local_map.get(&m).copied().unwrap_or(m)),
-        },
-        MirStmtKind::ClosureRetain { closure, made } => MirStmtKind::ClosureRetain {
             closure: local_map.get(closure).copied().unwrap_or(*closure),
             made: made.map(|m| local_map.get(&m).copied().unwrap_or(m)),
         },
@@ -895,6 +893,7 @@ fn remap_stmt(
                     by_ref: c.by_ref,
                     copy: c.copy,
                     lent: c.lent,
+                    owns: c.owns.clone(),
                 })
                 .collect(),
         },
@@ -1191,6 +1190,7 @@ mod tests {
             is_extern_c: false,
             inline_hint: false,
             param_modes: Vec::new(),
+            item_mode_from_body: false,
             source_file: None,
 
         }
@@ -1220,6 +1220,7 @@ mod tests {
             is_extern_c: false,
             inline_hint: false,
             param_modes: Vec::new(),
+            item_mode_from_body: false,
             source_file: None,
 
         }
@@ -1288,6 +1289,7 @@ mod tests {
             is_extern_c: false,
             inline_hint: false,
             param_modes: Vec::new(),
+            item_mode_from_body: false,
             source_file: None,
         };
         let caller = MirFunction {
@@ -1308,6 +1310,7 @@ mod tests {
             is_extern_c: false,
             inline_hint: false,
             param_modes: Vec::new(),
+            item_mode_from_body: false,
             source_file: None,
         };
 
@@ -1378,6 +1381,7 @@ mod tests {
                 is_extern_c: false,
                 inline_hint: false,
                 param_modes: Vec::new(),
+                item_mode_from_body: false,
                 source_file: None,
     
             },
@@ -1413,6 +1417,7 @@ mod tests {
             is_extern_c: false,
             inline_hint: false,
             param_modes: Vec::new(),
+            item_mode_from_body: false,
             source_file: None,
         }
     }
@@ -1423,7 +1428,7 @@ mod tests {
             dst: None,
             closure: LocalId(1),
             args: vec![MirOperand::Local(LocalId(0))],
-            taken: Vec::new(),
+            modes: vec![rask_ast::ty::ParamMode::Borrow; 1],
         });
         let written = params_written_through(&[f]);
         assert!(written["write"].contains(&0), "self goes to the closure by address");
@@ -1464,6 +1469,7 @@ mod tests {
             is_extern_c: false,
             inline_hint: false,
             param_modes: Vec::new(),
+            item_mode_from_body: false,
             source_file: None,
 
         }];

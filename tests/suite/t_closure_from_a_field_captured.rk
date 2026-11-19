@@ -3,11 +3,10 @@
 // the call.
 //
 // The field's closure belongs to the struct, and the struct belongs to the
-// caller. `doubled` copied it into the new closure's environment without a
-// reference of its own, so when the caller dropped the temporary `Plan` the
-// inner closure was freed under the new one. Natively the next call read a
-// freed environment: an empty Vec, an index out of bounds, or "allocation size
-// overflow" depending on what reused the memory. The interpreter was right.
+// caller. A closure that carries it would be its second owner, so `doubled`
+// clones it first (mem.closures/CV2); carrying `p.run` itself is E0909. Before
+// that rule, the caller dropping the temporary `Plan` freed the inner closure
+// under the new one, and natively the next call read a freed environment.
 
 struct Plan {
     run: func() -> Vec<i64>
@@ -19,7 +18,7 @@ func stage(v: Vec<i64>) -> Plan {
 }
 
 func doubled(p: Plan) -> Plan {
-    let src = p.run
+    let src = p.run.clone()
     return Plan(
         run: || {
             let xs = src()

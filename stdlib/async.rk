@@ -146,13 +146,17 @@ extend Channel<T> {
 @handle(release: "rask_sender_drop_i64")
 public struct Sender<T> { }
 
-extend Sender<T> {
+// A closure carries only what it can clone (mem.closures/CV4), so a sender
+// has to say it is Cloneable for a callback to carry one.
+Sender<T> implements Cloneable {
     /// Another sender on the same channel. The channel stays open until every
     /// sender has been dropped or closed. Declared here because a handle that
     /// frees itself can be cloned only by saying how.
     @native("rask_sender_clone_i64")
     public func clone(self) -> Sender<T> {}
+}
 
+extend Sender<T> {
     /// Send a value. Pauses/blocks if buffer full.
     @native("rask_channel_send_ptr")
     @blocks

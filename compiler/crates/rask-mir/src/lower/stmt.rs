@@ -726,8 +726,11 @@ impl<'a> MirLowerer<'a> {
                         )
                     };
                     Some(final_op)
-                } else {
+                } else if self.inline_return_target.as_ref().is_some_and(|t| t.2.is_none()) {
+                    // An inlined closure's empty `return` answers the closure.
                     None
+                } else {
+                    self.empty_return_value()
                 };
                 // Inside an inlined closure (e.g. fold callback), redirect
                 // return to an assignment + goto instead of a real return.
@@ -2382,8 +2385,7 @@ impl<'a> MirLowerer<'a> {
 
         for (i, name) in names.iter().enumerate() {
             let elem_ty = if is_channel_create {
-                // Channel tx/rx handles are opaque i64 pointers
-                MirType::I64
+                super::channel_half_ty(if i == 0 { "channel_tx" } else { "channel_rx" })
             } else {
                 mir_elem_types.as_ref()
                     .and_then(|elems| elems.get(i).cloned())

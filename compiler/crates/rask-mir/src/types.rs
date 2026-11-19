@@ -371,6 +371,12 @@ impl MirType {
         }
     }
 
+    /// A number, bool or char: the bytes are the whole value, so a copy of
+    /// one neither holds nor points at any storage.
+    pub fn is_plain_scalar(&self) -> bool {
+        self.is_int_like() || self.is_float() || matches!(self, MirType::Bool | MirType::Char | MirType::Void)
+    }
+
     /// True for F32 and F64.
     pub fn is_float(&self) -> bool {
         matches!(self, MirType::F32 | MirType::F64)

@@ -2597,6 +2597,11 @@ impl<'a> MirLowerer<'a> {
                     self.ctx.call_symbol(expr.id).unwrap_or_else(|| name.to_string())
                 }
                 _ => {
+                    let callee_ty = self.ctx.lookup_raw_type(func.id).ok_or_else(|| LoweringError::no_checked_type("callee"))?;
+                    let (_, modes) = self
+                        .ctx
+                        .callable_sig(&callee_ty, self.ctx.type_names)
+                        .ok_or_else(|| LoweringError::InvalidConstruct(format!("internal compiler error: calling a `{callee_ty}`, which isn't a function")))?;
                     let (callee_op, _callee_ty) = self.lower_expr(func)?;
                     let callee_local = match callee_op {
                         MirOperand::Local(id) => id,
@@ -2611,12 +2616,11 @@ impl<'a> MirLowerer<'a> {
                     };
                     let ret_ty = self.lookup_expr_type(expr).unwrap_or_else(|| crate::fallback::unknown_type("lower/expr:885"));
                     let result_local = self.builder.alloc_temp(ret_ty.clone());
-                    let taken = self.taken_params(func);
                     self.builder.push_stmt(MirStmt::dummy(MirStmtKind::ClosureCall {
                         dst: Some(result_local),
                         closure: callee_local,
                         args: arg_operands,
-                        taken,
+                        modes,
                     }));
                     self.flush_elem_writebacks(wb_mark);
                     return Ok((MirOperand::Local(result_local), ret_ty));
@@ -2628,14 +2632,13 @@ impl<'a> MirLowerer<'a> {
             // to register its name instead missed one form after another — a
             // `for` element, a `T?` payload, a `with` binding, a `Sequence`
             // element (#869, #1151, #1241, #1421).
-            if let Some((closure_local, ret_ty)) = self.callable_local(func) {
+            if let Some((closure_local, ret_ty, modes)) = self.callable_local(func)? {
                 let result_local = self.builder.alloc_temp(ret_ty.clone());
-                let taken = self.taken_params(func);
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::ClosureCall {
                     dst: Some(result_local),
                     closure: closure_local,
                     args: arg_operands,
-                    taken,
+                    modes,
                 }));
                 self.flush_elem_writebacks(wb_mark);
                 return Ok((MirOperand::Local(result_local), ret_ty));
@@ -2891,7 +2894,7 @@ impl<'a> MirLowerer<'a> {
             .c_params
             .iter()
             .enumerate()
-            .map(|(i, t)| tb.add_param(format!("a{}", i), self.ctx.type_to_mir(t)))
+            .map(|(i, t)| tb.add_param(format!("a{}", i), self.ctx.type_to_mir(t), rask_ast::ty::ParamMode::Borrow))
             .collect();
         let rest: Vec<MirOperand> = params
             .iter()
@@ -2900,7 +2903,7 @@ impl<'a> MirLowerer<'a> {
             .map(|(_, p)| MirOperand::Local(*p))
             .collect();
         let dst = if ret_ty == MirType::Void { None } else { Some(tb.alloc_temp(ret_ty.clone())) };
-        tb.push_stmt(MirStmt::dummy(MirStmtKind::ClosureCall { dst, closure: params[cc.spec.at], args: rest, taken: Vec::new() }));
+        tb.push_stmt(MirStmt::dummy(MirStmtKind::ClosureCall { dst, closure: params[cc.spec.at], modes: vec![rask_ast::ty::ParamMode::Borrow; rest.len()], args: rest }));
         tb.terminate(MirTerminator::dummy(MirTerminatorKind::Return { value: dst.map(MirOperand::Local) }));
         let mut tramp = tb.finish();
         tramp.is_extern_c = true;
@@ -3083,13 +3086,14 @@ impl<'a> MirLowerer<'a> {
             // build its own handle is what removed it, and this is the read
             // that has to come along.
             if let Some(extract) = self.channel_half_extractor(object, field) {
-                let dst = self.builder.alloc_temp(MirType::I64);
+                let ty = super::channel_half_ty(extract);
+                let dst = self.builder.alloc_temp(ty.clone());
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                     dst: Some(dst),
                     func: super::channel_half(extract),
                     args: vec![obj_op],
                 }));
-                return Ok((MirOperand::Local(dst), MirType::I64));
+                return Ok((MirOperand::Local(dst), ty));
             }
 
             // Resolve field index, type, and byte offset from struct layout.
@@ -6212,6 +6216,19 @@ impl<'a> MirLowerer<'a> {
             return Ok((obj_op, obj_ty));
         }
 
+        // A function value is always a closure block, a named function
+        // included (`main__fnval_0`). Its clone is a heap block with its
+        // own copy of the environment (mem.closures/CV2), owned here.
+        if method == "clone" && matches!(obj_ty, MirType::FuncPtr(_)) {
+            let cloned = self.builder.alloc_temp(obj_ty.clone());
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                dst: Some(cloned),
+                func: FunctionRef::borrowing("rask_closure_clone"),
+                args: vec![obj_op.clone()],
+            }));
+            return Ok((MirOperand::Local(cloned), obj_ty));
+        }
+
         // Resolve the receiver's stdlib type prefix, then mangle to
         // `{Type}_{method}`. Dispatch is driven by the resolved receiver
         // type and the stub-derived metadata — not a hand-maintained
@@ -6756,19 +6773,31 @@ impl<'a> MirLowerer<'a> {
 
     /// The edge-registration call a container mutator needs, if its value is a
     /// link. `None` for everything else, which is almost every call.
+    ///
+    /// The value is the argument the declaration types as what the container
+    /// stores: `T` of `Vec<T>`, `V` of `Map<K, V>`. A name list kept here
+    /// instead had `Vec_insert_at`, a name nothing lowers to, so
+    /// `v.insert(0, link)` never registered and a delete left the dead link in
+    /// the vector.
     pub(super) fn container_edge_call(
         &self,
         name: &str,
         args: &[MirOperand],
     ) -> Option<(&'static str, Vec<MirOperand>)> {
-        let (value_index, func) = match name {
-            "Vec_push" => (1, "rask_link_register_element"),
-            "Vec_replace" | "Vec_insert_at" => (2, "rask_link_register_element"),
-            "Map_insert" => (2, "rask_link_register_entry"),
+        let container = args.first()?;
+        let MirOperand::Local(container_id) = container else { return None };
+        let func = match self.builder.local_type(*container_id)? {
+            MirType::Container(crate::types::ContainerKind::Vec) => "rask_link_register_element",
+            MirType::Container(crate::types::ContainerKind::Map) => "rask_link_register_entry",
             _ => return None,
         };
-        let value = args.get(value_index)?;
-        let container = args.first()?;
+        let declared = rask_stdlib::mir_metadata::lookup(name)?;
+        if !declared.takes_self {
+            return None;
+        }
+        let stored = declared.extended_type_params.checked_sub(1)?;
+        let (param_index, _) = declared.slot_params().find(|&(_, t)| t == stored)?;
+        let value = args.get(param_index + 1)?;
         let is_link = match value {
             MirOperand::Local(id) => {
                 matches!(self.builder.local_type(*id), Some(MirType::Link(_)))
@@ -7400,12 +7429,6 @@ impl<'a> MirLowerer<'a> {
             rvalue: MirRValue::Deref(ptr),
         }));
         (MirOperand::Local(value), want)
-    }
-
-    /// Which parameters of the function value `callee` is are `take`, from the
-    /// checker's type for it. A call through it hands those arguments over.
-    fn taken_params(&self, callee: &Expr) -> Vec<bool> {
-        self.param_modes_of(callee).into_iter().map(|m| m == rask_ast::ty::ParamMode::Take).collect()
     }
 
     /// The parameter modes of the function value `expr` is, from the

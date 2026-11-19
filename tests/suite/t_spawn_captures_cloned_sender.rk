@@ -1,0 +1,36 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A sender cloned into a local and captured by tasks spawned in a loop. The
+// clone of a sender is a copy of the handle, so the local looked like a plain
+// alias of `tx0` rather than a handle of its own; each task then moved it
+// instead of retaining it, and the channel was never released (#2005). The
+// leak gate checks the release; the asserts pin the values.
+
+func fan(tasks: i64) -> i64 {
+    using Multitasking {
+        let (tx0, rx) = Channel<i64>.buffered(8)
+        let tx = tx0.clone()
+        for id in 0..tasks {
+            spawn {
+                tx.send(id + 1)
+            }.detach()
+        }
+        mut total = 0
+        mut got = 0
+        while got < tasks {
+            if rx.receive()? as v {
+                total = total + v
+                got = got + 1
+            }
+        }
+        return total
+    }
+}
+
+test "one task" {
+    assert fan(1) == 1
+}
+
+test "several tasks" {
+    assert fan(4) == 10
+}

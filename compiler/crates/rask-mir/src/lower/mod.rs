@@ -1157,6 +1157,11 @@ impl<'a> MirContext<'a> {
     /// identity. `struct Bad { }` used as the error side of `i64 or Bad` is
     /// told apart from the ok side by its MIR type, and collapsing it to i64
     /// makes both branches identical.
+    fn is_sequence(&self, id: rask_types::TypeId) -> bool {
+        use rask_types::LangItem;
+        [LangItem::Sequence, LangItem::SequenceMut].iter().any(|&l| self.type_defs.lang(l) == Some(id))
+    }
+
     fn struct_or_handle(&self, idx: u32, sl: &StructLayout) -> MirType {
         if sl.fields.is_empty() && sl.key.as_ref().is_some_and(|k| self.type_defs.declared_by_stdlib(k.id)) {
             return MirType::I64;
@@ -1873,6 +1878,13 @@ impl<'a> MirContext<'a> {
             Type::Generic { .. } if self.generic_head(ty).as_deref() == Some("Rack") => {
                 MirType::Ptr
             }
+            // A sequence is the closure that drives it (SEQ36). As an empty
+            // stdlib struct it lowered to a word, so a `map` carrying a
+            // `walk()` read its capture as a copied number and kept nothing
+            // the `walk()` pointed at alive.
+            Type::Named(id) | Type::Generic { base: id, .. } if self.is_sequence(*id) => {
+                MirType::FuncPtr(crate::types::SignatureId(0))
+            }
             // A declared type is found by its identity. A newtype has no
             // layout of its own: it is what it wraps.
             Type::Named(id) => {
@@ -2160,17 +2172,20 @@ impl<'a> MirContext<'a> {
     /// The answer a callable type hands back, for a type the checker resolved.
     /// `None` if it isn't callable. A sequence answers nothing — it is driven
     /// for its yields, not for a return value.
-    pub fn callable_ret_ty(
+    /// What calling a value of this type returns, and how it takes each
+    /// argument. A sequence is called with its yield callback, which it only
+    /// borrows.
+    pub fn callable_sig(
         &self,
         ty: &Type,
         type_names: &HashMap<rask_types::TypeId, String>,
-    ) -> Option<MirType> {
-        if let Type::Fn { ret, .. } = ty {
-            return Some(self.type_to_mir(ret));
+    ) -> Option<(MirType, Vec<ParamMode>)> {
+        if let Type::Fn { params, ret } = ty {
+            return Some((self.type_to_mir(ret), params.iter().map(|p| p.mode).collect()));
         }
         let head = Self::type_prefix(ty, type_names)?;
         match head.as_str() {
-            "Sequence" | "SequenceMut" => Some(MirType::Void),
+            "Sequence" | "SequenceMut" => Some((MirType::Void, vec![ParamMode::Borrow])),
             _ => None,
         }
     }
@@ -2898,6 +2913,22 @@ impl<'a> MirLowerer<'a> {
             .unwrap_or_else(|| self.builder.ret_ty().clone())
     }
 
+    /// What an empty `return` hands back: nothing from a `void` function, and
+    /// an Ok built here from a `void or E` one. Codegen used to fill the Ok
+    /// in when it met a return with no value, so every other reader of MIR
+    /// (the inliner, miri) saw a result function return nothing (#1555).
+    pub(crate) fn empty_return_value(&mut self) -> Option<MirOperand> {
+        let ret_ty = self.return_ty();
+        if !matches!(&ret_ty, MirType::Result { ok, .. } if matches!(ok.as_ref(), MirType::Void)) {
+            return None;
+        }
+        let slot = self.builder.alloc_temp(ret_ty.clone());
+        // The tag and a zeroed origin, so the caller's copy of the whole slot
+        // carries no stale bytes.
+        self.store_wrapper_tag(slot, &ret_ty, rask_mono::runtime_abi::RASK_TAG_PRESENT);
+        Some(MirOperand::Local(slot))
+    }
+
     /// Terminate the current block as a function return.
     ///
     /// One place, because there are four of them — `return`, `try`'s error path
@@ -3027,15 +3058,25 @@ impl<'a> MirLowerer<'a> {
         }
     }
 
-    /// When `callee` names a local holding a function value: that local, and
-    /// what calling it answers. Read off the checker's type for the callee, so
-    /// every way of binding a function value is covered at once.
-    pub(crate) fn callable_local(&self, callee: &Expr) -> Option<(LocalId, MirType)> {
-        let ExprKind::Ident(name) = &callee.kind else { return None };
-        let (local, _) = self.locals.get(name)?;
-        let ty = self.ctx.lookup_raw_type(callee.id)?;
-        let ret = self.ctx.callable_ret_ty(&ty, self.ctx.type_names)?;
-        Some((*local, ret))
+    /// When `callee` names a local holding a function value: the local with
+    /// the closure, and what calling it answers. Read off the checker's type
+    /// for the callee, so every way of binding a function value is covered at
+    /// once. A `mutate` parameter's local is the caller's address, so the
+    /// closure is loaded through it, the way any read of the name is.
+    pub(crate) fn callable_local(
+        &mut self,
+        callee: &Expr,
+    ) -> Result<Option<(LocalId, MirType, Vec<ParamMode>)>, LoweringError> {
+        let ExprKind::Ident(name) = &callee.kind else { return Ok(None) };
+        let Some((local, _)) = self.locals.get(name).cloned() else { return Ok(None) };
+        let Some(ty) = self.ctx.lookup_raw_type(callee.id) else { return Ok(None) };
+        let Some((ret, modes)) = self.ctx.callable_sig(&ty, self.ctx.type_names) else { return Ok(None) };
+        if self.meta(name).is_some_and(|m| m.scalar_through_ptr.is_some()) {
+            let (op, _) = self.lower_expr(callee)?;
+            let MirOperand::Local(loaded) = op else { return Ok(None) };
+            return Ok(Some((loaded, ret, modes)));
+        }
+        Ok(Some((local, ret, modes)))
     }
 
     /// Box a value on its way into a declared `Heap<T>` slot, unless it is a
@@ -4180,7 +4221,7 @@ impl<'a> MirLowerer<'a> {
         self.closure_counter += 1;
 
         let mut thunk_builder = BlockBuilder::new(thunk_name.clone(), MirType::Void);
-        let env_param = thunk_builder.add_param("__env".to_string(), MirType::Ptr);
+        let env_param = thunk_builder.add_param("__env".to_string(), MirType::Ptr, rask_ast::ty::ParamMode::Borrow);
 
         let captures = crate::stmt::lay_out_captures(
             caps.iter().map(|c| (c.outer, c.ty.clone(), c.by_ref, c.copy)),
@@ -4674,7 +4715,11 @@ impl<'a> MirLowerer<'a> {
             // The parameter keeps saying which container it is, so a frame that
             // gets it back from a call knows which free matches (#1502).
             let declared_ty = if scalar_mutate { local_ty.clone() } else { param_ty.clone() };
-            let local_id = lowerer.builder.add_param(param.name.clone(), declared_ty);
+            let local_id = lowerer.builder.add_param(
+                param.name.clone(),
+                declared_ty,
+                rask_ast::ty::ParamMode::from_flags(param.is_take, param.is_mutate),
+            );
             lowerer.locals.insert(param.name.clone(), (local_id, local_ty));
             {
                 let meta = lowerer.local_meta.entry(param.name.clone()).or_default();
@@ -4793,29 +4838,11 @@ impl<'a> MirLowerer<'a> {
         // Implicit return for functions that don't explicitly return.
         // Void functions get `return`, non-void get Unreachable (caller
         // must ensure all paths return explicitly).
-        // Result { ok: Void, .. } also gets an implicit return — emit a
-        // wrapped Ok-tagged temp so callers (including the inliner, which
-        // copies the return value into the call-site dst) see a properly
-        // initialized Result instead of stale stack bytes.
         if lowerer.builder.current_block_unterminated() {
-            let result_void_ok = matches!(&ret_ty,
-                MirType::Result { ok, .. } if matches!(ok.as_ref(), MirType::Void));
-            let implicit_ok = matches!(ret_ty, MirType::Void) || result_void_ok;
+            let implicit_ok = matches!(ret_ty, MirType::Void)
+                || matches!(&ret_ty, MirType::Result { ok, .. } if matches!(ok.as_ref(), MirType::Void));
             if implicit_ok {
-                // For Result<Void, E>, build a temp holding Ok(void) so the
-                // caller's slot gets the right tag bytes even when the call
-                // is inlined.
-                let return_value = if result_void_ok {
-                    let wrap_local = lowerer.builder.alloc_temp(ret_ty.clone());
-                    // The tag and a zeroed origin, so the caller's copy of
-                    // the whole slot carries no stale bytes.
-                    lowerer.store_wrapper_tag(
-                        wrap_local, &ret_ty, rask_mono::runtime_abi::RASK_TAG_PRESENT,
-                    );
-                    Some(MirOperand::Local(wrap_local))
-                } else {
-                    None
-                };
+                let return_value = lowerer.empty_return_value();
                 if lowerer.ensure_stack.is_empty() {
                     lowerer.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Return { value: return_value }));
                 } else {
@@ -4845,19 +4872,6 @@ impl<'a> MirLowerer<'a> {
         let mut main_fn = lowerer.builder.finish();
         main_fn.is_extern_c = fn_decl.abi.is_some();
         main_fn.inline_hint = fn_decl.attrs.iter().any(|a| a.is("inline"));
-        // By name: lowering can add parameters the declaration doesn't write.
-        main_fn.param_modes = main_fn
-            .params
-            .iter()
-            .map(|p| {
-                p.name
-                    .as_deref()
-                    .and_then(|n| fn_decl.params.iter().find(|d| d.name == n))
-                    .map_or(rask_ast::ty::ParamMode::Borrow, |d| {
-                        rask_ast::ty::ParamMode::from_flags(d.is_take, d.is_mutate)
-                    })
-            })
-            .collect();
         main_fn.source_file = ctx.source_file.map(|s| s.to_string());
         let mut result = vec![main_fn];
         for f in &mut lowerer.synthesized_functions {
@@ -8212,8 +8226,22 @@ mod tests {
 /// demand. The end is the caller's, released as its declared type says: one
 /// sender or one receiver fewer, and the channel goes with the last of them.
 pub(crate) fn channel_half(extract: &'static str) -> FunctionRef {
+    FunctionRef::reading(extract).handing_back(channel_half_release(extract))
+}
+
+/// The MIR type of a channel end: a handle that frees itself by its declared
+/// release. A plain `i64` here said nothing about freeing it, so a closure
+/// environment carrying a `Sender` never gave it back.
+pub(crate) fn channel_half_ty(extract: &'static str) -> MirType {
+    let release = channel_half_release(extract);
+    MirType::Container(
+        crate::ContainerKind::handle(release)
+            .unwrap_or_else(|| panic!("`{release}` is not a declared handle release")),
+    )
+}
+
+fn channel_half_release(extract: &'static str) -> &'static str {
     let end = if extract == "channel_tx" { "Sender" } else { "Receiver" };
-    let release = rask_stdlib::handles::declared_release(end)
-        .unwrap_or_else(|| panic!("stdlib/async.rk declares no release for `{end}`"));
-    FunctionRef::reading(extract).handing_back(release)
+    rask_stdlib::handles::declared_release(end)
+        .unwrap_or_else(|| panic!("stdlib/async.rk declares no release for `{end}`"))
 }

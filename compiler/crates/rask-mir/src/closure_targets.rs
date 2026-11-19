@@ -43,7 +43,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::{FieldSlot, LocalId, MirFunction, MirOperand, MirRValue, MirStmtKind, MirType};
+use crate::{BlockId, FieldSlot, LocalId, MirFunction, MirOperand, MirRValue, MirStmtKind, MirType};
 
 /// What a value might be, as far as this walk can tell.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -135,10 +135,40 @@ impl ClosureTargets {
             }
         }
 
+        // A closure variable lent to a call (`swap(mutate s)`) may come back
+        // holding whatever the callee stored through its parameter. What each
+        // function stores through each pointer parameter, `*(p) = f`, by
+        // function and parameter index. Read as still holding what it held,
+        // `s(mutate g, 3)` after `swap` put another function in `s` was taken
+        // for a call of the old one.
+        let mut param_stores: HashMap<(String, usize), Flow> = HashMap::new();
+        let lending: HashMap<&str, Lending> = fns.iter().map(|f| (f.name.as_str(), Lending::of(f))).collect();
+        // Calls through a closure whose target isn't known yet. Once the walk
+        // settles, any still unknown could have stored anything.
+        let mut settled_unknown: HashSet<(String, LocalId, usize)> = HashSet::new();
+
         loop {
             let mut grew = false;
             for func in fns {
                 let name = &func.name;
+                let lend = &lending[name.as_str()];
+                // Writes a call made through argument `a` land where `a`
+                // points: the caller's variable, or the caller's own pointer
+                // parameter, which passes them on to its caller.
+                let mut land = |locals: &mut HashMap<(String, LocalId), Flow>,
+                                param_stores: &mut HashMap<(String, usize), Flow>,
+                                a: LocalId,
+                                written: &Flow|
+                 -> bool {
+                    let mut grew = false;
+                    if let Some(src) = lend.refs.get(&a).filter(|src| is_closure(func, **src)) {
+                        grew |= merge_into(locals, (name.clone(), *src), written);
+                    }
+                    if let Some(i) = lend.ptr_params.get(&a) {
+                        grew |= merge_into(param_stores, (name.clone(), *i), written);
+                    }
+                    grew
+                };
                 // Parameters seed their locals.
                 for (i, p) in func.params.iter().enumerate() {
                     if let Some(flow) = params.get(&(name.clone(), i)).cloned() {
@@ -184,6 +214,7 @@ impl ClosureTargets {
                             if is_closure(func, *v) =>
                         {
                             let Some(flow) = locals.get(&(name.clone(), *v)).cloned() else { continue };
+                            grew |= land(&mut locals, &mut param_stores, *addr, &flow);
                             match field {
                                 Some(slot) => grew |= merge_into(&mut fields, *slot, &flow),
                                 None if no_field_sees(func, *addr) => {}
@@ -207,6 +238,11 @@ impl ClosureTargets {
                             }
                         }
                         MirStmtKind::Call { func: fref, args, dst } => {
+                            if let Some((d, src)) = clone_of(stmt) {
+                                if let Some(flow) = locals.get(&(name.clone(), src)).cloned() {
+                                    grew |= merge_into(&mut locals, (name.clone(), d), &flow);
+                                }
+                            }
                             if follow_returns {
                                 if let (Some(d), Some(flow)) = (dst, returns.get(&fref.name).cloned()) {
                                     grew |= merge_into(&mut locals, (name.clone(), *d), &flow);
@@ -214,11 +250,49 @@ impl ClosureTargets {
                             }
                             for (i, arg) in args.iter().enumerate() {
                                 let MirOperand::Local(a) = arg else { continue };
+                                if lend.lends(*a) {
+                                    let written = if with_body.contains(fref.name.as_str()) {
+                                        param_stores.get(&(fref.name.clone(), i)).cloned()
+                                    } else {
+                                        Some(Flow::Unknown)
+                                    };
+                                    if let Some(w) = written {
+                                        grew |= land(&mut locals, &mut param_stores, *a, &w);
+                                    }
+                                }
                                 let Some(flow) = locals.get(&(name.clone(), *a)).cloned() else {
                                     continue;
                                 };
                                 grew |=
                                     merge_into(&mut params, (fref.name.clone(), i), &flow);
+                            }
+                        }
+                        // Through a closure: argument `i` is parameter `i + 1`
+                        // of each body it reaches, after the environment.
+                        MirStmtKind::ClosureCall { closure, args, .. } => {
+                            let bodies = match locals.get(&(name.clone(), *closure)) {
+                                Some(Flow::Known(set)) if !set.is_empty() => Some(set.clone()),
+                                _ => None,
+                            };
+                            for (i, arg) in args.iter().enumerate() {
+                                let MirOperand::Local(a) = arg else { continue };
+                                if !lend.lends(*a) {
+                                    continue;
+                                }
+                                let written = match &bodies {
+                                    Some(set) => {
+                                        let mut w = Flow::Known(HashSet::new());
+                                        for b in set {
+                                            if let Some(f) = param_stores.get(&(b.clone(), i + 1)) {
+                                                w.merge(f);
+                                            }
+                                        }
+                                        w
+                                    }
+                                    None if settled_unknown.contains(&(name.clone(), *closure, i)) => Flow::Unknown,
+                                    None => continue,
+                                };
+                                grew |= land(&mut locals, &mut param_stores, *a, &written);
                             }
                         }
                         _ => {}
@@ -243,11 +317,97 @@ impl ClosureTargets {
                 }
             }
             if !grew {
-                break;
+                // Settled. A call whose target is still unknown could have
+                // stored anything through what it was lent; walk again with
+                // that.
+                let before = settled_unknown.len();
+                for func in fns {
+                    let lend = &lending[func.name.as_str()];
+                    for st in func.blocks.iter().flat_map(|b| b.statements.iter()) {
+                        let MirStmtKind::ClosureCall { closure, args, .. } = &st.kind else { continue };
+                        if matches!(locals.get(&(func.name.clone(), *closure)), Some(Flow::Known(set)) if !set.is_empty()) {
+                            continue;
+                        }
+                        for (i, arg) in args.iter().enumerate() {
+                            if matches!(arg, MirOperand::Local(a) if lend.lends(*a)) {
+                                settled_unknown.insert((func.name.clone(), *closure, i));
+                            }
+                        }
+                    }
+                }
+                if settled_unknown.len() == before {
+                    break;
+                }
             }
         }
 
         Self { locals }
+    }
+
+    /// Every `ClosureCall` that can reach each closure body, as (function,
+    /// block, statement), for the bodies where all of them can be named.
+    ///
+    /// The forward question ("which bodies can this call reach") answers the
+    /// backward one only when every call that could reach the body answers
+    /// it. A call through a value this walk lost track of could be calling
+    /// any body that takes as many arguments, so those bodies are left out:
+    /// `g()` on a closure variable rules out every body with no parameters,
+    /// and nothing else. A body handed to a function
+    /// with no MIR (the runtime, `spawn`) is called from places nobody can
+    /// list, so it is left out, and so is every body when a closure the walk
+    /// lost track of is handed there.
+    pub fn calls_reaching(&self, fns: &[MirFunction]) -> Option<HashMap<String, Vec<(String, BlockId, usize)>>> {
+        let with_body: HashSet<&str> = fns.iter().map(|f| f.name.as_str()).collect();
+        let mut sites: HashMap<String, Vec<(String, BlockId, usize)>> = HashMap::new();
+        let mut external: HashSet<String> = HashSet::new();
+        // A call the walk lost track of could reach any body that takes as
+        // many arguments as it passes, and none that doesn't.
+        let mut unknown_arities: HashSet<usize> = HashSet::new();
+        for func in fns {
+            for block in &func.blocks {
+                for (si, st) in block.statements.iter().enumerate() {
+                    match &st.kind {
+                        MirStmtKind::ClosureCall { closure, args, .. } => match self.known(&func.name, *closure) {
+                            Some(bodies) => {
+                                for body in bodies {
+                                    sites.entry(body.clone()).or_default().push((func.name.clone(), block.id, si));
+                                }
+                            }
+                            None => {
+                                unknown_arities.insert(args.len());
+                            }
+                        },
+                        // A clone neither calls nor keeps its source: the
+                        // copy is followed as a closure of its own.
+                        MirStmtKind::Call { func: callee, args, .. }
+                            if !with_body.contains(callee.name.as_str()) && clone_of(st).is_none() =>
+                        {
+                            for arg in args {
+                                let MirOperand::Local(a) = arg else { continue };
+                                if !matches!(func.local_ty(*a), Some(MirType::FuncPtr(_))) {
+                                    continue;
+                                }
+                                external.extend(self.known(&func.name, *a)?.iter().cloned());
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        // A body no call reaches still has a (empty) listing, unless it got out.
+        for func in fns {
+            for st in func.blocks.iter().flat_map(|b| b.statements.iter()) {
+                if let MirStmtKind::ClosureCreate { func_name, .. } = &st.kind {
+                    sites.entry(func_name.clone()).or_default();
+                }
+            }
+        }
+        let arity = |body: &str| fns.iter().find(|f| f.name == body).map(|f| f.params.len().saturating_sub(1));
+        sites.retain(|body, _| {
+            !external.contains(body) && arity(body).is_some_and(|n| !unknown_arities.contains(&n))
+        });
+        Some(sites)
     }
 
     /// The bodies `local` in `func` may hold, when that is fully known and not
@@ -278,6 +438,43 @@ fn merge_into<K: std::hash::Hash + Eq>(
 /// The local a value was copied from, for the shapes that carry a closure
 /// through unchanged. A by-ref capture holds the slot's address, so the body
 /// reads it with a `LoadCapture` and then a `Deref`.
+/// Where a function's pointers point, for following stores through them:
+/// `&x` taken into a local, and the pointer parameters.
+struct Lending {
+    /// `p = &x`: `p` to `x`.
+    refs: HashMap<LocalId, LocalId>,
+    /// Pointer parameters, to their index.
+    ptr_params: HashMap<LocalId, usize>,
+}
+
+impl Lending {
+    fn of(func: &MirFunction) -> Self {
+        let refs = func
+            .blocks
+            .iter()
+            .flat_map(|b| b.statements.iter())
+            .filter_map(|st| match &st.kind {
+                MirStmtKind::Assign { dst, rvalue: MirRValue::Ref(src) } => Some((*dst, *src)),
+                _ => None,
+            })
+            .collect();
+        let ptr_params = func
+            .params
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| matches!(p.ty, MirType::Ptr))
+            .map(|(i, p)| (p.id, i))
+            .collect();
+        Self { refs, ptr_params }
+    }
+
+    /// Does handing `a` to a call let the callee write somewhere this walk
+    /// tracks?
+    fn lends(&self, a: LocalId) -> bool {
+        self.refs.contains_key(&a) || self.ptr_params.contains_key(&a)
+    }
+}
+
 fn copied_from(rvalue: &MirRValue) -> Option<LocalId> {
     match rvalue {
         MirRValue::Use(MirOperand::Local(src)) | MirRValue::Deref(MirOperand::Local(src)) => {
@@ -302,7 +499,22 @@ fn modelled_def(func: &MirFunction, stmt: &crate::MirStmt) -> bool {
                 || (is_closure(func, *dst) && struct_field_read(func, rvalue).is_some())
         }
         MirStmtKind::Phi { .. } => true,
-        _ => false,
+        _ => clone_of(stmt).is_some(),
+    }
+}
+
+/// `dst = rask_closure_clone(src)`: a copy of the environment, running the
+/// same body (mem.closures/CV2). `let src = p.run.clone()` hid which closure
+/// `src()` called, so its result had no owner.
+fn clone_of(stmt: &crate::MirStmt) -> Option<(LocalId, LocalId)> {
+    match &stmt.kind {
+        MirStmtKind::Call { dst: Some(d), func, args } if func.name == "rask_closure_clone" => {
+            match args.first() {
+                Some(MirOperand::Local(src)) => Some((*d, *src)),
+                _ => None,
+            }
+        }
+        _ => None,
     }
 }
 

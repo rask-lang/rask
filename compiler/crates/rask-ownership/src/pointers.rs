@@ -261,7 +261,7 @@ impl<'a> OwnershipChecker<'a> {
                 sources.contains(&pointee)
                     && matches!(self.bindings.get(name.as_str()), Some(BindingState::Owned))
                     && outliving.is_none_or(|inner| {
-                        self.binding_decl_blocks.get(name.as_str()).is_none_or(|&d| d < inner)
+                        self.binding_decl_blocks.get(name.as_str()).is_none_or(|d| d.block < inner)
                     })
             })
             .map(|(name, _)| name.clone())
@@ -281,7 +281,7 @@ impl<'a> OwnershipChecker<'a> {
         let dying: Vec<String> = self
             .binding_decl_blocks
             .iter()
-            .filter(|(name, &d)| d >= inner && !self.ptr_lenders.contains_key(name.as_str()))
+            .filter(|(name, d)| d.block >= inner && !self.ptr_lenders.contains_key(name.as_str()))
             .map(|(name, _)| name.clone())
             .collect();
         for name in dying {

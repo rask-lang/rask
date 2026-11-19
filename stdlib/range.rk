@@ -230,7 +230,7 @@ extend Range<T> where T: Integer {
     }
 
     /// This range's values, then the other's.
-    public func chain(self, other: Sequence<T>) -> Sequence<T> {
+    public func chain(self, take other: Sequence<T>) -> Sequence<T> {
         let src: Sequence<T> = self.as_sequence()
         return src.chain(other)
     }

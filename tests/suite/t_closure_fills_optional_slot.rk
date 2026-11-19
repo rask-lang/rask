@@ -1,0 +1,34 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A closure whose body is a bare `T`, handed to a `func(…) -> T?` slot, hands
+// back the present side, the same way a body of type `T` fills a `T or E`
+// slot. Lowering builds that wrapper. When codegen stopped wrapping returns,
+// only the `T or E` case was wrapped in lowering, and `|x| x * 2` in an
+// `i64?` slot failed to compile natively.
+
+func apply(f: func(i64) -> i64?, x: i64) -> i64 {
+    return f(x) ?? -1
+}
+
+func half(f: func(i64) -> f64?, x: i64) -> f64 {
+    return f(x) ?? 0.0
+}
+
+func named(f: func(i64) -> string?, x: i64) -> string {
+    return f(x) ?? "none"
+}
+
+test "a number body fills an optional slot" {
+    assert apply(|x| x * 2, 4) == 8
+    let g: func(i64) -> i64? = |x| x - 1
+    assert (g(3) ?? 0) == 2
+}
+
+test "a float or string body fills an optional slot" {
+    assert half(|x| 1.5, 1) == 1.5
+    assert named(|x| "item-{x}-long-enough-to-be-on-the-heap", 3) == "item-3-long-enough-to-be-on-the-heap"
+}
+
+test "an explicit none still reads as none" {
+    assert apply(|x| none, 4) == -1
+}

@@ -59,6 +59,14 @@ impl ToDiagnostic for crate::OwnershipError {
             .with_help("pass the state through the C API's context pointer, or capture nothing and reach it another way")
             .with_why("C calls a function pointer with only its own arguments, so there's nowhere for a capture to come from [struct.c-interop/CB6]"),
 
+            CarriesUncloneable { captured, ty } => Diagnostic::error(format!(
+                "this closure carries `{captured}`, and `{ty}` can't be cloned"
+            ))
+            .with_code("E0976")
+            .with_primary(self.span, format!("carries `{captured}`"))
+            .with_help(format!("put `{captured}` in a `Shared` and capture that; a `Shared` clones as a second reference"))
+            .with_why("every closure can be cloned, and cloning one clones what it carries, so a closure may only carry Cloneable values [mem.closures/CV4]"),
+
             UseAfterMove { name, moved_at, reason }
                 if matches!(reason, crate::MoveReason::LinkDeleted) =>
             {
@@ -171,6 +179,10 @@ impl ToDiagnostic for crate::OwnershipError {
                     Sink::TakeArg { callee } => (
                         format!("`{}` takes `{}`, which `{}` still holds", callee, path, root),
                         format!("`{}`", callee),
+                    ),
+                    Sink::Closure => (
+                        format!("the closure would carry `{}`, which `{}` still holds", shown, root),
+                        "the closure".to_string(),
                     ),
                 };
                 let fix = match bound {
@@ -293,6 +305,7 @@ impl ToDiagnostic for crate::OwnershipError {
                     Sink::Payload { variant } => format!("`{}` holding it would be a second owner", variant),
                     Sink::Heap => "a `Heap` holding it would be a second owner".to_string(),
                     Sink::TakeArg { callee } => format!("`{}` would take it as a second owner", callee),
+                    Sink::Closure => "a closure carrying it would be a second owner".to_string(),
                 };
                 let primary = match into {
                     Sink::Return => format!("the signature promises an owned `{}`, and this path doesn't have one", payload_ty),
@@ -1498,7 +1511,16 @@ impl ToDiagnostic for crate::OwnershipError {
                 .with_why("resource types must be consumed properly — `discard` would silently leak the resource")
             }
 
-            ScopeLimitedClosureEscapes { name } => {
+            ScopeLimitedClosureEscapes { name, points_at: Some(local) } => {
+                let shown = if name == "<closure>" { "this closure".to_string() } else { format!("the closure in `{name}`") };
+                Diagnostic::error(format!("{shown} outlives `{local}`, which it points at"))
+                    .with_code("E0862")
+                    .with_primary(self.span, format!("`{local}` ends with its block; the closure is still held after"))
+                    .with_fix(format!("declare `{local}` in the block that holds the closure, or keep the closure only inside `{local}`'s block"))
+                    .with_why("a closure that stays in its frame reads its captures where they live rather than copying them, so it can't outlive any of them (MC3). A Copy value is no exception")
+            }
+
+            ScopeLimitedClosureEscapes { name, points_at: None } => {
                 Diagnostic::error(format!(
                     "closure `{}` captures scoped borrow and cannot escape",
                     name

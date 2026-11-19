@@ -1,0 +1,53 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// One closure body built in two places that disagree about who frees the
+// struct it captures: a copy pushed into a vector, where only the closure's
+// drop glue can free it, and a copy kept as a local, which the frame frees.
+// The glue is one function per body, so with the sites disagreeing it
+// released nothing, and natively the vector's struct leaked. Each group of
+// sites now gets its own copy of the body.
+
+struct Cfg {
+    name: string
+    n: i64
+}
+
+func gc(take c: Cfg) -> func() -> string {
+    return || "{c.name} {c.n}"
+}
+
+func nested(take c: Cfg) -> func() -> string {
+    return || {
+        let inner = || c.name.len()
+        return "{inner()} {c.name}"
+    }
+}
+
+test "pushed first, then a local" {
+    let k = 1
+    mut fs: Vec<func() -> string> = Vec.new()
+    fs.push(gc(Cfg(name: "cfg-{k}-padding-padding-padding-padding", n: k)))
+    let h = gc(Cfg(name: "loc-{k}-padding-padding-padding-padding", n: 9))
+    assert h() == "loc-1-padding-padding-padding-padding 9"
+    assert fs[0]() == "cfg-1-padding-padding-padding-padding 1"
+}
+
+test "a local first, then pushed in a loop" {
+    let k = 2
+    let h = gc(Cfg(name: "loc-{k}-padding-padding-padding-padding", n: 9))
+    mut fs: Vec<func() -> string> = Vec.new()
+    for i in 0..3 {
+        fs.push(gc(Cfg(name: "cfg-{i}-padding-padding-padding-padding", n: i)))
+    }
+    assert h() == "loc-2-padding-padding-padding-padding 9"
+    assert fs[2]() == "cfg-2-padding-padding-padding-padding 2"
+}
+
+test "a body that builds another closure" {
+    let k = 3
+    mut fs: Vec<func() -> string> = Vec.new()
+    fs.push(nested(Cfg(name: "cfg-{k}-padding-padding-padding-padding", n: k)))
+    let h = nested(Cfg(name: "loc-{k}-padding-padding-padding-padding", n: 9))
+    assert h() == "37 loc-3-padding-padding-padding-padding"
+    assert fs[0]() == "37 cfg-3-padding-padding-padding-padding"
+}

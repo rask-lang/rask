@@ -5,6 +5,21 @@
 // stay a list and not become "everything the underlying type can do".
 
 type OnlyEq = u64 implements Equal
+type Money = i64 implements Numeric, Equal
+
+struct Board {
+    n: i64
+}
+
+extend Board {
+    // A static method the newtype inherits answers the newtype, not whatever
+    // the context wants. `Self` was left open, so this passed as a `Board`
+    // (#2004).
+    func weird(self) -> Board {
+        // ERROR: expected `Board`, found `Money`
+        return Money.zero()
+    }
+}
 
 func main() {
     let a = OnlyEq(1)
@@ -19,4 +34,8 @@ func main() {
     // ERROR: an operator answers to a declared conformance
     let sum = a + b
     println("sum={sum}")
+
+    // ERROR: `Money` doesn't list `Comparable`, so no inherited `max`
+    let m = Money.zero().max(Money.one())
+    println("{Board(n: 1).weird().n} {m.value}")
 }
