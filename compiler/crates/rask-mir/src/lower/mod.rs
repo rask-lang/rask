@@ -2158,17 +2158,20 @@ impl<'a> MirContext<'a> {
     /// The answer a callable type hands back, for a type the checker resolved.
     /// `None` if it isn't callable. A sequence answers nothing — it is driven
     /// for its yields, not for a return value.
-    pub fn callable_ret_ty(
+    /// What calling a value of this type returns, and how it takes each
+    /// argument. A sequence is called with its yield callback, which it only
+    /// borrows.
+    pub fn callable_sig(
         &self,
         ty: &Type,
         type_names: &HashMap<rask_types::TypeId, String>,
-    ) -> Option<MirType> {
-        if let Type::Fn { ret, .. } = ty {
-            return Some(self.type_to_mir(ret));
+    ) -> Option<(MirType, Vec<ParamMode>)> {
+        if let Type::Fn { params, ret } = ty {
+            return Some((self.type_to_mir(ret), params.iter().map(|p| p.mode).collect()));
         }
         let head = Self::type_prefix(ty, type_names)?;
         match head.as_str() {
-            "Sequence" | "SequenceMut" => Some(MirType::Void),
+            "Sequence" | "SequenceMut" => Some((MirType::Void, vec![ParamMode::Borrow])),
             _ => None,
         }
     }
@@ -3052,17 +3055,20 @@ impl<'a> MirLowerer<'a> {
     /// for the callee, so every way of binding a function value is covered at
     /// once. A `mutate` parameter's local is the caller's address, so the
     /// closure is loaded through it, the way any read of the name is.
-    pub(crate) fn callable_local(&mut self, callee: &Expr) -> Result<Option<(LocalId, MirType)>, LoweringError> {
+    pub(crate) fn callable_local(
+        &mut self,
+        callee: &Expr,
+    ) -> Result<Option<(LocalId, MirType, Vec<ParamMode>)>, LoweringError> {
         let ExprKind::Ident(name) = &callee.kind else { return Ok(None) };
         let Some((local, _)) = self.locals.get(name).cloned() else { return Ok(None) };
         let Some(ty) = self.ctx.lookup_raw_type(callee.id) else { return Ok(None) };
-        let Some(ret) = self.ctx.callable_ret_ty(&ty, self.ctx.type_names) else { return Ok(None) };
+        let Some((ret, modes)) = self.ctx.callable_sig(&ty, self.ctx.type_names) else { return Ok(None) };
         if self.meta(name).is_some_and(|m| m.scalar_through_ptr.is_some()) {
             let (op, _) = self.lower_expr(callee)?;
             let MirOperand::Local(loaded) = op else { return Ok(None) };
-            return Ok(Some((loaded, ret)));
+            return Ok(Some((loaded, ret, modes)));
         }
-        Ok(Some((local, ret)))
+        Ok(Some((local, ret, modes)))
     }
 
     /// Box a value on its way into a declared `Heap<T>` slot, unless it is a

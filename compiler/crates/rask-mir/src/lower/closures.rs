@@ -937,6 +937,7 @@ impl<'a> MirLowerer<'a> {
             dst: None,
             closure: seq_local,
             args: vec![MirOperand::Local(closure_local)],
+            modes: vec![rask_ast::ty::ParamMode::Borrow],
         }));
 
         // SEQ8: the body asked to leave the enclosing function. Test the flag

@@ -125,6 +125,10 @@ pub enum MirStmtKind {
         dst: Option<LocalId>,
         closure: LocalId,
         args: Vec<MirOperand>,
+        /// How the closure's type takes each argument, one per `args` entry.
+        /// Only a `take` parameter can keep what it's handed (`mem.closures/CP1`);
+        /// the body behind the call is often unknown (a sequence's callback).
+        modes: Vec<rask_ast::ty::ParamMode>,
     },
     /// Get at a captured variable through the closure environment pointer.
     LoadCapture {

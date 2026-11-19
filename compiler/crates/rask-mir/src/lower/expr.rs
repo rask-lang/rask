@@ -2597,6 +2597,11 @@ impl<'a> MirLowerer<'a> {
                     self.ctx.call_symbol(expr.id).unwrap_or_else(|| name.to_string())
                 }
                 _ => {
+                    let callee_ty = self.ctx.lookup_raw_type(func.id).ok_or_else(|| LoweringError::no_checked_type("callee"))?;
+                    let (_, modes) = self
+                        .ctx
+                        .callable_sig(&callee_ty, self.ctx.type_names)
+                        .ok_or_else(|| LoweringError::InvalidConstruct(format!("internal compiler error: calling a `{callee_ty}`, which isn't a function")))?;
                     let (callee_op, _callee_ty) = self.lower_expr(func)?;
                     let callee_local = match callee_op {
                         MirOperand::Local(id) => id,
@@ -2615,6 +2620,7 @@ impl<'a> MirLowerer<'a> {
                         dst: Some(result_local),
                         closure: callee_local,
                         args: arg_operands,
+                        modes,
                     }));
                     self.flush_elem_writebacks(wb_mark);
                     return Ok((MirOperand::Local(result_local), ret_ty));
@@ -2626,12 +2632,13 @@ impl<'a> MirLowerer<'a> {
             // to register its name instead missed one form after another — a
             // `for` element, a `T?` payload, a `with` binding, a `Sequence`
             // element (#869, #1151, #1241, #1421).
-            if let Some((closure_local, ret_ty)) = self.callable_local(func)? {
+            if let Some((closure_local, ret_ty, modes)) = self.callable_local(func)? {
                 let result_local = self.builder.alloc_temp(ret_ty.clone());
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::ClosureCall {
                     dst: Some(result_local),
                     closure: closure_local,
                     args: arg_operands,
+                    modes,
                 }));
                 self.flush_elem_writebacks(wb_mark);
                 return Ok((MirOperand::Local(result_local), ret_ty));
@@ -2896,7 +2903,7 @@ impl<'a> MirLowerer<'a> {
             .map(|(_, p)| MirOperand::Local(*p))
             .collect();
         let dst = if ret_ty == MirType::Void { None } else { Some(tb.alloc_temp(ret_ty.clone())) };
-        tb.push_stmt(MirStmt::dummy(MirStmtKind::ClosureCall { dst, closure: params[cc.spec.at], args: rest }));
+        tb.push_stmt(MirStmt::dummy(MirStmtKind::ClosureCall { dst, closure: params[cc.spec.at], modes: vec![rask_ast::ty::ParamMode::Borrow; rest.len()], args: rest }));
         tb.terminate(MirTerminator::dummy(MirTerminatorKind::Return { value: dst.map(MirOperand::Local) }));
         let mut tramp = tb.finish();
         tramp.is_extern_c = true;

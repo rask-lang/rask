@@ -652,7 +652,7 @@ fn frame_routes(
                 // built `h` on its stack and the frame that took it freed it.
                 // A call nobody can place is left as staying, the same answer
                 // `KeptThroughCalls::keeps` gives when no body keeps a closure.
-                MirStmtKind::ClosureCall { dst, closure, args } => {
+                MirStmtKind::ClosureCall { dst, closure, args, .. } => {
                     let Some(bodies) = targets.known(&func.name, *closure) else { continue };
                     for (i, arg) in args.iter().enumerate() {
                         let Some(id) = uses::operand_local(arg) else { continue };
@@ -1071,11 +1071,16 @@ fn closure_facts(
                 // A closure handed to a `take` parameter of a closure is
                 // that body's, the same as through a named call: `f(x)` with
                 // `f = |take p| p` hands `x` back as the result, and freeing
-                // `x` here as well freed the one environment twice.
-                MirStmtKind::ClosureCall { closure, args, .. } => {
+                // `x` here as well freed the one environment twice. Any other
+                // parameter only borrows (`mem.closures/CP1`). That has to be
+                // read off the call: a sequence's yield calls a body nobody
+                // can place, and "unknown, so it keeps" leaked every closure
+                // `map(keep_i).to_vec()` yielded.
+                MirStmtKind::ClosureCall { closure, args, modes, .. } => {
                     for (i, arg) in args.iter().enumerate() {
                         let Some(id) = uses::operand_local(arg) else { continue };
-                        if crate::container_drop::closure_call_keeps_argument(
+                        if modes.get(i) == Some(&rask_ast::ty::ParamMode::Take)
+                            && crate::container_drop::closure_call_keeps_argument(
                             through.targets, through.reach, callee_escapes, &func.name, *closure, i, args.len(),
                         ) {
                             give(&mut ev, id);
@@ -1735,6 +1740,7 @@ mod tests {
                         dst: Some(LocalId(1)),
                         closure: LocalId(0),
                         args: vec![],
+                        modes: vec![rask_ast::ty::ParamMode::Borrow; 0],
                     }),
                 ], ret(Some(MirOperand::Local(LocalId(1))))),
             ],
@@ -1839,6 +1845,7 @@ mod tests {
                         dst: Some(LocalId(1)),
                         closure: LocalId(0),
                         args: vec![],
+                        modes: vec![rask_ast::ty::ParamMode::Borrow; 0],
                     }),
                 ], ret(Some(MirOperand::Local(LocalId(1))))),
             ],
@@ -1993,6 +2000,7 @@ mod tests {
                         dst: Some(LocalId(2)),
                         closure: LocalId(1),
                         args: vec![],
+                        modes: vec![rask_ast::ty::ParamMode::Borrow; 0],
                     }),
                 ], ret(Some(MirOperand::Local(LocalId(2))))),
             ],
@@ -2022,6 +2030,7 @@ mod tests {
                         dst: Some(LocalId(1)),
                         closure: LocalId(0),
                         args: vec![],
+                        modes: vec![rask_ast::ty::ParamMode::Borrow; 0],
                     }),
                 ], ret(Some(MirOperand::Local(LocalId(1))))),
             ],
@@ -2114,11 +2123,13 @@ mod tests {
                         dst: Some(LocalId(1)),
                         closure: LocalId(0),
                         args: vec![],
+                        modes: vec![rask_ast::ty::ParamMode::Borrow; 0],
                     }),
                     MirStmt::dummy(MirStmtKind::ClosureCall {
                         dst: Some(LocalId(2)),
                         closure: LocalId(1),
                         args: vec![],
+                        modes: vec![rask_ast::ty::ParamMode::Borrow; 0],
                     }),
                 ], ret(Some(MirOperand::Local(LocalId(2))))),
             ],
@@ -2194,6 +2205,7 @@ mod tests {
                         dst: Some(LocalId(2)),
                         closure: LocalId(1),
                         args: vec![],
+                        modes: vec![rask_ast::ty::ParamMode::Borrow; 0],
                     }),
                 ], MirTerminator::dummy(MirTerminatorKind::Goto { target: BlockId(1) })),
                 block(3, vec![], ret(Some(MirOperand::Local(LocalId(0))))),
@@ -2323,6 +2335,7 @@ mod tests {
                         dst: Some(LocalId(2)),
                         closure: LocalId(1),
                         args: vec![],
+                        modes: vec![rask_ast::ty::ParamMode::Borrow; 0],
                     }),
                 ], MirTerminator::dummy(MirTerminatorKind::Goto { target: BlockId(3) })),
                 block(2, vec![
@@ -2337,6 +2350,7 @@ mod tests {
                         dst: Some(LocalId(4)),
                         closure: LocalId(3),
                         args: vec![],
+                        modes: vec![rask_ast::ty::ParamMode::Borrow; 0],
                     }),
                 ], MirTerminator::dummy(MirTerminatorKind::Goto { target: BlockId(3) })),
                 block(3, vec![], ret(Some(MirOperand::Constant(MirConst::Int(0))))),
@@ -2469,6 +2483,7 @@ mod tests {
                         dst: Some(LocalId(2)),
                         closure: LocalId(1),
                         args: vec![],
+                        modes: vec![rask_ast::ty::ParamMode::Borrow; 0],
                     }),
                 ], MirTerminator::dummy(MirTerminatorKind::Goto { target: BlockId(1) })),
                 block(3, vec![], ret(None)),
