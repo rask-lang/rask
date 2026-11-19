@@ -17,16 +17,19 @@ extend Stack<T> {
         return self.items.pop()
     }
 
-    func peek(self) -> T? {
-        if self.items.len() == 0 { return none }
-        return self.items[self.items.len() - 1]
-    }
-
     func len(self) -> i64 {
         return self.items.len().to<i64>()!
     }
 
     func is_empty(self) -> bool {
         return self.items.len() == 0
+    }
+}
+
+// The top stays in the stack, so `peek` hands back a copy of it.
+extend Stack<T> where T: Cloneable {
+    func peek(self) -> T? {
+        if self.items.len() == 0 { return none }
+        return self.items.get_clone(self.items.len().to<i64>()! - 1)
     }
 }

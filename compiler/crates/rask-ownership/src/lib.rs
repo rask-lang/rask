@@ -202,10 +202,17 @@ struct SideAccess {
 }
 
 /// Where a name was declared: the block, and whether it is a parameter.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Declared {
     block: u32,
     param: bool,
+}
+
+/// The names in scope where a nested scope starts, and which of them were
+/// views. `leave_scope` puts both back for the names the scope declared.
+struct Scope {
+    decls: HashMap<String, Declared>,
+    lent: HashMap<String, LentValue>,
 }
 
 impl Declared {
@@ -1921,6 +1928,7 @@ impl<'a> OwnershipChecker<'a> {
         self.store_target = None;
         self.borrowed_loop_items.clear();
         self.borrowed_with.clear();
+        self.lent_locals.clear();
         self.loop_exits.clear();
         self.loop_continues.clear();
         self.refills.clear();
@@ -2127,6 +2135,36 @@ impl<'a> OwnershipChecker<'a> {
         );
     }
 
+    fn enter_scope(&self) -> Scope {
+        Scope { decls: self.binding_decl_blocks.clone(), lent: self.lent_locals.clone() }
+    }
+
+    /// End a scope. A name it declared, or shadowed, goes back to what it
+    /// was outside, view or not: the `v` of `if m.get(k)? as v` stopped being
+    /// a view at the branch's end and kept rejecting `return v` in functions
+    /// checked after it. A name it only assigned keeps what the assignment
+    /// made it.
+    fn leave_scope(&mut self, outer: Scope) {
+        let redeclared: Vec<String> = self
+            .binding_decl_blocks
+            .keys()
+            .chain(outer.decls.keys())
+            .filter(|n| self.binding_decl_blocks.get(*n) != outer.decls.get(*n))
+            .cloned()
+            .collect();
+        for name in redeclared {
+            match outer.lent.get(&name) {
+                Some(lent) => {
+                    self.lent_locals.insert(name, lent.clone());
+                }
+                None => {
+                    self.lent_locals.remove(&name);
+                }
+            }
+        }
+        self.binding_decl_blocks = outer.decls;
+    }
+
     fn check_block(&mut self, stmts: &[Stmt]) {
         let shadowed_on_entry = self.shadowed_holds.clone();
         // A `let` in the block may reuse a part's name (`parts`); the part is
@@ -2134,11 +2172,11 @@ impl<'a> OwnershipChecker<'a> {
         let parts_on_entry = self.parts.clone();
         // A name's block is the innermost declaration in scope: an inner `let k`
         // ends with its block and must not stand for an outer `k` after it.
-        let decls_on_entry = self.binding_decl_blocks.clone();
+        let decls_on_entry = self.enter_scope();
         self.check_block_body(stmts);
         self.shadowed_holds = shadowed_on_entry;
         self.parts = parts_on_entry;
-        self.binding_decl_blocks = decls_on_entry;
+        self.leave_scope(decls_on_entry);
         if self.instance.is_none() {
             self.check_borrowing_tasks(stmts);
         }
@@ -3729,7 +3767,7 @@ impl<'a> OwnershipChecker<'a> {
             StmtKind::While { label, cond, body } => {
                 // `while it? as v` binds `v` for the body, as `if` does.
                 let saved_parts = self.parts.clone();
-                let saved_decls = self.binding_decl_blocks.clone();
+                let saved_decls = self.enter_scope();
                 self.check_expr(cond);
                 // `v` is a new value each time round. Carried like a binding
                 // from before the loop, the first pass's move made every later
@@ -3746,13 +3784,13 @@ impl<'a> OwnershipChecker<'a> {
                     self.check_present_binding_consumed(binding, span);
                 }
                 self.parts = saved_parts;
-                self.binding_decl_blocks = saved_decls;
+                self.leave_scope(saved_decls);
             }
             StmtKind::WhileLet { label, pattern, expr, body } => {
                 self.check_expr(expr);
                 let scrutinee_ty = self.node_ty(&expr.id).cloned();
                 let saved_parts = self.parts.clone();
-                let saved_decls = self.binding_decl_blocks.clone();
+                let saved_decls = self.enter_scope();
                 let part_of = self.pattern_part_source(expr);
                 self.register_pattern_bindings_typed(
                     pattern,
@@ -3771,7 +3809,7 @@ impl<'a> OwnershipChecker<'a> {
                 Self::collect_pattern_binding_names(pattern, &mut bound);
                 self.check_loop_body(body, &bound, label.as_ref(), false);
                 self.parts = saved_parts;
-                self.binding_decl_blocks = saved_decls;
+                self.leave_scope(saved_decls);
             }
             StmtKind::For { label, binding, mutate, iter, body, .. } => {
                 self.check_expr(iter);
@@ -3791,9 +3829,10 @@ impl<'a> OwnershipChecker<'a> {
                     });
                 }
                 let binding_names: Vec<String> = binding.names().iter().map(|s| s.to_string()).collect();
-                let saved_decls = self.binding_decl_blocks.clone();
+                let saved_decls = self.enter_scope();
                 for name in &binding_names {
                     self.bindings.insert(name.clone(), BindingState::Owned);
+                    self.lent_locals.remove(name);
                     // Each iteration's value ends with the body.
                     self.binding_decl_blocks.insert(name.clone(), Declared::local(self.current_block + 1));
                 }
@@ -3866,7 +3905,7 @@ impl<'a> OwnershipChecker<'a> {
                 self.check_loop_body(body, &binding_names, label.as_ref(), false);
                 self.borrowed_loop_items = saved_items;
                 self.parts = saved_parts;
-                self.binding_decl_blocks = saved_decls;
+                self.leave_scope(saved_decls);
                 if pushed {
                     self.active_for_mutates.pop();
                 }
@@ -4761,10 +4800,11 @@ impl<'a> OwnershipChecker<'a> {
                 // reached from here is a capture, which the capture rules cover.
                 let saved_closure_params = std::mem::take(&mut self.closure_params);
                 let saved_parts = self.parts.clone();
-                let saved_decls = self.binding_decl_blocks.clone();
+                let saved_decls = self.enter_scope();
                 for p in params {
                     // A parameter is a new name, whatever an outer `n` was.
                     self.parts.remove(&p.name);
+                    self.lent_locals.remove(&p.name);
                     self.bindings.insert(p.name.clone(), BindingState::Owned);
                     self.binding_decl_blocks
                         .insert(p.name.clone(), Declared { block: self.current_block + 1, param: true });
@@ -4946,7 +4986,7 @@ impl<'a> OwnershipChecker<'a> {
                 self.mutate_params = saved_mutate_params;
                 self.closure_params = saved_closure_params;
                 self.parts = saved_parts;
-                self.binding_decl_blocks = saved_decls;
+                self.leave_scope(saved_decls);
 
                 // A carrying closure took the resource, so the outer scope
                 // stops owing it. A borrowing one still owes what it lent.
@@ -4966,7 +5006,7 @@ impl<'a> OwnershipChecker<'a> {
             ExprKind::If { cond, then_branch, else_branch, .. } => {
                 // A payload `cond` binds lives in the then-branch only.
                 let saved_parts = self.parts.clone();
-                let saved_decls = self.binding_decl_blocks.clone();
+                let saved_decls = self.enter_scope();
                 self.check_expr(cond);
                 // OPT19: `if x? as c` reads the payload out of `x`. For a linear
                 // payload "read out" can only mean moved — a resource can't be
@@ -4979,7 +5019,7 @@ impl<'a> OwnershipChecker<'a> {
                 self.check_expr(then_branch);
                 self.move_branch_value(then_branch);
                 self.parts = saved_parts;
-                self.binding_decl_blocks = saved_decls;
+                self.leave_scope(saved_decls);
                 if let Some(ref binding) = present_resource {
                     self.check_present_binding_consumed(binding, then_branch.span);
                 }
@@ -5014,7 +5054,7 @@ impl<'a> OwnershipChecker<'a> {
                 let pre_branch = self.bindings.clone();
                 let scrutinee_ty = self.node_ty(&scrutinee.id).cloned();
                 let saved_parts = self.parts.clone();
-                let saved_decls = self.binding_decl_blocks.clone();
+                let saved_decls = self.enter_scope();
                 let part_of = self.pattern_part_source(scrutinee);
                 let resources_before = self.resource_bindings.clone();
                 self.register_pattern_bindings_typed(
@@ -5044,7 +5084,7 @@ impl<'a> OwnershipChecker<'a> {
                 self.end_pattern_views(pattern_views);
                 self.move_branch_value(then_branch);
                 self.parts = saved_parts;
-                self.binding_decl_blocks = saved_decls;
+                self.leave_scope(saved_decls);
                 for binding in &pattern_bound {
                     self.check_present_binding_consumed(binding, then_branch.span);
                 }
@@ -5102,10 +5142,10 @@ impl<'a> OwnershipChecker<'a> {
                 let mut merged: Option<HashMap<String, BindingState>> = None;
                 let part_of = self.pattern_part_source(scrutinee);
                 let saved_parts = self.parts.clone();
-                let saved_decls = self.binding_decl_blocks.clone();
+                let saved_decls = self.enter_scope();
                 for arm in arms {
                     self.parts = saved_parts.clone();
-                    self.binding_decl_blocks = saved_decls.clone();
+                    self.binding_decl_blocks = saved_decls.decls.clone();
                     self.bindings = pre_arms.clone();
                     // A pattern's bindings belong to their own arm. Left on the
                     // books they were still owed while the *next* arm was being
@@ -5157,7 +5197,7 @@ impl<'a> OwnershipChecker<'a> {
                     });
                 }
                 self.parts = saved_parts;
-                self.binding_decl_blocks = saved_decls;
+                self.leave_scope(saved_decls);
                 // All arms diverge → code after is unreachable; keep pre-match.
                 self.bindings = merged.unwrap_or(pre_arms);
             }
@@ -5285,7 +5325,7 @@ impl<'a> OwnershipChecker<'a> {
                 // be left unregistered, so `as b` read the state of whatever
                 // `b` was in scope: an earlier `b` that had been moved made
                 // every use of the new one a use after move.
-                let saved_decls = self.binding_decl_blocks.clone();
+                let saved_decls = self.enter_scope();
                 let shadowed: Vec<(String, Option<BindingState>, Option<Type>)> = bindings
                     .iter()
                     .map(|b| {
@@ -5313,7 +5353,7 @@ impl<'a> OwnershipChecker<'a> {
                 self.check_block(body);
                 self.check_with_value(bindings, body);
                 self.borrowed_with = saved_with;
-                self.binding_decl_blocks = saved_decls;
+                self.leave_scope(saved_decls);
                 for (name, state, ty) in shadowed.into_iter().rev() {
                     match state {
                         Some(s) => self.bindings.insert(name.clone(), s),
@@ -6684,6 +6724,15 @@ impl<'a> OwnershipChecker<'a> {
             _ => {}
         }
         let Some(lent) = self.lent_value(expr) else { return false };
+        // A `@picks_item` body hands back one of its receiver's items: that is
+        // what a pick is, and its callers hold the answer as a view, the way
+        // they hold `get`'s (type.sequence/SEQ34).
+        if matches!(into, Sink::Return)
+            && self.keeps_own_items
+            && matches!(&lent.place, Some((root, _, _)) if root == "self")
+        {
+            return false;
+        }
         self.errors.push(OwnershipError {
             kind: OwnershipErrorKind::LentValueEscapes {
                 into: into.clone(),
