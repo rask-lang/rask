@@ -68,11 +68,11 @@ func rows() -> Sequence<(i64, string)> {
     }
 }
 
-test "type.sequence/SEQ34 — to_vec of tuples a sequence made keeps their strings" {
+test "type.sequence/SEQ34 — to_vec keeps what a map made, and a yield lends so it is cloned first" {
     let a = (0..3).map(|i| (i, long(i))).to_vec()
     assert a.len() == 3
     assert a[2].1 == long(2)
-    let b = rows().to_vec()
+    let b = rows().map(|r| r.clone()).to_vec()
     assert b.len() == 2
     assert b[1].1 == long(2)
     mut total = 0

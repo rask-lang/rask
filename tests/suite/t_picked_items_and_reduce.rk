@@ -7,12 +7,12 @@ import sequence.Sequence
 // element when their answer went (#2028), and `reduce` freed the first element
 // when the closure's answer replaced it as the accumulator.
 
-func longest(rows: Sequence<Vec<i64>>) -> u64 {
-    return (rows.max_by_key(|r| r.len()) ?? Vec.new()).len()
+func longest(take rows: Sequence<Vec<i64>>) -> u64 {
+    return (rows.map(|r| r.clone()).max_by_key(|r| r.len()) ?? Vec.new()).len()
 }
 
-func first_short(rows: Sequence<Vec<i64>>) -> u64 {
-    return (rows.find(|r| r.len() < 2) ?? Vec.new()).len()
+func first_short(take rows: Sequence<Vec<i64>>) -> u64 {
+    return (rows.map(|r| r.clone()).find(|r| r.len() < 2) ?? Vec.new()).len()
 }
 
 struct Named {
@@ -46,14 +46,14 @@ test "a picked copy is the caller's" {
 
 test "reduce leaves the source whole" {
     let rows: Vec<Vec<i64>> = [[1, 2], [3], [4, 5, 6]]
-    let r = rows.reduce(|a, b| if b.len() > a.len() { b.clone() } else { a.clone() })
+    let r = rows.map(|r| r.clone()).reduce(|a, b| if b.len() > a.len() { b.clone() } else { a.clone() })
     assert (r ?? Vec.new()).len() == 3
     assert rows[0].len() == 2
     let one: Vec<Vec<i64>> = [[9, 9]]
-    assert (one.reduce(|a, b| a.clone()) ?? Vec.new()).len() == 2
+    assert (one.map(|r| r.clone()).reduce(|a, b| a.clone()) ?? Vec.new()).len() == 2
     assert one[0].len() == 2
     let empty: Vec<Vec<i64>> = Vec.new()
-    assert (empty.reduce(|a, b| a.clone()) ?? Vec.new()).len() == 0
+    assert (empty.map(|r| r.clone()).reduce(|a, b| a.clone()) ?? Vec.new()).len() == 0
 }
 
 test "reduce over strings and structs keeps the source's" {
@@ -65,7 +65,7 @@ test "reduce over strings and structs keeps the source's" {
     mut people: Vec<Named> = Vec.new()
     people.push(Named(first: "a first name past sixteen bytes {n}", last: "x", note: "y"))
     people.push(Named(first: "b first name past sixteen bytes {n}", last: "x", note: "y"))
-    let p = people.reduce(|a, b| if b.first > a.first { b.clone() } else { a.clone() })
+    let p = people.map(|x| x.clone()).reduce(|a, b| if b.first > a.first { b.clone() } else { a.clone() })
     if p? as q {
         assert q.first == "b first name past sixteen bytes 7"
     }

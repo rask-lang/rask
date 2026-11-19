@@ -269,8 +269,8 @@ extend Compiler {
 
     func end_scope(self) {
         while self.scope.locals.len() > 0 {
-            let last = self.scope.locals.last()
-            if last.depth < self.scope.depth {
+            let depth = self.scope.locals.last().depth
+            if depth < self.scope.depth {
                 break
             }
             self.scope.locals.pop()

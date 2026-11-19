@@ -2206,11 +2206,19 @@ impl<'a> MirLowerer<'a> {
         method: &str,
         args: &[rask_ast::expr::CallArg],
     ) -> Result<Option<TypedOperand>, LoweringError> {
-        let arity = match method {
-            "min" | "max" => 0,
-            "find" | "min_by" | "max_by" | "min_by_key" | "max_by_key" => 1,
+        // How the winner is chosen, and whether the larger one wins.
+        enum Rank { Find, Plain, By, ByKey }
+        let (rank, want_max) = match method {
+            "find" => (Rank::Find, false),
+            "min" => (Rank::Plain, false),
+            "max" => (Rank::Plain, true),
+            "min_by" => (Rank::By, false),
+            "max_by" => (Rank::By, true),
+            "min_by_key" => (Rank::ByKey, false),
+            "max_by_key" => (Rank::ByKey, true),
             _ => return Ok(None),
         };
+        let arity = if matches!(rank, Rank::Plain) { 0 } else { 1 };
         if args.len() != arity {
             return Ok(None);
         }
@@ -2252,8 +2260,8 @@ impl<'a> MirLowerer<'a> {
         )?;
 
         let take_block = self.builder.create_block();
-        match method {
-            "find" => {
+        match rank {
+            Rank::Find => {
                 let (pred, _) = self.inline_closure_body(f.unwrap(), item_op.clone(), item_ty.clone())?;
                 self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
                     cond: pred,
@@ -2262,7 +2270,7 @@ impl<'a> MirLowerer<'a> {
                 }));
             }
             _ => {
-                let key = if method.ends_with("_by_key") {
+                let key = if matches!(rank, Rank::ByKey) {
                     let (k, k_ty) = self.inline_closure_body(f.unwrap(), item_op.clone(), item_ty.clone())?;
                     let k_local = self.builder.alloc_temp(k_ty.clone());
                     self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
@@ -2294,7 +2302,6 @@ impl<'a> MirLowerer<'a> {
                     else_block: compare_block,
                 }));
                 self.builder.switch_to_block(compare_block);
-                let want_max = method.starts_with("max");
                 let beats = match &key {
                     // Ties keep the first item seen, so the test is strict.
                     Some((k, k_ty)) => {
@@ -2314,7 +2321,7 @@ impl<'a> MirLowerer<'a> {
                     }
                     None => {
                         let best = self.pick_winner(&setup, found, found_pos, enumerates > 0);
-                        if method.ends_with("_by") {
+                        if matches!(rank, Rank::By) {
                             let (ord, _) = self.inline_closure_call(
                                 f.unwrap(),
                                 vec![
@@ -2356,7 +2363,7 @@ impl<'a> MirLowerer<'a> {
                 }
             }
         }
-        self.finish_pick(call, chain, &setup, take_block, found, found_pos, enumerates > 0, takes, method == "find")
+        self.finish_pick(call, chain, &setup, take_block, found, found_pos, enumerates > 0, takes, matches!(rank, Rank::Find))
             .map(Some)
     }
 

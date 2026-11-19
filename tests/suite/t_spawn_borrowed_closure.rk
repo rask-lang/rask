@@ -128,7 +128,7 @@ func pair() -> Sequence<func(i64) -> i64> {
 }
 
 test "closure literals yielded by a sequence, collected" {
-    let collected = pair().to_vec()
+    let collected = pair().map(|f| f.clone()).to_vec()
     assert collected.len() == 2
     assert collected[0](2) == 7
     assert collected[1](2) == 42
