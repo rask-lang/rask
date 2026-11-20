@@ -1,0 +1,136 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// SDL3 through `import c`, with no hand-written bindings: a window and a
+// software renderer on SDL's offscreen driver, so it runs headless. It covers
+// what binding a real C library needs:
+// - out-parameters through `&x`;
+// - a pixel read back from a surface;
+// - an event pushed and polled through a union;
+// - a timer whose callback is a closure;
+// - a struct returned by value (SDL_StringToGUID);
+// - function-like macros, folded and called at run time, including one
+//   that reads a struct field (SDL_MUSTLOCK).
+//
+// Needs SDL3 installed. With it under /opt/sdl:
+//   CPATH=/opt/sdl/include RASK_EXTRA_CFLAGS="-L/opt/sdl/lib -lSDL3" \
+//   LD_LIBRARY_PATH=/opt/sdl/lib rask run examples/sdl_tour
+
+import c "SDL3/SDL.h"
+
+import string.cstring
+import sync.Atomic
+
+const LEFT_MASK: u32 = c.SDL_BUTTON_MASK(c.SDL_BUTTON_LEFT)
+
+func text(s: string) -> cstring {
+    let c = s.to_cstring() catch _ => panic("nul in {s}")
+    return c
+}
+
+@noreturn
+func fail(what: string) {
+    let msg = unsafe c.SDL_GetError() ?? panic(what)
+    let err = unsafe string.from_c(msg)
+    panic("{what}: {err}")
+}
+
+func main() {
+    let hint = text(c.SDL_HINT_VIDEO_DRIVER)
+    let driver = text("offscreen")
+    unsafe c.SDL_SetHint(hint.as_ptr(), driver.as_ptr())
+    if !(unsafe c.SDL_Init(c.SDL_INIT_VIDEO)) {
+        fail("init")
+    }
+
+    // Out-parameters through &x.
+    let title = text("rask")
+    let window = unsafe c.SDL_CreateWindow(title.as_ptr(), 320, 240, 0) ?? fail("window")
+    mut w: c_int = 0
+    mut h: c_int = 0
+    unsafe c.SDL_GetWindowSize(window, &w, &h)
+    println("window {w}x{h}")
+
+    // Draw, then read a pixel back.
+    let soft = text("software")
+    let r = unsafe c.SDL_CreateRenderer(window, soft.as_ptr()) ?? fail("renderer")
+    unsafe c.SDL_SetRenderDrawColor(r, 0, 0, 0, 255)
+    unsafe c.SDL_RenderClear(r)
+    unsafe c.SDL_SetRenderDrawColor(r, 200, 100, 50, 255)
+    let rect = c.SDL_FRect(x: 10.0, y: 10.0, w: 50.0, h: 50.0)
+    unsafe c.SDL_RenderFillRect(r, &rect)
+    let surface = unsafe c.SDL_RenderReadPixels(r, none) ?? fail("read pixels")
+    mut pr: u8 = 0
+    mut pg: u8 = 0
+    mut pb: u8 = 0
+    mut pa: u8 = 0
+    unsafe c.SDL_ReadSurfacePixel(surface, 20, 20, &pr, &pg, &pb, &pa)
+    println("inside {pr} {pg} {pb} {pa}")
+    unsafe c.SDL_ReadSurfacePixel(surface, 100, 100, &pr, &pg, &pb, &pa)
+    println("outside {pr} {pg} {pb} {pa}")
+    let sw = unsafe surface.w
+    println("surface {sw}")
+    let lock = unsafe c.SDL_MUSTLOCK(surface)
+    let x: u32 = 0x11223344
+    println("mustlock {lock} swap {unsafe c.SDL_Swap32(x)} BE {unsafe c.SDL_Swap32BE(x)}")
+    unsafe c.SDL_DestroySurface(surface)
+
+    // Keyboard state is a *bool meant to be indexed.
+    mut numkeys: c_int = 0
+    let keys = unsafe c.SDL_GetKeyboardState(&numkeys) ?? fail("keyboard")
+    let a_down = unsafe keys[c.SDL_SCANCODE_A]
+    println("keys {numkeys}, A down: {a_down}")
+
+    // A user event, pushed and polled back through the union.
+    let user = c.SDL_UserEvent(
+        type_: c.SDL_EVENT_USER
+        reserved: 0
+        timestamp: 0
+        windowID: 0
+        code: 42
+        data1: none
+        data2: none
+    )
+    mut ev = c.SDL_Event(user: user)
+    unsafe c.SDL_PushEvent(&ev)
+    mut seen = 0
+    while unsafe c.SDL_PollEvent(&ev) {
+        let ty = unsafe ev.type_
+        if ty == c.SDL_EVENT_USER {
+            let code = unsafe ev.user.code
+            println("user event {code}")
+            seen += 1
+        }
+    }
+    assert seen == 1
+
+    // A timer: a closure through SDL's userdata, called on SDL's thread.
+    let fired: Atomic<i64> = Atomic.new(0)
+    let id = unsafe c.SDL_AddTimer(10, |timer: u32, interval: u32| -> u32 {
+        fired.fetch_add(1)
+        return 0
+    })
+    unsafe c.SDL_Delay(100)
+    println("timer {id} fired {fired.load()}")
+
+    // A struct returned by value, through the compiler's C wrapper.
+    let guid_text = text("030000005e0400008e02000014010000")
+    let guid = unsafe c.SDL_StringToGUID(guid_text.as_ptr())
+    mut back: Vec<u8> = Vec.with_capacity(33)
+    for _ in 0..33 {
+        back.push(0)
+    }
+    unsafe c.SDL_GUIDToString(guid, back.as_mut_ptr(), 33)
+    let shown = unsafe string.from_c(back.as_ptr())
+    println("guid {guid.data[0]} {guid.data[4]} {shown}")
+
+    // Function-like macros: a constant one folds, a run-time one is computed.
+    let ticks = unsafe c.SDL_GetTicksNS()
+    let ms = c.SDL_NS_TO_MS(ticks)
+    let rgba = c.SDL_FOURCC(82, 71, 66, 65)
+    println("macros {LEFT_MASK} {c.SDL_BUTTON_MASK(c.SDL_BUTTON_RIGHT)} {rgba} {ms >= 0}")
+
+    unsafe c.SDL_DestroyRenderer(r)
+    unsafe c.SDL_DestroyWindow(window)
+    unsafe c.SDL_Quit()
+    println("done")
+}

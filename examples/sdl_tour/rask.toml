@@ -1,0 +1,7 @@
+schema = "rask-package@1"
+
+[package]
+name = "sdl_tour"
+version = "0.1.0"
+description = "SDL3 through import c, no hand-written bindings"
+license = "MIT OR Apache-2.0"
