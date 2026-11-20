@@ -56,8 +56,7 @@ extend World {
         return out
     }
 
-    // index into a Vec field, reaching a field of the element. A binding for the
-    // whole element would be a silent 24-byte copy — E0871, mem.borrowing/E4.
+    // index into a Vec field, reaching a field of the element.
     func row_at(self, i: u64) -> string {
         return self.rows[i].key
     }

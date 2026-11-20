@@ -643,6 +643,20 @@ fn local_is_kept_by(
         MirStmtKind::ZeroAggregate { local } if *local != param => {
             names.remove(local);
         }
+        // A parameter a closure captures by reference lives in a memory cell,
+        // and the body reads it back with `x = *param`. That read is the
+        // parameter's value until something new is written into the cell.
+        // Missed, `for v in s { let g = || v.len(); if c { keep = v } }`
+        // stored the item without the sequence knowing, so it freed it after
+        // the call (#2008).
+        MirStmtKind::Assign { dst, rvalue: MirRValue::Deref(MirOperand::Local(src)) }
+            if *src == param && names.contains(&param) && func.local_ty(*dst) == func.local_ty(param) =>
+        {
+            names.insert(*dst);
+        }
+        MirStmtKind::Store { addr, offset: 0, .. } if *addr == param => {
+            names.remove(&param);
+        }
         _ => {}
     };
     let mut entry: HashMap<BlockId, HashSet<LocalId>> = HashMap::new();
@@ -1409,8 +1423,8 @@ fn insert_for_function(
     let fresh = collect_fresh_containers_with(func, all, handing_over, interface_handing, targets);
     let ensured = consumed_by_an_ensure(func, all, &fresh, keeps);
 
-    let lent = lent_slots(func, &mut tracked, kept);
     let owned: HashSet<LocalId> = owned.into_iter().map(|(id, _)| id).collect();
+    let lent = lent_slots(func, &mut tracked, kept, &owned);
     let facts =
         container_facts(func, &tracked, &made_here, &ensured, &lent, keeps, &passed, &owned);
     let plan = crate::analysis::ownership::plan(
@@ -3046,6 +3060,7 @@ fn lent_slots(
     func: &MirFunction,
     tracked: &mut HashMap<LocalId, &'static str>,
     kept: &HashMap<String, Vec<bool>>,
+    owned_params: &HashSet<LocalId>,
 ) -> LentSlots {
     let mut out = LentSlots {
         slots: HashMap::new(),
@@ -3094,12 +3109,21 @@ fn lent_slots(
     candidates.sort_by_key(|l| l.0);
     candidates.dedup();
     for slot in candidates {
-        if not_lent.contains(&slot) || params.contains(&slot) || !is_container_shaped(func, slot) {
+        if not_lent.contains(&slot) || !is_container_shaped(func, slot) {
+            continue;
+        }
+        // An owned parameter a closure captures by reference is a slot the
+        // call fills on entry. Followed as one, a load out of it is the
+        // parameter, so storing that load gives the parameter away: a loop
+        // body that captures its item and keeps it on one branch frees it
+        // only on the other (#2008).
+        let entry_fill = owned_params.contains(&slot).then(|| tracked.get(&slot).copied()).flatten();
+        if params.contains(&slot) && entry_fill.is_none() {
             continue;
         }
         // Every store fills the whole slot with a local, and at least one of
         // them is a container this frame made.
-        let mut free = None;
+        let mut free = entry_fill;
         let mut whole = true;
         for stmt in &stmts {
             if let MirStmtKind::Store { addr, offset, value, .. } = &stmt.kind {
@@ -3770,10 +3794,23 @@ fn values_the_body_owns(callee: &MirFunction) -> HashSet<LocalId> {
             }
         }
     }
+    // A `take` parameter a closure in the body captures by reference lives in
+    // a cell, and the body reads it back with `x = *p`: that read is the
+    // parameter (#2008).
+    let taken: HashSet<LocalId> = owned.clone();
     loop {
         let mut grew = false;
         for stmt in callee.blocks.iter().flat_map(|b| b.statements.iter()) {
-            if let MirStmtKind::Assign { dst, rvalue: MirRValue::Use(MirOperand::Local(src)) } = &stmt.kind {
+            let src = match &stmt.kind {
+                MirStmtKind::Assign { dst, rvalue: MirRValue::Use(MirOperand::Local(src)) } => Some((dst, src)),
+                MirStmtKind::Assign { dst, rvalue: MirRValue::Deref(MirOperand::Local(src)) }
+                    if taken.contains(src) && callee.local_ty(*dst) == callee.local_ty(*src) =>
+                {
+                    Some((dst, src))
+                }
+                _ => None,
+            };
+            if let Some((dst, src)) = src {
                 if owned.contains(src) && owned.insert(*dst) {
                     grew = true;
                 }

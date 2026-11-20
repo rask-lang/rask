@@ -108,6 +108,19 @@ impl AddrAliases {
                             .then(|| vec![*src])
                             .unwrap_or_default(),
                         MirRValue::Ref(src) => vec![*src],
+                        // An offset into an aggregate (`arr + i * 24`, a
+                        // field's address) still points into it.
+                        MirRValue::BinaryOp {
+                            op: crate::operand::BinOp::Add,
+                            left: MirOperand::Local(src),
+                            ..
+                        } => {
+                            let mut into = pointees.get(src).cloned().unwrap_or_default();
+                            if types.get(src).is_some_and(|t| t.passed_by_address()) {
+                                into.push(*src);
+                            }
+                            into
+                        }
                         MirRValue::Use(MirOperand::Local(src)) => {
                             pointees.get(src).cloned().unwrap_or_default()
                         }

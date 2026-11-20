@@ -153,8 +153,15 @@ fn forwarder(m: &FnDecl, elem: &TypeExpr, host_params: &[String]) -> String {
         _ => String::new(),
     };
 
+    // What the method does with its items is what the forwarder does.
+    let marks: String = ["keeps_items", "picks_item"]
+        .iter()
+        .filter(|a| rask_ast::attr::has(&m.attrs, a))
+        .map(|a| format!("    @{}\n", a))
+        .collect();
     let signature = format!(
-        "    public func {}{}(self{}{}){} {{\n",
+        "{}    public func {}{}(self{}{}){} {{\n",
+        marks,
         m.name,
         type_params,
         if params.is_empty() { "" } else { ", " },

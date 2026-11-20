@@ -100,7 +100,7 @@ extend Vm {
         } else {
             0
         }
-        return self.registers.get(base + idx)!
+        return self.registers.get_clone(base + idx)!
     }
 
     func set_reg(self, idx: i64, take val: Value) {
@@ -165,7 +165,7 @@ extend Vm {
                 Opcode.LOAD_CONST => {
                     let a = decode_a(instr)
                     let bx = decode_bx(instr)
-                    let val = self.chunk.main.constants.get(bx) ?? continue
+                    let val = self.chunk.main.constants.get_clone(bx) ?? continue
                     self.set_reg(a, val)
                 }
                 Opcode.LOAD_NONE => {

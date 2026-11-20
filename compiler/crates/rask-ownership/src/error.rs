@@ -175,16 +175,15 @@ pub enum OwnershipErrorKind {
         clone_form: Option<String>,
     },
 
-    /// mem.borrowing/E4: `let x = collection[key]` on an element that isn't
-    /// Copy. Indexing hands the element back in place, so the binding is a
-    /// second name for storage the collection still owns.
-    #[error("`{elem_ty}` isn't Copy, so `{binding}` would be a second name for the same element")]
-    NonCopyElementCopiedOut {
+    /// mem.borrowing/E4, S5: `mut x = collection[key]` (or a lookup or pick)
+    /// on an element that isn't Copy. The binding would be a second writable
+    /// name for storage the collection still owns.
+    #[error("`{binding}` and `{call}` would be the same `{elem_ty}`, both writable")]
+    MutableElementView {
         binding: String,
         elem_ty: String,
-        /// The collection being indexed, when it has a printable name.
-        /// Not called `source`: `thiserror` reads that name as the error cause.
-        collection: Option<String>,
+        /// `rows[…]`, `rows.get(…)`: the read that lent the element.
+        call: String,
     },
 
     /// mem.ownership/O11: a `const` can't be given away.
@@ -202,15 +201,20 @@ pub enum OwnershipErrorKind {
         sink: Option<String>,
     },
 
-    /// type.sequence/SEQ47: `to_vec` over a chain that only lends its items,
-    /// of a type that isn't Copy. The chain owns nothing it could move into
-    /// the Vec, and `to_vec` doesn't deep-clone on its own.
-    #[error("`to_vec` has nothing it may move — `{elem}` is lent, not owned")]
-    ToVecOfLentItems {
+    /// type.sequence/SEQ34, SEQ47: a terminal that keeps items (`to_vec`,
+    /// `to_map`, `reduce`, or a pick like `find` over a sequence that isn't
+    /// a collection) handed items that aren't Copy and that the chain only
+    /// lends. It owns nothing it could keep, and it doesn't deep-clone on its
+    /// own.
+    #[error("`{terminal}` has nothing it may keep — `{elem}` is lent, not owned")]
+    KeepsLentItems {
+        terminal: String,
         /// The item type, as written for the reader.
         elem: String,
-        /// The adapter nearest the source, which is what lends.
-        adapter: String,
+        /// What the items come from: `rows`, `vecs()`, `s`.
+        lender: String,
+        /// The lender is a collection, which still holds every item.
+        collection: bool,
     },
 
     /// type.sequence/SEQ47: `Vec.zip` over elements that aren't Copy. It
@@ -329,6 +333,9 @@ pub enum OwnershipErrorKind {
         path: String,
         /// Where the view was bound.
         viewed_at: Span,
+        /// The view is of an element (`rows[i]`, `rows.get(i)!`, a pick),
+        /// and the write reaches some element of the same collection.
+        element: bool,
     },
 
     /// `let name = p.f` moved the field out, and this reads it (or the value
@@ -602,8 +609,10 @@ pub enum OwnershipErrorKind {
     #[error("cannot give away `{name}` — the loop only lends it out of `{from}`")]
     ConsumeLoopItem {
         name: String,
-        /// The collection the loop walks.
+        /// The collection or sequence the loop walks.
         from: String,
+        /// `from` is a sequence: its yield lends the item for one call.
+        by_sequence: bool,
         /// The `for` statement.
         loop_at: Span,
         sink: Option<String>,
@@ -880,6 +889,8 @@ pub enum Sink {
     TakeArg { callee: String },
     /// A closure that outlives its frame, carrying the value (mem.closures/CM2).
     Closure,
+    /// The value of a `with` block, which outlives the binding it reads.
+    WithValue { binding: String },
 }
 
 /// What happened to the value a pointer points into (mem.unsafe/PT3).

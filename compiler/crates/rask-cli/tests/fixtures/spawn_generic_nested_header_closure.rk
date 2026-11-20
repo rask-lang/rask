@@ -16,7 +16,7 @@ extend Wrap<Wrap<U>> {
     func inner_keep(self) -> func() -> i64 {
         let u = self.v.v
         return || {
-            let y = u
+            look(u)
             return 1
         }
     }
@@ -35,3 +35,6 @@ func main() {
         t2.detach()
     }
 }
+
+// Reads its argument without keeping it, so the closure captures it.
+func look<T>(x: T) {}

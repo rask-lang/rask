@@ -33,7 +33,7 @@ func first_number() -> i64 {
     mut best: Vec<i64>? = none
     for v in numbers() {
         if best is none {
-            best = v
+            best = v.clone()
         }
     }
     if best? as b {
@@ -58,7 +58,7 @@ func first_name() -> string {
     mut best: Vec<string>? = none
     for v in names() {
         if best is none {
-            best = v
+            best = v.clone()
         }
     }
     if best? as b {

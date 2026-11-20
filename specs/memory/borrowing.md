@@ -1,6 +1,6 @@
 <!-- id: mem.borrowing -->
 <!-- status: decided -->
-<!-- summary: Block-scoped views for fixed-layout sources, inline access + `with` for growable sources -->
+<!-- summary: Block-scoped views of fields and elements; a growable source can't free a viewed element; `with` for writes -->
 <!-- depends: memory/ownership.md, memory/value-semantics.md -->
 <!-- implemented-by: compiler/crates/rask-ownership/, compiler/crates/rask-interp/ -->
 
@@ -10,7 +10,7 @@ A view into `point.x` can't go stale — struct fields sit at fixed offsets. But
 
 **Fixed-layout sources** (struct fields, arrays) can't resize. Views persist until the block ends.
 
-**Growable sources** (Vec, Map) own heap buffers that can reallocate. Each access is temporary — copy out the value for one expression, or use `with` for multi-statement access.
+**Growable sources** (Vec, Map) own heap buffers that can reallocate. A `let` of an element is still a view until the block ends, because it holds the element itself and not its address: a `push` that moves the buffer leaves it reading the same element. What a view can't survive is the element being freed or changed under it. The compiler doesn't tell one index from another, so while the view lives the collection's elements aren't written at all: no `remove`, `clear`, `replace`, assignment into an element, `for mutate` or `with` write. A `Map` can't `insert` either, because inserting a key that's already there frees its old value. Writes go through inline access or `with`, after the view's block ends.
 
 **A rack is neither.** `Rack<T>` never moves a node, so a `Link<T>` is a reference you keep and follow — it is not an access mode at all, and nothing below applies to it. That's what the type is for: see [racks.md](racks.md).
 
@@ -19,10 +19,10 @@ A view into `point.x` can't go stale — struct fields sit at fixed offsets. But
 | Rule | Source | Access model | Why |
 |------|--------|-------------|-----|
 | **B1: Fixed = block-scoped** | Struct fields, arrays | View valid until block ends | Layout can't change |
-| **B2: Growable = inline + `with`** | Vec, Map | Copy out (Copy types) or use `with` | Heap buffer can reallocate |
+| **B2: Growable = views + `with`** | Vec, Map | `let` views an element until the block ends (S1); writes go inline or through `with` | Heap buffer can reallocate, so a view holds the element, not its address |
 | **B5: String slices = inline only** | string | `s[i..j]` temporary for expression | Slice has no refcount; source could be freed |
 
-**The test:** can the source resize? Vec and Map own heap buffers that can reallocate. Struct fields and arrays have fixed in-place layout. Strings are immutable but slices are temporary views (S2).
+**The test:** can the source resize? Vec and Map own heap buffers that can reallocate, so a view of an element holds the element and a `Vec` may grow under it, but nothing may change or free its elements. Struct fields and arrays have fixed in-place layout. Strings are immutable but slices are temporary views (S2).
 
 ## Parameter and Receiver Borrows
 
@@ -131,7 +131,7 @@ Single-expression access to collection elements works inline. The compiler creat
 | **E1: Expression duration** | Inline access valid only within the expression |
 | **E2: Chain calls OK** | `v[i].field.method()` is one expression |
 | **E3: Lvalue in-place** | `collection[key].field = value` is in-place mutation, not copy-modify-discard |
-| **E4: Rvalue copies or errors** | `let x = collection[key]` copies if Copy, compile error if not |
+| **E4: Rvalue copies or views** | `let x = collection[key]` copies if Copy and is a view of the element if not (B2, S1): it lasts until the block ends, can't be stored or returned (S3), and the collection's elements can't be written, removed or replaced while it lives (E0958, see B2). Holding the element costs a copy of its bytes, `size_of(T)`, and nothing on the heap; for a large inline element (`[u8; 4096]`), read the field you need instead. `rows.get(i)!` and a pick (`type.sequence/SEQ50`) give the same view. `mut x = collection[key]` of a non-Copy element is a compile error (E0871): a second writable name for the element. Change it inline or with `with` |
 | **E5: Sync inline access** | `shared.read().chain`, `shared.write().chain`, and `mutex.lock().chain` follow E1-E4 rules. Lock held for expression duration, released at expression end. Standalone `.read()`/`.write()`/`.lock()` without chaining is a compile error |
 
 <!-- test: skip -->
@@ -161,7 +161,7 @@ with config.write() as c {
 }
 ```
 
-For non-Copy types, `let x = collection[key]` is a compile error. Use `.clone()` or `with` for multi-statement access.
+For non-Copy types, `let x = collection[key]` is a view of the element (E4) and `mut x = collection[key]` is a compile error. Use `with` to change the element over several statements, or `.clone()` for a separate value.
 
 An inline sync write is at most one store: if the right-hand side panics, the lock releases with nothing written (`ctrl.panic/U4`), so a single inline assignment can't leave a multi-field invariant half-done. A method call in the chain can still panic mid-mutation — that's `ctrl.panic/LK3`, same as anywhere.
 
@@ -371,26 +371,22 @@ All checks are performed **locally** within the function. No cross-function anal
 
 Error messages use value-based framing. No "statement-scoped" or "view released at semicolon" language.
 
-**Non-Copy element access [E4]:**
+**Writable binding of a non-Copy element [E4]:**
 ```
-ERROR [mem.borrowing/E4]: cannot bind non-Copy collection element
+ERROR [mem.borrowing/E4]: `entity` and `entities[…]` would be the same `Entity`, both writable
    |
-5  |  let entity = entities[i]
-   |               ^^^^^^^^^^^ Entity is not Copy
-6  |  entity.update()
-   |  ^^^^^^ cannot use — element was not copied out
+5  |  mut entity = entities[i]
+   |               ^^^^^^^^^^^ this element stays where the collection keeps it
 
-WHY: Collection elements that aren't Copy can't be assigned to variables.
-     Use .clone() for a copy, or with for multi-statement access.
+WHY: a `let` of an element that isn't Copy is a view of it where it sits, and
+     a read-only one sits fine beside the collection. `mut` asks for exclusive
+     access instead, and a plain binding can't say for how long.
 
-FIX: Use with for multi-statement access:
+FIX: read through a view, change it with `with`, or ask for a separate value:
 
-  with entities[i] as entity {
-      entity.update()
-  }
-
-  // Or clone if you need an independent copy:
-  let entity = entities[i].clone()
+  let entity = entities[i]
+  with entities[i] as entity { entity.update() }
+  mut entity = entities[i].clone()
 ```
 
 **Storing view from string [B2]:**
@@ -453,7 +449,10 @@ FIX: Move the structural mutation outside the with block:
 | Borrow of clone | — | Borrows the new copy, not original |
 | Inline access in method chain | E2 | Access spans entire chain |
 | `collection[key].field = value` | E3 | In-place lvalue mutation |
-| `let x = collection[key]` (non-Copy) | E4 | Compile error |
+| `let x = collection[key]` (non-Copy) | E4 | View until the block ends |
+| `mut x = collection[key]` (non-Copy) | E4 | Compile error (E0871) |
+| `collection.push(…)` while a view of an element lives | B2 | Allowed: the view holds the element, not its address |
+| `collection.remove(i)`, `clear()`, `pop()` or a write over the element while a view lives | S5 | Compile error (E0958) |
 | `shared.read().field` | E5 | Expression-scoped read lock, same as E1-E4 |
 | `shared.write().field = value` | E5 | Expression-scoped write lock, in-place mutation |
 | `mutex.lock().field` | E5 | Expression-scoped exclusive lock |
@@ -540,7 +539,7 @@ func apply_buff(mutate entities: Vec<Entity>, i: u64) -> void or Error {
 
 ### Rationale
 
-**B1/B2 (fixed vs growable):** I wanted to avoid "borrow checker wrestling" — code that looks fine then explodes 20 lines later. Collections can change structurally — `Vec` reallocates, `Map` rehashes. Block-scoped views into them would dangle. Inline access + `with` kills this bug class. A `Rack` is the exception that proves the rule: it never moves a node, which is the whole reason a `Link<T>` can be stored where no other reference can.
+**B1/B2 (fixed vs growable):** I wanted to avoid "borrow checker wrestling" — code that looks fine then explodes 20 lines later. Collections can change structurally — `Vec` reallocates, `Map` rehashes. A view that held an element's address would dangle, so a view holds the element itself: a `push` that moves the buffer leaves it reading the same element, and only removing or overwriting that element is refused. B2 used to allow inline access and `with` only, which made `let r = rows[i]` an error while `rows.get(i)!` and `rows.max_by_key(f)` gave the same view. Three spellings of one read with two answers was the worse deal. A `Rack` is the exception that proves the rule: it never moves a node, which is the whole reason a `Link<T>` can be stored where no other reference can.
 
 **S3 (no escape):** The cost is more `.clone()` calls. I think that's better than scope annotations leaking into function signatures.
 

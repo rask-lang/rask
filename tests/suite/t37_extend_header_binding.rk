@@ -111,7 +111,7 @@ struct Ring<T> {
     public items: Vec<T>
 }
 
-extend Ring<U> {
+extend Ring<U> where U: Copy {
     public func doubled_count(self) -> usize {
         return self.items.len() * 2
     }

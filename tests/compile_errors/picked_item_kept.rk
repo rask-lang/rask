@@ -1,0 +1,95 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Rejects: keeping an item `find`, `min`, `max` or their `_by_key` forms picked
+// out of a vector, whether returned or handed to a `take`, directly, through a
+// `match` arm or as the second half of an `enumerate` pair
+//
+// Spec: type.sequence (SEQ34), mem.borrowing (S3), mem.parameters (PM1)
+//
+// A terminal over a vector, or over `filter`, `skip` and the other adapters
+// that hand on what they were given, answers with the item where the vector
+// keeps it, the same as `get`. Natively `return rows.find(p) ?? Vec.new()`
+// handed the caller the vector's own element, and both freed it (#2028).
+// A name bound to a lookup and then handed to `push` was the same second owner,
+// for `get` as well, and compiled.
+//
+// One marker per rejection, on the line the compiler points at.
+
+func first_long(rows: Vec<Vec<i64>>) -> Vec<i64> {
+    // ERROR: `rows.find(…)` hands back what `rows` still holds [E0879]
+    return rows.find(|r| r.len() > 1) ?? Vec.new()
+}
+
+// --- through lending adapters and a local ---
+func shortest_after_first(rows: Vec<Vec<i64>>) -> Vec<i64> {
+    let m = rows.skip(1).min_by_key(|r| r.len())
+    // ERROR: `rows.min_by_key(…)` hands back what `rows` still holds [E0879]
+    return m ?? Vec.new()
+}
+
+// --- handed to `push` through an optional binding ---
+func keep_longest(rows: Vec<Vec<i64>>, mutate out: Vec<Vec<i64>>) {
+    if rows.max_by_key(|r| r.len())? as m {
+        // ERROR: `rows.max_by_key(…)` lends what `rows` still holds, and `push` takes it [E0906]
+        out.push(m)
+    }
+}
+
+// --- `get` bound to a name, then handed on ---
+func keep_second(rows: Vec<Vec<i64>>, mutate out: Vec<Vec<i64>>) {
+    let m = rows.get(1)!
+    // ERROR: `rows.get(…)` lends what `rows` still holds, and `push` takes it [E0906]
+    out.push(m)
+}
+
+// --- through a `match` arm that names the whole scrutinee ---
+func only_single(rows: Vec<Vec<i64>>) -> Vec<i64> {
+    // ERROR: `rows.find(…)` hands back what `rows` still holds [E0879]
+    return match rows.find(|r| r.len() == 1) {
+        y => y ?? Vec.new(),
+    }
+}
+
+func keep_single(rows: Vec<Vec<i64>>, mutate out: Vec<Vec<i64>>) {
+    match rows.find(|r| r.len() == 1) {
+        y => {
+            if y? as m {
+                // ERROR: `rows.find(…)` lends what `rows` still holds, and `push` takes it [E0906]
+                out.push(m)
+            }
+        }
+    }
+}
+
+// --- the pair `enumerate` picked ---
+func second_row(rows: Vec<Vec<i64>>) -> Vec<i64> {
+    if rows.enumerate().find(|p| p.0 == 1)? as p {
+        // ERROR: `rows.find(…)` hands back what `rows` still holds [E0879]
+        return p.1
+    }
+    return Vec.new()
+}
+
+// Reading the item is fine, and so is keeping one a `map` made: the chain
+// owns what its closure returned.
+func longest_len(rows: Vec<Vec<i64>>) -> u64 {
+    return (rows.max_by_key(|r| r.len()) ?? Vec.new()).len()
+}
+
+func longest_copy(rows: Vec<Vec<i64>>) -> Vec<i64> {
+    return rows.map(|r| r.clone()).max_by_key(|r| r.len()) ?? Vec.new()
+}
+
+func single_len(rows: Vec<Vec<i64>>) -> u64 {
+    return match rows.find(|r| r.len() == 1) {
+        y => (y ?? Vec.new()).len(),
+    }
+}
+
+func index_of_second(rows: Vec<Vec<i64>>) -> usize? {
+    if rows.enumerate().find(|p| p.0 == 1)? as p {
+        return p.0
+    }
+    return none
+}
+
+func main() {}

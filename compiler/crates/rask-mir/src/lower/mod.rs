@@ -135,6 +135,8 @@ pub(crate) enum IterAdapter<'a> {
     Map { closure: &'a Expr },
     Take { count: &'a Expr },
     Skip { count: &'a Expr },
+    TakeWhile { closure: &'a Expr },
+    SkipWhile { closure: &'a Expr },
     Enumerate,
 }
 
@@ -2301,6 +2303,10 @@ pub struct MirLowerer<'a> {
     /// return had just written, resetting it every iteration (#462) — and an
     /// inlined predicate reported the wrong type for its result local.
     inline_return_taken: Option<MirType>,
+    /// A function value a fused chain calls per element, lowered once ahead
+    /// of the loop: the local holding it, what it answers, and its modes.
+    /// Keyed by the argument expression (`rows.find(is_short)`).
+    fused_fns: HashMap<rask_ast::NodeId, (LocalId, MirType, Vec<ParamMode>)>,
     /// Stack of active ensure cleanup blocks (innermost last).
     /// At function exit points (return, try error, implicit return),
     /// this becomes the cleanup_chain on CleanupReturn terminators.
@@ -2876,6 +2882,54 @@ impl<'a> MirLowerer<'a> {
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::BindPlace { dst: local, addr: slot }));
         self.addressed_locals.insert(local);
         slot
+    }
+
+    /// Read `array[at]` into `dst` for a walk over the array. An element that
+    /// holds storage (a struct with a `Vec` in it) comes back lent, the way
+    /// `Vec_index` lends a vector's: read as a plain copy it looked like a
+    /// second owner, and releasing it freed what the array still holds. A
+    /// plain number is just copied.
+    pub(crate) fn read_array_element(&mut self, dst: LocalId, array: LocalId, at: LocalId, elem: &MirType) {
+        let elem_size = rask_layout::size_of(elem, self.ctx.target());
+        if elem.is_plain_scalar() {
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                dst,
+                rvalue: MirRValue::ArrayIndex {
+                    base: MirOperand::Local(array),
+                    index: MirOperand::Local(at),
+                    elem_size,
+                },
+            }));
+            return;
+        }
+        let offset = self.builder.alloc_temp(MirType::I64);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: offset,
+            rvalue: MirRValue::BinaryOp {
+                op: crate::operand::BinOp::Mul,
+                left: MirOperand::Local(at),
+                right: MirOperand::Constant(MirConst::Int(elem_size as i64)),
+            },
+        }));
+        let slot = self.builder.alloc_temp(MirType::Ptr);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: slot,
+            rvalue: MirRValue::BinaryOp {
+                op: crate::operand::BinOp::Add,
+                left: MirOperand::Local(array),
+                right: MirOperand::Local(offset),
+            },
+        }));
+        let place = self.builder.alloc_temp(elem.clone());
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::BindPlace { dst: place, addr: slot }));
+        self.addressed_locals.insert(place);
+        // The walk reads a copy of the bytes, still lent: anything that
+        // retains it (a pair built around it) retains its own copy, not the
+        // array's slot.
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst,
+            rvalue: MirRValue::Use(MirOperand::Local(place)),
+        }));
     }
 
     /// Hand an `Ordering` back as its tag when the function is declared to
@@ -4652,6 +4706,7 @@ impl<'a> MirLowerer<'a> {
             ensure_read_names: std::collections::HashSet::new(),
             inline_return_target: None,
             inline_return_taken: None,
+            fused_fns: HashMap::new(),
             ensure_stack: Vec::new(),
             elem_writebacks: Vec::new(),
             ensure_flags: HashMap::new(),

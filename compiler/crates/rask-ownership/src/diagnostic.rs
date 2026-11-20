@@ -184,6 +184,10 @@ impl ToDiagnostic for crate::OwnershipError {
                         format!("the closure would carry `{}`, which `{}` still holds", shown, root),
                         "the closure".to_string(),
                     ),
+                    Sink::WithValue { binding } => (
+                        format!("the `with` block would hand out `{}`, which ends with `{}`", path, binding),
+                        "the block's result".to_string(),
+                    ),
                 };
                 let fix = match bound {
                     Some((name, _)) => format!(
@@ -306,6 +310,7 @@ impl ToDiagnostic for crate::OwnershipError {
                     Sink::Heap => "a `Heap` holding it would be a second owner".to_string(),
                     Sink::TakeArg { callee } => format!("`{}` would take it as a second owner", callee),
                     Sink::Closure => "a closure carrying it would be a second owner".to_string(),
+                    Sink::WithValue { binding } => format!("the `with` block's result would go on reading it after `{}` ends", binding),
                 };
                 let primary = match into {
                     Sink::Return => format!("the signature promises an owned `{}`, and this path doesn't have one", payload_ty),
@@ -354,32 +359,25 @@ impl ToDiagnostic for crate::OwnershipError {
                 ))
             }
 
-            NonCopyElementCopiedOut { binding, elem_ty, collection } => {
-                let from = collection
-                    .as_deref()
-                    .map(|c| format!("`{}`", c))
-                    .unwrap_or_else(|| "the collection".to_string());
+            MutableElementView { binding, elem_ty, call } => {
                 Diagnostic::error(format!(
-                    "`{}` isn't Copy, so `{}` would be a second name for the same element",
-                    elem_ty, binding
+                    "`{}` and `{}` would be the same `{}`, both writable",
+                    binding, call, elem_ty
                 ))
                 .with_code("E0871")
-                .with_primary(
-                    self.span,
-                    format!("this element stays owned by {}", from),
-                )
+                .with_primary(self.span, "this element stays where the collection keeps it")
                 .with_fix(format!(
-                    "scope the access — `with {}[…] as {} {{ … }}` — or ask for a \
-                     separate value with `.clone()`",
-                    collection.as_deref().unwrap_or("collection"),
-                    binding
+                    "write `let {b}` for a read-only view, scope the writes with \
+                     `with {c} as {b} {{ … }}`, or ask for a separate value with `.clone()`",
+                    b = binding,
+                    c = call
                 ))
                 .with_why(
-                    "indexing hands the element back where it lives rather than \
-                     copying it out, so a binding of a non-Copy element is a second \
-                     name for storage the collection still owns — a write through \
-                     either one is a write through both. A Copy element is copied \
-                     and has no such tie [mem.borrowing/E4]"
+                    "a `let` of an element that isn't Copy is a view of it where it sits, and \
+                     a read-only one sits fine beside the collection. `mut` asks for exclusive \
+                     access instead, and a plain binding can't say for how long, so both names \
+                     stay live and a write through either is a write through both \
+                     [mem.borrowing/E4, S5]"
                         .to_string(),
                 )
             }
@@ -525,7 +523,19 @@ impl ToDiagnostic for crate::OwnershipError {
                     .with_why("`let old = p.f` followed by a refill of `p.f` in the same block is a move: from the read to the refill the field holds nothing, and what it held is the new binding's [mem.borrowing/S1, mem.parameters/PM7]".to_string())
             }
 
-            ViewOutlivedReplace { name, path, viewed_at } => {
+            ViewOutlivedReplace { name, path, viewed_at, element: true } => {
+                Diagnostic::error(format!("`{}` written while `{}` views one of its elements", path, name))
+                    .with_code("E0958")
+                    .with_primary(self.span, format!("this writes an element of `{}`, which may be the one `{}` reads", path, name))
+                    .with_secondary(*viewed_at, format!("`{}` views this element until its block ends", name))
+                    .with_fix(format!(
+                        "read the Copy fields you need straight from the element (`let n = {p}[i].field`) instead of binding all of it, end `{n}`'s block before this write, or bind a separate value with `.clone()`",
+                        p = path, n = name
+                    ))
+                    .with_why("a binding of an element that isn't Copy is a view: it reads the element where the collection keeps it. The checker doesn't tell one index from another, so a write to any element of the collection while the view lives could be a write under it [mem.borrowing/E4, S5]".to_string())
+            }
+
+            ViewOutlivedReplace { name, path, viewed_at, element: false } => {
                 Diagnostic::error(format!("`{}` written over while `{}` views it", path, name))
                     .with_code("E0958")
                     .with_primary(self.span, format!("this replaces `{}`, freeing what `{}` reads", path, name))
@@ -570,15 +580,33 @@ impl ToDiagnostic for crate::OwnershipError {
                     )
             }
 
-            ToVecOfLentItems { elem, adapter } => {
-                Diagnostic::error(format!("`to_vec` has nothing it may move — `{}` is lent, not owned", elem))
+            KeepsLentItems { terminal, elem, lender, collection } => {
+                let args = if terminal == "to_vec" || terminal == "to_map" { "()" } else { "(…)" };
+                let (label, why) = if *collection {
+                    (
+                        format!("every item still belongs to `{}`", lender),
+                        format!(
+                            "`{}` keeps the items it's handed, and these are `{}`'s, lent for the walk. It won't deep-clone a `{}` on your behalf: the allocation would be invisible [type.sequence/SEQ47]",
+                            terminal, lender, elem
+                        ),
+                    )
+                } else {
+                    (
+                        format!("`{}` lends each item for one call", lender),
+                        format!(
+                            "a sequence lends each item for one call, and once the walk moves on nothing holds it, so there is nothing left for `{}` to keep. Over a vector a picked item is the element where it sits; here nothing holds it. `{}` won't deep-clone a `{}` on your behalf: the allocation would be invisible [type.sequence/SEQ47, SEQ50]",
+                            terminal, terminal, elem
+                        ),
+                    )
+                };
+                Diagnostic::error(format!("`{}` has nothing it may keep — `{}` is lent, not owned", terminal, elem))
                     .with_code("E0905")
-                    .with_primary(self.span, "needs an owned element")
-                    .with_fix("clone where you mean it — a `map` makes values the chain owns: `.map(|x| x.clone()).to_vec()`")
-                    .with_why(format!(
-                        "`{}` hands on what its source lent it, so every item still belongs to the source. A Vec owns what it holds, and `to_vec` won't deep-clone a `{}` on your behalf — the allocation would be invisible [type.sequence/SEQ47]",
-                        adapter, elem
+                    .with_primary(self.span, label)
+                    .with_fix(format!(
+                        "clone where you mean it, and a `map` makes values the chain owns: `.map(|x| x.clone()).{}{}`",
+                        terminal, args
                     ))
+                    .with_why(why)
             }
 
             ZipOfLentItems { elem } => {
@@ -1330,7 +1358,7 @@ impl ToDiagnostic for crate::OwnershipError {
                 )
             }
 
-            ConsumeLoopItem { name, from, loop_at, sink } => {
+            ConsumeLoopItem { name, from, by_sequence: false, loop_at, sink } => {
                 let label = match sink {
                     Some(s) => format!("`{}` takes ownership, and `{}` is still in `{}`", s, name, from),
                     None => format!("this takes ownership, and `{}` is still in `{}`", name, from),
@@ -1347,6 +1375,27 @@ impl ToDiagnostic for crate::OwnershipError {
                     "a `for` loop lends each element and `{}` keeps it, so giving `{}` away would leave two owners of one value. [ctrl.loops/LP6]",
                     from, name
                 ))
+            }
+
+            ConsumeLoopItem { name, from, by_sequence: true, loop_at, sink } => {
+                let label = match sink {
+                    Some(s) => format!("`{}` takes ownership of `{}`, which is only lent for this call", s, name),
+                    None => format!("this takes ownership of `{}`, which is only lent for this call", name),
+                };
+                Diagnostic::error(format!(
+                    "cannot give away `{}` — `{}` only lends each item to the loop body",
+                    name, from
+                ))
+                .with_code("E0902")
+                .with_primary(self.span, label)
+                .with_secondary(*loop_at, format!("each `{}` is lent by `{}` for one pass of the body", name, from))
+                .with_fix(format!("{}.clone()", name))
+                .with_why(
+                    "a sequence lends each item to the body and takes it back when the body ends, \
+                     whether it walks a collection or made the item itself. Keeping one is a copy, \
+                     and the copy is yours to write. [type.sequence/SEQ34]"
+                        .to_string(),
+                )
             }
 
             ConsumeWithBinding { name, from, with_at, sink } => {

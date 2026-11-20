@@ -409,8 +409,9 @@ def c_heap_box(t, ty):
 
 
 def c_seq_yield(t, ty):
-    """Yielded by a Sequence and collected. `to_vec` moves what the chain owns
-    and copies what is Copy (type.sequence/SEQ47)."""
+    """Yielded by a Sequence and collected. A yield lends its item and `to_vec`
+    never clones (type.sequence/SEQ34, SEQ47), so an owned payload is kept
+    through a written `.clone()` and a Copy one is copied."""
     decls = """\
 func pair() -> Sequence<{decl}> {{
     return |yield| {{
@@ -420,9 +421,10 @@ func pair() -> Sequence<{decl}> {{
 }}
 """.format(decl=ty["decl"], val=ty["val"], val2=ty["val2"])
     return decls, """\
-    let collected = pair().to_vec()
+    let collected = pair(){keep}.to_vec()
     println("got={show}")
-""".format(show=read_expr(t, "collected[1]"))
+""".format(show=read_expr(t, "collected[1]"),
+           keep=".map(|v| v.clone())" if ty.get("owned") else "")
 
 
 def c_for_loop(t, ty):

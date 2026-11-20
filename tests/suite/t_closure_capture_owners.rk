@@ -24,7 +24,7 @@ func pairs() -> Vec<Vec<i64>> {
     mut out: Vec<Vec<i64>> = Vec.new()
     for v in vecs() {
         for w in vecs() {
-            if w[0] == v[0] { out.push(w) }
+            if w[0] == v[0] { out.push(w.clone()) }
         }
     }
     return out

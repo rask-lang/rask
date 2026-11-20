@@ -1,0 +1,112 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Picks and walks over arrays and over vectors a call returned, natively.
+//
+//   - A vector a call returns is nobody else's, so `load().max_by_key(…)`,
+//     `v.take_all().to_vec()` and their filtered forms hand back items the
+//     caller owns. `take_all().to_vec()` used to push views of the drained
+//     vector's elements and then free that vector: a crash.
+//   - An array element read during a walk was taken for an owned copy, so
+//     `for p in arr.enumerate()` released the element's insides each turn and
+//     the array freed them again at the end. A pick over an array did the
+//     same to its answer.
+//   - `max_by_key` with a string key released the "best so far" key before
+//     the first item had set it.
+//   - An element that is a bare vector is read through a load, which the
+//     release pass didn't follow: a `break` out of a walk, or a pick, freed
+//     the array under the element still being read. A `Vec<i64>?` copied into
+//     a pick's answer took no reference, and the answer's release freed it.
+// The leak and memcheck gates hold the releases; the asserts hold the answers.
+
+struct Row {
+    name: string
+    tags: Vec<string>
+}
+
+func load() -> Vec<Vec<i64>> {
+    return [[1, 2], [3], [4, 5, 6]]
+}
+
+func rows() -> Vec<Row> {
+    return [
+        Row(name: "a".to_uppercase(), tags: ["x"]),
+        Row(name: "bb".to_uppercase(), tags: ["y", "z"]),
+        Row(name: "c".to_uppercase(), tags: []),
+    ]
+}
+
+test "a vector a call returned owns what its chain picks or keeps" {
+    mut a = load()
+    let all = a.take_all().to_vec()
+    assert all.len() == 3
+    assert a.len() == 0
+    let long = load().filter(|x| x.len() > 1).to_vec()
+    assert long.len() == 2
+    let best = load().max_by_key(|x| x.len())
+    assert (best ?? Vec.new()).len() == 3
+    let empty = rows().find(|r| r.tags.len() == 0)
+    assert (empty ?? Row(name: "", tags: Vec.new())).name == "C"
+    let biggest = load().reduce(|x, y| if x.len() > y.len() { x.clone() } else { y.clone() })
+    assert (biggest ?? Vec.new()).len() == 3
+}
+
+test "a pick over an array answers with the element where it sits" {
+    let arr = [Row(name: "p".to_uppercase(), tags: ["1"]), Row(name: "q".to_uppercase(), tags: ["1", "2"])]
+    if arr.max_by_key(|r| r.tags.len())? as b {
+        assert b.name == "Q"
+        assert b.tags.len() == 2
+    } else {
+        assert false
+    }
+    assert arr.find(|r| r.tags.len() > 5) is none
+    if arr.enumerate().find(|p| p.1.name == "Q")? as p {
+        assert p.0 == 1
+        assert p.1.tags.len() == 2
+    } else {
+        assert false
+    }
+    assert arr[1].tags.len() == 2
+}
+
+test "a for over an array's enumerate leaves the elements to the array" {
+    let arr = [Row(name: "p".to_uppercase(), tags: ["1"]), Row(name: "q".to_uppercase(), tags: ["1", "2"])]
+    mut seen = 0
+    for p in arr.enumerate() {
+        if p.1.name == "Q" {
+            seen = p.0
+        }
+    }
+    assert seen == 1
+    assert arr.filter(|r| r.tags.len() > 1).count() == 1
+    assert arr[1].tags.len() == 2
+}
+
+test "max_by_key with a string key" {
+    let js = rows()
+    let top = js.max_by_key(|r| r.name)
+    assert (top ?? Row(name: "", tags: Vec.new())).name == "C"
+    let low = js.min_by_key(|r| r.name.to_lowercase())
+    assert (low ?? Row(name: "", tags: Vec.new())).name == "A"
+}
+
+test "elements that are vectors stay the array's" {
+    let vs: [Vec<string>; 2] = [["a".to_uppercase()], ["b".to_uppercase(), "c".to_uppercase()]]
+    mut last = ""
+    for v in vs {
+        if v.len() == 2 {
+            last = v[1].clone()
+            break
+        }
+    }
+    assert last == "C"
+    let ns: [Vec<i64>; 2] = [[1], [2, 3]]
+    assert (ns.max_by_key(|v| v.len()) ?? Vec.new()).len() == 2
+    if ns.enumerate().find(|p| p.1.len() == 2)? as p {
+        assert p.0 == 1
+        assert p.1.len() == 2
+    } else {
+        assert false
+    }
+    let opts: [Vec<i64>?; 3] = [none, [1, 2], [3]]
+    assert opts.find(|o| o != none) != none
+    assert (opts[1] ?? Vec.new()).len() == 2
+}

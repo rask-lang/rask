@@ -16,7 +16,7 @@ struct Two<K, V> {
     vals: Vec<V>
 }
 
-func first<T>(xs: Vec<T>) -> T {
+func first<T: Copy>(xs: Vec<T>) -> T {
     return xs[0]
 }
 

@@ -368,13 +368,14 @@ impl<'a> OwnershipChecker<'a> {
                     None if self.is_container_receiver(object) => {
                         // A stdlib container's own method grows or empties it
                         // and replaces no handle, but reads all of it. One that
-                        // removes elements frees them, and whatever a caller
-                        // views inside one goes with it.
+                        // removes elements, frees them or hands one out
+                        // (`replace`, `Map.insert` over a present key) takes
+                        // away whatever a caller views inside it.
                         if !writes {
                             each(object, vec![Vec::new()]);
                         } else {
                             let effect = self.program.declared_effects(e.id);
-                            if effect.shrinks || effect.drops_elements {
+                            if effect.shrinks || effect.drops_elements || effect.moves_out {
                                 each(object, vec![vec![ELEM.to_string()]]);
                             }
                         }

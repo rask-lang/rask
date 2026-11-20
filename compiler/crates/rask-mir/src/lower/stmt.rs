@@ -2672,10 +2672,9 @@ impl<'a> MirLowerer<'a> {
             (iter_op, iter_ty)
         };
 
-        let is_array = matches!(&iter_ty, MirType::Array { .. });
-        let (array_len, array_elem_size) = match &iter_ty {
-            MirType::Array { elem, len } => (Some(*len), Some(rask_layout::size_of(elem.as_ref(), self.ctx.target()))),
-            _ => (None, None),
+        let array_len = match &iter_ty {
+            MirType::Array { len, .. } => Some(*len),
+            _ => None,
         };
 
         let collection = self.builder.alloc_temp(iter_ty.clone());
@@ -2764,16 +2763,8 @@ impl<'a> MirLowerer<'a> {
         };
         let (pair_tys, _binding_ty, binding_local, elem_slot) =
             self.alloc_destructure_slots(&elem_ty, binding, single_name);
-        if let Some(elem_size) = array_elem_size {
-            // Fixed-size array: direct memory load
-            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                dst: elem_slot,
-                rvalue: MirRValue::ArrayIndex {
-                    base: MirOperand::Local(collection),
-                    index: MirOperand::Local(idx),
-                    elem_size,
-                },
-            }));
+        if let MirType::Array { elem, .. } = &iter_ty {
+            self.read_array_element(elem_slot, collection, idx, elem);
         } else if mutate && !is_map {
             // A `for mutate` binding is the element where it sits.
             self.bind_element_in_place(
@@ -3490,6 +3481,8 @@ impl<'a> MirLowerer<'a> {
                 super::IterAdapter::Filter { .. }
                     | super::IterAdapter::Skip { .. }
                     | super::IterAdapter::Take { .. }
+                    | super::IterAdapter::TakeWhile { .. }
+                    | super::IterAdapter::SkipWhile { .. }
             ));
         let final_ty = if consumes {
             self.handed_over_elem(chain.source, final_ty)

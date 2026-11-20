@@ -77,7 +77,7 @@ test "type.generics — an int key with a string value hashes as an int" {
 
 // A type *parameter* still has to stay open — the fix must not resolve `T` to
 // something, or a generic function couldn't take a literal.
-func first_or<T>(xs: Vec<T>, fallback: T) -> T {
+func first_or<T: Copy>(xs: Vec<T>, fallback: T) -> T {
     if xs.len() > 0 {
         return xs[0]
     }

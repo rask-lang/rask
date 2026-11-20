@@ -4,7 +4,7 @@
 
 // Vec helpers — Vec.get() returns T?, these unwrap with defaults
 func reg_get(regs: Vec<Value>, idx: i64) -> Value {
-    return regs.get(idx) ?? Value.None
+    return regs.get_clone(idx) ?? Value.None
 }
 
 func reg_set(mutate regs: Vec<Value>, idx: i64, take val: Value) {

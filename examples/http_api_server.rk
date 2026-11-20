@@ -95,12 +95,11 @@ func list_users() -> Response {
 }
 
 func get_user(id: i64) -> Response {
-    let found = with db.read() as d {
-        d.users.get(id)
+    let found: UserResponse? = with db.read() as d {
+        if d.users.get(id)? as u { UserResponse(id: u.id, name: u.name, email: u.email) } else { none }
     }
 
-    if found? as u {
-        let view = UserResponse(id: u.id, name: u.name, email: u.email)
+    if found? as view {
         return Response.json(json.encode(view))
     }
     return Response.json(json.encode(ErrorResponse(error: "user not found"))).with_status(404)

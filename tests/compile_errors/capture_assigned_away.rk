@@ -1,0 +1,74 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Rejects: a closure moving what it captured, or what its `mutate` parameter
+// holds, into another variable
+//
+// Spec: mem.closures (CM4), mem.parameters (PM1, PM2)
+//
+// A closure can't give away what it captured: nothing bounds how many times
+// it runs. `out.push(v)` in a closure was refused, and `keep = v` wasn't, so
+// natively both `v`'s owner and `keep` freed the vector. The same held for an
+// enclosing closure's parameter reached from a nested closure, and for a
+// closure's `mutate` parameter, which a named function is refused for since
+// the caller's slot is still there when the call returns.
+//
+// One marker per rejection, on the line the compiler points at.
+
+func owned_local() -> u64 {
+    mut keep: Vec<string> = Vec.new()
+    let v: Vec<string> = ["a"]
+    let g = || {
+        // ERROR: cannot consume `v` — a closure can't give away what it captured [E0891]
+        keep = v
+    }
+    g()
+    return keep.len()
+}
+
+func nested_param() -> u64 {
+    mut keep: Vec<string> = Vec.new()
+    let f = |v: Vec<string>| {
+        let g = || {
+            // ERROR: cannot give away `v` — it's borrowed, not owned [E0835]
+            keep = v
+        }
+        g()
+    }
+    let w: Vec<string> = ["a"]
+    f(w)
+    return keep.len()
+}
+
+func mutate_param() -> u64 {
+    mut keep: Vec<string> = Vec.new()
+    let f = |mutate v: Vec<string>| {
+        // ERROR: gave `v` away and didn't put anything back [E0836]
+        keep = v
+    }
+    mut w: Vec<string> = ["a"]
+    f(mutate w)
+    return keep.len()
+}
+
+// Copying is fine, and so is refilling the `mutate` slot.
+func copied() -> u64 {
+    mut keep: Vec<string> = Vec.new()
+    let v: Vec<string> = ["a"]
+    let g = || {
+        keep = v.clone()
+    }
+    g()
+    return keep.len()
+}
+
+func refilled() -> u64 {
+    mut keep: Vec<string> = Vec.new()
+    let f = |mutate v: Vec<string>| {
+        keep = v
+        v = Vec.new()
+    }
+    mut w: Vec<string> = ["a"]
+    f(mutate w)
+    return keep.len() + w.len()
+}
+
+func main() {}

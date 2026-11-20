@@ -104,6 +104,12 @@ pub const COMPILER_ATTRS: &[(&str, ArgForm, Writer)] = &[
     ("reorders", ArgForm::Exprs, Writer::Stdlib),
     ("drops_elements", ArgForm::Exprs, Writer::Stdlib),
     ("copies_elements", ArgForm::Exprs, Writer::Stdlib),
+    // A sequence terminal that keeps the items it's handed (`to_vec`,
+    // `reduce`), or the one it answers with (`find`, `max_by_key`). Callers
+    // may hand it only items the chain owns (type.sequence/SEQ47), so its
+    // body may keep its receiver's.
+    ("keeps_items", ArgForm::Exprs, Writer::Stdlib),
+    ("picks_item", ArgForm::Exprs, Writer::Stdlib),
     ("moves_out", ArgForm::Exprs, Writer::Stdlib),
     // The last argument is a node going into a rack's storage, so the call
     // carries the node type's layout (mem.racks)

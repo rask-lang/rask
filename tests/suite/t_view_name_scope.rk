@@ -1,0 +1,29 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A name that was a view of an element stops being one where its scope ends.
+// The checker kept `v` from `first_len`'s branch as a view and rejected every
+// later `return v`, in this function and in the ones checked after it.
+
+func first_len(m: Map<string, Vec<i64>>) -> i64 {
+    if m.get("a")? as v {
+        println(v.len())
+    }
+    // A loop's `v` is a new name: owned items out of an owned vector.
+    mut out: Vec<i64> = Vec.new()
+    for v in [Vec.from([1, 2]), Vec.from([3])] {
+        out.push(v.len().to<i64>()!)
+    }
+    return out[0]
+}
+
+func echo(take v: Vec<i64>) -> Vec<i64> {
+    let f = |v: Vec<i64>| v.len()
+    println(f(Vec.from([1])))
+    return v
+}
+
+test "a view's name ends with its scope" {
+    mut m: Map<string, Vec<i64>> = Map.new()
+    m.insert("a", Vec.from([1, 2, 3]))
+    assert first_len(m) == 2
+    assert echo(Vec.from([4, 5])).len() == 2
+}

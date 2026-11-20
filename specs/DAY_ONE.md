@@ -10,7 +10,7 @@ This page is a budget. If it stops fitting on a page, the language got bigger �
 
 ## The thirteen
 
-1. **Values are owned.** Assignment moves big values, copies small ones (≤16 bytes, all-Copy fields). Closures always move. `.clone()` keeps both — the visible cost. Use a moved value and the compiler names what moved and why.
+1. **Values are owned.** Assignment moves big values, copies small ones (≤16 bytes, all-Copy fields). Binding an element out of a collection (`let r = rows[i]`) gives a read-only view when it isn't Copy. Closures always move. `.clone()` keeps both — the visible cost. Use a moved value and the compiler names what moved and why.
 
 2. **`let` and `mut`.** Immutable and mutable bindings. Newlines end statements.
 
@@ -22,7 +22,7 @@ This page is a budget. If it stops fitting on a page, the language got bigger �
 
 6. **Optionals.** `T?` is "value or absent." `if x? as v` tests and binds; `x ?? v` supplies a value instead; `try x` propagates the absence. `try` is shared with errors; the fallback word is not — `?` marks something missing, `catch` something failed.
 
-7. **Collections.** `Vec<T>` and `Map<K, V>`. Element access is inline (`v[i].field`, one expression) or `with v[i] as x { ... }` for several statements.
+7. **Collections.** `Vec<T>` and `Map<K, V>`. Read an element inline (`v[i].field`) or through a view (`let r = v[i]`, read-only until the block ends). Write inline or with `with v[i] as x { ... }` for several statements.
 
 8. **Strings.** `string` is immutable and copies freely. Interpolation: `"hi {name}"`.
 
