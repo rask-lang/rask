@@ -24,6 +24,8 @@ If rules are enforced mechanically, two parties don't need a third party to trus
 
 **[Ting](ting/)** — Real-time multiplayer for one server and many clients, over QUIC. Stands apart from the federated pieces: it borrows Raido for shared game rules and sim mode for reproducing network bugs, and nothing from Leden.
 
+**[Verdandi](verdandi/)** — A deterministic simulation kernel for colony, factory, falling-sand and strategy games. Checkpoints, fast-forward and co-op multiplayer come out of one design: the game is a step over its state, and the kernel owns time, space, saves and the network, the hard boring parts every such game writes again. Ting carries the inputs, Urd's store makes checkpoints cheap.
+
 **[Midgard](midgard/)** — A virtual world that puts it all together. Independent servers, each running their own world. A sword can't be copied. A currency can't be inflated. A character can travel between servers and bring their things — because both sides can verify everything checks out. It's the most intuitive example, but the model isn't about games.
 
 ---
