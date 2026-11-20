@@ -1,0 +1,44 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// 11. Methods
+//
+// A function that belongs to a type is called a method, and methods go in an
+// `extend` block for that type. A method that takes `self` is called on a
+// value, `p.flipped()`, and `self` is that value. One without `self` is called
+// on the type itself, `Point.origin()`, and is usually a way to build one.
+
+struct Point {
+    x: i32
+    y: i32
+}
+
+extend Point {
+    func origin() -> Point {
+        return Point(x: 0, y: 0)
+    }
+
+    func flipped(self) -> Point {
+        return Point(x: self.y, y: self.x)
+    }
+
+    // Your turn: `a.plus(b)` adds the two points field by field.
+    func plus(self, other: Point) -> Point {
+        todo()
+    }
+}
+
+test "flipped" {
+    let p = Point(x: 1, y: 2).flipped()
+    assert p.x == 2
+    assert p.y == 1
+}
+
+test "plus" {
+    let p = Point(x: 1, y: 2).plus(Point(x: 10, y: 20))
+    assert p.x == 11
+    assert p.y == 22
+    assert Point.origin().plus(p).x == 11
+}
+
+// new: methods
+// test-specs: skip: an exercise; tests/tour_gate.sh checks it fails as shipped

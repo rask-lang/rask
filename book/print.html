@@ -1,0 +1,2235 @@
+<!DOCTYPE HTML>
+<html lang="en" class="light sidebar-visible" dir="ltr">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>Learning Rask</title>
+        <meta name="robots" content="noindex">
+
+
+        <!-- Custom HTML head -->
+        <!-- Rask syntax highlighting.
+        
+             This has to run from <head>, not from `additional-js`. mdBook puts
+             additional-js after book.js, and book.js has already run highlight.js over
+             every code block by then — so a language registered there arrives too late:
+             the Rask blocks render plain, the console fills with "Could not find the
+             language 'rask'", and a second pass has to repaint them a moment later.
+        
+             highlight.js declares `var hljs = ...` at global scope. A `var` that finds
+             the name already present on `window` leaves the existing property alone, so
+             the accessor below survives the declaration and catches the assignment —
+             which is the moment we get to register, still ahead of book.js. -->
+        <script src="/rask-vocabulary.js?v=483a2dc822cc"></script>
+        <script>
+        (function() {
+            'use strict';
+        
+            var VOCAB = window.RASK_VOCAB;
+        
+            function defineRask(hljs) {
+                return {
+                    name: 'Rask',
+                    aliases: ['rk'],
+                    keywords: {
+                        keyword: VOCAB.keywords.join(' '),
+                        literal: VOCAB.literals.join(' '),
+                        built_in: VOCAB.types.concat(VOCAB.builtins).join(' ')
+                    },
+                    contains: [
+                        hljs.COMMENT('//', '$'),
+                        hljs.COMMENT('/\\*', '\\*/', {contains: ['self']}),
+                        {
+                            className: 'string',
+                            variants: [
+                                {begin: /"/, end: /"/, contains: [hljs.BACKSLASH_ESCAPE]},
+                                {begin: /'/, end: /'/, contains: [hljs.BACKSLASH_ESCAPE]}
+                            ]
+                        },
+                        {
+                            className: 'number',
+                            variants: [
+                                {begin: '\\b0b[01_]+'},
+                                {begin: '\\b0o[0-7_]+'},
+                                {begin: '\\b0x[0-9a-fA-F_]+'},
+                                {begin: '\\b\\d+(_\\d+)*(\\.[0-9]+)?([eE][+-]?[0-9]+)?'}
+                            ],
+                            relevance: 0
+                        },
+                        {className: 'title.function', begin: /\b[a-z_][a-z0-9_]*(?=\s*\()/, relevance: 0},
+                        {className: 'title.class', begin: /\b[A-Z][a-zA-Z0-9_]*/, relevance: 0},
+                        {className: 'meta', begin: /@[a-z_][a-z0-9_]*/}
+                    ]
+                };
+            }
+        
+            var instance;
+            Object.defineProperty(window, 'hljs', {
+                configurable: true,
+                get: function() { return instance; },
+                set: function(value) {
+                    instance = value;
+                    if (value && value.registerLanguage) {
+                        value.registerLanguage('rask', defineRask);
+                    }
+                }
+            });
+        
+            // If that hook ever stops firing — highlight.js switching to a module, say —
+            // colour the blocks late rather than not at all.
+            document.addEventListener('DOMContentLoaded', function() {
+                var hl = window.hljs;
+                if (!hl || !hl.getLanguage || hl.getLanguage('rask')) { return; }
+                hl.registerLanguage('rask', defineRask);
+                document.querySelectorAll('pre code.language-rask').forEach(function(block) {
+                    (hl.highlightElement || hl.highlightBlock).call(hl, block);
+                });
+            });
+        })();
+        </script>
+
+        <meta name="description" content="The Rask book: learn the language one concept at a time">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff">
+
+        <link rel="shortcut icon" href="favicon-c4289e49.png">
+        <link rel="stylesheet" href="css/variables-8adf115d.css">
+        <link rel="stylesheet" href="css/general-e96d0476.css">
+        <link rel="stylesheet" href="css/chrome-d279d366.css">
+        <link rel="stylesheet" href="css/print-9e4910d8.css" media="print">
+
+        <!-- Fonts -->
+        <link rel="stylesheet" href="fonts/fonts-9644e21d.css">
+
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" id="mdbook-highlight-css" href="highlight-493f70e1.css">
+        <link rel="stylesheet" id="mdbook-tomorrow-night-css" href="tomorrow-night-4c0ae647.css">
+        <link rel="stylesheet" id="mdbook-ayu-highlight-css" href="ayu-highlight-3fdfc3ac.css">
+
+        <!-- Custom theme stylesheets -->
+        <link rel="stylesheet" href="theme/custom-632185c9.css">
+
+
+        <!-- Provide site root and default themes to javascript -->
+        <script>
+            const path_to_root = "";
+            const default_light_theme = "light";
+            const default_dark_theme = "navy";
+            window.path_to_searchindex_js = "searchindex-dd1608cd.js";
+        </script>
+        <!-- Start loading toc.js asap -->
+        <script src="toc-aa84d13c.js"></script>
+    </head>
+    <body>
+    <div id="mdbook-help-container">
+        <div id="mdbook-help-popup">
+            <h2 class="mdbook-help-title">Keyboard shortcuts</h2>
+            <div>
+                <p>Press <kbd>←</kbd> or <kbd>→</kbd> to navigate between chapters</p>
+                <p>Press <kbd>S</kbd> or <kbd>/</kbd> to search in the book</p>
+                <p>Press <kbd>?</kbd> to show this help</p>
+                <p>Press <kbd>Esc</kbd> to hide this help</p>
+            </div>
+        </div>
+    </div>
+    <div id="mdbook-body-container">
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                let theme = localStorage.getItem('mdbook-theme');
+                let sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            const default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? default_dark_theme : default_light_theme;
+            let theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            const html = document.documentElement;
+            html.classList.remove('light')
+            html.classList.add(theme);
+            html.classList.add("js");
+        </script>
+
+        <input type="checkbox" id="mdbook-sidebar-toggle-anchor" class="hidden">
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            let sidebar = null;
+            const sidebar_toggle = document.getElementById("mdbook-sidebar-toggle-anchor");
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            } else {
+                sidebar = 'hidden';
+                sidebar_toggle.checked = false;
+            }
+            if (sidebar === 'visible') {
+                sidebar_toggle.checked = true;
+            } else {
+                html.classList.remove('sidebar-visible');
+            }
+        </script>
+
+        <nav id="mdbook-sidebar" class="sidebar" aria-label="Table of contents">
+            <!-- populated by js -->
+            <mdbook-sidebar-scrollbox class="sidebar-scrollbox"></mdbook-sidebar-scrollbox>
+            <noscript>
+                <iframe class="sidebar-iframe-outer" src="toc.html"></iframe>
+            </noscript>
+            <div id="mdbook-sidebar-resize-handle" class="sidebar-resize-handle">
+                <div class="sidebar-resize-indicator"></div>
+            </div>
+        </nav>
+
+        <div id="mdbook-page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                <div id="mdbook-menu-bar-hover-placeholder"></div>
+                <div id="mdbook-menu-bar" class="menu-bar sticky">
+                    <div class="left-buttons">
+                        <label id="mdbook-sidebar-toggle" class="icon-button" for="mdbook-sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="mdbook-sidebar">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M0 96C0 78.3 14.3 64 32 64H416c17.7 0 32 14.3 32 32s-14.3 32-32 32H32C14.3 128 0 113.7 0 96zM0 256c0-17.7 14.3-32 32-32H416c17.7 0 32 14.3 32 32s-14.3 32-32 32H32c-17.7 0-32-14.3-32-32zM448 416c0 17.7-14.3 32-32 32H32c-17.7 0-32-14.3-32-32s14.3-32 32-32H416c17.7 0 32 14.3 32 32z"/></svg></span>
+                        </label>
+                        <button id="mdbook-theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="mdbook-theme-list">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M371.3 367.1c27.3-3.9 51.9-19.4 67.2-42.9L600.2 74.1c12.6-19.5 9.4-45.3-7.6-61.2S549.7-4.4 531.1 9.6L294.4 187.2c-24 18-38.2 46.1-38.4 76.1L371.3 367.1zm-19.6 25.4l-116-104.4C175.9 290.3 128 339.6 128 400c0 3.9 .2 7.8 .6 11.6c1.8 17.5-10.2 36.4-27.8 36.4H96c-17.7 0-32 14.3-32 32s14.3 32 32 32H240c61.9 0 112-50.1 112-112c0-2.5-.1-5-.2-7.5z"/></svg></span>
+                        </button>
+                        <ul id="mdbook-theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-default_theme">Auto</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-ayu">Ayu</button></li>
+                        </ul>
+                        <button id="mdbook-search-toggle" class="icon-button" type="button" title="Search (`/`)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="/ s" aria-controls="mdbook-searchbar">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M416 208c0 45.9-14.9 88.3-40 122.7L502.6 457.4c12.5 12.5 12.5 32.8 0 45.3s-32.8 12.5-45.3 0L330.7 376c-34.4 25.2-76.8 40-122.7 40C93.1 416 0 322.9 0 208S93.1 0 208 0S416 93.1 416 208zM208 352c79.5 0 144-64.5 144-144s-64.5-144-144-144S64 128.5 64 208s64.5 144 144 144z"/></svg></span>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title">Learning Rask</h1>
+
+                    <div class="right-buttons">
+                        <a href="print.html" title="Print this book" aria-label="Print this book">
+                            <span class=fa-svg id="print-button"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M128 0C92.7 0 64 28.7 64 64v96h64V64H354.7L384 93.3V160h64V93.3c0-17-6.7-33.3-18.7-45.3L400 18.7C388 6.7 371.7 0 354.7 0H128zM384 352v32 64H128V384 368 352H384zm64 32h32c17.7 0 32-14.3 32-32V256c0-35.3-28.7-64-64-64H64c-35.3 0-64 28.7-64 64v96c0 17.7 14.3 32 32 32H64v64c0 35.3 28.7 64 64 64H384c35.3 0 64-28.7 64-64V384zm-16-88c-13.3 0-24-10.7-24-24s10.7-24 24-24s24 10.7 24 24s-10.7 24-24 24z"/></svg></span>
+                        </a>
+                        <a href="https://github.com/rask-lang/rask" title="Git repository" aria-label="Git repository">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 496 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M165.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6zm-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3zm44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9zM244.8 8C106.1 8 0 113.3 0 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C428.2 457.8 496 362.9 496 252 496 113.3 383.5 8 244.8 8zM97.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1zm-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7zm32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1zm-11.4-14.7c-1.6 1-1.6 3.6 0 5.9 1.6 2.3 4.3 3.3 5.6 2.3 1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2z"/></svg></span>
+                        </a>
+
+                    </div>
+                </div>
+
+                <div id="mdbook-search-wrapper" class="hidden">
+                    <form id="mdbook-searchbar-outer" class="searchbar-outer">
+                        <div class="search-wrapper">
+                            <input type="search" id="mdbook-searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="mdbook-searchresults-outer" aria-describedby="searchresults-header">
+                            <div class="spinner-wrapper">
+                                <span class=fa-svg id="fa-spin"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M304 48c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zm0 416c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zM48 304c26.5 0 48-21.5 48-48s-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48zm464-48c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zM142.9 437c18.7-18.7 18.7-49.1 0-67.9s-49.1-18.7-67.9 0s-18.7 49.1 0 67.9s49.1 18.7 67.9 0zm0-294.2c18.7-18.7 18.7-49.1 0-67.9S93.7 56.2 75 75s-18.7 49.1 0 67.9s49.1 18.7 67.9 0zM369.1 437c18.7 18.7 49.1 18.7 67.9 0s18.7-49.1 0-67.9s-49.1-18.7-67.9 0s-18.7 49.1 0 67.9z"/></svg></span>
+                            </div>
+                        </div>
+                    </form>
+                    <div id="mdbook-searchresults-outer" class="searchresults-outer hidden">
+                        <div id="mdbook-searchresults-header" class="searchresults-header"></div>
+                        <ul id="mdbook-searchresults">
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('mdbook-sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('mdbook-sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#mdbook-sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="mdbook-content" class="content">
+                    <main>
+                        <p align="center">
+  <img alt="rask logo" class="logo-on-paper" src="assets/rask-logo-dark@3x.png" width="420">
+  <img alt="rask logo" class="logo-on-night" src="assets/rask-logo-white@3x.png" width="420">
+</p>
+
+<h1 id="what-rask-is"><a class="header" href="#what-rask-is">What Rask is</a></h1>
+<p>A systems language built around one bet: <strong>if references can’t be stored,
+lifetime annotations stop being necessary.</strong></p>
+<p>Borrow a value for a call or an expression and it works the way you’d expect.
+Put the borrow in a struct field, or return it, and there’s no syntax for what
+you’re asking — which is the point. Nothing outlives the thing it points at,
+so there’s nothing to track, and signatures carry types and nothing else.</p>
+<p>Graphs need stored references, so exactly one kind exists: a <code>Link</code> into a
+<code>Rack</code>. The rack owns every node and outlives every link into it, so even that
+one has no lifetime to name.</p>
+<p>Somewhere between Rust and Go. Closer to Rust on safety, closer to Go on
+ceremony.</p>
+<!-- test: compile -->
+<pre><code class="language-rask">import fs
+import io
+
+func grep(path: string, pat: string) -&gt; void or io.IoError {
+    mut file = try fs.open(path)
+    ensure file.close()
+
+    let text = try file.read_text()
+    for line in text.lines() {
+        if line.contains(pat) { println(line) }
+    }
+}
+</code></pre>
+<p>Three rules meet in those eight lines. <code>fs.open</code> hands back a linear resource
+the compiler makes you consume exactly once. <code>ensure</code> defers that consumption
+to the end of the scope. <code>try</code> returns early on failure — and because the
+consumption is already scheduled, leaving early still closes the file. No
+<code>defer</code> discipline to remember, no destructor running out of sight.</p>
+<h2 id="where-to-start"><a class="header" href="#where-to-start">Where to start</a></h2>
+<p>Rask is early and a solo project. Expect gaps in these chapters and bugs in
+the compiler; the <a href="https://github.com/rask-lang/rask/issues">issue tracker</a> is
+the honest picture.</p>
+<p><strong>New here.</strong> <a href="#install-it">Install it</a>, then take <a href="#a-tour-of-rask">the
+tour</a>. Each step is one idea: what problem it solves, the idea
+working, and a function for you to write that its tests check. Nothing to
+install to look around: the <a href="/app">playground</a> runs Rask in the browser, and
+the tour’s pages run their own code.</p>
+<p><strong>Already writing Rask.</strong> The <a href="https://github.com/rask-lang/rask/blob/main/LANGUAGE_CARD.md">language
+card</a> is the whole
+language on one page for looking a rule up. The <a href="#examples">example
+programs</a> are complete and CI-checked. The
+<a href="#formal-specifications">specs</a> are the normative wording when the other two
+disagree.</p>
+<p><strong>Here for the design.</strong> The <a href="/blog">blog</a> is the long-form argument; <a href="https://github.com/rask-lang/rask/blob/main/specs/CORE_DESIGN.md">CORE_DESIGN.md</a>
+is the principles it falls out of, and
+<a href="https://github.com/rask-lang/rask/blob/main/specs/RULINGS.md">RULINGS.md</a> is how
+open questions get settled.</p>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="try-it-in-the-browser"><a class="header" href="#try-it-in-the-browser">Try it in the browser</a></h1>
+<p>The <a href="/app">playground</a> runs Rask without installing anything. It’s the
+interpreter compiled to WebAssembly, so the code runs in your browser rather
+than on a server.</p>
+<p><strong><a href="/app">Open the playground →</a></strong></p>
+<p>Write code on the left, <code>Ctrl+Enter</code> to run, output on the right. <strong>Run tests</strong>
+runs the file’s <code>test</code> blocks instead of <code>main</code>. The examples dropdown loads the
+programs from
+<a href="https://github.com/rask-lang/rask/tree/main/examples">examples/</a>, and <strong>Copy
+link</strong> gives you a URL with your code in it.</p>
+<h2 id="what-it-cant-do"><a class="header" href="#what-it-cant-do">What it can’t do</a></h2>
+<p>A browser has no files, no sockets, no clock and no threads, so anything
+needing one of those is refused with a message rather than half-working:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th></th><th></th></tr>
+</thead>
+<tbody>
+<tr><td><code>fs</code>, <code>io</code>, <code>net</code>, <code>http</code></td><td>no filesystem or sockets</td></tr>
+<tr><td><code>time</code></td><td>no clock — which is also why <code>benchmark</code> blocks don’t run here</td></tr>
+<tr><td><code>spawn { }</code>, <code>Thread.spawn { }</code>, <code>ThreadPool.spawn { }</code>, <code>using Multitasking</code>, <code>using ThreadPool</code></td><td>no threads</td></tr>
+<tr><td><code>extern "C"</code>, <code>import c</code></td><td>no libc to call</td></tr>
+</tbody>
+</table>
+</div>
+<p>Everything else runs: collections, structs, enums, generics, interfaces, pattern
+matching, closures, error handling, <code>comptime</code>. Recursion is capped a few
+hundred frames deep, because the browser puts a much lower ceiling on call
+depth than an OS thread does.</p>
+<p>The dropdown only lists examples that actually run here. The rest are in
+<a href="https://github.com/rask-lang/rask/tree/main/examples">examples/</a>; to run those,
+<a href="#install-it">install Rask</a> and run the file directly.</p>
+<h2 id="source"><a class="header" href="#source">Source</a></h2>
+<p><a href="https://github.com/rask-lang/rask/tree/main/docs/playground">Playground UI</a> ·
+<a href="https://github.com/rask-lang/rask/tree/main/compiler/crates/rask-wasm">WASM bindings</a></p>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="install-it"><a class="header" href="#install-it">Install it</a></h1>
+<p>Rask is young and changes between releases. Expect breaking changes.</p>
+<h2 id="the-one-line"><a class="header" href="#the-one-line">The one line</a></h2>
+<pre><code class="language-bash">curl -fsSL https://rask-lang.dev/install.sh | sh
+</code></pre>
+<p>That downloads the latest release’s <code>rask</code> binary for your machine into
+<code>~/.local/bin</code>. Releases have binaries for <strong>Linux on x86_64</strong> and <strong>macOS on
+Apple silicon</strong>; on anything else the script says so and stops, and you build
+from source (below). It doesn’t touch anything else, so uninstalling is
+deleting <code>~/.local/bin/rask</code>.</p>
+<p>Two things it checks for and tells you about:</p>
+<ul>
+<li><strong><code>~/.local/bin</code> on your PATH.</strong> If it isn’t, the script prints the line to
+add to your shell’s startup file.</li>
+<li><strong>A C compiler.</strong> <code>rask run</code> compiles your program to machine code, and the
+last step, linking, uses the system’s <code>cc</code>. Without one only the interpreter
+works (<code>rask run --interp</code>). On macOS, <code>xcode-select --install</code> gets you
+one; on Linux, your package manager’s <code>gcc</code>.</li>
+</ul>
+<p>Check it worked:</p>
+<pre><code class="language-bash">rask --version
+</code></pre>
+<p>To pick a release other than the latest, or install somewhere else, set
+<code>RASK_VERSION</code> or <code>RASK_INSTALL_DIR</code> for the <code>sh</code>:</p>
+<pre><code class="language-bash">curl -fsSL https://rask-lang.dev/install.sh | RASK_VERSION=0.6.0 sh
+</code></pre>
+<p>The script
+itself is <a href="https://github.com/rask-lang/rask/blob/main/docs/install.sh">docs/install.sh</a>
+if you’d rather read it first.</p>
+<h2 id="get-the-tour"><a class="header" href="#get-the-tour">Get the tour</a></h2>
+<p>The tour is a set of files you run and edit, so get a copy of them:</p>
+<pre><code class="language-bash">git clone --depth 1 https://github.com/rask-lang/rask
+cd rask/docs/book/src/learn
+rask run 01-hello.rk
+</code></pre>
+<p>Open <code>README.md</code> in that directory, or <a href="#a-tour-of-rask">read it here</a>.
+The tour follows the repository’s main branch, which can be ahead of the
+latest release. If a step fails with an error its text doesn’t mention, your
+<code>rask</code> is older than the tour: build it from source as below.</p>
+<h2 id="build-from-source"><a class="header" href="#build-from-source">Build from source</a></h2>
+<p>You need Rust (from <a href="https://rustup.rs">rustup.rs</a>), git and a C compiler.</p>
+<pre><code class="language-bash">git clone https://github.com/rask-lang/rask
+cd rask/compiler
+cargo build --release -p rask-cli
+</code></pre>
+<p>The binary is <code>compiler/target/release/rask</code>. Put that directory on your
+PATH, or copy the file to <code>~/.local/bin</code>.</p>
+<h2 id="the-commands"><a class="header" href="#the-commands">The commands</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Command</th><th>What it does</th></tr>
+</thead>
+<tbody>
+<tr><td><code>rask run file.rk</code></td><td>Compile and run a program</td></tr>
+<tr><td><code>rask run --interp file.rk</code></td><td>Run it on the interpreter instead, no C compiler needed</td></tr>
+<tr><td><code>rask test file.rk</code></td><td>Run the file’s <code>test</code> blocks</td></tr>
+<tr><td><code>rask check file.rk</code></td><td>Type-check without running</td></tr>
+<tr><td><code>rask build</code></td><td>Build the package in this directory into <code>build/</code></td></tr>
+<tr><td><code>rask fmt file.rk</code></td><td>Format the file</td></tr>
+<tr><td><code>rask lint file.rk</code></td><td>Point out style and naming problems</td></tr>
+</tbody>
+</table>
+</div>
+<p><code>rask help</code> lists the rest.</p>
+<h2 id="next"><a class="header" href="#next">Next</a></h2>
+<p><a href="#a-tour-of-rask">Take the tour</a>: one idea per step, starting with hello
+world.</p>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="a-tour-of-rask"><a class="header" href="#a-tour-of-rask">A tour of Rask</a></h1>
+<p>Each step is one short file that teaches one thing. It says what problem the
+idea solves, shows it working, then leaves a function for you to write with
+only that idea and the ones before it. The tests at the bottom tell you when
+you’re done.</p>
+<p>On this site, each page is a step, and its code can be edited and run in
+place. In a clone of the repository the steps are the <code>.rk</code> files in
+<code>docs/book/src/learn/</code>. With <code>rask</code> installed (<a href="#install-it">Install it</a>
+says how), open a step in your editor and run its tests from that directory:</p>
+<pre><code class="language-bash">rask test 02-functions.rk
+</code></pre>
+<p>Until you’ve done the step they fail, and that’s the point. A step that
+says it doesn’t compile yet is meant to be read through the compiler’s
+error. Without a C compiler, add <code>--interp</code> to any command to run it on the
+interpreter instead.</p>
+<p>If you’re stuck, <code>solutions/</code> has an answer for every step.</p>
+<h2 id="the-steps"><a class="header" href="#the-steps">The steps</a></h2>
+<ol>
+<li>Hello</li>
+<li>Functions</li>
+<li>Names and strings</li>
+<li>Names that change</li>
+<li>if and else</li>
+<li>while</li>
+<li>for</li>
+<li>Vec</li>
+<li>Walking a Vec</li>
+<li>Structs</li>
+<li>Methods</li>
+<li>Enums and match</li>
+<li>Enums that carry data</li>
+<li>Optionals</li>
+<li>Map</li>
+<li>Errors are values</li>
+<li>try and catch</li>
+<li>Changing what you’re given</li>
+<li>Giving a value away</li>
+<li>Copying on purpose</li>
+<li>Changing an item in a Vec</li>
+<li>Closures</li>
+<li>Chains</li>
+<li>Working with text</li>
+<li>Generic functions</li>
+<li>Interfaces</li>
+<li>Cleanup that always runs</li>
+<li>Racks and links</li>
+<li>Tasks and channels</li>
+<li>Shared state</li>
+<li>Work done while compiling</li>
+<li>Splitting a program into files</li>
+</ol>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="hello"><a class="header" href="#hello">Hello</a></h1>
+<p>A program starts at the function called <code>main</code>, and <code>println</code> prints a line.
+Run this one:</p>
+<pre><code>rask run 01-hello.rk
+</code></pre>
+<p>Then make it greet you instead, and run it again.</p>
+<!-- tour: run -->
+<pre><code class="language-rask">func main() {
+    println("Hello, Rask!")
+}
+</code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="functions"><a class="header" href="#functions">Functions</a></h1>
+<p>A function says what it takes and what it gives back. It gives the value
+back with <code>return</code>, every time: the last line of a function is not returned
+on its own, the way it is in Rust or Ruby.</p>
+<!-- tour: test -->
+<pre><code class="language-rask">func double(n: i32) -&gt; i32 {
+    return n * 2
+}
+</code></pre>
+<p><code>i32</code> is a 32-bit integer. You’ll also meet <code>i64</code>, <code>f64</code> (a float), <code>bool</code>
+and <code>string</code>.</p>
+<p>Your turn: make <code>square</code> give back n times n. The <code>test</code> blocks at the
+bottom check it. Run them with</p>
+<pre><code>rask test 02-functions.rk
+</code></pre>
+<p>and they fail with “not yet implemented” until you replace <code>todo()</code>.</p>
+<!-- tour: test -->
+<pre><code class="language-rask">func square(n: i32) -&gt; i32 {
+    todo()
+}
+
+test "double" {
+    assert double(4) == 8
+}
+
+test "square" {
+    assert square(3) == 9
+    assert square(-4) == 16
+}
+</code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="names-and-strings"><a class="header" href="#names-and-strings">Names and strings</a></h1>
+<p><code>let</code> gives a value a name. A string can hold values in braces: “{name}”
+becomes whatever <code>name</code> holds. There’s no <code>+</code> for strings, so this is how
+you build one.</p>
+<!-- tour: test -->
+<pre><code class="language-rask">func greeting(name: string) -&gt; string {
+    let mark = "!"
+    return "Hello, {name}{mark}"
+}
+</code></pre>
+<p>Your turn: label(“Ada”, 36) should give “Ada is 36 years old”. Numbers go
+into braces the same way strings do.</p>
+<!-- tour: test -->
+<pre><code class="language-rask">func label(name: string, age: i32) -&gt; string {
+    todo()
+}
+
+test "greeting" {
+    assert greeting("Ada") == "Hello, Ada!"
+}
+
+test "label" {
+    assert label("Ada", 36) == "Ada is 36 years old"
+    assert label("Alan", 41) == "Alan is 41 years old"
+}
+</code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="names-that-change"><a class="header" href="#names-that-change">Names that change</a></h1>
+<p>A <code>let</code> name holds its value for good. A name whose value changes is made
+with <code>mut</code>. You have to pick, so when you read <code>let</code> you know the value
+stays put for the rest of the block.</p>
+<p>This file doesn’t compile. Run <code>rask test 04-mut.rk</code>, read what the
+compiler says, and fix it.</p>
+<!-- tour: test -->
+<pre><code class="language-rask">func total(a: i32, b: i32, c: i32) -&gt; i32 {
+    let sum = a
+    sum += b
+    sum += c
+    return sum
+}
+
+test "total" {
+    assert total(1, 2, 3) == 6
+}
+</code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="if-and-else"><a class="header" href="#if-and-else">if and else</a></h1>
+<p>The condition needs no parentheses. The block after it always has braces,
+even when it’s one line.</p>
+<!-- tour: test -->
+<pre><code class="language-rask">func abs(n: i32) -&gt; i32 {
+    if n &lt; 0 {
+        return -n
+    }
+    return n
+}
+</code></pre>
+<p><code>if</code> also gives a value. When each side is a single expression, write it
+after a colon instead of a block:</p>
+<pre><code>let kind = if n % 2 == 0: "even" else: "odd"
+</code></pre>
+<p><code>%</code> is the remainder, so <code>9 % 3 == 0</code>.</p>
+<p>Your turn: <code>fizz</code> gives “Fizz” for multiples of 3, “Buzz” for multiples of
+5, “FizzBuzz” for multiples of both, and the number itself otherwise.
+Chain the cases with <code>else if</code>.</p>
+<!-- tour: test -->
+<pre><code class="language-rask">func fizz(n: i32) -&gt; string {
+    todo()
+}
+
+test "abs" {
+    assert abs(-3) == 3
+    assert abs(3) == 3
+}
+
+test "fizz" {
+    assert fizz(9) == "Fizz"
+    assert fizz(10) == "Buzz"
+    assert fizz(30) == "FizzBuzz"
+    assert fizz(7) == "7"
+}
+</code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="while"><a class="header" href="#while">while</a></h1>
+<p><code>while</code> repeats its block as long as the condition holds. Parameters are
+<code>let</code> names, so a function that counts something down copies the value into
+a <code>mut</code> name first.</p>
+<!-- tour: test -->
+<pre><code class="language-rask">func halvings(n: i32) -&gt; i32 {
+    mut left = n
+    mut steps = 0
+    while left &gt; 1 {
+        left = left / 2
+        steps += 1
+    }
+    return steps
+}
+</code></pre>
+<p>Integer division drops the remainder: 7 / 2 == 3.</p>
+<p>Your turn: <code>digit_sum(1234)</code> is 1 + 2 + 3 + 4 = 10. <code>n % 10</code> is the last
+digit and <code>n / 10</code> drops it.</p>
+<!-- tour: test -->
+<pre><code class="language-rask">func digit_sum(n: i32) -&gt; i32 {
+    todo()
+}
+
+test "halvings" {
+    assert halvings(8) == 3
+    assert halvings(1) == 0
+}
+
+test "digit sum" {
+    assert digit_sum(1234) == 10
+    assert digit_sum(7) == 7
+    assert digit_sum(0) == 0
+    assert digit_sum(90210) == 12
+    assert digit_sum(1999999999) == 82
+}
+</code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="for"><a class="header" href="#for">for</a></h1>
+<p><code>for</code> walks a range. <code>0..n</code> stops before n; <code>1..=n</code> includes it.</p>
+<!-- tour: test -->
+<pre><code class="language-rask">func sum_to(n: i32) -&gt; i32 {
+    mut sum = 0
+    for i in 1..=n {
+        sum += i
+    }
+    return sum
+}
+</code></pre>
+<p>Your turn: <code>factorial(5)</code> is 1 * 2 * 3 * 4 * 5 = 120, and <code>factorial(0)</code> is 1.</p>
+<!-- tour: test -->
+<pre><code class="language-rask">func factorial(n: i32) -&gt; i32 {
+    todo()
+}
+
+test "sum to" {
+    assert sum_to(4) == 10
+}
+
+test "factorial" {
+    assert factorial(5) == 120
+    assert factorial(1) == 1
+    assert factorial(0) == 1
+}
+</code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="vec"><a class="header" href="#vec">Vec</a></h1>
+<p>A <code>Vec</code> is a list that can grow. <code>Vec.from([...])</code> makes one from values,
+<code>Vec.new()</code> makes an empty one, <code>push</code> adds to the end, <code>len()</code> counts, and
+<code>v[0]</code> is the first item. Pushing changes the list, so it needs a <code>mut</code> name.</p>
+<!-- tour: test -->
+<pre><code class="language-rask">func countdown(from: i32) -&gt; Vec&lt;i32&gt; {
+    mut list = Vec.new()
+    mut n = from
+    while n &gt; 0 {
+        list.push(n)
+        n -= 1
+    }
+    return list
+}
+</code></pre>
+<p>A Vec can’t go straight into a string, because there’s no one right way to
+show a list to a user. <code>"{list:debug}"</code> shows it the way a programmer wants
+to see it, <code>[3, 2, 1]</code>.</p>
+<p>Your turn: <code>evens(10)</code> is the even numbers below 10: [0, 2, 4, 6, 8].</p>
+<!-- tour: test -->
+<pre><code class="language-rask">func evens(below: i32) -&gt; Vec&lt;i32&gt; {
+    todo()
+}
+
+test "countdown" {
+    let list = countdown(3)
+    assert list.len() == 3
+    assert list[0] == 3
+    assert list == Vec.from([3, 2, 1])
+}
+
+test "evens" {
+    assert evens(10) == Vec.from([0, 2, 4, 6, 8])
+    assert evens(0).len() == 0
+}
+</code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="walking-a-vec"><a class="header" href="#walking-a-vec">Walking a Vec</a></h1>
+<p><code>for</code> walks a Vec the same way it walks a range, one item at a time.</p>
+<!-- tour: test -->
+<pre><code class="language-rask">func sum(numbers: Vec&lt;i32&gt;) -&gt; i32 {
+    mut total = 0
+    for n in numbers {
+        total += n
+    }
+    return total
+}
+</code></pre>
+<p>Your turn: <code>largest</code> gives the biggest number in the list. You can assume
+the list isn’t empty, so start from <code>numbers[0]</code>.</p>
+<!-- tour: test -->
+<pre><code class="language-rask">func largest(numbers: Vec&lt;i32&gt;) -&gt; i32 {
+    todo()
+}
+
+test "sum" {
+    assert sum(Vec.from([1, 2, 3])) == 6
+}
+
+test "largest" {
+    assert largest(Vec.from([3, 9, 4])) == 9
+    assert largest(Vec.from([-5, -2, -8])) == -2
+}
+</code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="structs"><a class="header" href="#structs">Structs</a></h1>
+<p>A struct groups a few values that belong together into one type of your
+own. A point on a map is an x and a y; passing them around as two loose
+integers invites mixing them up, while a <code>Point</code> keeps them together and
+names them.</p>
+<p>You build one like a function call, giving every field by name, and read a
+field with a dot: <code>p.x</code>.</p>
+<!-- tour: test -->
+<pre><code class="language-rask">struct Point {
+    x: i32
+    y: i32
+}
+
+func distance_from_origin(p: Point) -&gt; i32 {
+    return abs(p.x) + abs(p.y)
+}
+
+func abs(n: i32) -&gt; i32 {
+    return if n &lt; 0: -n else: n
+}
+</code></pre>
+<p>Changing a struct in place comes later. For now, a function that “moves” a
+point builds a new one from the old one’s fields.</p>
+<p>Your turn: <code>step_right(p, 3)</code> gives back a new Point whose x is three more
+than p’s, with the same y. <code>Point(x: 1, y: 2)</code> becomes <code>Point(x: 4, y: 2)</code>.</p>
+<!-- tour: test -->
+<pre><code class="language-rask">func step_right(p: Point, by: i32) -&gt; Point {
+    todo()
+}
+
+test "distance" {
+    assert distance_from_origin(Point(x: 3, y: -4)) == 7
+}
+
+test "step right" {
+    let p = step_right(Point(x: 1, y: 2), 3)
+    assert p.x == 4
+    assert p.y == 2
+}
+</code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="methods"><a class="header" href="#methods">Methods</a></h1>
+<p>A function that belongs to a type is called a method, and methods go in an
+<code>extend</code> block for that type. A method that takes <code>self</code> is called on a
+value, <code>p.flipped()</code>, and <code>self</code> is that value. One without <code>self</code> is called
+on the type itself, <code>Point.origin()</code>, and is usually a way to build one.</p>
+<!-- tour: test -->
+<pre><code class="language-rask">struct Point {
+    x: i32
+    y: i32
+}
+
+extend Point {
+    func origin() -&gt; Point {
+        return Point(x: 0, y: 0)
+    }
+
+    func flipped(self) -&gt; Point {
+        return Point(x: self.y, y: self.x)
+    }
+
+    // Your turn: `a.plus(b)` adds the two points field by field.
+    func plus(self, other: Point) -&gt; Point {
+        todo()
+    }
+}
+
+test "flipped" {
+    let p = Point(x: 1, y: 2).flipped()
+    assert p.x == 2
+    assert p.y == 1
+}
+
+test "plus" {
+    let p = Point(x: 1, y: 2).plus(Point(x: 10, y: 20))
+    assert p.x == 11
+    assert p.y == 22
+    assert Point.origin().plus(p).x == 11
+}
+</code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="enums-and-match"><a class="header" href="#enums-and-match">Enums and match</a></h1>
+<p>An enum is a type whose value is one choice from a fixed list. A direction
+is North, East, South or West and nothing else.</p>
+<p>You could use a string for that, “north”, but then “nrth” is a direction
+too, and nothing tells you which strings are allowed. With an enum the list
+is written down once, the compiler rejects anything not on it, and a reader
+sees every possibility in one place.</p>
+<p><code>match</code> is how you act on an enum, and you’ll see it everywhere in Rask. It
+picks the arm for the value it has and must cover every case: leave one out
+and the program doesn’t compile. So when you add a fifth case to an enum,
+the compiler shows you every <code>match</code> that has to handle it. Like <code>if</code>,
+<code>match</code> gives a value.</p>
+<!-- tour: test -->
+<pre><code class="language-rask">enum Direction {
+    North
+    East
+    South
+    West
+}
+
+func opposite(d: Direction) -&gt; Direction {
+    return match d {
+        Direction.North =&gt; Direction.South,
+        Direction.East =&gt; Direction.West,
+        Direction.South =&gt; Direction.North,
+        Direction.West =&gt; Direction.East,
+    }
+}
+</code></pre>
+<p>Your turn: <code>turn_right</code> gives the direction a quarter turn clockwise, so
+North becomes East.</p>
+<!-- tour: test -->
+<pre><code class="language-rask">func turn_right(d: Direction) -&gt; Direction {
+    todo()
+}
+
+test "opposite" {
+    assert opposite(Direction.North) == Direction.South
+}
+
+test "turn right" {
+    assert turn_right(Direction.North) == Direction.East
+    assert turn_right(Direction.West) == Direction.North
+}
+</code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="enums-that-carry-data"><a class="header" href="#enums-that-carry-data">Enums that carry data</a></h1>
+<p>Each case of an enum can carry its own fields, and each case can carry
+different ones. A card payment has a fee; cash doesn’t; a free order has no
+amount at all. A struct would need every field for every case, with some of
+them meaningless, and nothing would stop you reading a card fee off a cash
+payment. Here the fee only exists where it makes sense.</p>
+<p>A <code>match</code> arm names the fields it wants, and inside the arm they’re
+ordinary names. That’s the only way to get at them, so you can’t read the
+fee without first having checked that it’s a card.</p>
+<!-- tour: test -->
+<pre><code class="language-rask">enum Payment {
+    Cash(amount: i32)
+    Card(amount: i32, fee: i32)
+    Free
+}
+
+func charged(p: Payment) -&gt; i32 {
+    return match p {
+        Payment.Cash(amount) =&gt; amount,
+        Payment.Card(amount, fee) =&gt; amount + fee,
+        Payment.Free =&gt; 0,
+    }
+}
+</code></pre>
+<p>A field can be bound under another name, <code>Payment.Cash(amount: a)</code>, and one
+you don’t need can be left out of the pattern.</p>
+<p>Your turn: <code>receipt</code> gives “cash 10”, “card 10 + 2 fee” or “free”.</p>
+<!-- tour: test -->
+<pre><code class="language-rask">func receipt(p: Payment) -&gt; string {
+    todo()
+}
+
+test "charged" {
+    assert charged(Payment.Card(amount: 10, fee: 2)) == 12
+    assert charged(Payment.Free) == 0
+}
+
+test "receipt" {
+    assert receipt(Payment.Cash(amount: 10)) == "cash 10"
+    assert receipt(Payment.Card(amount: 10, fee: 2)) == "card 10 + 2 fee"
+    assert receipt(Payment.Free) == "free"
+}
+</code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="optionals"><a class="header" href="#optionals">Optionals</a></h1>
+<p>Some answers don’t always exist. The first negative number in a list of
+positive ones; the age of someone you’ve never heard of. Many languages
+answer with null, or with -1, and the caller has to remember to check. Forget,
+and the program carries on with a value that isn’t one.</p>
+<p>In Rask the type says so: <code>i32?</code> is an i32 or <code>none</code>. You can’t do sums
+with an <code>i32?</code>, so you can’t forget. You get the number out first:</p>
+<pre><code>x ?? 0              the number, or 0 when there's none
+if x? as n { }      run the block only when there's a number, as `n`
+x is none           true when there's no number
+</code></pre>
+<p>A function returning <code>i32?</code> returns a plain number or <code>none</code>.</p>
+<!-- tour: test -->
+<pre><code class="language-rask">func first_negative(numbers: Vec&lt;i32&gt;) -&gt; i32? {
+    for n in numbers {
+        if n &lt; 0 {
+            return n
+        }
+    }
+    return none
+}
+
+func describe(numbers: Vec&lt;i32&gt;) -&gt; string {
+    if first_negative(numbers)? as n {
+        return "starts going wrong at {n}"
+    }
+    return "all fine"
+}
+</code></pre>
+<p>Your turn: step 9’s <code>largest</code> assumed the list wasn’t empty. Make it give
+<code>none</code> for an empty list instead of crashing.</p>
+<!-- tour: test -->
+<pre><code class="language-rask">func largest(numbers: Vec&lt;i32&gt;) -&gt; i32? {
+    todo()
+}
+
+test "first negative" {
+    assert first_negative(Vec.from([4, -1, -7])) == -1
+    assert first_negative(Vec.from([4, 5])) is none
+    assert (first_negative(Vec.from([4])) ?? 0) == 0
+    assert describe(Vec.from([3, -2])) == "starts going wrong at -2"
+}
+
+test "largest" {
+    assert largest(Vec.from([3, 9, 4])) == 9
+    assert largest(Vec.from([-5, -2, -8])) == -2
+    assert largest(Vec.new()) is none
+}
+</code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="map"><a class="header" href="#map">Map</a></h1>
+<p>A Vec finds things by position. Often you want to find them by name
+instead: someone’s phone number, a word’s count. Searching a Vec for the
+name gets slower the longer the list; a <code>Map</code> goes straight to it.</p>
+<p><code>m[key] = value</code> adds or replaces. <code>m[key]</code> reads, and stops the program
+if the key isn’t there. <code>m.get(key)</code> is the careful read: it gives an
+optional, <code>none</code> for a missing key, so step 14’s <code>??</code> and <code>? as</code> work on it.
+<code>m.contains(key)</code> asks whether it’s there.</p>
+<!-- tour: test -->
+<pre><code class="language-rask">func phone_book() -&gt; Map&lt;string, string&gt; {
+    mut book = Map.new()
+    book["Ada"] = "555-0100"
+    book["Alan"] = "555-0199"
+    return book
+}
+
+func number_of(name: string) -&gt; string {
+    return phone_book().get(name) ?? "unknown"
+}
+</code></pre>
+<p>A Map hands its entries back in no particular order, so don’t rely on one.</p>
+<p>Your turn: <code>count_words</code> counts how often each word appears. <code>??</code> comes
+after arithmetic, so <code>m.get(k) ?? 0 + 1</code> means <code>m.get(k) ?? 1</code>; put the
+<code>??</code> in parentheses before adding to it.</p>
+<!-- tour: test -->
+<pre><code class="language-rask">func count_words(words: Vec&lt;string&gt;) -&gt; Map&lt;string, i32&gt; {
+    todo()
+}
+
+test "phone book" {
+    assert number_of("Ada") == "555-0100"
+    assert number_of("Grace") == "unknown"
+    assert phone_book().contains("Alan")
+}
+
+test "count words" {
+    let counts = count_words(Vec.from(["to", "be", "or", "not", "to", "be"]))
+    assert counts["to"] == 2
+    assert counts["or"] == 1
+    assert counts.len() == 4
+    assert count_words(Vec.from(["a", "a", "a"]))["a"] == 3
+    assert count_words(Vec.new()).len() == 0
+}
+</code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="errors-are-values"><a class="header" href="#errors-are-values">Errors are values</a></h1>
+<p>Taking money out of an account can fail, and the caller needs to know.
+Exceptions tell them by jumping out of the function, and nothing in the
+function’s signature warns that it might. Error codes don’t jump, but they
+are easy to ignore.</p>
+<p>In Rask, a function that can fail says so in its return type: <code>i32 or BankError</code> is either a new balance or a reason. The error is an ordinary
+value, usually an enum, and the function returns it like any other value.</p>
+<p>The caller can’t ignore the result: calling <code>withdraw</code> and dropping what it
+gives back is a compile error. <code>r is BankError</code> asks which one you got,
+and <code>r is BankError.NotPositive</code> whether it was that error in particular.
+<code>if r is BankError as e { }</code> runs the block only for an error, named <code>e</code>,
+the way <code>? as</code> does for an optional. <code>r!</code> takes the balance out and stops
+the program if it’s an error, which is right when an error here could only
+be a bug.</p>
+<!-- tour: test -->
+<pre><code class="language-rask">enum BankError {
+    Overdrawn(short: i32)
+    TooLarge(over: i32)
+    NotPositive
+}
+
+func withdraw(balance: i32, amount: i32) -&gt; i32 or BankError {
+    if amount &gt; balance {
+        return BankError.Overdrawn(short: amount - balance)
+    }
+    return balance - amount
+}
+</code></pre>
+<p>Your turn: <code>deposit</code> adds <code>amount</code> to the balance. An amount of zero or
+less is <code>NotPositive</code>. The bank takes at most 1000 at a time; more than
+that is <code>TooLarge</code>, carrying how far over the limit it was.</p>
+<!-- tour: test -->
+<pre><code class="language-rask">func deposit(balance: i32, amount: i32) -&gt; i32 or BankError {
+    todo()
+}
+
+test "withdraw" {
+    assert withdraw(10, 3)! == 7
+    assert withdraw(10, 30) is BankError
+}
+
+test "deposit" {
+    assert deposit(10, 5)! == 15
+    assert deposit(0, 1000)! == 1000
+    assert deposit(10, 0) is BankError.NotPositive
+    assert deposit(10, -3) is BankError.NotPositive
+    assert deposit(10, 1001) is BankError
+    let r = deposit(10, 1250)
+    assert r is BankError
+    if r is BankError as e {
+        assert e == BankError.TooLarge(over: 250)
+    }
+}
+</code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="try-and-catch"><a class="header" href="#try-and-catch">try and catch</a></h1>
+<p>Most code that meets an error can’t do anything useful about it, and
+should hand it to whoever called it. Checking every result by hand with
+<code>is</code> would bury what the function does under what could go wrong.</p>
+<p><code>try r</code> takes the value out of <code>r</code>, or returns the error from the function
+you’re in, right there. The function has to be able to return that error,
+so its own type says <code>or BankError</code> too.</p>
+<p><code>r catch e =&gt; fallback</code> deals with the error where it happens instead:
+it’s the value, or, when <code>r</code> is an error, whatever comes after <code>=&gt;</code>, with
+the error named <code>e</code>. <code>catch _ =&gt;</code> throws the error away, in writing.</p>
+<!-- tour: test -->
+<pre><code class="language-rask">enum BankError {
+    Overdrawn(short: i32)
+}
+
+func withdraw(balance: i32, amount: i32) -&gt; i32 or BankError {
+    if amount &gt; balance {
+        return BankError.Overdrawn(short: amount - balance)
+    }
+    return balance - amount
+}
+
+func pay_rent_and_food(balance: i32) -&gt; i32 or BankError {
+    let after_rent = try withdraw(balance, 700)
+    return try withdraw(after_rent, 200)
+}
+
+func left_after_rent(balance: i32) -&gt; i32 {
+    return withdraw(balance, 700) catch _ =&gt; 0
+}
+</code></pre>
+<p>Your turn: <code>pay_all</code> pays each bill in turn and gives the balance that’s
+left, or the first error it meets. <code>try</code> does both.</p>
+<!-- tour: test -->
+<pre><code class="language-rask">func pay_all(balance: i32, bills: Vec&lt;i32&gt;) -&gt; i32 or BankError {
+    todo()
+}
+
+test "rent" {
+    assert pay_rent_and_food(1000)! == 100
+    assert pay_rent_and_food(800) is BankError
+    assert left_after_rent(500) == 0
+}
+
+test "pay all" {
+    assert pay_all(100, Vec.from([10, 20, 30]))! == 40
+    assert pay_all(100, Vec.new())! == 100
+    let r = pay_all(50, Vec.from([30, 40, 5]))
+    assert r is BankError
+    if r is BankError as e {
+        assert e == BankError.Overdrawn(short: 20)
+    }
+}
+</code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="changing-what-youre-given"><a class="header" href="#changing-what-youre-given">Changing what you’re given</a></h1>
+<p>Every function so far has only read its parameters. That’s the default,
+and it’s cheap: a function reads a Vec where the caller keeps it, without
+copying it. The compiler calls this <strong>borrowing</strong>, and you’ll see the word
+in error messages. A borrowed value can’t be changed: a <code>scores.push(1)</code> in
+a function that only reads <code>scores</code> is a compile error.</p>
+<p>So when a function should change the caller’s value, it says <code>mutate</code>, and
+the caller writes <code>mutate</code> too. You can tell which calls might change your
+data by reading the calls, without opening every function.</p>
+<p>A method that changes its value takes <code>mutate self</code>. There the value it’s
+called on is the thing being changed, so the call is just <code>p.heal(5)</code>.</p>
+<!-- tour: test -->
+<pre><code class="language-rask">struct Player {
+    name: string
+    health: i32
+}
+
+extend Player {
+    func heal(mutate self, amount: i32) {
+        self.health += amount
+    }
+}
+
+func add_bonus(mutate scores: Vec&lt;i32&gt;, bonus: i32) {
+    for i in 0..scores.len() {
+        scores[i] += bonus
+    }
+}
+</code></pre>
+<p>Your turn: <code>cap</code> lowers every score above <code>max</code> to <code>max</code>, in the
+caller’s own Vec.</p>
+<!-- tour: test -->
+<pre><code class="language-rask">func cap(mutate scores: Vec&lt;i32&gt;, max: i32) {
+    todo()
+}
+
+test "bonus" {
+    mut scores = Vec.from([1, 2])
+    add_bonus(mutate scores, 10)
+    assert scores == Vec.from([11, 12])
+    mut p = Player(name: "Ada", health: 5)
+    p.heal(5)
+    assert p.health == 10
+}
+
+test "cap" {
+    mut scores = Vec.from([4, 70, 9, 12])
+    cap(mutate scores, 10)
+    assert scores == Vec.from([4, 10, 9, 10])
+    cap(mutate scores, 5)
+    assert scores == Vec.from([4, 5, 5, 5])
+}
+</code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="giving-a-value-away"><a class="header" href="#giving-a-value-away">Giving a value away</a></h1>
+<p>Sometimes a function keeps what you give it: it puts your list into an
+order and returns the order. Now two names reach one list, yours and the
+order’s. If both could change it, editing one would quietly edit the
+other, and which one cleans the list up when it’s no longer needed?</p>
+<p>Rask’s answer is that a value has one owner. A parameter marked <code>take</code>
+becomes the function’s to keep, and the name you passed in is gone: using
+it afterwards is a compile error. The compiler calls this a <strong>move</strong>: the
+value moved into the function, and the error says “use of moved value”.
+Small values (numbers, bools, strings, small structs) are copied instead,
+so this only ever happens to things like a Vec.</p>
+<p>This file doesn’t compile. Run <code>rask test 19-take.rk</code>, read the error, and
+fix <code>summary</code> so it doesn’t use <code>items</code> after giving it away. The compiler
+suggests a copy; there’s a better fix, since the order has the items now.</p>
+<!-- tour: test -->
+<pre><code class="language-rask">struct Order {
+    customer: string
+    items: Vec&lt;string&gt;
+}
+
+func place(customer: string, take items: Vec&lt;string&gt;) -&gt; Order {
+    return Order(customer: customer, items: items)
+}
+
+func summary(customer: string, count: i32) -&gt; string {
+    mut items = Vec.new()
+    for _ in 0..count {
+        items.push("tea")
+    }
+    let order = place(customer, items)
+    return "{order.customer}: {items.len()} items"
+}
+
+test "summary" {
+    assert summary("Ada", 2) == "Ada: 2 items"
+    assert summary("Alan", 0) == "Alan: 0 items"
+}
+</code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="copying-on-purpose"><a class="header" href="#copying-on-purpose">Copying on purpose</a></h1>
+<p>Copying a list costs time and memory, more the longer it is. Plenty of
+languages copy behind your back, and a slow program ends up slow in lines
+that look innocent. Rask never copies anything big unless you ask, and you
+ask with <code>.clone()</code>, so every copy is there to see.</p>
+<p>You need one when you want a changed version of something and the original
+too. A borrowed parameter can’t be changed (step 18), so to build on it you
+clone it into a <code>mut</code> name of your own and change that.</p>
+<!-- tour: test -->
+<pre><code class="language-rask">func sorted_copy(numbers: Vec&lt;i32&gt;) -&gt; Vec&lt;i32&gt; {
+    mut out = numbers.clone()
+    out.sort()
+    return out
+}
+</code></pre>
+<p>Strings are the exception that doesn’t feel like one: they can’t be
+changed in place, so sharing one is safe and there’s never a reason to
+clone a string.</p>
+<p>Your turn: <code>with_extra(list, x)</code> gives a new list, <code>list</code> with <code>x</code> on the
+end. The caller’s list stays as it was.</p>
+<!-- tour: test -->
+<pre><code class="language-rask">func with_extra(list: Vec&lt;i32&gt;, x: i32) -&gt; Vec&lt;i32&gt; {
+    todo()
+}
+
+test "sorted copy" {
+    let numbers = Vec.from([3, 1, 2])
+    assert sorted_copy(numbers) == Vec.from([1, 2, 3])
+    assert numbers == Vec.from([3, 1, 2])
+}
+
+test "with extra" {
+    let list = Vec.from([1, 2])
+    assert with_extra(list, 3) == Vec.from([1, 2, 3])
+    assert with_extra(list, 9) == Vec.from([1, 2, 9])
+    assert list == Vec.from([1, 2])
+    assert with_extra(Vec.new(), 4) == Vec.from([4])
+}
+</code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="changing-an-item-in-a-vec"><a class="header" href="#changing-an-item-in-a-vec">Changing an item in a Vec</a></h1>
+<p>One change to an item in a Vec is one line: <code>team[i].health -= 3</code>. For
+several, you’d want a name for the item. But a Player is too big to copy
+(step 19), so <code>let p = team[i]</code> would be a second name for an item the Vec
+owns, and a change through either name would change both. That doesn’t
+compile.</p>
+<p><code>with team[i] as p { ... }</code> names the item where it sits: changing <code>p</code>
+changes the item in the Vec. While the block runs, the Vec can’t grow or
+shrink, because a Vec that grows may move its items somewhere else in
+memory, and <code>p</code> would be left pointing at the old place.</p>
+<!-- tour: test -->
+<pre><code class="language-rask">struct Player {
+    name: string
+    health: i32
+    alive: bool
+}
+
+func rest(mutate team: Vec&lt;Player&gt;, i: usize) {
+    with team[i] as p {
+        p.health += 10
+        p.alive = true
+    }
+}
+</code></pre>
+<p>Positions in a Vec are <code>usize</code>, an unsigned integer as wide as a memory
+address. <code>len()</code> gives one too.</p>
+<p>Your turn: <code>hit</code> takes <code>damage</code> off player i. If that leaves them at zero
+or below, their health is 0 and they’re no longer alive.</p>
+<!-- tour: test -->
+<pre><code class="language-rask">func hit(mutate team: Vec&lt;Player&gt;, i: usize, damage: i32) {
+    todo()
+}
+
+test "hit" {
+    mut team = Vec.from([
+        Player(name: "Ada", health: 10, alive: true)
+        Player(name: "Alan", health: 10, alive: true)
+    ])
+    hit(mutate team, 1, 4)
+    assert team[1].health == 6
+    assert team[1].alive
+    hit(mutate team, 1, 9)
+    assert team[1].health == 0
+    assert !team[1].alive
+    assert team[0].health == 10
+    rest(mutate team, 1)
+    assert team[1].alive
+}
+</code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="closures"><a class="header" href="#closures">Closures</a></h1>
+<p>Counting the even numbers in a list and counting the negative ones are the
+same loop with a different test inside. Rather than write the loop twice,
+write it once and take the test as a parameter.</p>
+<p>A closure is a small function written where it’s used: <code>|n| n &lt; 0</code> takes
+<code>n</code> and gives back whether it’s negative. A parameter that takes one has a
+function type, <code>func(i32) -&gt; bool</code>. The body can use names from around it,
+like <code>limit</code> in <code>count_above</code>.</p>
+<!-- tour: test -->
+<pre><code class="language-rask">func count_where(numbers: Vec&lt;i32&gt;, keep: func(i32) -&gt; bool) -&gt; i32 {
+    mut count = 0
+    for n in numbers {
+        if keep(n) {
+            count += 1
+        }
+    }
+    return count
+}
+
+func count_above(numbers: Vec&lt;i32&gt;, limit: i32) -&gt; i32 {
+    return count_where(numbers, |n| n &gt; limit)
+}
+</code></pre>
+<p>Your turn: <code>keep_where</code> gives the numbers that pass the test, in order.</p>
+<!-- tour: test -->
+<pre><code class="language-rask">func keep_where(numbers: Vec&lt;i32&gt;, keep: func(i32) -&gt; bool) -&gt; Vec&lt;i32&gt; {
+    todo()
+}
+
+test "count where" {
+    let numbers = Vec.from([4, -1, 6, -3, 7])
+    assert count_where(numbers, |n| n &lt; 0) == 2
+    assert count_where(numbers, |n| n % 2 == 0) == 2
+    assert count_above(numbers, 5) == 2
+}
+
+test "keep where" {
+    let numbers = Vec.from([4, -1, 6, -3, 7])
+    assert keep_where(numbers, |n| n &lt; 0) == Vec.from([-1, -3])
+    assert keep_where(numbers, |n| n &gt; 100).len() == 0
+    let small = 5
+    assert keep_where(numbers, |n| n &gt; -2 &amp;&amp; n &lt; small) == Vec.from([4, -1])
+}
+</code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="chains"><a class="header" href="#chains">Chains</a></h1>
+<p>Step 22’s <code>keep_where</code> is a loop everybody needs, so a Vec comes with it,
+called <code>filter</code>, along with a few others. Chained together, they say what
+you want and leave out how to loop:</p>
+<pre><code>filter(|x| ...)   keep the items that pass
+map(|x| ...)      turn each item into something else
+to_vec()          collect what's left into a new Vec
+sum(), count()    or boil it down to one value
+</code></pre>
+<p>A chain does nothing until its last step asks for a result, and then it
+goes through the list once. The middle steps don’t build lists of their own.</p>
+<!-- tour: test -->
+<pre><code class="language-rask">struct Person {
+    name: string
+    age: i32
+}
+
+func adult_names(people: Vec&lt;Person&gt;) -&gt; Vec&lt;string&gt; {
+    return people.filter(|p| p.age &gt;= 18).map(|p| p.name).to_vec()
+}
+</code></pre>
+<p>Your turn: <code>even_squares_total</code> squares the even numbers and adds them up,
+so [1, 2, 3, 4] gives 4 + 16 = 20. One chain does it.</p>
+<!-- tour: test -->
+<pre><code class="language-rask">func even_squares_total(numbers: Vec&lt;i32&gt;) -&gt; i32 {
+    todo()
+}
+
+test "adult names" {
+    let people = Vec.from([
+        Person(name: "Ada", age: 36)
+        Person(name: "Tim", age: 9)
+        Person(name: "Alan", age: 41)
+    ])
+    assert adult_names(people) == Vec.from(["Ada", "Alan"])
+    assert people.filter(|p| p.age &lt; 18).count() == 1
+}
+
+test "even squares" {
+    assert even_squares_total(Vec.from([1, 2, 3, 4])) == 20
+    assert even_squares_total(Vec.from([6, -2, 5])) == 40
+    assert even_squares_total(Vec.from([1, 3])) == 0
+}
+</code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="working-with-text"><a class="header" href="#working-with-text">Working with text</a></h1>
+<p>Text usually arrives as one string, a line someone typed or read from a
+file, and the program needs the pieces in it. A string has methods for
+that, and they never change the string itself: strings can’t be changed,
+only replaced by new ones.</p>
+<pre><code>trim()            without spaces at either end
+split(",")        the pieces between the commas, as a chain
+starts_with("/")  true or false
+to_uppercase()    a new string in capitals
+parse&lt;i32&gt;()      the number it spells, or an error
+</code></pre>
+<p><code>trim</code> and the pieces of <code>split</code> don’t copy anything: they are views into
+the original string, so they can’t be kept, not even in a <code>let</code>. Use them
+on the spot, or make a string of their own with <code>.to_string()</code>.</p>
+<!-- tour: test -->
+<pre><code class="language-rask">func is_command(line: string) -&gt; bool {
+    return line.trim().starts_with("/")
+}
+
+func first_word(line: string) -&gt; string {
+    for word in line.split(" ") {
+        return word.to_string()
+    }
+    return ""
+}
+</code></pre>
+<p>Your turn: <code>sum_list("3, 4,5")</code> adds up the numbers between the commas,
+12. Anything that isn’t a number counts as 0.</p>
+<!-- tour: test -->
+<pre><code class="language-rask">func sum_list(text: string) -&gt; i32 {
+    todo()
+}
+
+test "commands" {
+    assert is_command("  /quit")
+    assert !is_command("hello /quit")
+    assert first_word("take lamp") == "take"
+}
+
+test "sum list" {
+    assert sum_list("3, 4,5") == 12
+    assert sum_list(" 10 ,  20 ") == 30
+    assert sum_list("7") == 7
+    assert sum_list("4,x,6") == 10
+    assert "-3".parse&lt;i32&gt;()! == -3
+}
+</code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="generic-functions"><a class="header" href="#generic-functions">Generic functions</a></h1>
+<p>Counting how often 3 appears in a list of numbers and how often “tea”
+appears in a list of strings is the same code with different types in it.
+A generic function is written once with a stand-in type, <code>T</code>, and works
+for each type you call it with.</p>
+<p><code>&lt;T: Equal&gt;</code> says which types are allowed: ones whose values can be
+compared with <code>==</code>. The compiler checks the body uses only what the
+bound allows, so <code>&lt;</code> in here would be an error; that needs <code>Comparable</code>.
+Numbers, strings, and most of your own structs and enums are both.</p>
+<p>Behind the scenes the compiler writes out a copy of the function for each
+type it’s used with, so a generic function runs as fast as one written for
+that type by hand.</p>
+<!-- tour: test -->
+<pre><code class="language-rask">func count_of&lt;T: Equal&gt;(items: Vec&lt;T&gt;, want: T) -&gt; i32 {
+    mut count = 0
+    for item in items {
+        if item == want {
+            count += 1
+        }
+    }
+    return count
+}
+</code></pre>
+<p>Your turn: <code>position</code> gives where <code>want</code> first appears in <code>items</code>, or
+none if it’s not there.</p>
+<!-- tour: test -->
+<pre><code class="language-rask">func position&lt;T: Equal&gt;(items: Vec&lt;T&gt;, want: T) -&gt; usize? {
+    todo()
+}
+
+test "count of" {
+    assert count_of(Vec.from([3, 1, 3]), 3) == 2
+    assert count_of(Vec.from(["tea", "cake"]), "tea") == 1
+}
+
+test "position" {
+    assert position(Vec.from([5, 6, 7]), 7) == 2
+    assert position(Vec.from([5, 6, 5]), 5) == 0
+    assert position(Vec.from(["tea", "cake"]), "cake") == 1
+    assert position(Vec.from(["tea"]), "jam") is none
+}
+</code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="interfaces"><a class="header" href="#interfaces">Interfaces</a></h1>
+<p>A generic function can only use what its bound promises. <code>Equal</code> from
+step 25 is an interface: a list of methods that a type promises to have.
+Writing your own lets one function work on any type that keeps your
+promise, like <code>total_area</code> below on squares and rectangles alike.</p>
+<p>A type keeps it by saying so, <code>Square implements Shape { ... }</code>, with the
+methods inside. Having methods with the right names isn’t enough; the
+compiler wants the words. So a type never takes on a promise by accident,
+and you can find every shape by searching for <code>implements Shape</code>.</p>
+<!-- tour: test -->
+<pre><code class="language-rask">interface Shape {
+    func area(self) -&gt; i32
+}
+
+struct Square {
+    side: i32
+}
+
+Square implements Shape {
+    func area(self) -&gt; i32 {
+        return self.side * self.side
+    }
+}
+
+func total_area&lt;T: Shape&gt;(shapes: Vec&lt;T&gt;) -&gt; i32 {
+    mut total = 0
+    for s in shapes {
+        total += s.area()
+    }
+    return total
+}
+</code></pre>
+<p>Your turn: make rectangles shapes too. A 2 by 3 Rect has an area of 6.</p>
+<!-- tour: test -->
+<pre><code class="language-rask">struct Rect {
+    width: i32
+    height: i32
+}
+
+Rect implements Shape {
+    func area(self) -&gt; i32 {
+        todo()
+    }
+}
+
+test "squares" {
+    assert total_area(Vec.from([Square(side: 2), Square(side: 3)])) == 13
+    assert Square(side: 4).area() == 16
+}
+
+test "rects" {
+    assert Rect(width: 2, height: 3).area() == 6
+    assert total_area(Vec.from([Rect(width: 2, height: 3), Rect(width: 5, height: 1)])) == 11
+}
+</code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="cleanup-that-always-runs"><a class="header" href="#cleanup-that-always-runs">Cleanup that always runs</a></h1>
+<p>Some things have to be undone however a function ends: a file closed, a
+lock let go, a drawer shut. With a <code>return</code> here and a <code>try</code> there, a
+function has several ways out, and putting the cleanup before each one is
+easy to get wrong, especially for the exits <code>try</code> makes for you.</p>
+<p><code>ensure</code> says it once, right after the thing it undoes, and runs it when
+the block it’s in ends, however it ends: a <code>return</code>, an error leaving
+through <code>try</code>, or simply reaching the <code>}</code>. A call can follow <code>ensure</code>
+directly, <code>ensure file.close()</code>; anything else goes in braces,
+<code>ensure { door.open = false }</code>.</p>
+<!-- tour: test -->
+<pre><code class="language-rask">struct Till {
+    drawer_open: bool
+    sales: i32
+}
+
+enum PriceError {
+    Negative(price: i32)
+}
+
+func checked(price: i32) -&gt; i32 or PriceError {
+    if price &lt; 0 {
+        return PriceError.Negative(price: price)
+    }
+    return price
+}
+
+func refund(mutate till: Till, amount: i32) -&gt; i32 or PriceError {
+    till.drawer_open = true
+    ensure { till.drawer_open = false }
+    return try checked(amount)
+}
+</code></pre>
+<p>Your turn: <code>ring_up</code> opens the drawer, adds up the prices (each one
+through <code>checked</code>), counts one more sale, and gives the total. The drawer
+must be shut afterwards, also when a price is bad.</p>
+<!-- tour: test -->
+<pre><code class="language-rask">func ring_up(mutate till: Till, prices: Vec&lt;i32&gt;) -&gt; i32 or PriceError {
+    todo()
+}
+
+test "ring up" {
+    mut till = Till(drawer_open: false, sales: 0)
+    assert ring_up(mutate till, Vec.from([3, 4]))! == 7
+    assert !till.drawer_open
+    assert till.sales == 1
+    assert ring_up(mutate till, Vec.new())! == 0
+    assert till.sales == 2
+}
+
+test "a bad price" {
+    mut till = Till(drawer_open: false, sales: 0)
+    assert ring_up(mutate till, Vec.from([3, -1, 4])) is PriceError
+    assert !till.drawer_open
+    assert till.sales == 0
+    assert refund(mutate till, -5) is PriceError
+    assert !till.drawer_open
+}
+</code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="racks-and-links"><a class="header" href="#racks-and-links">Racks and links</a></h1>
+<p>Some data points at itself: each person in a company has a boss who is
+another person, rooms in a game lead to other rooms. A struct field can’t
+hold a borrowed value, and a position in a Vec stops meaning the same
+person once someone ahead of them leaves.</p>
+<p>A <code>Rack</code> holds things that need to point at each other. <code>insert</code> puts one
+in and gives back a <code>Link</code>, which can be stored in a field. Reading through
+a link reads the thing it links to: <code>p.boss</code> and <code>p.name</code> work as if <code>p</code>
+were the Person. In a function that can change the rack, <code>p.boss = ...</code>
+changes that person. When someone is deleted from the rack, every field that
+links to them becomes <code>none</code> before the delete returns, so a link to someone
+who’s gone can’t exist. That’s why <code>boss</code> is a <code>Link&lt;Person&gt;?</code>: the <code>?</code> is
+where the <code>none</code> goes, and it makes you check before following the link.</p>
+<p><code>Rack</code> and <code>Link</code> live in the standard library’s <code>memory</code> module. Apart
+from the basics (numbers, strings, Vec, Map), everything there needs an
+<code>import</code> line first.</p>
+<!-- tour: test -->
+<pre><code class="language-rask">import memory.Rack
+import memory.Link
+
+struct Person {
+    name: string
+    boss: Link&lt;Person&gt;?
+}
+
+func chain_of_command(p: Link&lt;Person&gt;) -&gt; string {
+    mut text = p.name
+    mut next = p.boss
+    while next? as boss {
+        text = "{text} &gt; {boss.name}"
+        next = boss.boss
+    }
+    return text
+}
+</code></pre>
+<p>Your turn: everyone whose boss is <code>from</code> reports to <code>to</code> instead.
+<code>staff.nodes()</code> goes through everyone, and links compare with <code>==</code>.</p>
+<!-- tour: test -->
+<pre><code class="language-rask">func reassign(mutate staff: Rack&lt;Person&gt;, from: Link&lt;Person&gt;, to: Link&lt;Person&gt;) {
+    todo()
+}
+
+test "reassign" {
+    mut staff = Rack&lt;Person&gt;.new()
+    let ada = staff.insert(Person(name: "Ada", boss: none))
+    let bo = staff.insert(Person(name: "Bo", boss: ada))
+    let cy = staff.insert(Person(name: "Cy", boss: bo))
+    let di = staff.insert(Person(name: "Di", boss: bo))
+    assert chain_of_command(cy) == "Cy &gt; Bo &gt; Ada"
+    reassign(mutate staff, bo, ada)
+    assert chain_of_command(cy) == "Cy &gt; Ada"
+    assert chain_of_command(di) == "Di &gt; Ada"
+    assert chain_of_command(bo) == "Bo &gt; Ada"
+    staff.delete(ada)
+    assert chain_of_command(cy) == "Cy"
+}
+</code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="tasks-and-channels"><a class="header" href="#tasks-and-channels">Tasks and channels</a></h1>
+<p>A program often has two things to do that don’t depend on each other: add
+up two halves of a long list, answer two people at once. Doing them one
+after the other wastes the time one spends waiting or the second core the
+machine has.</p>
+<p><code>spawn { ... }</code> starts the block as a task that runs alongside the code
+that started it. The block is the whole of the task, so it hands back its
+answer with <code>return</code>, as a function does. <code>join()</code> waits for the task and
+gives back that answer, or an error if the task crashed, hence the <code>!</code>.
+Every task you start has to be joined; forgetting one is a compile error.
+Any function can run in a task, with no special kind of function for it.
+Tasks need something to run them, which <code>using Multitasking { ... }</code> sets
+up.</p>
+<!-- tour: test -->
+<pre><code class="language-rask">func doubled_and_squared(n: i32) -&gt; i32 {
+    using Multitasking {
+        let doubled = spawn { return n * 2 }
+        let squared = spawn { return n * n }
+        return doubled.join()! + squared.join()!
+    }
+}
+</code></pre>
+<p>A channel carries values from one task to another while both run.
+<code>Channel&lt;i32&gt;.buffered(10)</code> gives a sending end and a receiving end, which
+can hold 10 values waiting.</p>
+<!-- tour: test -->
+<pre><code class="language-rask">func squares(n: i32) -&gt; Vec&lt;i32&gt; {
+    using Multitasking {
+        let (tx, rx) = Channel&lt;i32&gt;.buffered(10)
+        let worker = spawn {
+            for i in 1..=n {
+                tx.send(i * i)!
+            }
+        }
+        mut out = Vec.new()
+        for _ in 0..n {
+            out.push(rx.receive()!)
+        }
+        worker.join()!
+        return out
+    }
+}
+</code></pre>
+<p>Your turn: <code>split_sum</code> adds up the numbers with two tasks, one for each
+half of the list, and adds their two answers together.</p>
+<!-- tour: test -->
+<pre><code class="language-rask">func split_sum(numbers: Vec&lt;i32&gt;) -&gt; i32 {
+    todo()
+}
+
+test "two tasks" {
+    assert doubled_and_squared(5) == 35
+}
+
+test "squares" {
+    assert squares(4) == Vec.from([1, 4, 9, 16])
+    assert squares(0).len() == 0
+}
+
+test "split sum" {
+    assert split_sum(Vec.from([1, 2, 3, 4, 5])) == 15
+    assert split_sum(Vec.from([7])) == 7
+    assert split_sum(Vec.new()) == 0
+}
+</code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="shared-state"><a class="header" href="#shared-state">Shared state</a></h1>
+<p>A channel hands a value from one task to another. Sometimes several tasks
+need the same value at once instead: a counter they all add to, a table
+they all fill in. Two tasks changing one value at the same moment can
+leave it half of each, and that kind of bug shows up once in a thousand
+runs. So in Rask a value that more than one task changes has to live in a
+<code>Shared</code>, which lets one task at a time change it.</p>
+<p><code>with total.write() as n { ... }</code> waits its turn, then gives you the value
+for the block. A block of one line can follow a colon instead, <code>with total.write() as n: n += 1</code>. <code>.read()</code> instead of <code>.write()</code> only looks,
+and lets several readers in together. Each task gets its own <code>.clone()</code> of
+the Shared: a second way to reach the same value, not a copy of it.</p>
+<p><code>total.get()</code> copies a small value out. Anything bigger you clone out of a
+<code>.read()</code> block, <code>with table.read() as t { return t.clone() }</code>, since the
+Shared still owns what’s in it.</p>
+<!-- tour: test -->
+<pre><code class="language-rask">import sync.Shared
+
+func count_both(times: i32) -&gt; i32 {
+    let total = Shared.new(0)
+    using Multitasking {
+        let mine = total.clone()
+        let theirs = total.clone()
+        let a = spawn {
+            for _ in 0..times {
+                with mine.write() as n: n += 1
+            }
+        }
+        let b = spawn {
+            for _ in 0..times {
+                with theirs.write() as n: n += 1
+            }
+        }
+        a.join()!
+        b.join()!
+    }
+    return total.get()
+}
+</code></pre>
+<p>Your turn: <code>tally</code> counts the words in both lists, one task per list,
+into one shared Map.</p>
+<!-- tour: test -->
+<pre><code class="language-rask">func tally(first: Vec&lt;string&gt;, second: Vec&lt;string&gt;) -&gt; Map&lt;string, i32&gt; {
+    todo()
+}
+
+test "count both" {
+    assert count_both(1000) == 2000
+}
+
+test "tally" {
+    let counts = tally(Vec.from(["a", "b", "a"]), Vec.from(["b", "c"]))
+    assert counts["a"] == 2
+    assert counts["b"] == 2
+    assert counts["c"] == 1
+    assert counts.len() == 3
+    assert tally(Vec.new(), Vec.from(["x"]))["x"] == 1
+}
+</code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="work-done-while-compiling"><a class="header" href="#work-done-while-compiling">Work done while compiling</a></h1>
+<p>Some values never change between runs: a table of squares, the primes
+under 100. Working them out every time the program starts is wasted
+effort, and typing them in by hand invites a typo nobody spots.</p>
+<p>A <code>comptime</code> block runs while the program is being compiled, and its
+result is built into the program as a constant. It’s ordinary Rask, and it
+can call your own functions, as long as they only compute and don’t print,
+read files or start tasks. <code>const</code> names the result, outside any function.</p>
+<!-- tour: test -->
+<pre><code class="language-rask">const SQUARES = comptime {
+    mut table = Vec.new()
+    for i in 0..10 {
+        table.push(i * i)
+    }
+    table
+}
+</code></pre>
+<p>A block that gives a value ends with that value on its own line, like
+<code>table</code> above. <code>return</code> would leave a function, and this block isn’t in
+one.</p>
+<p>Your turn: write <code>is_prime</code>. <code>PRIMES</code> calls it while compiling, so until
+it’s done, <code>rask test</code> stops before running anything, with the compiler
+telling you a <code>todo()</code> was reached at compile time.</p>
+<!-- tour: test -->
+<pre><code class="language-rask">func is_prime(n: i32) -&gt; bool {
+    todo()
+}
+
+const PRIMES = comptime {
+    mut found = Vec.new()
+    for n in 0..50 {
+        if is_prime(n) {
+            found.push(n)
+        }
+    }
+    found
+}
+
+test "squares" {
+    assert SQUARES[7] == 49
+}
+
+test "primes" {
+    assert PRIMES.len() == 15
+    assert PRIMES[0] == 2
+    assert PRIMES[14] == 47
+    assert !is_prime(1)
+    assert is_prime(97)
+}
+</code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="splitting-a-program-into-files"><a class="header" href="#splitting-a-program-into-files">Splitting a program into files</a></h1>
+<p>A program that grows past a few hundred lines is easier to work on in
+several files, each about one thing. A directory with a <code>rask.toml</code> in it
+is a package: one program, or one library, made of every .rk file in it.
+The files see each other’s names without importing anything, so moving a
+function to another file changes nothing else.</p>
+<p>This step is a directory, and the commands take the directory:</p>
+<pre><code>rask test 32-packages
+rask run 32-packages
+</code></pre>
+<p><code>public</code> is for other packages. One that imports this package sees only
+what’s marked <code>public</code>, so everything else can change without breaking
+anyone. <code>rask api 32-packages/prices.rk</code> lists what a file offers.</p>
+<p>Your turn is in till.rk.</p>
+<!-- tour: show -->
+<pre><code class="language-rask">func main() {
+    let basket = Vec.from(["tea", "cake"])
+    println("tea costs {price_of("tea") ?? 0}, the basket {total(basket)}")
+}
+
+test "prices" {
+    assert price_of("tea") == 3
+    assert price_of("caviar") is none
+}
+
+test "total" {
+    assert total(Vec.from(["tea", "cake"])) == 7
+    assert total(Vec.from(["tea", "tea", "jam"])) == 8
+    assert total(Vec.from(["caviar"])) == 0
+    assert total(Vec.new()) == 0
+}
+</code></pre>
+<h2 id="pricesrk"><a class="header" href="#pricesrk">prices.rk</a></h2>
+<p>What things cost. Only <code>price_of</code> is public; how the prices are kept is
+this package’s own business.</p>
+<!-- tour: show -->
+<pre><code class="language-rask">public func price_of(item: string) -&gt; i32? {
+    return price_list().get(item)
+}
+
+func price_list() -&gt; Map&lt;string, i32&gt; {
+    mut list = Map.new()
+    list["tea"] = 3
+    list["cake"] = 4
+    list["jam"] = 2
+    return list
+}
+</code></pre>
+<h2 id="tillrk"><a class="header" href="#tillrk">till.rk</a></h2>
+<p>Your turn: <code>total</code> adds up what the items cost, with <code>price_of</code> from
+prices.rk. Something without a price counts as 0.</p>
+<!-- tour: show -->
+<pre><code class="language-rask">public func total(items: Vec&lt;string&gt;) -&gt; i32 {
+    todo()
+}
+</code></pre>
+<h2 id="rasktoml"><a class="header" href="#rasktoml">rask.toml</a></h2>
+<pre><code class="language-toml">schema = "rask-package@1"
+
+[package]
+name = "shop"
+version = "0.1.0"
+</code></pre>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="examples"><a class="header" href="#examples">Examples</a></h1>
+<p>Complete programs, not fragments. Each one lives in
+<a href="https://github.com/rask-lang/rask/tree/main/examples">examples/</a> with a recorded output in
+<code>tests/golden/</code>, which enrolls it in the example gate: every CI run compiles it on both
+backends and diffs what it prints. A program listed here works, or the build is red.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Program</th><th>What it exercises</th></tr>
+</thead>
+<tbody>
+<tr><td><a href="https://github.com/rask-lang/rask/blob/main/examples/grep_clone.rk">grep_clone.rk</a></td><td>CLI flags, file reads, <code>catch</code> on the error branch, string scanning</td></tr>
+<tr><td><a href="https://github.com/rask-lang/rask/blob/main/examples/file_copy.rk">file_copy.rk</a></td><td>Error enums with <code>message()</code>, optionals, <code>own</code> at a call site</td></tr>
+<tr><td><a href="https://github.com/rask-lang/rask/blob/main/examples/game_loop.rk">game_loop.rk</a></td><td>Frame update, interfaces, worker threads. Read it for the loop, not the storage (see below)</td></tr>
+<tr><td><a href="https://github.com/rask-lang/rask/blob/main/examples/text_editor.rk">text_editor.rk</a></td><td>Undo stack, <code>ensure</code> cleanup, linear resources. Same storage caveat</td></tr>
+<tr><td><a href="https://github.com/rask-lang/rask/blob/main/examples/parameter_modes.rk">parameter_modes.rk</a></td><td>Borrow, <code>mutate</code>, <code>take</code>. The subject of the tour’s steps <a href="#changing-what-youre-given">18</a> and <a href="#giving-a-value-away">19</a></td></tr>
+</tbody>
+</table>
+</div>
+<p>Run one:</p>
+<pre><code class="language-bash">rask run examples/grep_clone.rk -- -n pattern file.txt
+</code></pre>
+<p>There were walkthrough chapters here. They quoted code by hand, were checked only for
+parsing, and drifted: the game-loop page taught <code>Pool&lt;T&gt;</code>, which the design replaced with
+racks and links. Guide chapters now pull their code out of these programs
+(<a href="#how-this-book-is-built">how this book is built</a>),
+so a walkthrough can’t say something the program doesn’t do.</p>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="formal-specifications"><a class="header" href="#formal-specifications">Formal Specifications</a></h1>
+<p>The formal language specifications are maintained in the repository’s <code>specs/</code> directory. These are detailed technical documents for language implementers and those who want deep understanding.</p>
+<p><strong><a href="https://github.com/rask-lang/rask/tree/main/specs">View Specifications →</a></strong></p>
+<h2 id="organization"><a class="header" href="#organization">Organization</a></h2>
+<p>Specs are organized by topic:</p>
+<ul>
+<li><strong><a href="https://github.com/rask-lang/rask/tree/main/specs/types">Types</a></strong> - Type system, generics, interfaces</li>
+<li><strong><a href="https://github.com/rask-lang/rask/tree/main/specs/memory">Memory</a></strong> - Ownership, borrowing, resources</li>
+<li><strong><a href="https://github.com/rask-lang/rask/tree/main/specs/control">Control</a></strong> - Loops, match, comptime</li>
+<li><strong><a href="https://github.com/rask-lang/rask/tree/main/specs/concurrency">Concurrency</a></strong> - Tasks, threads, channels</li>
+<li><strong><a href="https://github.com/rask-lang/rask/tree/main/specs/structure">Structure</a></strong> - Modules, packages, builds</li>
+<li><strong><a href="https://github.com/rask-lang/rask/tree/main/specs/stdlib">Stdlib</a></strong> - Standard library APIs</li>
+</ul>
+<h2 id="quick-access"><a class="header" href="#quick-access">Quick Access</a></h2>
+<p>Key specifications:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Topic</th><th>Link</th></tr>
+</thead>
+<tbody>
+<tr><td>Ownership</td><td><a href="https://github.com/rask-lang/rask/blob/main/specs/memory/ownership.md">ownership.md</a></td></tr>
+<tr><td>Borrowing</td><td><a href="https://github.com/rask-lang/rask/blob/main/specs/memory/borrowing.md">borrowing.md</a></td></tr>
+<tr><td>Collections</td><td><a href="https://github.com/rask-lang/rask/blob/main/specs/stdlib/collections.md">collections.md</a></td></tr>
+<tr><td>Racks and Links</td><td><a href="https://github.com/rask-lang/rask/blob/main/specs/memory/racks.md">racks.md</a></td></tr>
+<tr><td>Error Types</td><td><a href="https://github.com/rask-lang/rask/blob/main/specs/types/error-types.md">error-types.md</a></td></tr>
+<tr><td>Concurrency</td><td><a href="https://github.com/rask-lang/rask/blob/main/specs/concurrency/async.md">async.md</a></td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="for-users-vs-implementers"><a class="header" href="#for-users-vs-implementers">For Users vs Implementers</a></h2>
+<ul>
+<li><strong>This Book</strong> - User-facing documentation (“How do I use Rask?”)</li>
+<li><strong>Specs</strong> - Formal specifications (“How does Rask work internally?”)</li>
+</ul>
+<p>Most Rask users won’t need the specs. If you’re:</p>
+<ul>
+<li><strong>Building applications</strong> → This book is for you</li>
+<li><strong>Building compilers/tools</strong> → Read the specs</li>
+<li><strong>Curious about internals</strong> → Specs provide complete detail</li>
+</ul>
+<h2 id="see-also"><a class="header" href="#see-also">See Also</a></h2>
+<ul>
+<li><a href="https://github.com/rask-lang/rask/blob/main/specs/CORE_DESIGN.md">CORE_DESIGN.md</a> - Design philosophy and rationale</li>
+<li><a href="https://github.com/rask-lang/rask/blob/main/specs/METRICS.md">METRICS.md</a> - How the design is validated</li>
+</ul>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="contributing"><a class="header" href="#contributing">Contributing</a></h1>
+<p>The most useful thing to do with Rask right now is use it and say where it
+breaks: a program that crashes, an error message that left you guessing, a
+page in this book that says something the compiler doesn’t do.
+<a href="https://github.com/rask-lang/rask/issues/new">Open an issue</a> with the smallest
+program that shows it, what it printed, and <code>rask --version</code>.</p>
+<p><a href="https://github.com/rask-lang/rask/blob/main/CONTRIBUTING.md">CONTRIBUTING.md</a>
+in the repository covers the rest: building from source, running the tests,
+which checks CI runs, and where things are.</p>
+<p>The two pages here are about the design and the book:</p>
+<ul>
+<li><a href="#design-process">Design process</a>: the principles every feature is
+measured against.</li>
+<li><a href="#how-this-book-is-built">How this book is built</a>: the rules for adding a
+page or a tour step, and why every block in it is checked.</li>
+</ul>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="design-process"><a class="header" href="#design-process">Design Process</a></h1>
+<p>Rask’s design is guided by clear principles and measured against specific metrics.</p>
+<h2 id="design-principles"><a class="header" href="#design-principles">Design Principles</a></h2>
+<ol>
+<li><strong>Safety Without Annotation</strong> - Memory safety without lifetime markers</li>
+<li><strong>Value Semantics</strong> - No hidden sharing or aliasing</li>
+<li><strong>No Storable References</strong> - References can’t escape scope</li>
+<li><strong>Transparent Costs</strong> - Major costs visible in code</li>
+<li><strong>Local Analysis Only</strong> - No whole-program inference</li>
+<li><strong>Resource Types</strong> - I/O handles must be consumed</li>
+<li><strong>Compiler Knowledge is Visible</strong> - IDE shows inferred information</li>
+</ol>
+<p>Full details: <a href="https://github.com/rask-lang/rask/blob/main/specs/CORE_DESIGN.md">CORE_DESIGN.md</a></p>
+<h2 id="validation"><a class="header" href="#validation">Validation</a></h2>
+<p>Rask is validated against test programs that must work naturally:</p>
+<ol>
+<li>HTTP JSON API server ✓ (passes type-checking)</li>
+<li>grep clone ✓ (implemented)</li>
+<li>Text editor with undo ✓ (implemented)</li>
+<li>Game loop with entities ✓ (implemented)</li>
+<li>Embedded sensor processor ✓ (passes type-checking)</li>
+</ol>
+<p><strong>Litmus test:</strong> If Rask is longer/noisier than Go for core loops, fix the design.</p>
+<h2 id="metrics"><a class="header" href="#metrics">Metrics</a></h2>
+<p>Design decisions are evaluated using concrete metrics:</p>
+<ul>
+<li>Clone overhead (% of lines with .clone())</li>
+<li>Graph edge-write cost (nanoseconds)</li>
+<li>Compile times (seconds per 1000 LOC)</li>
+<li>Binary size</li>
+<li>Memory usage</li>
+</ul>
+<p>See <a href="https://github.com/rask-lang/rask/blob/main/specs/METRICS.md">METRICS.md</a> for the scoring methodology.</p>
+<h2 id="specs-and-rfcs"><a class="header" href="#specs-and-rfcs">Specs and RFCs</a></h2>
+<p>Language features are documented as formal specifications in <a href="https://github.com/rask-lang/rask/tree/main/specs">specs/</a>.</p>
+<p>Major changes follow an RFC process:</p>
+<ol>
+<li>Open an issue for discussion</li>
+<li>Draft a specification</li>
+<li>Implement in compiler</li>
+<li>Validate against litmus tests</li>
+<li>Update metrics</li>
+<li>Merge if it improves the design</li>
+</ol>
+<h2 id="tradeoffs"><a class="header" href="#tradeoffs">Tradeoffs</a></h2>
+<p>Every design has tradeoffs. Rask makes these intentional choices:</p>
+<ul>
+<li><strong>More <code>.clone()</code> calls</strong> - Better than lifetime annotations (our view)</li>
+<li><strong>An edge write touches the target too</strong> - Better than raw pointers with manual tracking</li>
+<li><strong>No storable references</strong> - Simpler mental model, requires restructuring some patterns</li>
+<li><strong>Explicit costs</strong> - Better than hidden complexity</li>
+</ul>
+<p>See <a href="https://github.com/rask-lang/rask/blob/main/specs/CORE_DESIGN.md#design-tradeoffs">CORE_DESIGN.md § Tradeoffs</a> for full discussion.</p>
+<h2 id="contributing-to-design"><a class="header" href="#contributing-to-design">Contributing to Design</a></h2>
+<p>When proposing changes:</p>
+<ol>
+<li><strong>Explain the problem</strong> - What use case is difficult today?</li>
+<li><strong>Show the tradeoff</strong> - What does this cost?</li>
+<li><strong>Test against litmus tests</strong> - Does it make real programs better or worse?</li>
+<li><strong>Measure the impact</strong> - Update relevant metrics</li>
+<li><strong>Consider alternatives</strong> - What other approaches exist?</li>
+</ol>
+<p>The goal is ergonomics without hidden costs. If a feature hides complexity or breaks transparency, it probably doesn’t belong.</p>
+<h2 id="philosophy"><a class="header" href="#philosophy">Philosophy</a></h2>
+<blockquote>
+<p>“Safety is a property, not an experience.”</p>
+</blockquote>
+<p>Users shouldn’t think about memory safety—they should just write code. The type system and scope rules make unsafe operations impossible by construction.</p>
+<blockquote>
+<p>“If Rask needs 3+ lines where Go needs 1, question the design.”</p>
+</blockquote>
+<p>Ceremony should be minimal. Explicit costs are good; boilerplate is bad.</p>
+<blockquote>
+<p>“Local analysis only.”</p>
+</blockquote>
+<p>Compilation should scale linearly. No whole-program inference, no escape analysis. Function signatures tell the whole story.</p>
+<h2 id="learn-more"><a class="header" href="#learn-more">Learn More</a></h2>
+<ul>
+<li><a href="https://github.com/rask-lang/rask/blob/main/specs/CORE_DESIGN.md">CORE_DESIGN.md</a> - Complete design rationale</li>
+<li><a href="https://github.com/rask-lang/rask/blob/main/specs/METRICS.md">METRICS.md</a> - How we measure success</li>
+<li><a href="https://github.com/rask-lang/rask/blob/main/TODO.md">TODO.md</a> - What’s being worked on</li>
+<li><a href="#formal-specifications">Formal Specifications</a> - Detailed technical specs</li>
+</ul>
+<div style="break-before: page; page-break-before: always;"></div>
+<h1 id="how-this-book-is-built"><a class="header" href="#how-this-book-is-built">How this book is built</a></h1>
+<p>Rules for anyone adding a page. They exist because a book is a second copy of the
+language, and the usual fate of a second copy is to drift until it teaches a version
+of the language nobody ships.</p>
+<h2 id="what-a-page-may-contain"><a class="header" href="#what-a-page-may-contain">What a page may contain</a></h2>
+<p>Prose, and code that something else already verifies. Nothing else.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>You want to show</th><th>Write it as</th></tr>
+</thead>
+<tbody>
+<tr><td>A few lines from a real program</td><td><code>{{#include ../path/prog.rk:anchor}}</code></td></tr>
+<tr><td>A small self-contained snippet</td><td>an inline block with <code>&lt;!-- test: compile --&gt;</code> or <code>&lt;!-- test: run | expected output --&gt;</code></td></tr>
+<tr><td>What a program prints</td><td><code>{{#include ../../../../tests/golden/&lt;name&gt;.out}}</code></td></tr>
+</tbody>
+</table>
+</div>
+<p><code>&lt;!-- test: parse --&gt;</code> does not count as verified anywhere in the book. Parsing proves the
+syntax is current; syntax is not what rots. The front-page snippet passed <code>test: parse</code>
+while calling <code>fs.open</code>, which the real grep program doesn’t use, and missing both its
+imports, so a reader copying it got two errors on page one. <code>compile</code> type-checks;
+<code>run | expected</code> runs it and matches the output. Use one of those.</p>
+<p>CI runs the markers in its “Docs snippets parse” step, which has covered <code>docs/</code> for a
+while. What it can’t tell you is whether a block has a marker at all, or whether the one
+it has is strong enough, which is what <code>tests/book_gate.sh</code> is for. It also checks that every include resolves: the file is
+present <em>and</em> the named anchor really is in it, because mdBook renders a missing anchor as
+nothing at all and says so quietly.</p>
+<h2 id="the-tour"><a class="header" href="#the-tour">The tour</a></h2>
+<p>“Learn the language” is the tour in <code>learn/</code>, one step per idea, and each step is a
+<code>.rk</code> file the reader runs in a clone: prose in its comments, the idea working, then a
+<code>todo()</code> for the reader and the <code>test</code> blocks that check it. The pages here are made
+from those files by <code>learn_pages.py</code> when the book is built, so the text exists once.
+Comment blocks at the left margin become prose, and the code between them becomes
+blocks that can be edited and run on the page. A step’s page isn’t committed; don’t
+write one by hand.</p>
+<p><code>tests/tour_gate.sh</code> holds the steps to what they promise: each one fails as shipped,
+and its answer in <code>learn/solutions/</code> passes on both backends. Each step declares the
+idea it introduces with a <code>// new: &lt;idea&gt;</code> line, and <code>tests/tour_ideas.py</code> knows what
+each idea looks like in code, so a step that uses something a later step teaches fails
+the gate. That was the old tutorial’s worst problem: a chapter’s exercise needed the
+next chapter.</p>
+<p>A new step goes in the order, with a solution, a <code>// new:</code> line, an entry in
+<code>tour_ideas.py</code>, and a line in <code>SUMMARY.md</code> and <code>learn/README.md</code>. <code>learn_pages.py</code>
+fails the build when either list disagrees with the files.</p>
+<h2 id="how-to-explain-it"><a class="header" href="#how-to-explain-it">How to explain it</a></h2>
+<p>The machine is the metaphor. Describe what actually happens in memory, in plain words,
+and don’t build a story on top of it.</p>
+<p>Lending is the cautionary case. In a library the book leaves the shelf; in Rask the
+caller goes on reading the value for the whole call. A reader who builds the library
+model predicts the wrong thing at their first <code>mutate</code> call — and learned it here.</p>
+<p>Rask can afford the literal route where most languages can’t. No lifetime annotations,
+no reference type, no effects: every rule is a claim about bytes and where they sit. So
+make the claim.</p>
+<p><strong>One noun carries it: storage.</strong> A place in memory holding a value. A name reaches
+storage, a move hands it over, a borrow reads storage the function doesn’t own, a copy
+makes a second one. Define it once and don’t introduce a parallel vocabulary three
+chapters later.</p>
+<p><strong>Idea first, word second.</strong> Build the model in plain language, then attach the term in
+one sentence, as a hook for the error messages:</p>
+<blockquote>
+<p>A function that takes a value without <code>take</code> reads the caller’s storage where it sits
+— it doesn’t get a copy, and it doesn’t get to keep it. The compiler calls this
+<strong>borrowing</strong>, and you’ll see the word in error messages.</p>
+</blockquote>
+<p>Jargon is a label for something the reader already has. Arriving before the idea is what
+makes a language feel like it was written for people who already know it.</p>
+<p><strong>Spend a metaphor only where the literal thing isn’t observable.</strong> In Rask that’s
+almost nowhere, which is the design working rather than a style choice. Every spend
+should feel like a defeat.</p>
+<p>The test for a paragraph: could a reader predict the next error message from what it
+just told them? If they’d have to re-derive it from a metaphor first, the paragraph is
+doing the wrong job.</p>
+<p><strong>No “I”, and no decisions.</strong> The style guide keeps first person for design writing,
+where someone is owning a tradeoff. A chapter isn’t that. It explains a language that
+already works, to someone trying to use it, so it says what the rule is and why it holds:
+“taking a lock is a real cost, so it belongs in the source where it happens”, never “I
+picked scoped access over making a shared value feel like a plain one”. Same reasoning, no
+author in the room.</p>
+<p>The difference from the section below is worth keeping straight. The <em>why</em> belongs in a
+chapter. The <em>choosing</em> doesn’t: alternatives that were weighed, what was rejected and
+what it would have cost are design writing, and they live in <code>specs/</code> and
+<a href="https://github.com/rask-lang/rask/blob/main/specs/RULINGS.md">RULINGS.md</a>. A reader
+learning <code>Shared</code> needs the reason the lock is visible. They don’t need to know it was
+ever up for debate.</p>
+<h2 id="write-the-language-not-the-compilers-current-mood"><a class="header" href="#write-the-language-not-the-compilers-current-mood">Write the language, not the compiler’s current mood</a></h2>
+<p>A chapter describes the language as it’s designed. A bug in one backend is a bug, not a
+smaller language, and it never decides what a page is allowed to teach.</p>
+<p>When the two backends disagree the interpreter is the reference, so a block that runs
+correctly there is correct. Mark it <code>&lt;!-- test: run-interp | expected --&gt;</code>, which exists
+for this, and file the native gap. The block stays verified, the chapter stays honest,
+and the marker is what the fix later deletes.</p>
+<p>What this rules out is quietly teaching less. The scoped-access chapter dropped recursive <code>Heap</code>
+for a day because the recursive case doesn’t lower on native (<a href="https://github.com/rask-lang/rask/issues/1234">#1234</a>), and what the page
+taught instead was a smaller language that happens to match one backend’s bugs. A reader
+can’t tell the difference between “Rask doesn’t do this” and “Rask does this and the
+compiler is behind”, and only one of those is true.</p>
+<p>Caveats about what’s broken don’t belong in a chapter either. They date instantly and
+they’re the issue tracker’s job.</p>
+<h2 id="the-book-teaches-the-ruling-not-just-the-rule"><a class="header" href="#the-book-teaches-the-ruling-not-just-the-rule">The book teaches the ruling, not just the rule</a></h2>
+<p>The specs are normative and say what the rule is. A chapter’s job is the part the spec
+tables leave out: why it holds. “The marker is required” is a spec line. “A misread move
+is caught for you and a misread mutation isn’t, so the one that can’t be caught is the
+one you write down” is a chapter.</p>
+<p>Note what that example doesn’t do: it never mentions the alternative, or that anyone
+chose. It gives the reader the reason and stops. That’s the line between a why, which
+belongs here, and a decision, which belongs in <code>specs/</code>.</p>
+<p><a href="https://github.com/rask-lang/rask/blob/main/specs/RULINGS.md">specs/RULINGS.md</a> is where those arguments come from. If a
+chapter can’t say why, it’s restating the spec and should link to it instead.</p>
+<h2 id="size-is-capped-by-the-language-not-by-the-author"><a class="header" href="#size-is-capped-by-the-language-not-by-the-author">Size is capped by the language, not by the author</a></h2>
+<p><a href="https://github.com/rask-lang/rask/blob/main/specs/DAY_ONE.md">specs/DAY_ONE.md</a> holds the reading set: the concepts you need
+to read someone else’s Rask, which must fit one page. The guide inherits that budget:
+roughly one chapter per Day-One concept, and no chapter for something that isn’t in the
+language yet.</p>
+<p>This is the answer to books that grow to a thousand pages: the guide can’t outgrow the
+language, because its table of contents is the language’s own list. Anything deeper goes
+to <code>specs/</code>, which is allowed to be long.</p>
+<h2 id="what-to-do-when-the-language-changes"><a class="header" href="#what-to-do-when-the-language-changes">What to do when the language changes</a></h2>
+<p>Nothing, usually. That’s the point: included code moves with its program, a tour step
+fails its gate when the compiler stops agreeing with it, program output comes from the
+goldens. The
+prose only needs touching when a <em>decision</em> changes, which is rare and deliberate.</p>
+<p>If you find yourself keeping a page in step by hand, the page is built wrong.</p>
+
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+
+
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+
+            </nav>
+
+        </div>
+
+        <template id=fa-eye><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M288 32c-80.8 0-145.5 36.8-192.6 80.6C48.6 156 17.3 208 2.5 243.7c-3.3 7.9-3.3 16.7 0 24.6C17.3 304 48.6 356 95.4 399.4C142.5 443.2 207.2 480 288 480s145.5-36.8 192.6-80.6c46.8-43.5 78.1-95.4 93-131.1c3.3-7.9 3.3-16.7 0-24.6c-14.9-35.7-46.2-87.7-93-131.1C433.5 68.8 368.8 32 288 32zM432 256c0 79.5-64.5 144-144 144s-144-64.5-144-144s64.5-144 144-144s144 64.5 144 144zM288 192c0 35.3-28.7 64-64 64c-11.5 0-22.3-3-31.6-8.4c-.2 2.8-.4 5.5-.4 8.4c0 53 43 96 96 96s96-43 96-96s-43-96-96-96c-2.8 0-5.6 .1-8.4 .4c5.3 9.3 8.4 20.1 8.4 31.6z"/></svg></span></template>
+        <template id=fa-eye-slash><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M38.8 5.1C28.4-3.1 13.3-1.2 5.1 9.2S-1.2 34.7 9.2 42.9l592 464c10.4 8.2 25.5 6.3 33.7-4.1s6.3-25.5-4.1-33.7L525.6 386.7c39.6-40.6 66.4-86.1 79.9-118.4c3.3-7.9 3.3-16.7 0-24.6c-14.9-35.7-46.2-87.7-93-131.1C465.5 68.8 400.8 32 320 32c-68.2 0-125 26.3-169.3 60.8L38.8 5.1zM223.1 149.5C248.6 126.2 282.7 112 320 112c79.5 0 144 64.5 144 144c0 24.9-6.3 48.3-17.4 68.7L408 294.5c5.2-11.8 8-24.8 8-38.5c0-53-43-96-96-96c-2.8 0-5.6 .1-8.4 .4c5.3 9.3 8.4 20.1 8.4 31.6c0 10.2-2.4 19.8-6.6 28.3l-90.3-70.8zm223.1 298L373 389.9c-16.4 6.5-34.3 10.1-53 10.1c-79.5 0-144-64.5-144-144c0-6.9 .5-13.6 1.4-20.2L83.1 161.5C60.3 191.2 44 220.8 34.5 243.7c-3.3 7.9-3.3 16.7 0 24.6c14.9 35.7 46.2 87.7 93 131.1C174.5 443.2 239.2 480 320 480c47.8 0 89.9-12.9 126.2-32.5z"/></svg></span></template>
+        <template id=fa-copy><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M502.6 70.63l-61.25-61.25C435.4 3.371 427.2 0 418.7 0H255.1c-35.35 0-64 28.66-64 64l.0195 256C192 355.4 220.7 384 256 384h192c35.2 0 64-28.8 64-64V93.25C512 84.77 508.6 76.63 502.6 70.63zM464 320c0 8.836-7.164 16-16 16H255.1c-8.838 0-16-7.164-16-16L239.1 64.13c0-8.836 7.164-16 16-16h128L384 96c0 17.67 14.33 32 32 32h47.1V320zM272 448c0 8.836-7.164 16-16 16H63.1c-8.838 0-16-7.164-16-16L47.98 192.1c0-8.836 7.164-16 16-16H160V128H63.99c-35.35 0-64 28.65-64 64l.0098 256C.002 483.3 28.66 512 64 512h192c35.2 0 64-28.8 64-64v-32h-47.1L272 448z"/></svg></span></template>
+        <template id=fa-play><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 384 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M73 39c-14.8-9.1-33.4-9.4-48.5-.9S0 62.6 0 80V432c0 17.4 9.4 33.4 24.5 41.9s33.7 8.1 48.5-.9L361 297c14.3-8.7 23-24.2 23-41s-8.7-32.2-23-41L73 39z"/></svg></span></template>
+        <template id=fa-clock-rotate-left><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M75 75L41 41C25.9 25.9 0 36.6 0 57.9V168c0 13.3 10.7 24 24 24H134.1c21.4 0 32.1-25.9 17-41l-30.8-30.8C155 85.5 203 64 256 64c106 0 192 86 192 192s-86 192-192 192c-40.8 0-78.6-12.7-109.7-34.4c-14.5-10.1-34.4-6.6-44.6 7.9s-6.6 34.4 7.9 44.6C151.2 495 201.7 512 256 512c141.4 0 256-114.6 256-256S397.4 0 256 0C185.3 0 121.3 28.7 75 75zm181 53c-13.3 0-24 10.7-24 24V256c0 6.4 2.5 12.5 7 17l72 72c9.4 9.4 24.6 9.4 33.9 0s9.4-24.6 0-33.9l-65-65V152c0-13.3-10.7-24-24-24z"/></svg></span></template>
+
+
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+
+
+        <script src="elasticlunr-ef4e11c1.min.js"></script>
+        <script src="mark-09e88c2c.min.js"></script>
+        <script src="searcher-09f2665d.js"></script>
+
+        <script src="clipboard-1626706a.min.js"></script>
+        <script src="highlight-abc7f01d.js"></script>
+        <script src="book-609e4cb8.js"></script>
+
+        <!-- Custom JS scripts -->
+        <script src="theme/chrome-049a19c1.js"></script>
+        <script src="theme/run-bca2d72e.js"></script>
+
+        <script>
+        window.addEventListener('load', function() {
+            window.setTimeout(window.print, 100);
+        });
+        </script>
+
+
+    </div>
+    </body>
+</html>

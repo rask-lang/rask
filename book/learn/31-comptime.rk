@@ -1,0 +1,57 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// 31. Work done while compiling
+//
+// Some values never change between runs: a table of squares, the primes
+// under 100. Working them out every time the program starts is wasted
+// effort, and typing them in by hand invites a typo nobody spots.
+//
+// A `comptime` block runs while the program is being compiled, and its
+// result is built into the program as a constant. It's ordinary Rask, and it
+// can call your own functions, as long as they only compute and don't print,
+// read files or start tasks. `const` names the result, outside any function.
+
+const SQUARES = comptime {
+    mut table = Vec.new()
+    for i in 0..10 {
+        table.push(i * i)
+    }
+    table
+}
+
+// A block that gives a value ends with that value on its own line, like
+// `table` above. `return` would leave a function, and this block isn't in
+// one.
+//
+// Your turn: write `is_prime`. `PRIMES` calls it while compiling, so until
+// it's done, `rask test` stops before running anything, with the compiler
+// telling you a `todo()` was reached at compile time.
+
+func is_prime(n: i32) -> bool {
+    todo()
+}
+
+const PRIMES = comptime {
+    mut found = Vec.new()
+    for n in 0..50 {
+        if is_prime(n) {
+            found.push(n)
+        }
+    }
+    found
+}
+
+test "squares" {
+    assert SQUARES[7] == 49
+}
+
+test "primes" {
+    assert PRIMES.len() == 15
+    assert PRIMES[0] == 2
+    assert PRIMES[14] == 47
+    assert !is_prime(1)
+    assert is_prime(97)
+}
+
+// new: comptime
+// test-specs: skip: an exercise; tests/tour_gate.sh checks it fails as shipped

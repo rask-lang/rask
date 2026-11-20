@@ -1,0 +1,85 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// 29. Tasks and channels
+//
+// A program often has two things to do that don't depend on each other: add
+// up two halves of a long list, answer two people at once. Doing them one
+// after the other wastes the time one spends waiting or the second core the
+// machine has.
+//
+// `spawn { ... }` starts the block as a task that runs alongside the code
+// that started it. The block is the whole of the task, so it hands back its
+// answer with `return`, as a function does. `join()` waits for the task and
+// gives back that answer, or an error if the task crashed, hence the `!`.
+// Every task you start has to be joined; forgetting one is a compile error.
+// Any function can run in a task, with no special kind of function for it.
+// Tasks need something to run them, which `using Multitasking { ... }` sets
+// up.
+
+func doubled_and_squared(n: i32) -> i32 {
+    using Multitasking {
+        let doubled = spawn { return n * 2 }
+        let squared = spawn { return n * n }
+        return doubled.join()! + squared.join()!
+    }
+}
+
+// A channel carries values from one task to another while both run.
+// `Channel<i32>.buffered(10)` gives a sending end and a receiving end, which
+// can hold 10 values waiting.
+
+func squares(n: i32) -> Vec<i32> {
+    using Multitasking {
+        let (tx, rx) = Channel<i32>.buffered(10)
+        let worker = spawn {
+            for i in 1..=n {
+                tx.send(i * i)!
+            }
+        }
+        mut out = Vec.new()
+        for _ in 0..n {
+            out.push(rx.receive()!)
+        }
+        worker.join()!
+        return out
+    }
+}
+
+// Your turn: `split_sum` adds up the numbers with two tasks, one for each
+// half of the list, and adds their two answers together.
+
+func split_sum(numbers: Vec<i32>) -> i32 {
+    let middle = numbers.len() / 2
+    using Multitasking {
+        let low = spawn {
+            mut sum = 0
+            for i in 0..middle {
+                sum += numbers[i]
+            }
+            return sum
+        }
+        let high = spawn {
+            mut sum = 0
+            for i in middle..numbers.len() {
+                sum += numbers[i]
+            }
+            return sum
+        }
+        return low.join()! + high.join()!
+    }
+}
+
+test "two tasks" {
+    assert doubled_and_squared(5) == 35
+}
+
+test "squares" {
+    assert squares(4) == Vec.from([1, 4, 9, 16])
+    assert squares(0).len() == 0
+}
+
+test "split sum" {
+    assert split_sum(Vec.from([1, 2, 3, 4, 5])) == 15
+    assert split_sum(Vec.from([7])) == 7
+    assert split_sum(Vec.new()) == 0
+}

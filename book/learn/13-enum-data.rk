@@ -1,0 +1,50 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// 13. Enums that carry data
+//
+// Each case of an enum can carry its own fields, and each case can carry
+// different ones. A card payment has a fee; cash doesn't; a free order has no
+// amount at all. A struct would need every field for every case, with some of
+// them meaningless, and nothing would stop you reading a card fee off a cash
+// payment. Here the fee only exists where it makes sense.
+//
+// A `match` arm names the fields it wants, and inside the arm they're
+// ordinary names. That's the only way to get at them, so you can't read the
+// fee without first having checked that it's a card.
+
+enum Payment {
+    Cash(amount: i32)
+    Card(amount: i32, fee: i32)
+    Free
+}
+
+func charged(p: Payment) -> i32 {
+    return match p {
+        Payment.Cash(amount) => amount,
+        Payment.Card(amount, fee) => amount + fee,
+        Payment.Free => 0,
+    }
+}
+
+// A field can be bound under another name, `Payment.Cash(amount: a)`, and one
+// you don't need can be left out of the pattern.
+//
+// Your turn: `receipt` gives "cash 10", "card 10 + 2 fee" or "free".
+
+func receipt(p: Payment) -> string {
+    todo()
+}
+
+test "charged" {
+    assert charged(Payment.Card(amount: 10, fee: 2)) == 12
+    assert charged(Payment.Free) == 0
+}
+
+test "receipt" {
+    assert receipt(Payment.Cash(amount: 10)) == "cash 10"
+    assert receipt(Payment.Card(amount: 10, fee: 2)) == "card 10 + 2 fee"
+    assert receipt(Payment.Free) == "free"
+}
+
+// new: enum-data
+// test-specs: skip: an exercise; tests/tour_gate.sh checks it fails as shipped
