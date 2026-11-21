@@ -125,6 +125,15 @@ impl TypeChecker {
                         });
                         continue;
                     }
+                    // A `?.` read whose object settled late still needs its
+                    // optional layer peeled, or rejected.
+                    if through_chain {
+                        let c = TypeConstraint::HasField { ty, field, expected, span, self_type, through_chain };
+                        if let Err(e) = self.solve_constraint(c) {
+                            self.errors.push(e);
+                        }
+                        continue;
+                    }
                     if !Self::is_placeholder_type(&resolved) {
                         self.poison(&expected);
                         self.errors.push(TypeError::NoSuchField {
@@ -611,18 +620,43 @@ impl TypeChecker {
             } => {
                 let ty = if through_chain {
                     let settled = self.resolve_named(&self.ctx.apply(&ty));
-                    if matches!(settled, Type::Var(_)) {
-                        self.ctx.add_constraint(TypeConstraint::HasField {
-                            ty: settled,
-                            field,
-                            expected,
-                            span,
-                            self_type,
-                            through_chain,
-                        });
-                        return Ok(false);
+                    match settled {
+                        Type::Var(_) => {
+                            self.ctx.add_constraint(TypeConstraint::HasField {
+                                ty: settled,
+                                field,
+                                expected,
+                                span,
+                                self_type,
+                                through_chain,
+                            });
+                            return Ok(false);
+                        }
+                        Type::Error => settled,
+                        _ => match settled.as_option() {
+                            // `?.` unwraps one layer at run time, so a payload
+                            // that is itself optional has no fields (OPT19).
+                            Some(payload) if payload.is_option() => {
+                                self.poison(&expected);
+                                return Err(TypeError::WrapperFieldCut {
+                                    field,
+                                    receiver: payload.clone(),
+                                    chained: true,
+                                    span,
+                                });
+                            }
+                            Some(payload) => payload.clone(),
+                            // `T or E` has no `?.` either; `resolve_field` reports it.
+                            None if matches!(settled, Type::Result { .. }) => settled,
+                            // `?.` is for optionals (OPT3). On a plain value
+                            // native read the field and the interpreter failed
+                            // at run time.
+                            None => {
+                                self.poison(&expected);
+                                return Err(TypeError::TryOnNonResult { found: settled, op: "?.", span });
+                            }
+                        },
                     }
-                    settled.as_option().cloned().unwrap_or(settled)
                 } else {
                     ty
                 };

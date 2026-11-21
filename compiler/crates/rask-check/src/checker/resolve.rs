@@ -440,7 +440,7 @@ impl TypeChecker {
             // wrapper: nothing narrows `x`, so the payload may not be there.
             // Looking through used to type-check it, and then native read the
             // field out of an absent value while the interpreter failed.
-            ty if ty.is_option() => Err(TypeError::WrapperFieldCut { field, receiver: ty.clone(), span }),
+            ty if ty.is_option() => Err(TypeError::WrapperFieldCut { field, receiver: ty.clone(), chained: false, span }),
             _ => Err(TypeError::NoSuchField {
                 ty,
                 field,

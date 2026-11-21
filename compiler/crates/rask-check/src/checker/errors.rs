@@ -337,7 +337,7 @@ pub enum TypeError {
     /// `x.field` on a `T?`: the wrapper has no fields either. The test
     /// `if x?` doesn't narrow, so the field is reached through `?.` or a bind.
     #[error("no field `{field}` on `{receiver}`")]
-    WrapperFieldCut { field: String, receiver: Type, span: Span },
+    WrapperFieldCut { field: String, receiver: Type, chained: bool, span: Span },
     #[error("missing return statement")]
     MissingReturn {
         function_name: String,
