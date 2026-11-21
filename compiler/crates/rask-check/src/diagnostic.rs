@@ -1150,7 +1150,7 @@ impl ToDiagnostic for crate::TypeError {
 
             WrapperFieldCut { field, receiver, span } => {
                 Diagnostic::error(format!("no field `{}` on `{}`", field, receiver))
-                    .with_code("E0367")
+                    .with_code("E0978")
                     .with_primary(*span, "the value may be absent")
                     .with_fix(format!(
                         "`x?.{0}` reads it when present, or bind first: `if x? as v {{ … v.{0} … }}`",

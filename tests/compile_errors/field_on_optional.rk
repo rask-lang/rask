@@ -15,10 +15,10 @@ func find(yes: bool) -> Big? {
 
 func main() {
     let present = find(false)
-    // ERROR: the value may be absent [E0367]
+    // ERROR: the value may be absent [E0978]
     let y: i64 = present.a
     if present? {
-        // ERROR: the value may be absent [E0367]
+        // ERROR: the value may be absent [E0978]
         println("{present.b}")
     }
     if present? as p {
