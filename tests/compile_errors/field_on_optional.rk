@@ -1,0 +1,46 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Rejects: `x.field` on an optional, inside `if x?` or anywhere else
+//
+// The checker used to look through the optional and answer with the payload's
+// field. Nothing had proved the payload was there: natively `find(false).a`
+// read a field out of an absent value, and the interpreter failed at runtime.
+// `if x?` is a plain boolean, so it doesn't make the read safe either.
+//
+// `?.` unwraps one layer. When the object's type settled late (a generic
+// call's result, a closure parameter) the checker peeled as many layers as it
+// found, so `wrap(xs.get(0))?.v` on an `Inner??` read garbage natively, and
+// `?.` on a plain struct passed check and failed only at run time.
+
+struct Big { a: i64, b: i64 }
+
+func find(yes: bool) -> Big? {
+    if yes { return Big(a: 1, b: 2) }
+    return none
+}
+
+func wrap<T>(x: T) -> T? {
+    return x
+}
+
+func main() {
+    let present = find(false)
+    // ERROR: the value may be absent [E0978]
+    let y: i64 = present.a
+    if present? {
+        // ERROR: the value may be absent [E0978]
+        println("{present.b}")
+    }
+    if present? as p {
+        println("{p.a}")
+    }
+    println("{y}")
+
+    let xs: Vec<Big> = [Big(a: 5, b: 6)]
+    // ERROR: the value may be absent [E0978]
+    let r = wrap(xs.get(0))?.a ?? -1
+    println("{r}")
+
+    // ERROR: `?.` on `Big`, which has no absent or error branch [E0369]
+    let f = |o| o?.a ?? -2
+    println("{f(Big(a: 3, b: 4))}")
+}

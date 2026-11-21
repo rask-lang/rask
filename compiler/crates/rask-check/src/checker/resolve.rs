@@ -229,6 +229,7 @@ impl TypeChecker {
                     expected,
                     span,
                     self_type,
+                    through_chain: false,
                 });
                 Ok(false)
             }
@@ -239,6 +240,7 @@ impl TypeChecker {
                     expected,
                     span,
                     self_type,
+                    through_chain: false,
                 });
                 Ok(false)
             }
@@ -434,11 +436,11 @@ impl TypeChecker {
                     Err(TypeError::NoSuchField { ty, field, span })
                 }
             }
-            // Option<T> field access: unwrap and access inner type
-            ty if ty.is_option() => {
-                let inner = ty.as_option().unwrap().clone();
-                self.resolve_field(inner, field, expected, span, self_type)
-            }
+            // `x.field` on a `T?` is an error, not a look through the
+            // wrapper: nothing narrows `x`, so the payload may not be there.
+            // Looking through used to type-check it, and then native read the
+            // field out of an absent value while the interpreter failed.
+            ty if ty.is_option() => Err(TypeError::WrapperFieldCut { field, receiver: ty.clone(), chained: false, span }),
             _ => Err(TypeError::NoSuchField {
                 ty,
                 field,

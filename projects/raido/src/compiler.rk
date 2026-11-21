@@ -250,8 +250,7 @@ extend Compiler {
         // always true and `i - 1` at zero wraps to u64::MAX.
         mut i = (self.scope.locals.len().wrap<i64>()) - 1
         while i >= 0 {
-            let local = self.scope.locals.get(i)
-            if local? {
+            if self.scope.locals.get(i)? as local {
                 if local.name == name {
                     return local.reg
                 }
@@ -269,7 +268,7 @@ extend Compiler {
 
     func end_scope(self) {
         while self.scope.locals.len() > 0 {
-            let depth = self.scope.locals.last().depth
+            let depth = self.scope.locals.last()!.depth
             if depth < self.scope.depth {
                 break
             }

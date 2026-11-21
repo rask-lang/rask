@@ -1854,17 +1854,13 @@ impl Interpreter {
                 else_branch,
                 else_binding,
             } => {
-                // OPT19/OPT20 + ER19/ER20/ER21/ER22: `if x?` or `if expr? as v`
-                // evaluates the scrutinee once and rebinds the payload as the
-                // narrow name (scrutinee ident for plain, `v` for `as v`,
-                // `else as e` for the else branch).
+                // `if expr? as v` / `... else as e` evaluate the scrutinee once
+                // and bind the payload in the matching branch. A test with no
+                // `as` binds nothing: `if x?` is a plain boolean and `x` stays
+                // optional inside the branch (no flow typing, type.optionals).
                 if let ExprKind::IsPresent { expr: inner, binding } = &cond.kind {
-                    let then_name = match (binding, &inner.kind) {
-                        (Some(v), _) => Some(v.clone()),
-                        (None, ExprKind::Ident(n)) => Some(n.clone()),
-                        _ => None,
-                    };
-                    let else_name = else_binding.clone().or_else(|| then_name.clone());
+                    let then_name = binding.clone();
+                    let else_name = else_binding.clone();
                     if then_name.is_some() || else_name.is_some() {
                         let scrutinee_val = self.eval_expr(inner)?;
                         let present = matches!(
@@ -1900,57 +1896,6 @@ impl Interpreter {
                         } else {
                             return Ok(Value::Unit);
                         }
-                    }
-                }
-
-                // ER24: early-exit narrowing. `if x == none { <diverges> }` with
-                // no `else` — reaching the code after this `if` means the guard
-                // didn't fire, so `x` holds the success side. Rebind it directly
-                // in the current scope (not a pushed one, unlike the `if x?`
-                // case above) so the narrowing is visible to the statements that
-                // follow the whole `if`, not just inside a branch.
-                // (The `if x is ErrType { … }` shape is parsed as `IfLet`, not
-                // `If` — its equivalent narrowing lives in the `IfLet` arm.)
-                if else_branch.is_none() {
-                    // `x == none` desugars to `x.eq(none)`; a bare `Binary` survives
-                    // when desugar was skipped (e.g. the spec test runner).
-                    let none_check = match &cond.kind {
-                        ExprKind::MethodCall { object, method, args, .. }
-                            if method == "eq"
-                                && args.len() == 1
-                                && matches!(args[0].expr.kind, ExprKind::None) =>
-                        {
-                            match &object.kind {
-                                ExprKind::Ident(name) => Some((name.clone(), object.as_ref())),
-                                _ => None,
-                            }
-                        }
-                        ExprKind::Binary { op: BinOp::Eq, left, right }
-                            if matches!(right.kind, ExprKind::None) =>
-                        {
-                            match &left.kind {
-                                ExprKind::Ident(name) => Some((name.clone(), left.as_ref())),
-                                _ => None,
-                            }
-                        }
-                        _ => None,
-                    };
-                    if let Some((name, inner)) = none_check {
-                        let scrutinee_val = self.eval_expr(inner)?;
-                        let is_none = matches!(
-                            &scrutinee_val,
-                            Value::Enum { variant, .. } if variant == "None"
-                        );
-                        if is_none {
-                            return self.eval_expr(then_branch);
-                        }
-                        if let Value::Enum { variant, fields, .. } = &scrutinee_val {
-                            if variant == "Some" {
-                                let payload = fields.first().cloned().unwrap_or(Value::Unit);
-                                self.env.define(name, payload);
-                            }
-                        }
-                        return Ok(Value::Unit);
                     }
                 }
 

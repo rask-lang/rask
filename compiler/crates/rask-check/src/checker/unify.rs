@@ -109,7 +109,7 @@ impl TypeChecker {
                 // later statement. Kept for the next round; anything nothing
                 // ever pins becomes an array in `settle_collection_literals`.
                 c @ TypeConstraint::CollectionLiteral { .. } => still_open.push(c),
-                TypeConstraint::HasField { ty, field, expected, span, self_type } => {
+                TypeConstraint::HasField { ty, field, expected, span, self_type, through_chain } => {
                     let resolved = self.resolve_named(&self.ctx.apply(&ty));
                     // A receiver that's still a variable has something left to
                     // wait for, the same as the `HasMethod` case below — and the
@@ -121,8 +121,17 @@ impl TypeChecker {
                     // once everything else has settled.
                     if matches!(resolved, Type::Var(_)) {
                         self.deferred_fields.push(TypeConstraint::HasField {
-                            ty, field, expected, span, self_type,
+                            ty, field, expected, span, self_type, through_chain,
                         });
+                        continue;
+                    }
+                    // A `?.` read whose object settled late still needs its
+                    // optional layer peeled, or rejected.
+                    if through_chain {
+                        let c = TypeConstraint::HasField { ty, field, expected, span, self_type, through_chain };
+                        if let Err(e) = self.solve_constraint(c) {
+                            self.errors.push(e);
+                        }
                         continue;
                     }
                     if !Self::is_placeholder_type(&resolved) {
@@ -607,7 +616,50 @@ impl TypeChecker {
                 expected,
                 span,
                 self_type,
+                through_chain,
             } => {
+                let ty = if through_chain {
+                    let settled = self.resolve_named(&self.ctx.apply(&ty));
+                    match settled {
+                        Type::Var(_) => {
+                            self.ctx.add_constraint(TypeConstraint::HasField {
+                                ty: settled,
+                                field,
+                                expected,
+                                span,
+                                self_type,
+                                through_chain,
+                            });
+                            return Ok(false);
+                        }
+                        Type::Error => settled,
+                        _ => match settled.as_option() {
+                            // `?.` unwraps one layer at run time, so a payload
+                            // that is itself optional has no fields (OPT19).
+                            Some(payload) if payload.is_option() => {
+                                self.poison(&expected);
+                                return Err(TypeError::WrapperFieldCut {
+                                    field,
+                                    receiver: payload.clone(),
+                                    chained: true,
+                                    span,
+                                });
+                            }
+                            Some(payload) => payload.clone(),
+                            // `T or E` has no `?.` either; `resolve_field` reports it.
+                            None if matches!(settled, Type::Result { .. }) => settled,
+                            // `?.` is for optionals (OPT3). On a plain value
+                            // native read the field and the interpreter failed
+                            // at run time.
+                            None => {
+                                self.poison(&expected);
+                                return Err(TypeError::TryOnNonResult { found: settled, op: "?.", span });
+                            }
+                        },
+                    }
+                } else {
+                    ty
+                };
                 // A read that failed was reported here; its result is an
                 // error, not an open variable to report again (#1485).
                 let result = expected.clone();

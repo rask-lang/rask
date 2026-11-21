@@ -20,6 +20,10 @@ pub enum TypeConstraint {
         span: Span,
         /// V5: Self type at constraint creation site (for private field checks)
         self_type: Option<Type>,
+        /// The receiver is the object of an `a?.b`: once its type is known,
+        /// peel exactly one optional layer, or reject a non-optional. A plain
+        /// `.b` never looks through an optional (it may be absent).
+        through_chain: bool,
     },
     /// AT6/AT8: `result` is `base.assoc` read through the applied interface
     /// `bound` — the bound a generic callee put on the parameter `base` stands

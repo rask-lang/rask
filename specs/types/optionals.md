@@ -295,6 +295,7 @@ No optional-specific equality rule.
 | `try x` in a `U?`-returning function | ER16/ER47 | Legal — propagates `none`; the ordinary spelling |
 | `try x` in a `T or E`-returning function | ER47 | Compile error — `none` doesn't fit an error branch. Use `x ?? return <error>` |
 | `use(x)` inside `if x? { … }` | OPT19 | Compile error — `x` is still `T?`; the test doesn't narrow. FIX writes `if x? as v` |
+| `x.field` on `T?`, inside `if x?` or not | OPT19 | Compile error — the optional has no fields; `x?.field` reads it when present, `if x? as v` binds it |
 | `if compute()? as v` | OPT19 | Legal — binds the call result at the check site, no intermediate binding |
 | `!x?` syntax | OPT16 | Parse error suggesting `x is none` |
 | Linear `?.field` | OPT25 | Compile error — cannot partially move |

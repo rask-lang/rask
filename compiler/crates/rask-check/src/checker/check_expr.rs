@@ -2747,24 +2747,12 @@ impl TypeChecker {
             ExprKind::OptionalField { object, field } => {
                 let inferred = self.infer_expr(object);
                 let obj_ty = self.ctx.apply(&inferred);
-                // `?.` is for optionals (OPT3). On a plain value it read the
-                // field and wrapped it, so native gave 0 for `p?.x` on a
-                // `Point` and the interpreter failed at run time.
-                if !matches!(obj_ty, Type::Var(_) | Type::Error | Type::Result { .. }) && obj_ty.as_option().is_none() {
-                    self.errors.push(TypeError::TryOnNonResult {
-                        found: obj_ty.clone(),
-                        op: "?.",
-                        span: expr.span,
-                    });
-                }
-                // ?. unwraps Option, accesses field, wraps in Option (flatten if already Option)
-                let inner_ty = match obj_ty.as_option() {
-                    Some(inner) => inner.clone(),
-                    None => obj_ty.clone(),
-                };
                 let field_ty = self.ctx.fresh_var();
                 self.ctx.add_constraint(TypeConstraint::HasField {
-                    ty: inner_ty,
+                    // The solver peels exactly one optional layer once the
+                    // object's type is known, and rejects a non-optional.
+                    through_chain: true,
+                    ty: obj_ty,
                     field: field.clone(),
                     expected: field_ty.clone(),
                     span: expr.span,
