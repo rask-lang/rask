@@ -2332,29 +2332,6 @@ impl<'a> MirLowerer<'a> {
                     }));
                     return Ok((MirOperand::Local(dst), ty));
                 }
-                // ER24/CF22: ER24 narrowing redefines the binding's type in
-                // the type checker's scope, but the MIR local keeps its
-                // declared type. When the use-site has a more specific
-                // narrowed type recorded, extract the payload from the
-                // wider Result/Option so downstream Field / method lookup
-                // operates on the narrowed type, not the wrapper.
-                let narrow_ty = self.ctx.lookup_node_type(expr.id);
-                let needs_narrow = matches!(
-                    (&ty, &narrow_ty),
-                    (MirType::Result { .. }, Some(n)) if !matches!(n, MirType::Result { .. })
-                ) || matches!(
-                    (&ty, &narrow_ty),
-                    (MirType::Option(_), Some(n)) if !matches!(n, MirType::Option(_))
-                );
-                if needs_narrow {
-                    let inner_ty = narrow_ty.unwrap();
-                    let inner_local = self.builder.alloc_temp(inner_ty.clone());
-                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                        dst: inner_local,
-                        rvalue: self.payload_field(MirOperand::Local(id), &ty, &inner_ty),
-                    }));
-                    return Ok((MirOperand::Local(inner_local), inner_ty));
-                }
                 Ok((MirOperand::Local(id), ty))
             } else if name == "None" {
                 self.lower_none(expr)
@@ -10694,16 +10671,14 @@ impl<'a> MirLowerer<'a> {
         else_branch: Option<&Expr>,
         else_binding: Option<&str>,
     ) -> Result<TypedOperand, LoweringError> {
-        // OPT19/OPT20 + ER19/ER20/ER21/ER22: `if x?` / `if x? as v` /
-        // `... else as e` evaluate the scrutinee once and rebind the
-        // payload as a local in the matching branch.
+        // `if x? as v` / `... else as e` evaluate the scrutinee once and bind
+        // the payload as a fresh local in the matching branch. A test with
+        // no `as` binds nothing: `if x?` is a plain boolean and `x` keeps its
+        // optional type inside the branch, because the language has no flow
+        // typing (type.optionals, type.errors "Conditions and Binding").
         if let ExprKind::IsPresent { expr: inner, binding } = &cond.kind {
-            let then_name = match (binding.as_deref(), &inner.kind) {
-                (Some(v), _) => Some(v.to_string()),
-                (None, ExprKind::Ident(n)) => Some(n.clone()),
-                _ => None,
-            };
-            let else_name = else_binding.map(|s| s.to_string()).or_else(|| then_name.clone());
+            let then_name = binding.clone();
+            let else_name = else_binding.map(|s| s.to_string());
             if then_name.is_some() || else_name.is_some() {
                 return self.lower_if_present(
                     inner,
@@ -10920,9 +10895,6 @@ impl<'a> MirLowerer<'a> {
         Ok((MirOperand::Local(result_local), MirType::Bool))
     }
 
-    /// Lower `if expr? [as v] { then } [else [as e] { else_br }]` — present-check
-    /// with payload narrowing. Mirrors the interpreter path in
-    /// `rask-interp/src/interp/eval_expr.rs::ExprKind::If(IsPresent ..)`.
     /// The payload type behind an `x?` scrutinee.
     pub(crate) fn presence_payload_type(&mut self, inner: &Expr, scrutinee_ty: &MirType) -> MirType {
         Self::better_payload_ty(
@@ -10963,6 +10935,9 @@ impl<'a> MirLowerer<'a> {
         self.locals.insert(name.to_string(), (local, payload_ty.clone()));
     }
 
+    /// Lower `if expr? [as v] { then } [else [as e] { else_br }]`: test the
+    /// scrutinee once and bind the payload to the names that were written.
+    /// Mirrors the interpreter's `ExprKind::If` arm for `IsPresent`.
     fn lower_if_present(
         &mut self,
         inner: &Expr,
@@ -10997,10 +10972,10 @@ impl<'a> MirLowerer<'a> {
             else_block,
         }));
 
-        // Then: bind the present payload as the narrow name, lower body.
+        // Then: bind the present payload as the `as` name, lower body.
         //
         // The bind is scoped to the branch. `lower_block` snapshots `locals`,
-        // but it does that *after* this bind, so the narrowed name used to
+        // but it does that *after* this bind, so the bound name used to
         // outlive its block — a second `if x?` further down then read a tag out
         // of the bare payload and segfaulted, where the interpreter answered.
         self.builder.switch_to_block(then_block);

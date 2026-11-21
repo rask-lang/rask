@@ -109,7 +109,7 @@ impl TypeChecker {
                 // later statement. Kept for the next round; anything nothing
                 // ever pins becomes an array in `settle_collection_literals`.
                 c @ TypeConstraint::CollectionLiteral { .. } => still_open.push(c),
-                TypeConstraint::HasField { ty, field, expected, span, self_type } => {
+                TypeConstraint::HasField { ty, field, expected, span, self_type, through_chain } => {
                     let resolved = self.resolve_named(&self.ctx.apply(&ty));
                     // A receiver that's still a variable has something left to
                     // wait for, the same as the `HasMethod` case below — and the
@@ -121,7 +121,7 @@ impl TypeChecker {
                     // once everything else has settled.
                     if matches!(resolved, Type::Var(_)) {
                         self.deferred_fields.push(TypeConstraint::HasField {
-                            ty, field, expected, span, self_type,
+                            ty, field, expected, span, self_type, through_chain,
                         });
                         continue;
                     }
@@ -607,7 +607,25 @@ impl TypeChecker {
                 expected,
                 span,
                 self_type,
+                through_chain,
             } => {
+                let ty = if through_chain {
+                    let settled = self.resolve_named(&self.ctx.apply(&ty));
+                    if matches!(settled, Type::Var(_)) {
+                        self.ctx.add_constraint(TypeConstraint::HasField {
+                            ty: settled,
+                            field,
+                            expected,
+                            span,
+                            self_type,
+                            through_chain,
+                        });
+                        return Ok(false);
+                    }
+                    settled.as_option().cloned().unwrap_or(settled)
+                } else {
+                    ty
+                };
                 // A read that failed was reported here; its result is an
                 // error, not an open variable to report again (#1485).
                 let result = expected.clone();

@@ -1,0 +1,28 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Rejects: `x.field` on an optional, inside `if x?` or anywhere else
+//
+// The checker used to look through the optional and answer with the payload's
+// field. Nothing had proved the payload was there: natively `find(false).a`
+// read a field out of an absent value, and the interpreter failed at runtime.
+// `if x?` is a plain boolean, so it doesn't make the read safe either.
+
+struct Big { a: i64, b: i64 }
+
+func find(yes: bool) -> Big? {
+    if yes { return Big(a: 1, b: 2) }
+    return none
+}
+
+func main() {
+    let present = find(false)
+    // ERROR: the value may be absent [E0367]
+    let y: i64 = present.a
+    if present? {
+        // ERROR: the value may be absent [E0367]
+        println("{present.b}")
+    }
+    if present? as p {
+        println("{p.a}")
+    }
+    println("{y}")
+}

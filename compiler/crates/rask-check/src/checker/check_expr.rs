@@ -2757,13 +2757,15 @@ impl TypeChecker {
                         span: expr.span,
                     });
                 }
-                // ?. unwraps Option, accesses field, wraps in Option (flatten if already Option)
+                // `?.` reads the field of the payload. An object whose type is
+                // still open (the middle of `a?.b?.c`) is peeled when it settles.
                 let inner_ty = match obj_ty.as_option() {
                     Some(inner) => inner.clone(),
                     None => obj_ty.clone(),
                 };
                 let field_ty = self.ctx.fresh_var();
                 self.ctx.add_constraint(TypeConstraint::HasField {
+                    through_chain: matches!(inner_ty, Type::Var(_)),
                     ty: inner_ty,
                     field: field.clone(),
                     expected: field_ty.clone(),

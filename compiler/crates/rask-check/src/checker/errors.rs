@@ -334,6 +334,10 @@ pub enum TypeError {
         fix: String,
         span: Span,
     },
+    /// `x.field` on a `T?`: the wrapper has no fields either. The test
+    /// `if x?` doesn't narrow, so the field is reached through `?.` or a bind.
+    #[error("no field `{field}` on `{receiver}`")]
+    WrapperFieldCut { field: String, receiver: Type, span: Span },
     #[error("missing return statement")]
     MissingReturn {
         function_name: String,
@@ -1965,7 +1969,8 @@ impl TypeError {
             | TryErrorIntoOptional { return_ty, .. }
             | TryInNonPropagatingContext { return_ty, .. } => *return_ty = f(return_ty),
 
-            WrapperMethodCut { receiver, .. } => *receiver = f(receiver),
+            WrapperMethodCut { receiver, .. }
+            | WrapperFieldCut { receiver, .. } => *receiver = f(receiver),
 
             MissingReturn { expected_type, .. } => *expected_type = f(expected_type),
 

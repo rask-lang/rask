@@ -95,20 +95,12 @@ extend Vm {
 
     func get_reg(self, idx: i64) -> Value {
         // --- Register access (relative to current frame) ---
-        let base = if self.call_stack.len() > 0 {
-            self.call_stack.last().base_reg
-        } else {
-            0
-        }
+        let base = self.call_stack.last()?.base_reg ?? 0
         return self.registers.get_clone(base + idx)!
     }
 
     func set_reg(self, idx: i64, take val: Value) {
-        let base = if self.call_stack.len() > 0 {
-            self.call_stack.last().base_reg
-        } else {
-            0
-        }
+        let base = self.call_stack.last()?.base_reg ?? 0
         self.registers[base + idx] = val
     }
 

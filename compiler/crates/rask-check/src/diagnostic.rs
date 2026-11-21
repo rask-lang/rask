@@ -1148,6 +1148,17 @@ impl ToDiagnostic for crate::TypeError {
                     .with_why("`T?` and `T or E` are operator-only: one spelling per job, and the right side is lazy by construction [std.api/SD4]")
             }
 
+            WrapperFieldCut { field, receiver, span } => {
+                Diagnostic::error(format!("no field `{}` on `{}`", field, receiver))
+                    .with_code("E0367")
+                    .with_primary(*span, "the value may be absent")
+                    .with_fix(format!(
+                        "`x?.{0}` reads it when present, or bind first: `if x? as v {{ … v.{0} … }}`",
+                        field
+                    ))
+                    .with_why("an optional has no fields of its own, and `if x?` doesn't change `x`'s type: the payload is reached through `?.` or an `as` bind [type.optionals/OPT19]")
+            }
+
             TryOutsideFunction { span } => {
                 Diagnostic::error("`try` has nowhere to send the error here")
                     .with_code("E0317")
