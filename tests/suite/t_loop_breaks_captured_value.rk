@@ -1,0 +1,73 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A loop that breaks out a vector a closure in its body reads.
+//
+// The closure reaches `v` by address, so `v` lives in a cell, and `break v`
+// loads it out and copies it through a couple of temporaries before the
+// function returns it. The drop pass only counted the load as handed back
+// when the load itself was returned, so the function freed nothing, its
+// caller thought it had been given a borrow and freed nothing either, and the
+// vector leaked (#2034). The strings are long enough to live on the heap.
+
+func returned() -> Vec<string> {
+    let r = loop {
+        mut v: Vec<string> = Vec.new()
+        v.push("returned-heap-string-padded-past-inline")
+        let f = || v.len()
+        assert f() == 1
+        break v
+    }
+    return r
+}
+
+func kept() -> i64 {
+    let r = loop {
+        mut v: Vec<string> = Vec.new()
+        v.push("kept-heap-string-padded-past-inline")
+        let f = || v.len()
+        assert f() == 1
+        break v
+    }
+    return r.len().to<i64>()!
+}
+
+func passed_on() -> Vec<string> {
+    let r = loop {
+        mut v: Vec<string> = Vec.new()
+        v.push("passed-heap-string-padded-past-inline")
+        let f = || v.len()
+        assert f() == 1
+        break v
+    }
+    let s = r
+    return s
+}
+
+func on_one_path(k: bool) -> Vec<string> {
+    let r = loop {
+        mut v: Vec<string> = Vec.new()
+        v.push("one-path-heap-string-padded-past-inline")
+        let f = || v.len()
+        assert f() == 1
+        break v
+    }
+    if k { return r }
+    return Vec.new()
+}
+
+test "a broken-out vector returned" {
+    assert returned()[0] == "returned-heap-string-padded-past-inline"
+}
+
+test "a broken-out vector kept by its frame" {
+    assert kept() == 1
+}
+
+test "a broken-out vector passed on, then returned" {
+    assert passed_on().len() == 1
+}
+
+test "a broken-out vector returned on one path" {
+    assert on_one_path(true).len() == 1
+    assert on_one_path(false).len() == 0
+}

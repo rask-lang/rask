@@ -2239,6 +2239,10 @@ fn follow_copies(func: &MirFunction, fresh: &mut HashMap<LocalId, &'static str>)
 /// reads `items` out of its cell three times, and putting all three in one
 /// value group made a vector that used to be freed once stop being freed at all
 /// (t26 went from 4 leaked allocations to 6, t31 from 21 to 40).
+///
+/// A load reaches the return through plain copies when a loop hands it out:
+/// `break v` lowers to `_24 = *cell; _25 = _24; … return _26`, and the
+/// caller of such a function freed nothing (#2034).
 fn fresh_through_cells(
     func: &MirFunction,
     all: &[MirFunction],
@@ -2286,6 +2290,21 @@ fn fresh_through_cells(
         })
         .collect();
 
+    // Every local whose value goes on to be returned, or wrapped for the
+    // return, through nothing but copies.
+    let mut handed_back: HashSet<LocalId> = returned.union(&wrapped).copied().collect();
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for stmt in func.blocks.iter().flat_map(|b| b.statements.iter()) {
+            if let MirStmtKind::Assign { dst, rvalue: MirRValue::Use(MirOperand::Local(src)) } = &stmt.kind {
+                if handed_back.contains(dst) && handed_back.insert(*src) {
+                    changed = true;
+                }
+            }
+        }
+    }
+
     let mut out = Vec::new();
     for (cell, values) in &stores {
         let [MirOperand::Local(src)] = values.as_slice() else { continue };
@@ -2300,7 +2319,7 @@ fn fresh_through_cells(
                     rvalue: MirRValue::Deref(MirOperand::Local(addr)),
                 } = &stmt.kind
                 {
-                    if addr == cell && (returned.contains(dst) || wrapped.contains(dst)) {
+                    if addr == cell && handed_back.contains(dst) {
                         out.push((*dst, free));
                     }
                 }
