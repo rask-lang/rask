@@ -93,7 +93,7 @@ go down.
 | [interface_static_call.rk](interface_static_call.rk) | A method called on an interface's name, `Labeled.label(d)` (E0897, MN1) — it used to type-check as a static call and die in MIR lowering |
 | [method_name_clash.rk](method_name_clash.rk) | Two blocks each defining `label` on one type (E0898, MN2) — two `extend` blocks, and two conformances to different interfaces; the last block read used to win silently |
 | [method_outside_interface.rk](method_outside_interface.rk) | A plain method inside an `implements` block (E0893, CD2) — the block is the contract, so the helper is sent to `extend T { }` |
-| [method_not_for_receiver.rk](method_not_for_receiver.rk) | A method whose `extend` header doesn't fit the receiver (E0313, std.reflect/R5): `flatten` on a `Sequence<Vec<T>>`, `to_map` on a sequence of non-pairs. The lookup fell back to the stdlib's stub list, which ignores headers, so both compiled (#2045) |
+| [method_not_for_receiver.rk](method_not_for_receiver.rk) | A method whose `extend` header doesn't fit the receiver (E0981, std.reflect/R5): `flatten` on a `Sequence<Vec<T>>`, `to_map` on a sequence of non-pairs. The lookup fell back to the stdlib's stub list, which ignores headers, so both compiled (#2045) |
 | [map_key_hashable.rk](map_key_hashable.rk) | A Map key that isn't Hashable (E0834, HA1/HA4, #812) — a nominal newtype with no `implements …` clause, a float, a struct with a float field; each gets the way out that fits it |
 | [generic_arg_identity.rk](generic_arg_identity.rk) | A user type as a generic argument keeps its identity — a wrong Map key or value on `Map<K, V>.new()` (E0392/E0308, #812) |
 | [type_mismatch_arg.rk](type_mismatch_arg.rk) | Wrong argument type |

@@ -11,14 +11,14 @@
 
 func detached_reads(items: Vec<i64>) {
     spawn {
-        // ERROR: the caller only lent [E0862]
+        // ERROR: the caller only lent [E0982]
         println("{items.len()}")
     }.detach()
 }
 
 func detached_calls(f: func() -> i64) {
     spawn {
-        // ERROR: the caller only lent [E0862]
+        // ERROR: the caller only lent [E0982]
         println("{f()}")
     }.detach()
 }
@@ -26,7 +26,7 @@ func detached_calls(f: func() -> i64) {
 func detached_per_item(vs: Vec<Vec<i64>>) {
     for v in vs {
         spawn {
-            // ERROR: `vs` still holds it [E0862]
+            // ERROR: `vs` still holds it [E0982]
             println("{v.len()}")
         }.detach()
     }
@@ -77,7 +77,7 @@ func joined_in_match(items: Vec<i64>) -> i64 {
 func detached_in_with(mutate rows: Vec<Vec<i64>>) {
     with rows[0] as row {
         spawn {
-            // ERROR: `row` is inside `rows` [E0862]
+            // ERROR: `row` is inside `rows` [E0982]
             println("{row.len()}")
         }.detach()
     }
@@ -103,7 +103,7 @@ func main() {
         detached_in_with(mutate rows)
         println("{joined_per_item([[5, 6]])}")
         keep(7)
-        // ERROR: makes `x` a `Vec<i64>` [E0862]
+        // ERROR: makes `x` a `Vec<i64>` [E0983]
         keep(v)
     }
 }

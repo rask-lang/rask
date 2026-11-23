@@ -84,7 +84,7 @@ impl ToDiagnostic for crate::OwnershipError {
                     ),
                 };
                 Diagnostic::error(format!("a task that outlives this block reads `{name}`, which is only borrowed"))
-                    .with_code("E0862")
+                    .with_code("E0982")
                     .with_primary(self.span, format!("`{name}` is {owner}"))
                     .with_help(help)
                     .with_why("a task whose handle leaves the block that spawned it carries what it names, and a borrow isn't this block's to carry [conc.async/S5]")
@@ -106,7 +106,7 @@ impl ToDiagnostic for crate::OwnershipError {
                 Diagnostic::error(format!(
                     "a task in `{func}` outlives its block and reads `{name}`, which is only borrowed and here a `{type_arg}`"
                 ))
-                .with_code("E0862")
+                .with_code("E0983")
                 .with_primary(self.span, format!("this call makes `{name}` a `{type_arg}`{via}"))
                 .with_secondary(*read_at, format!("`{name}` is {whose}, and the task may run after it's freed"))
                 .with_help(format!(

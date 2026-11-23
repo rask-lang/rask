@@ -11,7 +11,7 @@
 import sequence.Sequence
 
 func nested(rows: Vec<Vec<i64>>) -> i64 {
-    // ERROR: no method `flatten` on `Sequence<Vec<i64>>` [E0313]
+    // ERROR: no method `flatten` on `Sequence<Vec<i64>>` [E0981]
     let s = rows.as_sequence().flatten()
     mut n = 0
     for x in s { n += x }
@@ -19,7 +19,7 @@ func nested(rows: Vec<Vec<i64>>) -> i64 {
 }
 
 func not_pairs(xs: Vec<i64>) -> i64 {
-    // ERROR: no method `to_map` on `Sequence<i64>` [E0313]
+    // ERROR: no method `to_map` on `Sequence<i64>` [E0981]
     let m = xs.as_sequence().to_map()
     return m.len().to<i64>()!
 }

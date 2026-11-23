@@ -3052,7 +3052,7 @@ impl ToDiagnostic for crate::TypeError {
             }
             MethodNotForReceiver { ty, method, headers, span } => {
                 let mut d = Diagnostic::error(format!("no method `{}` on `{}`", method, ty))
-                    .with_code("E0313")
+                    .with_code("E0981")
                     .with_primary(*span, "this receiver doesn't fit the block that declares it");
                 for h in headers {
                     d = d.with_note(format!("`{}` is declared in `extend {}`", method, h));
