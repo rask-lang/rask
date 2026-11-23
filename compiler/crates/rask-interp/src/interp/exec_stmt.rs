@@ -107,7 +107,13 @@ impl Interpreter {
             }
 
             StmtKind::Assign { target, value, .. } => {
+                let moves_from = self.pending_moves.len();
                 let val = self.eval_owned(value)?;
+                // The value holds what it moved before the store: in
+                // `left = Expr.Add(left: left, …)` the place written is the
+                // one read, and emptying it after the statement would empty
+                // the new value.
+                self.complete_moves(moves_from);
                 // The place's type says how many layers it holds, and the
                 // value's type how many it brings: `m = a` with `m: i64??` and
                 // `a: i64?` stores `some(a)` even when `a` is `none` (#2044).
