@@ -1,0 +1,46 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+// A generic struct whose field only mentions its parameter (`Link<T>?`) gets a
+// layout of its own at each instantiation. `Edge<Leaf>` fits the shared
+// layout's eight bytes, so it used that, and the field's type there still named
+// `T`: lowering read it as a link to nothing, a bare pointer whose optional is a
+// 16-byte tagged one, and the store refused the 8-byte slot (#2068).
+import memory.Link
+import memory.Rack
+
+struct Leaf {
+    id: i32
+}
+
+struct Edge<T> {
+    to: Link<T>?
+    n: i64
+}
+
+struct Bag<T> {
+    items: Vec<T>
+    tag: i64
+}
+
+test "a link option field through a parameter" {
+    mut leaves: Rack<Leaf> = Rack.new()
+    let a = leaves.insert(Leaf(id: 3))
+    let e = Edge(to: a, n: 5)
+    assert !(e.to is none)
+    let f = Edge(to: e.to, n: 6)
+    assert f.to!.id == 3
+    assert f.n == 6
+    let g = f.clone()
+    assert g.to!.id == 3
+    leaves.delete(a)
+    let h: Edge<Leaf> = Edge(to: none, n: 7)
+    assert h.to is none
+}
+
+test "a vector of the parameter keeps its elements" {
+    mut b = Bag(items: Vec.from(["x", "yy"]), tag: 1)
+    b.items.push("zzz")
+    let c = b.clone()
+    assert c.items[2].len() == 3
+    assert b.items.len() == 3
+}

@@ -494,12 +494,17 @@ fn lay_out_instance(
     // under method dispatch: `Map$string$Vec$i32_index`, a function nobody
     // emitted.
     let owns = !declared.in_stdlib && args.iter().any(|a| arg_owns_heap(a, handles));
-    // ...or when the instance is laid out differently at all. The language's
-    // size is the instance's — `Pair<u8>` is two bytes to the copy rule and to
-    // `reflect.size_of` — so memory has to be that too. A word per parameter
-    // made `Pair<u8>` sixteen bytes here and two everywhere else.
+    // ...or when the instance is laid out or typed differently at all. The
+    // language's size is the instance's — `Pair<u8>` is two bytes to the copy
+    // rule and to `reflect.size_of` — so memory has to be that too. A word per
+    // parameter made `Pair<u8>` sixteen bytes here and two everywhere else.
+    // And a field that only mentions a parameter keeps it in the shared
+    // layout: `Edge<Leaf> { to: Link<T>? }` fits the same eight bytes, but
+    // lowering read `Link<T>` as a link to nothing, a bare pointer whose
+    // option is a 16-byte tagged one, and the store refused the slot (#2068).
     let same_shape = |a: &[FieldLayout], b: &[FieldLayout]| {
-        a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x.offset == y.offset && x.size == y.size)
+        a.len() == b.len()
+            && a.iter().zip(b).all(|(x, y)| x.offset == y.offset && x.size == y.size && x.ty == y.ty)
     };
     let key = LayoutKey::instance(declared.id, args.to_vec());
     match def {
