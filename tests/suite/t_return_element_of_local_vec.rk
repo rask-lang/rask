@@ -26,7 +26,7 @@ func pick_either(n: i64, first: bool) -> One {
     if n > 100 {
         return pick_either(n - 1, first)
     }
-    let v = [One(s: "first, long enough to live on the heap {n}"), One(s: "second, long enough to live on the heap {n}")]
+    let v = Vec.from([One(s: "first, long enough to live on the heap {n}"), One(s: "second, long enough to live on the heap {n}")])
     return if first { v[0] } else { v[1] }
 }
 
