@@ -777,7 +777,7 @@ impl<'a> MirLowerer<'a> {
                     self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: cont_block }));
                 } else {
                     let value = match (value, opt_expr) {
-                        (Some(v), Some(e)) => Some(self.retain_returned_copy_param(v, e)),
+                        (Some(v), Some(e)) => Some(self.returned_copy(v, e)),
                         (v, _) => v,
                     };
                     self.terminate_return(value);
@@ -1986,7 +1986,12 @@ impl<'a> MirLowerer<'a> {
     /// is copied the same way, as `let x = v[0]` is. Returned as is, the
     /// release pass read the return as handing on the whole local, and the
     /// parts left behind were never released (#2067).
-    fn retain_returned_copy_param(&mut self, value: MirOperand, expr: &Expr) -> MirOperand {
+    ///
+    /// A non-Copy part moves out instead (`return t.a`), and the release pass
+    /// empties its slot and releases the rest of the local. An aggregate part
+    /// is read as the address of its slot, so it gets its own bytes here,
+    /// ahead of the emptying (#2072).
+    fn returned_copy(&mut self, value: MirOperand, expr: &Expr) -> MirOperand {
         let mut root = expr;
         let mut part = false;
         loop {
@@ -2004,7 +2009,7 @@ impl<'a> MirLowerer<'a> {
         }
         let MirOperand::Local(returned) = value else { return value };
         let Some(ty) = self.ctx.lookup_raw_type(expr.id).map(std::borrow::Cow::into_owned) else { return value };
-        if !self.ctx.type_defs.is_copy(&ty) {
+        if !part && !self.ctx.type_defs.is_copy(&ty) {
             return value;
         }
         let Some(mir_ty) = self.builder.local_type(returned) else { return value };

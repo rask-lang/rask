@@ -964,7 +964,7 @@ fn what_comes_back(
             paths.push(Path::Made(f));
             continue;
         }
-        if let Some(f) = container_moved_out_of_taken_param(func, *id, kept) {
+        if let Some(f) = container_moved_out_of_owned_struct(func, *id, kept) {
             paths.push(Path::Made(f));
             continue;
         }
@@ -1013,14 +1013,16 @@ fn what_comes_back(
     }
 }
 
-/// The free of a container read out of a field of a struct `take` parameter,
-/// when `local` is one (`return self.items`).
+/// The free of a container read out of a field of a struct the frame owns,
+/// when `local` is one: a `take` parameter (`return self.items`) or a struct
+/// the function built (`let t = Pt(…); return t.items`).
 ///
 /// A `take` argument was given up at the call, and everything in it with it:
 /// the field is the callee's to hand on, and what comes back is the caller's
-/// whatever it owned before. The rest of the struct is the callee's to
-/// release (`rc_insert`).
-fn container_moved_out_of_taken_param(
+/// whatever it owned before. A struct built here holds what was moved into
+/// it. Either way the rest of the struct is the callee's to release
+/// (`rc_insert`), which empties the returned field's slot first.
+fn container_moved_out_of_owned_struct(
     func: &MirFunction,
     local: LocalId,
     kept: &HashMap<String, Vec<bool>>,
@@ -1028,7 +1030,6 @@ fn container_moved_out_of_taken_param(
     if func.is_extern_c {
         return None;
     }
-    let flags = kept.get(&func.name)?;
     let defs_of = |l: LocalId| {
         func.blocks
             .iter()
@@ -1063,10 +1064,15 @@ fn container_moved_out_of_taken_param(
     let mut at = *root;
     for _ in 0..func.locals.len() + func.params.len() {
         if let Some(i) = func.params.iter().position(|p| p.id == at) {
-            return flags.get(i).copied().unwrap_or(false).then(|| container_free(kind));
+            let taken = kept.get(&func.name).and_then(|f| f.get(i)).copied().unwrap_or(false);
+            return taken.then(|| container_free(kind));
         }
         let mut defs = defs_of(at);
-        let def = defs.next()?;
+        let Some(def) = defs.next() else {
+            // Or a struct this frame built field by field: what went into
+            // its slots was moved there, so it is the frame's to hand on.
+            return built_here(func, at).then(|| container_free(kind));
+        };
         if defs.next().is_some() {
             return None;
         }
@@ -1076,6 +1082,15 @@ fn container_moved_out_of_taken_param(
         }
     }
     None
+}
+
+/// `local` is a struct this frame builds in place: zeroed, then filled by
+/// stores, and never assigned whole.
+fn built_here(func: &MirFunction, local: LocalId) -> bool {
+    func.blocks
+        .iter()
+        .flat_map(|b| b.statements.iter())
+        .any(|st| matches!(&st.kind, MirStmtKind::ZeroAggregate { local: l } if *l == local))
 }
 
 /// What a call that may hand back one of its arguments was passed there: per

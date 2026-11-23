@@ -1338,7 +1338,7 @@ fn insert_aggregate_release(
         .filter(|(i, p)| (given_up(*i) || held.contains(p)) && tracked.contains(p))
         .map(|(_, p)| *p)
         .collect();
-    let slot_parts = struct_field_parts(func, &ty_of, &held);
+    let slot_parts = struct_field_parts(func, &ty_of, &held, copy_layouts);
     // A field returned leaves the frame at the `return`, which is after the
     // last place the struct could be released. The marker puts the
     // hand-over on a statement, ahead of the release.
@@ -1989,28 +1989,17 @@ fn insert_aggregate_release(
     // release at the same spot.
     let mut clears: HashMap<usize, Vec<(usize, MirStmt)>> = HashMap::new();
     for (bi, si, name, holders, guard) in &plan.moved_out {
-        let Some((root, offset)) = slot_parts.get(name) else { continue };
+        let Some(&(root, offset, size)) = slot_parts.get(name) else { continue };
         let block = &func.blocks[*bi];
         let span = block.statements.get(*si).map(|s| s.span).unwrap_or(block.terminator.span);
         let mut copies: Vec<LocalId> =
-            holders.iter().copied().filter(|h| ty_of.get(h) == ty_of.get(root)).collect();
-        if !copies.contains(root) {
-            copies.push(*root);
+            holders.iter().copied().filter(|h| ty_of.get(h) == ty_of.get(&root)).collect();
+        if !copies.contains(&root) {
+            copies.push(root);
         }
         let empty: Vec<MirStmt> = copies
             .into_iter()
-            .map(|addr| {
-                MirStmt::new(
-                    MirStmtKind::Store {
-                        addr,
-                        offset: *offset,
-                        value: MirOperand::Constant(crate::operand::MirConst::Int(0)),
-                        store_size: 8,
-                        field: None,
-                    },
-                    span,
-                )
-            })
+            .flat_map(|addr| zero_stores(addr, offset, size, span))
             .collect();
         for stmt in guards.wrap(*guard, empty) {
             clears.entry(*bi).or_default().push((shifted.at(*bi, *si), stmt));
@@ -2085,7 +2074,8 @@ fn struct_field_parts(
     func: &MirFunction,
     ty_of: &HashMap<LocalId, MirType>,
     held: &[LocalId],
-) -> HashMap<LocalId, (LocalId, u32)> {
+    copy_layouts: &crate::CopyLayouts,
+) -> HashMap<LocalId, (LocalId, u32, u32)> {
     let mut defs: HashMap<LocalId, usize> = HashMap::new();
     for stmt in func.blocks.iter().flat_map(|b| b.statements.iter()) {
         if let Some(d) = uses::stmt_def(stmt) {
@@ -2113,22 +2103,67 @@ fn struct_field_parts(
         }
         l
     };
-    let mut out: HashMap<LocalId, (LocalId, u32)> = HashMap::new();
+    // Names a `return` hands back.
+    let returned: HashSet<LocalId> = func
+        .blocks
+        .iter()
+        .filter_map(|b| match &b.terminator.kind {
+            MirTerminatorKind::Return { value: Some(MirOperand::Local(n)) }
+            | MirTerminatorKind::CleanupReturn { value: Some(MirOperand::Local(n)), .. } => Some(*n),
+            _ => None,
+        })
+        .collect();
+    let mut out: HashMap<LocalId, (LocalId, u32, u32)> = HashMap::new();
     for stmt in func.blocks.iter().flat_map(|b| b.statements.iter()) {
-        let MirStmtKind::Assign {
-            dst,
-            rvalue: MirRValue::Field { base: MirOperand::Local(root), byte_offset: Some(offset), .. },
-        } = &stmt.kind
-        else {
-            continue;
+        let (dst, root, offset) = match &stmt.kind {
+            MirStmtKind::Assign {
+                dst,
+                rvalue: MirRValue::Field { base: MirOperand::Local(root), byte_offset: Some(offset), .. },
+            } if matches!(ty_of.get(root), Some(MirType::Struct(_) | MirType::Tuple(_))) => (*dst, *root, *offset),
+            MirStmtKind::Assign {
+                dst,
+                rvalue:
+                    MirRValue::ArrayIndex {
+                        base: MirOperand::Local(root),
+                        index: MirOperand::Constant(crate::operand::MirConst::Int(i)),
+                        elem_size,
+                    },
+            } if *i >= 0 && matches!(ty_of.get(root), Some(MirType::Array { .. })) => {
+                (*dst, *root, *i as u32 * elem_size)
+            }
+            _ => continue,
         };
-        let moves_out = matches!(ty_of.get(dst), Some(MirType::Container(_) | MirType::Heap(_) | MirType::InterfaceObject { .. }))
-            && matches!(ty_of.get(root), Some(MirType::Struct(_)))
-            && once(dst)
-            && !held.contains(&origin(*root));
-        if moves_out {
-            out.insert(*dst, (*root, *offset));
+        if !once(&dst) || held.contains(&origin(root)) {
+            continue;
         }
+        let Some(dst_ty) = ty_of.get(&dst) else { continue };
+        let size = match dst_ty {
+            // A pointer out of a struct is a box or a runtime handle the
+            // struct owns (`part_of_field`); a Copy link has a type of its
+            // own. `lines.take().close()` moved the connection out of a
+            // `BufferedReader` and kept its buffer unreleased.
+            MirType::Container(_) | MirType::Heap(_) | MirType::InterfaceObject { .. } | MirType::Ptr
+                if matches!(ty_of.get(&root), Some(MirType::Struct(_))) =>
+            {
+                8
+            }
+            // An aggregate part is read as the address of its slot, so only
+            // a returned one moves: lowering gave the return a copy of its
+            // bytes, which the emptying can't reach (#2072). Anywhere else the
+            // name still points into the slot.
+            MirType::Struct(_)
+            | MirType::Enum(_)
+            | MirType::Tuple(_)
+            | MirType::Array { .. }
+            | MirType::Option(_)
+            | MirType::Result { .. }
+                if !copy_layouts.is_copy(dst_ty) && returned_copy_of(func, dst, &returned) =>
+            {
+                copy_layouts.size_of(dst_ty)
+            }
+            _ => continue,
+        };
+        out.insert(dst, (root, offset, size));
     }
     // A phi, or a name written more than once, is a join: an inlined
     // callee's result, or an `if` that gives the field on one branch and
@@ -2166,7 +2201,7 @@ fn struct_field_parts(
             if out.contains_key(dst) {
                 continue;
             }
-            let parts: HashSet<(LocalId, u32)> = srcs.iter().filter_map(|s| out.get(s).copied()).collect();
+            let parts: HashSet<(LocalId, u32, u32)> = srcs.iter().filter_map(|s| out.get(s).copied()).collect();
             if parts.len() == 1 {
                 out.insert(*dst, *parts.iter().next().unwrap());
                 grew = true;
@@ -2176,6 +2211,37 @@ fn struct_field_parts(
             return out;
         }
     }
+}
+
+/// Whether `part` reaches a `return` only through a byte copy of it: the
+/// copy lowering makes for a returned non-Copy part (`returned_copy`).
+fn returned_copy_of(func: &MirFunction, part: LocalId, returned: &HashSet<LocalId>) -> bool {
+    func.blocks.iter().flat_map(|b| b.statements.iter()).any(|st| {
+        matches!(&st.kind, MirStmtKind::Assign { dst, rvalue: MirRValue::Use(MirOperand::Local(src)) }
+            if *src == part && returned.contains(dst))
+    })
+}
+
+/// Stores that zero `size` bytes at `offset` in `addr`, the widest first.
+fn zero_stores(addr: LocalId, offset: u32, size: u32, span: rask_ast::Span) -> Vec<MirStmt> {
+    let mut out = Vec::new();
+    let mut at = 0;
+    for width in [8u32, 4, 2, 1] {
+        while size - at >= width {
+            out.push(MirStmt::new(
+                MirStmtKind::Store {
+                    addr,
+                    offset: offset + at,
+                    value: MirOperand::Constant(crate::operand::MirConst::Int(0)),
+                    store_size: width,
+                    field: None,
+                },
+                span,
+            ));
+            at += width;
+        }
+    }
+    out
 }
 
 /// Whether reading a field of `base` into `dst` gives a part of what `base`
