@@ -1098,10 +1098,20 @@ impl<'a> OwnershipChecker<'a> {
                     let head = Self::call_text(cur).unwrap_or_else(|| "the sequence".to_string());
                     return ChainHead::Lends { head, collection: false };
                 }
-                // `Sequence<Sequence<U>>.flatten`: who owns an item is up to
-                // the inner sequence that made it, which the chain's shape
-                // doesn't show.
-                return ChainHead::Unknown;
+                // `Sequence<Sequence<U>>.flatten` yields what each inner
+                // sequence yields. Out of `map(|r| e)` every inner sequence
+                // is `e`, so `e`'s head says who owns the items; any other
+                // inner sequence was handed to the chain and lends its items
+                // like every sequence does (SEQ34). Classed as unknowable,
+                // `g.map(|r| r.as_sequence()).flatten().find(p)` kept a row
+                // `g` still held and natively freed it twice.
+                if let Some(made) = Self::mapped_value(object) {
+                    if matches!(self.chain_head(made), ChainHead::Owns) {
+                        return ChainHead::Owns;
+                    }
+                }
+                let head = Self::call_text(cur).unwrap_or_else(|| "the sequence".to_string());
+                return ChainHead::Lends { head, collection: false };
             }
         }
         let Some(ty) = self.node_ty(&cur.id) else { return ChainHead::Unknown };
@@ -1135,6 +1145,26 @@ impl<'a> OwnershipChecker<'a> {
             return ChainHead::Lends { head, collection: false };
         }
         ChainHead::Unknown
+    }
+
+    /// `e` in `….map(|r| e)`: the value the closure makes for each item,
+    /// when its body is that one expression.
+    fn mapped_value(expr: &Expr) -> Option<&Expr> {
+        let ExprKind::MethodCall { method, args, .. } = &expr.kind else { return None };
+        if method != "map" {
+            return None;
+        }
+        let ExprKind::Closure { body, .. } = &args.first()?.expr.kind else { return None };
+        match &body.kind {
+            ExprKind::Block(stmts) => match stmts.as_slice() {
+                [only] => match &only.kind {
+                    rask_ast::stmt::StmtKind::Return(Some(e)) | rask_ast::stmt::StmtKind::Expr(e) => Some(e),
+                    _ => None,
+                },
+                _ => None,
+            },
+            _ => Some(body),
+        }
     }
 
     /// What a chain walks: `expr` with the adapters that hand on what they

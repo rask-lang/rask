@@ -78,6 +78,14 @@ func either(a: Vec<Vec<i64>>, b: Vec<Vec<i64>>) -> u64 {
     return (f ?? Vec.new()).len()
 }
 
+func rows_of_rows(grid: Vec<Vec<Vec<i64>>>) -> u64 {
+    // Each inner sequence is `as_sequence` over a row `grid` still holds, so
+    // flattening them hands on lent rows.
+    // ERROR: `find` has nothing it may keep — `Vec<i64>` is lent, not owned [E0905]
+    let f = grid.map(|r| r.as_sequence()).flatten().find(|x| x.len() > 1)
+    return (f ?? Vec.new()).len()
+}
+
 // Picking over a vector reads the element where it sits; a `map` makes items
 // the chain owns; a Copy item copies.
 func legal(rows: Vec<Vec<i64>>) -> u64 {
@@ -89,7 +97,9 @@ func legal(rows: Vec<Vec<i64>>) -> u64 {
     let f = (rows.map(|r| r.clone()).reduce(|a, b| if b.len() > a.len() { b.clone() } else { a.clone() }) ?? Vec.new()).len()
     let g = (rows.flatten().find(|x| x > 1) ?? 0).to<u64>()!
     let h = (vecs().map(|v| v.clone()).chain(vecs().map(|v| v.clone())).find(|v| v.len() == 1) ?? Vec.new()).len()
-    return a + b + c + d + e + f + g + h
+    // Inner sequences whose items `map` made: the chain owns them.
+    let i = (rows.map(|r| r.map(|x| [x, x])).flatten().find(|v| v[0] > 1) ?? Vec.new()).len()
+    return a + b + c + d + e + f + g + h + i
 }
 
 func main() {}
