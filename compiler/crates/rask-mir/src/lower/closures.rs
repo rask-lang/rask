@@ -735,8 +735,18 @@ impl<'a> MirLowerer<'a> {
             dst: ret_flag,
             rvalue: MirRValue::Use(MirOperand::Constant(crate::operand::MirConst::Int(0))),
         }));
+        // Inside another loop's body, a `return` here answers the same
+        // function, so it writes the slot that body's `return` writes. With a
+        // slot of its own, the outer body copied the answer on and nothing
+        // released the copy it was made from (#2042).
+        let enclosing_slot = match &self.inline_return_target {
+            Some((dst, _, Some(_))) => Some(*dst),
+            _ => None,
+        };
         let ret_value = if outer_ret == MirType::Void {
             None
+        } else if enclosing_slot.is_some() {
+            enclosing_slot
         } else {
             Some(self.builder.alloc_local(
                 format!("__seq_ret_value_{}", self.closure_counter), outer_ret.clone(),
@@ -989,7 +999,9 @@ impl<'a> MirLowerer<'a> {
         for local in moved_out {
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::MovedOut { local }));
         }
-        self.terminate_return(ret_value.map(MirOperand::Local));
+        // Already in the enclosing body's slot: leave with nothing to write.
+        let answer = if enclosing_slot.is_some() { None } else { ret_value.map(MirOperand::Local) };
+        self.terminate_return(answer);
         self.builder.switch_to_block(done);
         Ok(())
     }
