@@ -1122,7 +1122,11 @@ impl<'a> MirLowerer<'a> {
         place: &Expr,
         require_aggregate: bool,
     ) -> Option<TypedOperand> {
-        let ExprKind::Index { object, index } = &place.kind else {
+        // `v[i].f.g` borrows the element and points `.f.g`'s offset into it:
+        // the field lives in the buffer too, and a copy of it is what the
+        // callee wrote to while the element kept its old value (#2020).
+        let (root, fields) = Self::peel_field_path(place);
+        let ExprKind::Index { object, index } = &root.kind else {
             return None;
         };
         let (borrow, release) = if self.is_vec_expr(object) {
@@ -1140,13 +1144,19 @@ impl<'a> MirLowerer<'a> {
         };
         let elem_ty = self
             .ctx
-            .lookup_raw_type(place.id)
+            .lookup_raw_type(root.id)
             .map(|t| self.ctx.type_to_mir(&t))
             .or_else(|| self.collection_elem_of_expr(object))?;
+        let (offset, place_ty) = if fields.is_empty() {
+            (0, elem_ty)
+        } else {
+            let (off, _, fty) = self.field_path_offset_ty(&elem_ty, &fields)?;
+            (off, fty)
+        };
         // On the aggregate path, only aggregates: a scalar element is passed by
         // value there, and handing over its address would have the callee read
         // the pointer as the value.
-        if require_aggregate && !crate::lower::stmt::mutate_param_by_pointer(&elem_ty) {
+        if require_aggregate && !crate::lower::stmt::mutate_param_by_pointer(&place_ty) {
             return None;
         }
         let (coll_op, _) = self.lower_expr(object).ok()?;
@@ -1164,7 +1174,19 @@ impl<'a> MirLowerer<'a> {
             collection: coll_op,
             release,
         });
-        Some((MirOperand::Local(ptr), elem_ty))
+        if offset == 0 {
+            return Some((MirOperand::Local(ptr), place_ty));
+        }
+        let at = self.builder.alloc_temp(MirType::Ptr);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: at,
+            rvalue: MirRValue::BinaryOp {
+                op: crate::operand::BinOp::Add,
+                left: MirOperand::Local(ptr),
+                right: MirOperand::Constant(MirConst::Int(offset as i64)),
+            },
+        }));
+        Some((MirOperand::Local(at), place_ty))
     }
 
     /// Settle every `mutate` argument opened since `mark`. Called right after

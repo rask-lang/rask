@@ -195,7 +195,7 @@ impl<'a> MirLowerer<'a> {
 
     /// Peel a `.f.g.h` chain off a place, returning what it's rooted at and the
     /// field names in outermost-last order.
-    fn peel_field_path(expr: &Expr) -> (&Expr, Vec<&str>) {
+    pub(crate) fn peel_field_path(expr: &Expr) -> (&Expr, Vec<&str>) {
         let mut fields = Vec::new();
         let mut base = expr;
         while let ExprKind::Field { object, field } = &base.kind {
@@ -214,7 +214,7 @@ impl<'a> MirLowerer<'a> {
     /// The size comes from the layout, not from the field type's nominal size.
     /// A niche-packed `Handle?` is 8 bytes where its type reports 16, and a
     /// 16-byte copy from an integer sentinel dereferences it.
-    fn field_path_offset_ty(&self, base_ty: &MirType, fields: &[&str]) -> Option<(u32, u32, MirType)> {
+    pub(crate) fn field_path_offset_ty(&self, base_ty: &MirType, fields: &[&str]) -> Option<(u32, u32, MirType)> {
         let mut offset = 0;
         let mut ty = base_ty.clone();
         let mut size = None;
