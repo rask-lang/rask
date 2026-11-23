@@ -520,6 +520,7 @@ impl<'a> MirLowerer<'a> {
             let saved_builder = std::mem::replace(&mut self.builder, closure_builder);
             let saved_locals = std::mem::replace(&mut self.locals, closure_locals);
             let saved_captures = std::mem::replace(&mut self.addressed_locals, addressed_locals);
+            let saved_placed = std::mem::take(&mut self.placed_locals);
             let saved_loop_stack = std::mem::take(&mut self.loop_stack);
             // The cleanup chain belongs to the enclosing function, and its
             // blocks live in that function's MIR. A `return` inside this body
@@ -567,6 +568,7 @@ impl<'a> MirLowerer<'a> {
             closure_builder = std::mem::replace(&mut self.builder, saved_builder);
             self.locals = saved_locals;
             self.addressed_locals = saved_captures;
+            self.placed_locals = saved_placed;
             self.loop_stack = saved_loop_stack;
             self.ensure_stack = saved_ensure_stack;
             self.ensure_flags = saved_ensure_flags;
@@ -854,6 +856,7 @@ impl<'a> MirLowerer<'a> {
             let saved_builder = std::mem::replace(&mut self.builder, yb);
             let saved_locals = std::mem::replace(&mut self.locals, yield_locals);
             let saved_captures = std::mem::replace(&mut self.addressed_locals, body_captures);
+            let saved_placed = std::mem::take(&mut self.placed_locals);
             let saved_moved = std::mem::replace(&mut self.seq_moved_names, Some(Default::default()));
             let saved_loops = std::mem::take(&mut self.loop_stack);
             // The cleanup chain belongs to the enclosing function, and its
@@ -916,6 +919,7 @@ impl<'a> MirLowerer<'a> {
             yb = std::mem::replace(&mut self.builder, saved_builder);
             self.locals = saved_locals;
             self.addressed_locals = saved_captures;
+            self.placed_locals = saved_placed;
             let moved = std::mem::replace(&mut self.seq_moved_names, saved_moved).unwrap_or_default();
             // A `return` in a loop nested in another loop's body leaves that
             // body too, so what it moved is moved there as well.

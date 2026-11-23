@@ -229,33 +229,43 @@ impl<'a> MirLowerer<'a> {
     ) -> Result<TypedOperand, LoweringError> {
         let (box_op, _) = self.lower_expr(object)?;
 
-        // A payload that lives in its own storage is aliased through the pointer
-        // acquire hands back; anything word-sized is loaded into the local
-        // (codegen does the load), which is why it needs writing back.
+        // The binding is the box's payload where it sits. A payload with its own
+        // storage is aliased through the pointer acquire hands back. A
+        // word-sized one is bound to the payload's slot (`BindPlace`), the way
+        // `with v[i] as x` binds an element: acquire would load it, and a copy
+        // written back on exit dropped the value `x = new` replaced (#2039).
         let guard_ty = self.resolve_sync_payload_mir(object).unwrap_or_else(|| crate::fallback::unknown_type("lower/concurrency:278"));
         let by_address = guard_ty.passed_by_address();
 
         let guard_local = self.builder.alloc_local(binding_name.to_string(), guard_ty.clone());
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-            dst: Some(guard_local),
+            dst: by_address.then_some(guard_local),
             func: syms.acquire.call(),
             args: vec![box_op.clone()],
         }));
+        if !by_address {
+            let slot = self.builder.alloc_temp(MirType::Ptr);
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                dst: Some(slot),
+                func: syms.data.call(),
+                args: vec![box_op.clone()],
+            }));
+            self.bind_place(guard_local, slot);
+        }
 
         let saved_binding = self.locals.insert(binding_name.to_string(), (guard_local, guard_ty.clone()));
         // The binding shadows any outer name for the block only, metadata
         // included.
         let saved_meta = self.local_meta.remove(binding_name);
         self.meta_mut(binding_name).checked_type = self.sync_type_arg(object, 0);
-        // Bound by address, the binding is the box's own payload, so `p = v`
-        // replaces what the box holds. It used to rebind the local, and the
-        // box kept its old value.
+        // The binding is the box's own payload, so `p = v` replaces what the
+        // box holds. It used to rebind the local, and the box kept its old
+        // value.
         if by_address {
             self.meta_mut(binding_name).assigns_through = true;
         }
-        let writeback = (!by_address).then(|| rask_layout::size_of(&guard_ty, self.ctx.target()));
         let depth = self.ensure_stack.len();
-        self.push_guard_cleanup(&box_op, guard_local, writeback, syms);
+        self.push_guard_cleanup(&box_op, syms);
 
         let result = self.lower_block(body);
 
@@ -299,16 +309,9 @@ impl<'a> MirLowerer<'a> {
         result
     }
 
-    /// Schedule "write the guard back, then unlock" as a scope cleanup, the same
-    /// shape `ensure` uses: the main flow skips the block, and every exit path
-    /// chains through it.
-    fn push_guard_cleanup(
-        &mut self,
-        box_op: &MirOperand,
-        guard_local: crate::LocalId,
-        writeback: Option<u32>,
-        syms: &BoxWithSyms,
-    ) {
+    /// Schedule the unlock as a scope cleanup, the same shape `ensure` uses:
+    /// the main flow skips the block, and every exit path chains through it.
+    fn push_guard_cleanup(&mut self, box_op: &MirOperand, syms: &BoxWithSyms) {
         let cleanup_block = self.builder.create_block();
         let continue_block = self.builder.create_block();
 
@@ -316,21 +319,6 @@ impl<'a> MirLowerer<'a> {
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: continue_block }));
 
         self.builder.switch_to_block(cleanup_block);
-        if let Some(size) = writeback {
-            let slot = self.builder.alloc_temp(MirType::Ptr);
-            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                dst: Some(slot),
-                func: syms.data.call(),
-                args: vec![box_op.clone()],
-            }));
-            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-                addr: slot,
-                offset: 0,
-                value: MirOperand::Local(guard_local),
-                store_size: size,
-                field: None,
-            }));
-        }
         if let Some(release) = syms.release {
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: None,

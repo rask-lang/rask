@@ -361,7 +361,8 @@ impl<'a> MirLowerer<'a> {
     /// `mem.parameters/PM2` says is always there. A struct or enum, a tuple
     /// or an array, a string, a container. A scalar holds nothing to give
     /// back.
-    fn released_on_overwrite(&self, target: &Expr, reuses_old: bool, ty: &MirType) -> Option<MirType> {
+    /// `closures`: whether a closure held there is this write's to give back.
+    fn released_on_overwrite(&self, target: &Expr, reuses_old: bool, ty: &MirType, closures: bool) -> Option<MirType> {
         self.replaced_slot_type(target, reuses_old, ty)
             .filter(|t| {
                 matches!(
@@ -369,7 +370,7 @@ impl<'a> MirLowerer<'a> {
                     MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_) | MirType::Array { .. }
                         | MirType::Buffer | MirType::Container(_)
                         | MirType::InterfaceObject { .. }
-                )
+                ) || (closures && matches!(t, MirType::FuncPtr(_)))
             })
             // An optional or a result holds what it wraps, and the slot is
             // always filled (`none` counts): `best = x` in a loop body over a
@@ -1036,7 +1037,7 @@ impl<'a> MirLowerer<'a> {
                             let replaced = if renew {
                                 None
                             } else if assigns_through {
-                                self.released_on_overwrite(target, reuses_old, &dst_ty)
+                                self.released_on_overwrite(target, reuses_old, &dst_ty, false)
                             } else {
                                 None
                             };
@@ -1093,7 +1094,8 @@ impl<'a> MirLowerer<'a> {
                             // replaced (#1448), and a `lines()` loop body doing
                             // `block = Vec.new()` every block.
                             let replaced = if self.addressed_locals.contains(&local_id) {
-                                self.released_on_overwrite(target, reuses_old, &dst_ty)
+                                let closures = self.placed_locals.contains(&local_id);
+                                self.released_on_overwrite(target, reuses_old, &dst_ty, closures)
                             } else {
                                 None
                             };

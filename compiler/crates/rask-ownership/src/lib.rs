@@ -507,9 +507,11 @@ pub struct OwnershipChecker<'a> {
     /// carry their captures instead of pointing at them. Collected before any
     /// body is walked — see `collect_escaping_closures`.
     escaping_closures: HashSet<rask_ast::NodeId>,
-    /// The `mutate` parameters of the function `collect_escaping_closures` is
-    /// walking: assigning one writes the caller's variable, not a local.
-    mutate_params_in_walk: HashSet<String>,
+    /// Names in the walk of `collect_escaping_closures` that stand for storage
+    /// this frame doesn't own, so assigning one writes there: the function's
+    /// `mutate` parameters (the caller's variable) and `with` bindings (the
+    /// box's payload, the collection's element).
+    places_in_walk: HashSet<String>,
     /// See `OwnershipResult::closure_captures`.
     closure_captures: HashMap<rask_ast::NodeId, Vec<String>>,
     /// Which parameters each function and method can resize (`resize.rs`).
@@ -872,7 +874,7 @@ impl<'a> OwnershipChecker<'a> {
             named_fn_values: HashMap::new(),
             fn_name_bindings: HashMap::new(),
             escaping_closures: HashSet::new(),
-            mutate_params_in_walk: HashSet::new(),
+            places_in_walk: HashSet::new(),
             closure_captures: HashMap::new(),
             task_bound_closures: HashSet::new(),
             lent_captures: HashMap::new(),
@@ -7898,9 +7900,9 @@ impl<'a> OwnershipChecker<'a> {
     }
 
     fn escapes_in_fn(&mut self, f: &FnDecl) {
-        self.mutate_params_in_walk = f.params.iter().filter(|p| p.is_mutate).map(|p| p.name.clone()).collect();
+        self.places_in_walk = f.params.iter().filter(|p| p.is_mutate).map(|p| p.name.clone()).collect();
         self.escapes_in_body(&f.body);
-        self.mutate_params_in_walk.clear();
+        self.places_in_walk.clear();
     }
 
     fn escapes_in_body(&mut self, body: &[Stmt]) {
@@ -7924,7 +7926,7 @@ impl<'a> OwnershipChecker<'a> {
     fn escapes_in_stmt(&mut self, stmt: &Stmt, named: &mut HashMap<String, Vec<rask_ast::NodeId>>) {
         match &stmt.kind {
             StmtKind::Let { name, init, .. } | StmtKind::Mut { name, init, .. } => {
-                self.mutate_params_in_walk.remove(name);
+                self.places_in_walk.remove(name);
                 self.escapes_in_expr(init, named);
                 let carried = self.closure_ids_of(init, named);
                 if carried.is_empty() { named.remove(name); }
@@ -7935,10 +7937,9 @@ impl<'a> OwnershipChecker<'a> {
                 self.escapes_in_expr(target, named);
                 // Through a field or an index the closure lands in something
                 // that outlives the assignment; a plain name is just a rebind,
-                // unless it is a `mutate` parameter: that writes the caller's
-                // variable, which outlives this frame.
+                // unless it names storage outside the frame (`places_in_walk`).
                 let local = match &target.kind {
-                    ExprKind::Ident(name) if !self.mutate_params_in_walk.contains(name) => Some(name),
+                    ExprKind::Ident(name) if !self.places_in_walk.contains(name) => Some(name),
                     _ => None,
                 };
                 if let Some(name) = local {
@@ -8036,7 +8037,10 @@ impl<'a> OwnershipChecker<'a> {
                 }
                 ExprKind::WithAs { bindings, body } => {
                     for b in bindings { self.escapes_in_expr(&b.source, named); }
+                    let saved = self.places_in_walk.clone();
+                    self.places_in_walk.extend(bindings.iter().map(|b| b.name.clone()));
                     self.escapes_in_stmts(body, named);
+                    self.places_in_walk = saved;
                     false
                 }
                 // A task joined in this block before anything else touches its

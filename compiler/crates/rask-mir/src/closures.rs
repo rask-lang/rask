@@ -1537,7 +1537,10 @@ fn find_escaping_closures(
                 // body is its own function, and the write only becomes a store
                 // once `addr_taken` runs, after this decision. Left on the
                 // stack, `f` pointed into the body's frame after it returned.
-                MirStmtKind::LoadCapture { dst, .. } => {
+                // A local bound to storage where it sits (`BindPlace`: a
+                // collection element, a `with` block's payload) is the same:
+                // `with sh.write() as g { g = || v }` puts the closure in the box.
+                MirStmtKind::LoadCapture { dst, .. } | MirStmtKind::BindPlace { dst, .. } => {
                     escaping.extend(aliases.origins(dst).iter().copied());
                 }
                 // The other side of the same trade: what this frame puts in a

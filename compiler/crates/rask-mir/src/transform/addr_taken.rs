@@ -261,15 +261,24 @@ fn withdraw_borrows(fns: &mut [MirFunction], by_value: &HashSet<String>, target:
                 if !by_value.contains(func_name) {
                     continue;
                 }
+                let tys: Vec<MirType> = captures
+                    .iter()
+                    .map(|c| types.iter().find(|(id, _)| *id == c.local_id).map_or(MirType::Ptr, |(_, ty)| ty.clone()))
+                    .collect();
                 let laid = crate::lay_out_captures(
-                    captures.iter().map(|c| {
-                        let ty = types.iter().find(|(id, _)| *id == c.local_id).map_or(MirType::Ptr, |(_, ty)| ty.clone());
-                        (c.local_id, ty, false, c.copy)
-                    }),
+                    captures.iter().zip(&tys).map(|(c, ty)| (c.local_id, ty.clone(), false, c.copy)),
                     target,
                 );
                 let mut offsets = Vec::with_capacity(captures.len());
-                for (c, l) in captures.iter_mut().zip(&laid) {
+                for ((c, l), ty) in captures.iter_mut().zip(&laid).zip(tys) {
+                    // A Copy value is copied in with references of its own,
+                    // taken at the create (`rc_insert` runs after this), so the
+                    // environment gives them back. `|| tag` handed to
+                    // `Shared.mutex` leaked its string. Anything else stays the
+                    // frame's: it was never moved in.
+                    if c.copy {
+                        c.owns = Some(ty);
+                    }
                     c.by_ref = false;
                     c.size = l.size;
                     c.offset = l.offset;

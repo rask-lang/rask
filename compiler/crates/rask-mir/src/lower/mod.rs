@@ -2259,6 +2259,10 @@ pub struct MirLowerer<'a> {
     /// place (`BindPlace`). A whole-value write to one replaces what the
     /// storage holds, so the old value is released there.
     pub(crate) addressed_locals: std::collections::HashSet<LocalId>,
+    /// The `BindPlace` part of `addressed_locals`: storage a collection or a
+    /// box owns. A closure written over one is given back there; a capture's
+    /// old closure is the creating frame's to drop.
+    pub(crate) placed_locals: std::collections::HashSet<LocalId>,
     /// While a `for` body over a sequence is lowered: the names of the loop's
     /// variables a `return` in it moved (`MirContext::return_moves`).
     pub(crate) seq_moved_names: Option<std::collections::HashSet<String>>,
@@ -2879,9 +2883,15 @@ impl<'a> MirLowerer<'a> {
     /// whole.
     pub(crate) fn bind_element_in_place(&mut self, local: LocalId, collection: MirOperand, at: MirOperand, map: bool) -> LocalId {
         let slot = self.emit_element_slot(collection, at, map);
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::BindPlace { dst: local, addr: slot }));
-        self.addressed_locals.insert(local);
+        self.bind_place(local, slot);
         slot
+    }
+
+    /// Bind `local` to the storage at `addr`, where it sits.
+    pub(crate) fn bind_place(&mut self, local: LocalId, addr: LocalId) {
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::BindPlace { dst: local, addr }));
+        self.addressed_locals.insert(local);
+        self.placed_locals.insert(local);
     }
 
     /// Read `array[at]` into `dst` for a walk over the array. An element that
@@ -2921,8 +2931,7 @@ impl<'a> MirLowerer<'a> {
             },
         }));
         let place = self.builder.alloc_temp(elem.clone());
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::BindPlace { dst: place, addr: slot }));
-        self.addressed_locals.insert(place);
+        self.bind_place(place, slot);
         // The walk reads a copy of the bytes, still lent: anything that
         // retains it (a pair built around it) retains its own copy, not the
         // array's slot.
@@ -4364,8 +4373,10 @@ impl<'a> MirLowerer<'a> {
         // cell's to release: `EnsureHookPop` reads what the hook holds, so the
         // frame doesn't release it before the hook is gone.
         let saved_addressed = std::mem::replace(&mut self.addressed_locals, thunk_addressed);
+        let saved_placed = std::mem::take(&mut self.placed_locals);
         let body_result = self.lower_ensure_body(body, else_handler);
         self.addressed_locals = saved_addressed;
+        self.placed_locals = saved_placed;
         thunk_builder = std::mem::replace(&mut self.builder, saved_builder);
         self.locals = saved_locals;
         self.pending_module_consts = saved_pending;
@@ -4697,6 +4708,7 @@ impl<'a> MirLowerer<'a> {
             spawn_result_boxed: false,
             c_callback: false,
             addressed_locals: std::collections::HashSet::new(),
+            placed_locals: std::collections::HashSet::new(),
             seq_moved_names: None,
             parent_name: func_name,
             pointer_checks: PointerChecks::of(&fn_decl.attrs),
