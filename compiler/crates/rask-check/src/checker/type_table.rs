@@ -319,6 +319,10 @@ pub struct TypeTable {
     /// satisfies them, so layout answers a placeholder word instead of
     /// walking fields that never settle (#1973).
     pub(crate) sizeless: std::collections::HashSet<TypeId>,
+    /// Whether every declared type is in and every recursive one marked
+    /// `sizeless`. Until then a size is a guess at a half-built table, so the
+    /// 4 GiB check on a written type waits (`too_large`).
+    pub(crate) declarations_settled: bool,
     /// The bounds a generic struct or enum declares on its parameters, in
     /// declaration order: `struct Holder<T: Named>` → `[("T", [Named])]`.
     /// Every method of the type may assume them (#1364).
@@ -375,6 +379,7 @@ impl TypeTable {
             declared_types: HashMap::new(),
             layout_stand_ins: std::collections::HashSet::new(),
             sizeless: std::collections::HashSet::new(),
+            declarations_settled: false,
             declared_param_bounds: HashMap::new(),
             declared_by: HashMap::new(),
             ambiguous_conformances: std::collections::HashSet::new(),

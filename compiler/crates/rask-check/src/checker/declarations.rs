@@ -204,6 +204,7 @@ impl TypeChecker {
     }
 
     pub(super) fn collect_type_declarations(&mut self, decls: &[Decl]) {
+        self.types.declarations_settled = false;
         // `const W = 4` then `[i32; W]`, and `const TWICE = W * 2`. The length
         // has to be known before any declared type is parsed, so the consts
         // are folded here rather than where each is checked (#906). The fold is
@@ -242,6 +243,13 @@ impl TypeChecker {
             let params = owner_type_params(&decl.kind, &self.types);
             self.with_type_params(params, |this| this.resolve_forward_field_types(decl));
         }
+        // Before anything is measured: a size walked through a type that
+        // holds itself never settles.
+        for decl in decls {
+            let params = owner_type_params(&decl.kind, &self.types);
+            self.with_type_params(params, |this| this.reject_recursive_decl(decl));
+        }
+        self.types.declarations_settled = true;
         for decl in decls {
             if let DeclKind::Impl(i) = &decl.kind {
                 let params = owner_type_params(&decl.kind, &self.types);
@@ -3197,6 +3205,28 @@ impl TypeChecker {
         }
     }
 
+    /// E0890 for a struct or enum declaration that holds itself inline. Runs
+    /// once every type is registered, so a field may name one declared below.
+    /// Unknown names are left for `check_decl` to report.
+    fn reject_recursive_decl(&mut self, decl: &Decl) {
+        let (name, fields): (&str, Vec<_>) = match &decl.kind {
+            // `@binary` fields are wire specifiers, never a declared type.
+            DeclKind::Struct(s) if !s.attrs.iter().any(|a| a.is("binary")) => {
+                (&s.name, s.fields.iter().map(|f| (&f.ty, f.name_span)).collect())
+            }
+            DeclKind::Enum(e) => {
+                (&e.name, e.variants.iter().flat_map(|v| v.fields.iter()).map(|f| (&f.ty, f.name_span)).collect())
+            }
+            _ => return,
+        };
+        let Some(owner) = self.types.get_type_id(name) else { return };
+        for (ty, span) in fields {
+            if let Ok(ty) = resolve_type_expr(ty, &self.types) {
+                self.reject_recursive_type(owner, &ty, span);
+            }
+        }
+    }
+
     /// A struct or enum whose fields reach itself with nothing in between.
     ///
     /// Every field is stored inline, so room for a `Node` inside a `Node`
@@ -3211,10 +3241,6 @@ impl TypeChecker {
     /// and arrays. `Heap<T>`, `Link<T>`, `Vec` and the rest put the value
     /// somewhere else and hold an address, which is exactly what breaks the
     /// cycle — and what the message tells the author to reach for.
-    ///
-    /// A generic carrier (`struct Wrap<T> { v: T }`, then `Wrap<Node>`) is not
-    /// walked: the field's declared type is `T`, so seeing through it needs the
-    /// substitution, which isn't done here. That case still reaches layout.
     fn reject_recursive_type(&mut self, owner: rask_types::TypeId, ty: &Type, span: Span) {
         let mut chain: Vec<String> = Vec::new();
         let mut seen: Vec<rask_types::TypeId> = Vec::new();
@@ -3362,7 +3388,6 @@ impl TypeChecker {
                 // spelling here as well rejected every `@binary` struct there
                 // is, with a message telling you to declare `u16be`.
                 if !s.attrs.iter().any(|a| a.is("binary")) {
-                    let owner = self.types.get_type_id(&s.name);
                     let fields: Vec<_> = s
                         .fields
                         .iter()
@@ -3370,9 +3395,6 @@ impl TypeChecker {
                         .collect();
                     for (ty, span) in fields {
                         self.reject_non_optional_link(&ty, span);
-                        if let Some(owner) = owner {
-                            self.reject_recursive_type(owner, &ty, span);
-                        }
                     }
                 }
                 self.current_self_type = self.types.get_type_id(&s.name).map(Type::Named);
@@ -3383,7 +3405,6 @@ impl TypeChecker {
             }
             DeclKind::Enum(e) => {
                 // PC2: variant payload types must name declared types
-                let owner = self.types.get_type_id(&e.name);
                 let payloads: Vec<_> = e
                     .variants
                     .iter()
@@ -3392,9 +3413,6 @@ impl TypeChecker {
                     .collect();
                 for (ty, span) in payloads {
                     self.reject_non_optional_link(&ty, span);
-                    if let Some(owner) = owner {
-                        self.reject_recursive_type(owner, &ty, span);
-                    }
                 }
                 self.current_self_type = self.types.get_type_id(&e.name).map(Type::Named);
                 for method in &e.methods {

@@ -40,28 +40,34 @@ impl crate::TypeTable {
         known_size_align(&ty, &cache)
     }
 
-    /// Bytes in `[elem; len]`, uncapped, or `None` while the element has no
-    /// layout (a type parameter, an open variable).
-    pub fn array_bytes(&self, elem: &Type, len: usize) -> Option<u64> {
-        let (size, _) = self.size_align(elem, &rask_layout::no_params)?;
-        Some(u64::from(size).saturating_mul(len as u64))
-    }
-
     /// VS12: whether `ty` is over the 4 GiB a value can take. `Some(Some(bytes))`
     /// for an array, whose size is exact; `Some(None)` for a struct, tuple,
     /// enum or union whose parts add up past it, which layout holds at
     /// `u32::MAX`. A type with a part already over is left to that part's
     /// report, so two 3 GB arrays in a struct are one error, at the struct.
+    ///
+    /// `None` while declarations are still being collected: a field naming a
+    /// type declared further down, or the type it sits in, has no layout yet.
+    /// Each declared struct, enum and union is measured once collection ends.
     pub(crate) fn too_large(&self, ty: &Type) -> Option<Option<u64>> {
-        if let Type::Array { elem, len } = ty {
-            let bytes = self.array_bytes(elem, *len)?;
-            return (bytes > u64::from(u32::MAX) && !self.at_cap(elem)).then_some(Some(bytes));
+        if !self.declarations_settled {
+            return None;
         }
-        if !self.at_cap(ty) {
+        // Inside `struct Chain<T>`, `Wrapper<Chain<T>>` has no size until `T`
+        // has one; read as a concrete type, `T` sent layout looking for a
+        // declaration that isn't there.
+        let in_scope = |n: &str| self.is_type_param_in_scope(n);
+        let is_param: IsParam = &in_scope;
+        if let Type::Array { elem, len } = ty {
+            let (size, _) = self.size_align(elem, is_param)?;
+            let bytes = u64::from(size).saturating_mul(*len as u64);
+            return (bytes > u64::from(u32::MAX) && size != u32::MAX).then_some(Some(bytes));
+        }
+        if self.size_align(ty, is_param).is_none_or(|(size, _)| size != u32::MAX) {
             return None;
         }
         let part_sizes: Vec<u32> = match ty {
-            Type::Tuple(elems) => elems.iter().filter_map(|e| self.size_align(e, &rask_layout::no_params)).map(|(s, _)| s).collect(),
+            Type::Tuple(elems) => elems.iter().filter_map(|e| self.size_align(e, is_param)).map(|(s, _)| s).collect(),
             Type::Named(_) | Type::Generic { .. } => {
                 let (id, args) = match ty {
                     Type::Named(id) => (*id, Vec::new()),
@@ -80,7 +86,7 @@ impl crate::TypeTable {
                         .collect(),
                     Some(TypeDef::Union { fields, .. }) => fields
                         .iter()
-                        .filter_map(|(_, f)| self.size_align(f, &rask_layout::no_params))
+                        .filter_map(|(_, f)| self.size_align(f, is_param))
                         .map(|(s, _)| s)
                         .collect(),
                     _ => Vec::new(),
@@ -89,11 +95,6 @@ impl crate::TypeTable {
             _ => Vec::new(),
         };
         (!part_sizes.contains(&u32::MAX)).then_some(None)
-    }
-
-    /// Whether layout held `ty`'s size at the 4 GiB cap.
-    fn at_cap(&self, ty: &Type) -> bool {
-        self.size_align(ty, &rask_layout::no_params).is_some_and(|(size, _)| size == u32::MAX)
     }
 
     /// `size_align` for the copy rule, which has to answer inside a generic
