@@ -6,7 +6,8 @@
 // never asked, and `Sequence` stopped being recognised as something that can
 // hold a borrow once it became a declared type, so all of these compiled and
 // returned a sequence reading a dead frame. Over a parameter or `self` they
-// are fine: the caller still holds the source.
+// are fine: the caller still holds the source, and so are views of one (a loop
+// item over a parameter, `let items = b.items` off one).
 import sequence.Sequence
 
 func filtered() -> Sequence<i64> {
@@ -36,6 +37,22 @@ func from_a_field() -> Sequence<i64> {
     return b.items.filter(|x| x > 0)
 }
 
+func view_of_a_local() -> Sequence<i64> {
+    let b = Bag(items: [1, 2])
+    let items = b.items
+    // ERROR: E0862 — `items` views `b`, which dies here
+    return items.filter(|x| x > 1)
+}
+
+func item_of_a_local() -> Sequence<i64> {
+    let vs: Vec<Vec<i64>> = [[1, 2]]
+    for v in vs {
+        // ERROR: E0862 — `v` is lent by `vs`, which dies here
+        return v.filter(|x| x > 1)
+    }
+    return Vec.new().as_sequence()
+}
+
 func make_seq(v: Vec<i64>) -> Sequence<i64> {
     return v.filter(|x| x > 0)
 }
@@ -48,6 +65,20 @@ func through_a_function() -> Sequence<i64> {
 
 func over_a_param(v: Vec<i64>) -> Sequence<i64> {
     return v.filter(|x| x > 1).take(2)
+}
+
+func first_of_param(vs: Vec<Vec<i64>>) -> Sequence<i64> {
+    // A loop item and an index are views of the parameter, which the caller
+    // still holds.
+    for v in vs {
+        return v.filter(|x| x > 1)
+    }
+    return vs[0].filter(|x| x > 0)
+}
+
+func through_a_view(b: Bag) -> Sequence<i64> {
+    let items = b.items
+    return items.filter(|x| x > 1)
 }
 
 extend Bag {
@@ -78,6 +109,13 @@ func main() {
     }
     let b = Bag(items: [5, 6])
     for x in b.big() {
+        n += x
+    }
+    let vs: Vec<Vec<i64>> = [[1, 2, 3]]
+    for x in first_of_param(vs) {
+        n += x
+    }
+    for x in through_a_view(b) {
         n += x
     }
     let fs: Vec<func() -> i64> = [|| 1]

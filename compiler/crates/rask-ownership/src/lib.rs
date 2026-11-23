@@ -302,10 +302,11 @@ pub struct OwnershipChecker<'a> {
     /// target itself moves out rather than viewing.
     store_target: Option<(String, Vec<String>)>,
     /// Bindings of a value-mode `for` over a collection: name → (the loop, the
-    /// collection). The loop lends each element (ctrl.loops/LP1), so the
-    /// binding can't be given away any more than a borrowed parameter can
-    /// (LP6). Scoped to the loop body.
-    borrowed_loop_items: HashMap<String, (Span, String, bool)>,
+    /// collection, whether a sequence lends it, the variable the collection
+    /// lives in when it is one). The loop lends each element (ctrl.loops/LP1),
+    /// so the binding can't be given away any more than a borrowed parameter
+    /// can (LP6). Scoped to the loop body.
+    borrowed_loop_items: HashMap<String, (Span, String, bool, Option<String>)>,
     /// `with … as name` bindings: the source still holds the value, the
     /// block only reaches into it. Name → (the `with` source, what it reads).
     borrowed_with: HashMap<String, (Span, String)>,
@@ -3999,7 +4000,11 @@ impl<'a> OwnershipChecker<'a> {
                 for name in &binding_names {
                     match &lender {
                         Some(from) => {
-                            self.borrowed_loop_items.insert(name.clone(), (stmt.span, from.0.clone(), from.1));
+                            let root = match &iter.kind {
+                                ExprKind::Ident(n) => Some(n.clone()),
+                                _ => Self::projection_root(iter).map(str::to_string),
+                            };
+                            self.borrowed_loop_items.insert(name.clone(), (stmt.span, from.0.clone(), from.1, root));
                         }
                         None => {
                             self.borrowed_loop_items.remove(name);
@@ -10050,8 +10055,10 @@ impl<'a> OwnershipChecker<'a> {
 
     /// SL3: a plain local, or a part of one, lent to a call. The call may
     /// answer a closure built over it (`make_filter(tags)`,
-    /// `w.items.filter(p)`), so the result is limited to the local's block. A
-    /// parameter needs no entry: it outlives the whole body already.
+    /// `w.items.filter(p)`), so the result is limited to the block of the
+    /// local whose storage it reads. A parameter needs no entry: it outlives
+    /// the whole body already, and so does a view of one (`for v in vs`,
+    /// `let items = b.items` over a parameter `b`).
     fn lent_local_limit(&self, expr: &Expr) -> Option<(u32, String)> {
         let name = match &expr.kind {
             ExprKind::Ident(name) => name.as_str(),
@@ -10060,7 +10067,30 @@ impl<'a> OwnershipChecker<'a> {
         if self.capture_is_copy(name) {
             return None;
         }
-        self.body_local_block(name).map(|b| (b, name.to_string()))
+        let owner = self.storage_owner(name);
+        self.body_local_block(&owner).map(|b| (b, name.to_string()))
+    }
+
+    /// The variable whose storage `name` reads: `name` itself, or, for a view
+    /// (a `for` item a collection lends, `let items = b.items`), the owner of
+    /// what it views, followed through views of views.
+    fn storage_owner(&self, name: &str) -> String {
+        let mut cur = name.to_string();
+        let mut seen = vec![cur.clone()];
+        loop {
+            let next = self
+                .field_views
+                .get(&cur)
+                .map(|v| v.root.clone())
+                .or_else(|| self.borrowed_loop_items.get(&cur).and_then(|item| item.3.clone()));
+            match next {
+                Some(n) if !seen.contains(&n) => {
+                    seen.push(n.clone());
+                    cur = n;
+                }
+                _ => return cur,
+            }
+        }
     }
 
     /// Only if the call hands a closure back. `apply(f, 10) -> i64` borrows
@@ -10129,7 +10159,7 @@ impl<'a> OwnershipChecker<'a> {
         if self.outlives_this_call(name) {
             return Some(crate::Lender::Caller);
         }
-        if let Some((_, from, _)) = self.borrowed_loop_items.get(name) {
+        if let Some((_, from, _, _)) = self.borrowed_loop_items.get(name) {
             return Some(crate::Lender::Loop(from.clone()));
         }
         self.borrowed_with.get(name).map(|(_, from)| crate::Lender::With(from.clone()))
@@ -10322,7 +10352,7 @@ impl<'a> OwnershipChecker<'a> {
             });
             return;
         }
-        if let Some((loop_at, from, by_sequence)) = self.borrowed_loop_items.get(name).cloned() {
+        if let Some((loop_at, from, by_sequence, _)) = self.borrowed_loop_items.get(name).cloned() {
             self.errors.push(OwnershipError {
                 kind: OwnershipErrorKind::ConsumeLoopItem {
                     name: name.to_string(),
