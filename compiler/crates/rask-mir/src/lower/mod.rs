@@ -2705,6 +2705,28 @@ impl<'a> MirLowerer<'a> {
         self.build_err(val.clone(), val_ty, result_ty)
     }
 
+    /// A value leaving a function or closure body as its answer, shaped for
+    /// `ret_ty`: on the error side where the checker put it there (ER9),
+    /// wrapped into the success side's layers otherwise. `node` is the
+    /// returned expression, or a closure's whole body; an expression-bodied
+    /// closure's `|x| Bad(code: x)` came back as the success side (#2021).
+    pub(super) fn shape_returned(
+        &mut self,
+        node: rask_ast::NodeId,
+        val: MirOperand,
+        val_ty: &MirType,
+        ret_ty: &MirType,
+    ) -> Result<MirOperand, LoweringError> {
+        if self.ctx.err_returns.contains(&node) {
+            return self.build_err(val, val_ty, ret_ty).ok_or_else(|| {
+                LoweringError::InvalidConstruct(format!(
+                    "a return on the error side of `{}`, which has none", ret_ty
+                ))
+            });
+        }
+        Ok(self.coerce_into_wrapper(rask_ast::coercion::CoercionSite::Return, val, val_ty, ret_ty))
+    }
+
     /// `val` on the error side of `result_ty`: tag 1, no origin, the error as
     /// payload — a union member wrapped into the union first. `None` when
     /// `result_ty` has no error side.

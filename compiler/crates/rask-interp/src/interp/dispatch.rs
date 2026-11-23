@@ -981,6 +981,9 @@ impl Interpreter {
         ret: crate::value::ClosureRet,
     ) -> Result<Value, RuntimeError> {
         let (value, have) = match ended {
+            // A body the checker put on the error side, as it does a `return`
+            // (#2021): `|x| Bad(code: x)` in a `func(i64) -> i64 or Bad` slot.
+            Ok(v) if self.err_returns.contains(&body.id) => return Ok(Value::err(v)),
             Ok(v) => (v, self.static_option_depth(body)),
             Err(RuntimeError::Return(v)) => (v, self.returned_depth.take()),
             Err(RuntimeError::TryError(v)) => return Ok(v),

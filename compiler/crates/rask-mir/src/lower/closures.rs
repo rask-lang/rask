@@ -546,23 +546,18 @@ impl<'a> MirLowerer<'a> {
             // type `T` (`|x| x * 2` in a `func(i64) -> i64?` slot) hands back
             // the success side, as a function declared that way does. Lowering
             // builds that wrapper; codegen no longer adds it.
-            let body_result = self.lower_expr(body).map(|(op, ty)| {
-                if self.is_ordering_ty(&ty) && closure_ret == MirType::I64 {
+            let body_result = self.lower_expr(body).and_then(|(op, ty)| {
+                Ok(if self.is_ordering_ty(&ty) && closure_ret == MirType::I64 {
                     let tag = self.emit_ordering_tag_i64(op);
                     (MirOperand::Local(tag), MirType::I64)
                 } else if matches!(closure_ret, MirType::Result { .. } | MirType::Option(_))
                     && self.builder.current_block_unterminated()
                 {
-                    let wrapped = self.coerce_into_wrapper(
-                        rask_ast::coercion::CoercionSite::Return,
-                        op,
-                        &ty,
-                        &closure_ret,
-                    );
-                    (wrapped, closure_ret.clone())
+                    let shaped = self.shape_returned(body.id, op, &ty, &closure_ret)?;
+                    (shaped, closure_ret.clone())
                 } else {
                     (op, ty)
-                }
+                })
             });
 
             closure_builder = std::mem::replace(&mut self.builder, saved_builder);

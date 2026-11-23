@@ -852,12 +852,7 @@ impl<'a> MirLowerer<'a> {
                 // `1 1 1` for `1 12 13`.
                 if self.builder.current_block_unterminated() {
                     let body_op = match &declared_ret {
-                        Some(ret) => self.coerce_into_wrapper(
-                            rask_ast::coercion::CoercionSite::Return,
-                            body_op,
-                            &body_ty,
-                            ret,
-                        ),
+                        Some(ret) => self.shape_returned(body.id, body_op, &body_ty, ret)?,
                         None => body_op,
                     };
                     self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {

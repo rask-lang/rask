@@ -726,17 +726,8 @@ impl<'a> MirLowerer<'a> {
                     // bare 3 the caller read as a string.
                     let final_op = if inlined_closure {
                         op
-                    } else if self.ctx.err_returns.contains(&e.id) {
-                        self.build_err(op, &op_ty, &ret_ty).ok_or_else(|| {
-                            LoweringError::InvalidConstruct(format!(
-                                "a return on the error side of `{}`, which has none", ret_ty
-                            ))
-                        })?
                     } else {
-                        self.coerce_into_wrapper(
-                            rask_ast::coercion::CoercionSite::Return,
-                            op, &op_ty, &ret_ty,
-                        )
+                        self.shape_returned(e.id, op, &op_ty, &ret_ty)?
                     };
                     Some(final_op)
                 } else if self.inline_return_target.as_ref().is_some_and(|t| t.2.is_none()) {
