@@ -1,0 +1,59 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// An interface may name `any` of itself, or of an interface declared further
+// down, in its own methods.
+//
+// The method signatures were read before the interface was in the table, so
+// `any Shape` inside `Shape` named no declaration and no implementation's
+// `func copy_out(self) -> any Shape` matched it: every conformance failed and
+// every coercion to `any Shape` with it. That's what giving `any Registry` a
+// clone method ran into.
+
+interface Shape {
+    func area(self) -> i64
+    func copy_out(self) -> any Shape
+    func label(self) -> any Label
+}
+
+interface Label {
+    func text(self) -> string
+}
+
+struct Sq { side: i64 }
+struct Tag { name: string }
+
+Tag implements Label {
+    func text(self) -> string {
+        return self.name
+    }
+}
+
+Sq implements Shape {
+    func area(self) -> i64 {
+        return self.side * self.side
+    }
+
+    func copy_out(self) -> any Shape {
+        return Sq(side: self.side)
+    }
+
+    func label(self) -> any Label {
+        return Tag(name: "square-with-a-long-enough-label-{self.side}")
+    }
+}
+
+func make(side: i64) -> any Shape {
+    return Sq(side: side)
+}
+
+test "a method returns any of its own interface" {
+    let s = make(3)
+    let t = s.copy_out()
+    assert t.area() == 9
+    assert s.area() == 9
+}
+
+test "a method returns any of an interface declared below" {
+    let s = make(4)
+    assert s.label().text() == "square-with-a-long-enough-label-4"
+}

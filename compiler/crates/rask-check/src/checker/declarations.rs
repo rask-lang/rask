@@ -295,6 +295,18 @@ impl TypeChecker {
             types.reaches_inline(new, owner, &mut seen, &mut chain)
         };
         match &decl.kind {
+            // An interface's methods were read before the interface itself was
+            // in the table, so `any Shape` in `Shape`'s own `func copy(self) ->
+            // any Shape` named no declaration, and no implementation's
+            // `-> any Shape` matched it. The same for an interface named
+            // further down. Every interface is registered now: read them again.
+            DeclKind::Interface(t) => {
+                let Some(id) = self.types.get_type_id(&t.name) else { return };
+                let fresh = self.interface_method_signatures(t);
+                if let Some(TypeDef::Interface { methods, .. }) = self.types.get_mut(id) {
+                    *methods = fresh;
+                }
+            }
             DeclKind::Struct(s) if !s.attrs.iter().any(|a| a.is("binary")) => {
                 let Some(id) = self.types.get_type_id(&s.name) else { return };
                 let Some(TypeDef::Struct { fields, .. }) = self.types.get(id) else { return };
@@ -2158,16 +2170,19 @@ impl TypeChecker {
         }
     }
 
-    pub(super) fn register_interface(&mut self, t: &InterfaceDecl) {
-        let methods = t
-            .methods
+    fn interface_method_signatures(&mut self, t: &InterfaceDecl) -> Vec<MethodSig> {
+        t.methods
             .iter()
             .map(|m| {
                 let mut sig = self.method_signature(m, &[], &[]);
                 receiver_as_written(m, &mut sig);
                 sig
             })
-            .collect();
+            .collect()
+    }
+
+    pub(super) fn register_interface(&mut self, t: &InterfaceDecl) {
+        let methods = self.interface_method_signatures(t);
         let generic_methods = t.methods.iter()
             .filter(|m| !m.type_params.is_empty())
             .map(|m| m.name.clone())
