@@ -892,6 +892,39 @@ void rask_elem_links(char *elem, const RaskElemStrs *strs, RaskLinkSlotFn fn, vo
     if (strs) links_walk_from(elem, strs->offsets, strs->count, fn, ctx);
 }
 
+static void containers_walk_from(char *elem, const int32_t *entries, int64_t count,
+                                 RaskContainerSlotFn fn, void *ctx) {
+    if (!elem || !entries) return;
+    for (int64_t i = 0; i < count; i++) {
+        int32_t e = entries[i];
+        uint32_t kind = (uint32_t)e >> RASK_OWNED_KIND_SHIFT;
+        if (kind == RASK_OWNED_TAG_IF) {
+            int64_t body;
+            int live = rask_owned_guard(elem, entries, count, &i, &body);
+            if (live < 0) return;
+            if (live) {
+                containers_walk_from(elem, entries + i + 1, body, fn, ctx);
+            }
+            i += body;
+            continue;
+        }
+        // Behind a heap block is out of reach, as for links.
+        if (kind == RASK_OWNED_HEAP) {
+            int64_t body;
+            if (rask_owned_heap(entries, count, &i, &body) < 0) return;
+            i += body;
+            continue;
+        }
+        if (kind == RASK_OWNED_VEC || kind == RASK_OWNED_MAP) {
+            fn((void **)(elem + (e & RASK_OWNED_OFFSET_MASK)), kind, ctx);
+        }
+    }
+}
+
+void rask_elem_containers(char *elem, const RaskElemStrs *strs, RaskContainerSlotFn fn, void *ctx) {
+    if (strs) containers_walk_from(elem, strs->offsets, strs->count, fn, ctx);
+}
+
 static int32_t elem_strs_links(const RaskElemStrs *s) {
     for (int64_t i = 0; s->offsets && i < s->count; i++) {
         if (((uint32_t)s->offsets[i] >> RASK_OWNED_KIND_SHIFT) == RASK_OWNED_LINK) return 2;

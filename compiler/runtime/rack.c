@@ -1234,6 +1234,73 @@ static void rask_map_remap_link_values(RaskMap *m, const RaskRack *r, void **ori
     rask_map_map_values_ptr(m, snapshot_remap_cb, &ctx);
 }
 
+// The vectors and maps an element owns are copies the snapshot made, and their
+// links still name the original's nodes. Each is re-pointed and recorded as a
+// whole, the way a node's own vector is, and so on down (#2071). Recorded
+// already: a clone records itself as it is made, against the originals, and
+// a delete there rescans it, finds nothing and drops the record.
+static void snapshot_remap_vec(RaskVec *v, SnapshotCtx *sc);
+static void snapshot_remap_map(RaskMap *m, SnapshotCtx *sc);
+
+static void snapshot_nested_cb(void **slot, uint32_t kind, void *ctx) {
+    if (!*slot) return;
+    if (kind == RASK_OWNED_VEC) {
+        snapshot_remap_vec((RaskVec *)*slot, (SnapshotCtx *)ctx);
+    } else {
+        snapshot_remap_map((RaskMap *)*slot, (SnapshotCtx *)ctx);
+    }
+}
+
+static void snapshot_nested_value_cb(char *value, void *ctx) {
+    SnapshotValuesCtx *c = (SnapshotValuesCtx *)ctx;
+    rask_elem_containers(value, c->strs, snapshot_nested_cb, c->snap);
+}
+
+static void snapshot_nested_in_vec(RaskVec *v, SnapshotCtx *sc) {
+    const RaskElemStrs *strs = rask_vec_elem_strs(v);
+    if (strs->count == 0 || rask_elem_strs_are_links(strs)) return;
+    int64_t n = rask_vec_len(v);
+    for (int64_t e = 0; e < n; e++) {
+        rask_elem_containers(rask_vec_get_unchecked(v, e), strs, snapshot_nested_cb, sc);
+    }
+}
+
+static void snapshot_nested_in_map(RaskMap *m, SnapshotCtx *sc) {
+    const RaskElemStrs *strs = rask_map_val_strs(m);
+    if (strs->count == 0 || rask_elem_strs_are_links(strs)) return;
+    SnapshotValuesCtx vc = { strs, sc };
+    rask_map_each_value(m, snapshot_nested_value_cb, &vc);
+}
+
+// Only a container whose elements say they hold links has any to re-point:
+// below a node's own fields nothing else vouches for an element's first word
+// being a link.
+static void snapshot_remap_vec(RaskVec *v, SnapshotCtx *sc) {
+    int64_t n = rask_vec_len(v);
+    const RaskElemStrs *strs = rask_vec_elem_strs(v);
+    if (rask_vec_holds_struct_links(v)) {
+        for (int64_t e = 0; e < n; e++) {
+            rask_elem_links(rask_vec_get_unchecked(v, e), strs, snapshot_remap_slot_cb, sc);
+        }
+        rask_link_register_vec(v);
+    } else if (rask_elem_strs_are_links(strs)) {
+        for (int64_t e = 0; e < n; e++) {
+            snapshot_remap_slot_cb((void **)rask_vec_get_unchecked(v, e), sc);
+        }
+        rask_link_register_vec(v);
+    }
+    snapshot_nested_in_vec(v, sc);
+}
+
+static void snapshot_remap_map(RaskMap *m, SnapshotCtx *sc) {
+    const RaskElemStrs *strs = rask_map_val_strs(m);
+    if (rask_map_holds_struct_links(m) || rask_elem_strs_are_links(strs)) {
+        rask_map_remap_link_values(m, sc->rack, sc->origin, sc->n_slots);
+        rask_link_register_map(m);
+    }
+    snapshot_nested_in_map(m, sc);
+}
+
 RaskRack *rask_rack_snapshot(const RaskRack *r) {
     if (!r) return NULL;
     RaskRack *copy = rask_rack_new();
@@ -1338,6 +1405,7 @@ RaskRack *rask_rack_snapshot(const RaskRack *r) {
                     }
                 }
                 rask_link_register_vec(fresh);
+                snapshot_nested_in_vec(fresh, &(SnapshotCtx){ r, origin, n_slots });
                 break;
             }
             case RASK_RACK_FIELD_MAP: {
@@ -1349,6 +1417,7 @@ RaskRack *rask_rack_snapshot(const RaskRack *r) {
                 *slot = fresh;
                 rask_map_remap_link_values(fresh, r, origin, n_slots);
                 rask_link_register_map(fresh);
+                snapshot_nested_in_map(fresh, &(SnapshotCtx){ r, origin, n_slots });
                 break;
             }
             }
