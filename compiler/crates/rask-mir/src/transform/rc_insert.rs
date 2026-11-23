@@ -108,7 +108,7 @@ pub fn insert_rc_ops(
 
     // A copy of an aggregate read out of somebody else's storage, given to a
     // keeper, takes references of its own to what it holds.
-    retain_views_handed_over(func, kept, own, &owns_copy, closure_keeps, copy_layouts, target);
+    let built_from_views = retain_views_handed_over(func, kept, writes, own, &owns_copy, closure_keeps, copy_layouts, target);
 
     // A join that might hand the frame's own value on gets a copy of it with
     // references of its own, so the join always owns what it holds.
@@ -119,7 +119,7 @@ pub fn insert_rc_ops(
 
     // And the aggregates: a struct field or a wrapper's payload owns a string —
     // or a container — just as much as a local does.
-    insert_aggregate_release(func, kept, writes, own, &owns_copy, closure_keeps, rack_holders, copy_layouts);
+    insert_aggregate_release(func, kept, writes, own, &owns_copy, &built_from_views, closure_keeps, rack_holders, copy_layouts);
 }
 
 /// The type of a closure's capture when it copies a Copy aggregate in.
@@ -318,12 +318,13 @@ fn call_keeps_arg(fref: &crate::FunctionRef, i: usize, kept: &HashMap<String, Ve
 fn retain_views_handed_over(
     func: &mut MirFunction,
     kept: &HashMap<String, Vec<bool>>,
+    writes: &HashMap<String, HashSet<usize>>,
     own: &HashSet<String>,
     owns_copy: &HashSet<LocalId>,
     closure_keeps: &ClosureKeeps,
     copy_layouts: &crate::CopyLayouts,
     target: rask_ast::Target,
-) {
+) -> HashSet<LocalId> {
     let func_name = func.name.clone();
     let ty_of: HashMap<LocalId, MirType> = func
         .locals
@@ -372,9 +373,29 @@ fn retain_views_handed_over(
             views.insert(p.id);
         }
     }
+    let fills = filled_in_place(func, kept, writes, own, closure_keeps);
+    let mut built: HashSet<LocalId> = HashSet::new();
     let mut changed = true;
     while changed {
         changed = false;
+        // Filled only with views and plain values, it holds nothing of its
+        // own: a view of the same storage (#2048).
+        for (agg, values) in &fills {
+            use crate::operand::MirConst;
+            let all_views = values.iter().all(|v| match v {
+                MirOperand::Local(l) => views.contains(l) || ty_of.get(l).is_some_and(|t| t.is_plain_scalar()),
+                MirOperand::Constant(c) => matches!(
+                    c,
+                    MirConst::Int(_) | MirConst::Int128(_) | MirConst::Float(_) | MirConst::Bool(_) | MirConst::Char(_)
+                ),
+                _ => false,
+            });
+            let any_view = values.iter().any(|v| matches!(v, MirOperand::Local(l) if views.contains(l)));
+            if all_views && any_view && is_aggregate(agg) && !owns_copy.contains(agg) && views.insert(*agg) {
+                built.insert(*agg);
+                changed = true;
+            }
+        }
         for stmt in func.blocks.iter().flat_map(|b| b.statements.iter()) {
             let found = match &stmt.kind {
                 MirStmtKind::Call { func: fref, dst: Some(dst), args } => {
@@ -545,6 +566,7 @@ fn retain_views_handed_over(
                 MirStmtKind::Store { addr, value: MirOperand::Local(v), .. }
                 | MirStmtKind::ArrayStore { base: addr, value: MirOperand::Local(v), .. }
                     if addr != v
+                        && !built.contains(addr)
                         && !store_is_narrow(stmt, &ty_of)
                         && lowering_copy_retain(&block.statements, si, owns_copy).is_none()
                         && copies(si, *v, Some(*addr), &block.statements, &block.terminator) =>
@@ -579,6 +601,80 @@ fn retain_views_handed_over(
             block.statements.insert(idx, MirStmt::new(MirStmtKind::RcIncContents { local, for_hand_off: true }, span));
         }
     }
+    built
+}
+
+/// Aggregates a literal builds in place (field stores, after a
+/// `ZeroAggregate` or not) and nothing else writes, with the values stored into each. A tuple or
+/// option wrapped around an element (`enumerate`'s pair, a pick's answer) is
+/// one. Anything that could put a value there some other way leaves it out:
+/// a definition, an address taken, an array store, a call that may write
+/// through it.
+fn filled_in_place(
+    func: &MirFunction,
+    kept: &HashMap<String, Vec<bool>>,
+    writes: &HashMap<String, HashSet<usize>>,
+    own: &HashSet<String>,
+    closure_keeps: &ClosureKeeps,
+) -> HashMap<LocalId, Vec<MirOperand>> {
+    let mut fills: HashMap<LocalId, Vec<MirOperand>> = HashMap::new();
+    for stmt in func.blocks.iter().flat_map(|b| b.statements.iter()) {
+        if let MirStmtKind::ZeroAggregate { local } | MirStmtKind::Store { addr: local, .. } = &stmt.kind {
+            fills.entry(*local).or_default();
+        }
+    }
+    if fills.is_empty() {
+        return fills;
+    }
+    let params: HashSet<LocalId> = func.params.iter().map(|p| p.id).collect();
+    let mut out: HashSet<LocalId> = params;
+    for stmt in func.blocks.iter().flat_map(|b| b.statements.iter()) {
+        if let Some(d) = uses::stmt_def(stmt) {
+            out.insert(d);
+        }
+        match &stmt.kind {
+            MirStmtKind::Store { addr, value, .. } => {
+                if let Some(list) = fills.get_mut(addr) {
+                    list.push(value.clone());
+                }
+            }
+            MirStmtKind::ArrayStore { base, .. } | MirStmtKind::ReleaseSlot { addr: base, .. } => {
+                out.insert(*base);
+            }
+            MirStmtKind::Assign { rvalue: MirRValue::Ref(src), .. } => {
+                out.insert(*src);
+            }
+            MirStmtKind::Call { func: fref, args, .. } => {
+                for (i, arg) in args.iter().enumerate() {
+                    let Some(id) = uses::operand_local(arg) else { continue };
+                    let may_write = !own.contains(&fref.name)
+                        || writes.get(&fref.name).is_some_and(|set| set.contains(&i));
+                    if !call_keeps_arg(fref, i, kept) && may_write && !fref.runtime {
+                        out.insert(id);
+                    }
+                }
+            }
+            MirStmtKind::ClosureCall { closure, args, .. } => {
+                for (i, arg) in args.iter().enumerate() {
+                    if let Some(id) = uses::operand_local(arg) {
+                        if !closure_keeps(&func.name, *closure, i, args.len()) {
+                            out.insert(id);
+                        }
+                    }
+                }
+            }
+            MirStmtKind::InterfaceCall { .. } | MirStmtKind::ClosureCreate { .. } => {
+                for id in fills.keys() {
+                    if uses::stmt_reads(stmt, *id) {
+                        out.insert(*id);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    fills.retain(|l, _| !out.contains(l));
+    fills
 }
 
 /// Insert `RcInc` after each assignment that copies a string local.
@@ -709,6 +805,7 @@ fn insert_aggregate_release(
     writes: &HashMap<String, HashSet<usize>>,
     own: &HashSet<String>,
     owns_copy: &HashSet<LocalId>,
+    built_from_views: &HashSet<LocalId>,
     closure_keeps: &ClosureKeeps,
     rack_holders: &HashSet<u32>,
     copy_layouts: &crate::CopyLayouts,
@@ -1406,7 +1503,10 @@ fn insert_aggregate_release(
                                 _ => None,
                             })
                             .unwrap_or(false);
-                        if owns_copy.contains(addr) && retain_follows {
+                        if built_from_views.contains(addr) {
+                            // A literal holding only views is one too.
+                            ev.push(ownership::Event::ViewAlso { dst: *addr, base: v });
+                        } else if owns_copy.contains(addr) && retain_follows {
                             // A Copy value bound into a slot lowering retains
                             // (`retain_bound_copy`): the slot takes references
                             // of its own, so this is a copy and the source
@@ -1434,6 +1534,7 @@ fn insert_aggregate_release(
                     // was released while the caller still held it.
                     let into_slot = held.contains(addr);
                     if aggregates.contains(addr)
+                        && !built_from_views.contains(addr)
                         && !replaces
                         && !into_slot
                         && !places.contains(addr)
@@ -1578,6 +1679,9 @@ fn insert_aggregate_release(
                 // A loop body's `return` took it.
                 MirStmtKind::MovedOut { local } => hand_over(&mut ev, *local),
                 // A literal starts here, empty, and its field stores fill it.
+                MirStmtKind::ZeroAggregate { local } if built_from_views.contains(local) => {
+                    ev.push(ownership::Event::Other(*local))
+                }
                 MirStmtKind::ZeroAggregate { local } if aggregates.contains(local) => {
                     ev.push(ownership::Event::Make(*local))
                 }
@@ -2821,6 +2925,70 @@ mod tests {
         let stmts = &f.blocks[0].statements;
         assert_eq!(count_rc_inc(stmts), 1, "one inc for the store: {stmts:?}");
         assert_eq!(count_rc_dec(stmts), 0, "a parameter is borrowed: {stmts:?}");
+    }
+
+    /// `for p in rows.enumerate()`: the pair is the turn's index beside an
+    /// element bound where it sits. It holds nothing of its own, so it is
+    /// neither retained nor released. Retaining a pair whose element holds a
+    /// `Vec` deep-cloned the vector each turn (#2048).
+    #[test]
+    fn a_pair_around_a_bound_element_is_a_view() {
+        let elem_ty = MirType::Tuple(vec![MirType::Buffer, MirType::Buffer]);
+        let pair_ty = MirType::Tuple(vec![MirType::I64, elem_ty.clone()]);
+        let mut f = make_fn(
+            vec![
+                MirLocal { id: local(0), name: Some("at".into()), ty: MirType::Ptr, is_param: false },
+                MirLocal { id: local(1), name: Some("row".into()), ty: elem_ty, is_param: false },
+                MirLocal { id: local(2), name: Some("i".into()), ty: MirType::I64, is_param: false },
+                MirLocal { id: local(3), name: Some("p".into()), ty: pair_ty, is_param: false },
+                MirLocal { id: local(4), name: Some("n".into()), ty: MirType::I64, is_param: false },
+            ],
+            vec![MirBlock {
+                id: BlockId(0),
+                statements: vec![
+                    MirStmt::dummy(MirStmtKind::Call {
+                        dst: Some(local(0)),
+                        func: FunctionRef::internal("slot".into()),
+                        args: vec![],
+                    }),
+                    MirStmt::dummy(MirStmtKind::BindPlace { dst: local(1), addr: local(0) }),
+                    MirStmt::dummy(MirStmtKind::Assign {
+                        dst: local(2),
+                        rvalue: MirRValue::Use(MirOperand::Constant(MirConst::Int(0))),
+                    }),
+                    MirStmt::dummy(MirStmtKind::Store {
+                        addr: local(3),
+                        offset: 0,
+                        value: MirOperand::Local(local(2)),
+                        store_size: 8,
+                        field: None,
+                    }),
+                    MirStmt::dummy(MirStmtKind::Store {
+                        addr: local(3),
+                        offset: 8,
+                        value: MirOperand::Local(local(1)),
+                        store_size: 32,
+                        field: None,
+                    }),
+                    MirStmt::dummy(MirStmtKind::Assign {
+                        dst: local(4),
+                        rvalue: MirRValue::Field {
+                            base: MirOperand::Local(local(3)),
+                            field_index: 0,
+                            byte_offset: Some(0),
+                            access: crate::operand::FieldAccess::Word,
+                        },
+                    }),
+                ],
+                terminator: MirTerminator::dummy(MirTerminatorKind::Return { value: None }),
+            }],
+        );
+        insert_rc_ops(&mut f, &HashMap::new(), &HashMap::new(), &HashSet::new(), &|_, _, _, _| false, &HashSet::new(), &crate::CopyLayouts::default(), rask_ast::Target::default());
+        let stmts = &f.blocks[0].statements;
+        assert!(
+            !stmts.iter().any(|s| matches!(s.kind, MirStmtKind::RcIncContents { .. } | MirStmtKind::RcDecContents { .. })),
+            "the pair only views the element: {stmts:?}"
+        );
     }
 
     /// `unsafe { native_fn(fd, s as i64) }` — the release belongs after the
