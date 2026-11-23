@@ -856,10 +856,12 @@ impl<'a> MirLowerer<'a> {
                     .map(std::borrow::Cow::into_owned)
                     .and_then(|t| self.ctx.container_link_registration(&t))
                 {
+                    // The container itself, not the optional a `T?` place
+                    // wrapped it in: the runtime reads the handle as a vector.
                     self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                         dst: None,
                         func: FunctionRef::runtime(func.to_string()),
-                        args: vec![val_op.clone()],
+                        args: vec![unwrapped_val.clone()],
                     }));
                 }
                 // A whole aggregate written over a name carries whatever edges
@@ -2051,6 +2053,25 @@ impl<'a> MirLowerer<'a> {
     fn lower_binding(&mut self, name: &str, annotated: Option<rask_ast::NodeId>, init: &Expr) -> Result<(), LoweringError> {
         let is_closure = matches!(&init.kind, ExprKind::Closure { .. });
         let (init_op, inferred_ty) = self.lower_expr(init)?;
+        // A container of links that arrives whole — `let w = h.v.clone()`, a
+        // `filter` result — carries edges nothing recorded, the same gap an
+        // assignment closes: every stored link is an edge, a local container's
+        // included (mem.racks/RK3). Records dedupe per (container, target), so
+        // a vector whose pushes already recorded them costs a probe per entry.
+        // Registered before any wrapping into `T?`: the runtime reads the
+        // handle as the container, and a wrapper's bytes are not one.
+        if let Some(func) = self
+            .ctx
+            .lookup_raw_type(init.id)
+            .map(std::borrow::Cow::into_owned)
+            .and_then(|t| self.ctx.container_link_registration(&t))
+        {
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                dst: None,
+                func: FunctionRef::runtime(func.to_string()),
+                args: vec![init_op.clone()],
+            }));
+        }
 
         // `let b = Heap(Big { … })` takes over the block rather than copying out
         // of it. A struct-typed destination copies its bytes on assignment,
@@ -2171,23 +2192,6 @@ impl<'a> MirLowerer<'a> {
         // fields before the value has anywhere to live, so there was no slot to
         // register (mem.racks/RK3). Now there is.
         self.emit_struct_link_registration(local_id, &var_ty);
-        // A container of links that arrives whole — `let w = h.v.clone()`, a
-        // `filter` result — carries edges nothing recorded, the same gap an
-        // assignment closes: every stored link is an edge, a local container's
-        // included (mem.racks/RK3). Records dedupe per (container, target), so
-        // a vector whose pushes already recorded them costs a probe per entry.
-        if let Some(func) = self
-            .ctx
-            .lookup_raw_type(init.id)
-            .map(std::borrow::Cow::into_owned)
-            .and_then(|t| self.ctx.container_link_registration(&t))
-        {
-            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                dst: None,
-                func: FunctionRef::runtime(func.to_string()),
-                args: vec![MirOperand::Local(local_id)],
-            }));
-        }
         // A fused `collect()` records its element type against the local it
         // built; carry it onto the binding so `for v in page` iterates the right
         // stride and dispatches methods on the right type.
