@@ -2087,19 +2087,30 @@ fn containers_and_makers(
     // What comes out of such a wrapper is the container, and it is this frame's
     // now. Read as a field of the returned aggregate — the tag beside it is not
     // pointer-shaped, so the payload is the only slot this can pick up (#1117).
+    //
+    // Only a read the wrapper isn't used after: the payload then has no other
+    // holder. `if o? as x { … }` followed by `o!` reads it twice, and freeing
+    // it as `x` died left `o` holding freed memory; so does a read inside a
+    // loop of a wrapper filled before it.
     let mut unwrapped: HashSet<LocalId> = HashSet::new();
     if !unwrap_for.is_empty() {
-        for stmt in func.blocks.iter().flat_map(|b| b.statements.iter()) {
-            let MirStmtKind::Assign {
-                dst,
-                rvalue: MirRValue::Field { base, field_index, .. },
-            } = &stmt.kind
-            else {
-                continue;
-            };
-            let MirOperand::Local(src) = base else { continue };
-            if let Some(free) = unwrap_for.get(src) {
-                if holds_the_payload(func, *dst, *src, *field_index) {
+        let copies = wrapper_copies(func);
+        for block in &func.blocks {
+            for (i, stmt) in block.statements.iter().enumerate() {
+                let MirStmtKind::Assign {
+                    dst,
+                    rvalue: MirRValue::Field { base, field_index, .. },
+                } = &stmt.kind
+                else {
+                    continue;
+                };
+                let MirOperand::Local(src) = base else { continue };
+                let Some(free) = unwrap_for.get(src) else { continue };
+                if !holds_the_payload(func, *dst, *src, *field_index) {
+                    continue;
+                }
+                let class = copies.get(src).cloned().unwrap_or_else(|| HashSet::from([*src]));
+                if class.iter().all(|w| dead_after(func, block, i, *w)) {
                     fresh.insert(*dst, free);
                     unwrapped.insert(*dst);
                 }
@@ -2157,6 +2168,96 @@ fn containers_and_makers(
         .chain(unwrapped)
         .collect();
     (fresh, made_here)
+}
+
+/// Each wrapper local with every wrapper local a copy connects it to, in
+/// either direction: the names one value goes by.
+fn wrapper_copies(func: &MirFunction) -> HashMap<LocalId, HashSet<LocalId>> {
+    let is_wrapper = |l: LocalId| matches!(func.local_ty(l), Some(MirType::Option(_) | MirType::Result { .. }));
+    let mut parent: HashMap<LocalId, LocalId> = HashMap::new();
+    fn root(parent: &HashMap<LocalId, LocalId>, mut l: LocalId) -> LocalId {
+        while let Some(p) = parent.get(&l) {
+            if *p == l {
+                break;
+            }
+            l = *p;
+        }
+        l
+    }
+    for stmt in func.blocks.iter().flat_map(|b| b.statements.iter()) {
+        let MirStmtKind::Assign { dst, rvalue: MirRValue::Use(MirOperand::Local(src)) } = &stmt.kind else { continue };
+        if !is_wrapper(*dst) || !is_wrapper(*src) {
+            continue;
+        }
+        let (a, b) = (root(&parent, *dst), root(&parent, *src));
+        if a != b {
+            parent.insert(a, b);
+        }
+    }
+    let members: Vec<LocalId> = parent.keys().copied().chain(parent.values().copied()).collect();
+    let mut classes: HashMap<LocalId, HashSet<LocalId>> = HashMap::new();
+    for l in &members {
+        classes.entry(root(&parent, *l)).or_default().insert(*l);
+    }
+    members.iter().map(|l| (*l, classes[&root(&parent, *l)].clone())).collect()
+}
+
+/// Whether nothing reads `local` after statement `at` of `block`, on any path,
+/// before it is written again. A release of the wrapper is no read: what it
+/// releases is what the wrapper's own cleanup already accounts for.
+fn dead_after(func: &MirFunction, block: &crate::MirBlock, at: usize, local: LocalId) -> bool {
+    use crate::analysis::uses::{stmt_def, stmt_reads, terminator_reads};
+    let releases = |st: &MirStmt| match &st.kind {
+        MirStmtKind::RcDec { local: l } | MirStmtKind::RcDecContents { local: l } => *l == local,
+        MirStmtKind::UnwindArm { value, .. } => *value == local,
+        _ => false,
+    };
+    // `Some(true)`: read on this stretch; `Some(false)`: written first.
+    let scan = |stmts: &[MirStmt]| {
+        for st in stmts {
+            if releases(st) {
+                continue;
+            }
+            // A store into the wrapper refills it: the frame builds a `T?`
+            // field by field.
+            let refills = matches!(&st.kind, MirStmtKind::Store { addr, value, .. }
+                if *addr == local && !crate::analysis::uses::operand_reads(value, local));
+            if refills {
+                return Some(false);
+            }
+            if stmt_reads(st, local) {
+                return Some(true);
+            }
+            if stmt_def(st) == Some(local) {
+                return Some(false);
+            }
+        }
+        None
+    };
+    let by_id: HashMap<crate::BlockId, &crate::MirBlock> = func.blocks.iter().map(|b| (b.id, b)).collect();
+    match scan(&block.statements[at + 1..]) {
+        Some(read) => return !read,
+        None if terminator_reads(&block.terminator, local) => return false,
+        None => {}
+    }
+    let mut seen: HashSet<crate::BlockId> = HashSet::new();
+    let mut work = crate::analysis::cfg::successors(&block.terminator);
+    while let Some(id) = work.pop() {
+        if !seen.insert(id) {
+            continue;
+        }
+        let Some(b) = by_id.get(&id) else { continue };
+        match scan(&b.statements) {
+            Some(true) => return false,
+            Some(false) => continue,
+            None => {}
+        }
+        if terminator_reads(&b.terminator, local) {
+            return false;
+        }
+        work.extend(crate::analysis::cfg::successors(&b.terminator));
+    }
+    true
 }
 
 /// `T?` and `T or E` wrappers this frame built around a container it made,
