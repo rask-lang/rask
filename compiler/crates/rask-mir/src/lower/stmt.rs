@@ -368,6 +368,7 @@ impl<'a> MirLowerer<'a> {
                     t,
                     MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_) | MirType::Array { .. }
                         | MirType::Buffer | MirType::Container(_)
+                        | MirType::InterfaceObject { .. }
                 )
             })
             // An optional or a result holds what it wraps, and the slot is
