@@ -7993,7 +7993,7 @@ impl<'a> MirLowerer<'a> {
 
     /// `value` converted to the wider integer type `to`. Lossless: the checker
     /// only lets an operand widen to a type that holds every value of it.
-    fn widen_operand(&mut self, value: MirOperand, to: &MirType) -> MirOperand {
+    pub(crate) fn widen_operand(&mut self, value: MirOperand, to: &MirType) -> MirOperand {
         let wide = self.builder.alloc_temp(to.clone());
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
             dst: wide,

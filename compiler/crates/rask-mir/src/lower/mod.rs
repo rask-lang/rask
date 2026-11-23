@@ -3513,7 +3513,15 @@ impl<'a> MirLowerer<'a> {
 
         let (dst_layers, _) = Self::wrapper_layers(dst_ty);
         let (src_layers, _) = Self::wrapper_layers(src_ty);
-        if dst_layers.len() <= src_layers.len() {
+        // An `i32?` going where an `i64?` belongs widens first (CV1a), so the
+        // layers built below hold a payload of the width they say.
+        let n_add = dst_layers.len().saturating_sub(src_layers.len());
+        let inner_dst = Self::peel_layers(dst_ty, n_add);
+        let (val, src_ty) = match self.widen_optional(val.clone(), src_ty, &inner_dst) {
+            Some(wide) => (wide, &inner_dst),
+            None => (val, src_ty),
+        };
+        if n_add == 0 {
             return val;
         }
 
@@ -3523,8 +3531,6 @@ impl<'a> MirLowerer<'a> {
         if matches!(dst_ty, MirType::Option(inner) if inner.is_niche_payload()) {
             return val;
         }
-
-        let n_add = dst_layers.len() - src_layers.len();
 
         // An error value at a Result layer is the err side, not a payload to
         // wrap as Ok. Only the outermost added layer can be the one it belongs
@@ -3600,19 +3606,76 @@ impl<'a> MirLowerer<'a> {
         // An equality operand is an argument position — `a == v` is `a.eq(v)`
         // after desugaring, and `v` is the argument.
         let site = rask_ast::coercion::CoercionSite::Argument;
-        if let Some(inner) = payload_of(left_ty) {
-            if &inner == right_ty {
-                let wrapped = self.coerce_into_wrapper(site, right, right_ty, left_ty);
-                return (left, wrapped);
-            }
+        // Integers of two widths meet at the wider one (CV1a), so `i64? ==
+        // i32` and `i32? == i64` both compare as `i64?`. Matching the payload
+        // exactly sent either straight to a raw compare of a 16-byte optional
+        // against a scalar, which read the scalar as an address (#1981).
+        let core = |ty: &MirType| payload_of(ty).unwrap_or_else(|| ty.clone());
+        let (lc, rc) = (core(left_ty), core(right_ty));
+        let shared = if lc == rc {
+            lc
+        } else if lc.is_int_like() && rc.is_int_like() {
+            let target = self.ctx.target();
+            if rask_layout::size_of(&rc, target) > rask_layout::size_of(&lc, target) { rc } else { lc }
+        } else {
+            return (left, right);
+        };
+        if payload_of(left_ty).is_none() && payload_of(right_ty).is_none() {
+            return (left, right);
         }
-        if let Some(inner) = payload_of(right_ty) {
-            if &inner == left_ty {
-                let wrapped = self.coerce_into_wrapper(site, left, left_ty, right_ty);
-                return (wrapped, right);
-            }
-        }
+        let wrapper = MirType::Option(Box::new(shared));
+        let left = self.coerce_into_wrapper(site, left, left_ty, &wrapper);
+        let right = self.coerce_into_wrapper(site, right, right_ty, &wrapper);
         (left, right)
+    }
+
+    /// An optional over a narrower integer rebuilt over the wider one `dst`
+    /// asks for, at any depth (`i32??` into `i64??`): the tag copied, the
+    /// payload widened. `None` when nothing needs converting.
+    ///
+    /// A `none`'s payload bytes are copied through the cast too; nothing reads
+    /// them.
+    fn widen_optional(&mut self, val: MirOperand, src_ty: &MirType, dst_ty: &MirType) -> Option<MirOperand> {
+        let (MirType::Option(src_inner), MirType::Option(dst_inner)) = (src_ty, dst_ty) else { return None };
+        if src_inner.is_niche_payload() || dst_inner.is_niche_payload() {
+            return None;
+        }
+        let (src_layers, src_core) = Self::wrapper_layers(src_ty);
+        let (dst_layers, dst_core) = Self::wrapper_layers(dst_ty);
+        let all_options = |l: &[WrapLayer]| l.iter().all(|w| matches!(w, WrapLayer::Option));
+        if src_layers.len() != dst_layers.len()
+            || !all_options(&src_layers)
+            || !all_options(&dst_layers)
+            || !src_core.is_int_like()
+            || !dst_core.is_int_like()
+            || src_core == dst_core
+        {
+            return None;
+        }
+        let tag = self.builder.alloc_temp(MirType::U8);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: tag,
+            rvalue: MirRValue::EnumTag { value: val.clone() },
+        }));
+        let payload = self.builder.alloc_temp((**src_inner).clone());
+        let rvalue = self.payload_field(val, src_ty, src_inner);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign { dst: payload, rvalue }));
+        let payload = MirOperand::Local(payload);
+        let inner = match self.widen_optional(payload.clone(), src_inner, dst_inner) {
+            Some(wide) => wide,
+            None if src_inner.is_int_like() => self.widen_operand(payload, dst_inner),
+            None => payload,
+        };
+        let slot = self.builder.alloc_temp(dst_ty.clone());
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+            addr: slot,
+            offset: rask_types::abi::TAG_OFFSET,
+            value: MirOperand::Local(tag),
+            store_size: rask_types::abi::TAG_BYTES,
+            field: None,
+        }));
+        self.store_wrapper_payload(slot, dst_ty, inner, dst_inner);
+        Some(MirOperand::Local(slot))
     }
 
     /// Write a `T?`'s, a `T or E`'s or a union's tag (a union's member index),
