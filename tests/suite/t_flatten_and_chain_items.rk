@@ -50,3 +50,18 @@ test "chain over two held vectors of vectors" {
     assert n == 3
     assert a.as_sequence().chain(b.as_sequence()).count() == 2
 }
+
+test "a cloned item picked out of a named or flattened sequence" {
+    // The `map` body only reads its item, but it was settled as taking it
+    // because `find`'s body keeps its own and the yield between them looked
+    // like it could reach both: the source vector's rows were freed inside
+    // `map` and again with `rows` (#2062).
+    let rows: Vec<Vec<i64>> = [[1], [2, 3]]
+    let s = rows.as_sequence()
+    let g = s.map(|r| r.clone()).find(|r| r.len() == 2)
+    assert g!.len() == 2
+    let grid: Vec<Vec<Vec<i64>>> = [[[1], [2, 3]], [[4, 5, 6]]]
+    let h = grid.flatten().map(|r| r.clone()).find(|r| r.len() == 3)
+    assert h!.len() == 3
+    assert rows[1].len() == 2
+}

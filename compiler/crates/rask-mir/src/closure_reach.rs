@@ -123,6 +123,12 @@ struct Walk<'a> {
     /// Functions whose environment a `ClosureCreate` or an ensure hook builds,
     /// so the walk knows what their captures hold.
     env_built: HashSet<&'a str>,
+    /// Per closure body, the capture slots it may write through their
+    /// address. A slot nobody writes holds what was captured and nothing else.
+    written: HashMap<&'a str, HashSet<u32>>,
+    /// Addresses of capture slots nobody writes: reading through one gives
+    /// what the slot was captured with.
+    clean_ptrs: HashSet<(&'a str, LocalId)>,
     locals: HashMap<(String, LocalId), Held>,
     params: HashMap<(String, usize), Held>,
     captures: HashMap<(String, u32), Held>,
@@ -175,11 +181,21 @@ impl<'a> Walk<'a> {
             }
         }
 
+        let mut written = HashMap::new();
+        let mut clean_ptrs = HashSet::new();
+        for func in fns {
+            let (w, clean) = capture_slot_writes(func);
+            written.insert(func.name.as_str(), w);
+            clean_ptrs.extend(clean.into_iter().map(|id| (func.name.as_str(), id)));
+        }
+
         Self {
             fns,
             with_body,
             entered_unseen,
             env_built,
+            written,
+            clean_ptrs,
             locals: HashMap::new(),
             params: HashMap::new(),
             captures: HashMap::new(),
@@ -201,7 +217,9 @@ impl<'a> Walk<'a> {
                     | MirStmtKind::Phi { .. }
                     | MirStmtKind::ClosureCall { .. } => true,
                     MirStmtKind::Assign { rvalue, .. } => copied_from(rvalue).is_some(),
-                    MirStmtKind::Call { func: f, .. } => self.with_body.contains(f.name.as_str()),
+                    MirStmtKind::Call { func: f, .. } => {
+                        self.with_body.contains(f.name.as_str()) || clone_of(stmt).is_some()
+                    }
                     _ => false,
                 };
                 if !followed {
@@ -311,7 +329,7 @@ impl<'a> Walk<'a> {
                     if let Some(h) = self.captures.get(&(name.to_string(), *offset)).cloned() {
                         self.into_local(name, *dst, h);
                     }
-                    if access.is_addressed() {
+                    if access.is_addressed() && !self.clean_ptrs.contains(&(name, *dst)) {
                         self.into_local(name, *dst, Held::aliased());
                     }
                 }
@@ -322,7 +340,9 @@ impl<'a> Walk<'a> {
                         }
                         match rvalue {
                             // What a pointer reads is whatever was last stored there.
-                            MirRValue::Deref(_) => self.into_local(name, *dst, Held::aliased()),
+                            MirRValue::Deref(_) if !self.clean_ptrs.contains(&(name, src)) => {
+                                self.into_local(name, *dst, Held::aliased())
+                            }
                             // The address is out, so a store may land in `src`.
                             MirRValue::Ref(_) => {
                                 self.into_local(name, src, Held::aliased());
@@ -344,6 +364,13 @@ impl<'a> Walk<'a> {
                         if let Some(h) = self.held(name, op) {
                             self.into_local(name, *dst, h);
                         }
+                    }
+                }
+                // A copy of the environment runs the same body (mem.closures/CV2).
+                MirStmtKind::Call { .. } if clone_of(stmt).is_some() => {
+                    let (dst, src) = clone_of(stmt).unwrap();
+                    if let Some(h) = self.locals.get(&(name.to_string(), src)).cloned() {
+                        self.into_local(name, dst, h);
                     }
                 }
                 MirStmtKind::Call { dst, func: f, args } => {
@@ -436,7 +463,8 @@ impl<'a> Walk<'a> {
 
     fn capture(&mut self, func: &str, body: &str, captures: &[crate::ClosureCapture]) {
         for cap in captures {
-            if cap.by_ref {
+            let written = self.written.get(body).is_none_or(|w| w.contains(&cap.offset));
+            if cap.by_ref && written {
                 // The body can store through the address.
                 self.into_local(func, cap.local_id, Held::aliased());
             }
@@ -494,4 +522,77 @@ fn copied_from(rvalue: &MirRValue) -> Option<LocalId> {
         | MirRValue::Ref(src) => Some(*src),
         _ => None,
     }
+}
+
+/// `dst = rask_closure_clone(src)`: a copy of the environment, running the
+/// same body (mem.closures/CV2).
+fn clone_of(stmt: &crate::MirStmt) -> Option<(LocalId, LocalId)> {
+    match &stmt.kind {
+        MirStmtKind::Call { dst: Some(d), func, args } if func.name == "rask_closure_clone" => match args.first() {
+            Some(MirOperand::Local(src)) => Some((*d, *src)),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// The capture slots `func` may write through their address, and the
+/// addresses of the ones it never does.
+///
+/// A body loads a by-reference or `own` capture as the slot's address. Only
+/// two uses of that address leave the slot as it was: reading through it and
+/// copying the address to another local. Anything else (a store, a call, a
+/// capture, a return) may write it. Counting every such slot as written made
+/// each `yield` a sequence body reaches through its environment look like it
+/// could reach every escaped closure, its own body among them (#2062).
+fn capture_slot_writes(func: &MirFunction) -> (HashSet<u32>, HashSet<LocalId>) {
+    let mut slot_of: HashMap<LocalId, u32> = HashMap::new();
+    for stmt in func.blocks.iter().flat_map(|b| b.statements.iter()) {
+        if let MirStmtKind::LoadCapture { dst, offset, access, .. } = &stmt.kind {
+            if access.is_addressed() {
+                slot_of.insert(*dst, *offset);
+            }
+        }
+    }
+    if slot_of.is_empty() {
+        return (HashSet::new(), HashSet::new());
+    }
+    loop {
+        let before = slot_of.len();
+        for stmt in func.blocks.iter().flat_map(|b| b.statements.iter()) {
+            if let MirStmtKind::Assign { dst, rvalue: MirRValue::Use(MirOperand::Local(src)) } = &stmt.kind {
+                if let Some(off) = slot_of.get(src).copied() {
+                    slot_of.entry(*dst).or_insert(off);
+                }
+            }
+        }
+        if slot_of.len() == before {
+            break;
+        }
+    }
+    let mut written: HashSet<u32> = HashSet::new();
+    for block in &func.blocks {
+        for stmt in &block.statements {
+            let leaves_alone = match &stmt.kind {
+                MirStmtKind::Assign { rvalue: MirRValue::Deref(MirOperand::Local(src)), .. }
+                | MirStmtKind::Assign { rvalue: MirRValue::Use(MirOperand::Local(src)), .. } => Some(*src),
+                _ => None,
+            };
+            for id in crate::analysis::uses::stmt_uses(stmt) {
+                if leaves_alone == Some(id) {
+                    continue;
+                }
+                if let Some(off) = slot_of.get(&id) {
+                    written.insert(*off);
+                }
+            }
+        }
+        for id in crate::analysis::uses::terminator_uses(&block.terminator) {
+            if let Some(off) = slot_of.get(&id) {
+                written.insert(*off);
+            }
+        }
+    }
+    let clean = slot_of.into_iter().filter(|(_, off)| !written.contains(off)).map(|(id, _)| id).collect();
+    (written, clean)
 }
