@@ -437,6 +437,19 @@ impl TypeChecker {
             }
             let before = deferred.len();
             for constraint in deferred {
+                // Still nothing to resolve against. Solving it would file it
+                // with the main constraints, which have finished and are never
+                // read again, so it stays here for the next round. In
+                // `users.map(|u| (0, u.name)).to_map().len()` the `to_map`
+                // waits for the `0` to default, and `len` waits for `to_map`:
+                // retried before the default landed, `len` went to the main
+                // queue and was dropped with it, leaving no dispatch record.
+                if let TypeConstraint::HasMethod { ty, .. } = &constraint {
+                    if matches!(self.resolve_named(&self.ctx.apply(ty)), Type::Var(_)) {
+                        self.deferred_methods.push(constraint);
+                        continue;
+                    }
+                }
                 match self.solve_constraint(constraint) {
                     Ok(_) => {}
                     Err(e) => self.errors.push(e),
