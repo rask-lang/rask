@@ -8677,10 +8677,12 @@ impl<'a> MirLowerer<'a> {
     /// Every member satisfies the same obligation (ER4: an error type provides
     /// `message`), so there is one method per member and they agree on the return
     /// type. Which one to call is a runtime fact, so this is a switch on the
-    /// member index with one arm per member, each calling `{Member}_{method}` on
-    /// the member's own bytes.
+    /// member index with one arm per member, each calling that member's method
+    /// on the member's own bytes. Which function that is comes from the symbol
+    /// table, as for any method call: gluing `{Member}_{method}` together named
+    /// `GrowError$f64_message` for a generic member, a function nothing emits.
     ///
-    /// `None` when any member has no nominal name to mangle — better to fall
+    /// `None` when any member's method has no body in Rask — better to fall
     /// through to the ordinary dispatch error, which names the method, than to
     /// emit a call to a symbol that doesn't exist.
     fn lower_union_method(
@@ -8694,12 +8696,10 @@ impl<'a> MirLowerer<'a> {
         let MirType::Union(members) = obj_ty else {
             return Ok(None);
         };
-        let names: Option<Vec<String>> =
-            members.iter().map(|m| self.mir_type_name(m)).collect();
-        let Some(names) = names else {
+        let Some(names) = self.ctx.union_method_calls(expr.id) else {
             return Ok(None);
         };
-        if names.is_empty() {
+        if names.is_empty() || names.len() != members.len() {
             return Ok(None);
         }
 
@@ -8748,7 +8748,7 @@ impl<'a> MirLowerer<'a> {
             args.extend(all_args.iter().skip(1).cloned());
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: Some(result),
-                func: crate::operand::FunctionRef::internal(format!("{}_{}", name, method)),
+                func: crate::operand::FunctionRef::internal(name.clone()),
                 args,
             }));
             self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {

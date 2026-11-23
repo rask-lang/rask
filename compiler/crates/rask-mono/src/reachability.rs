@@ -1515,12 +1515,11 @@ impl<'a> Monomorphizer<'a> {
                     }
                     // A union of error types switches on its member at run
                     // time, so each member's own body is reachable.
-                    Some(Callee::Method { recv: Type::Union(members), method: m, package, body: None }) => {
-                        for member in &members {
-                            let body = self.typed.and_then(|t| t.types.method_body(member, &m, package.as_deref()));
-                            if let Some(symbol) = body.and_then(|d| self.symbols.by_decl.get(&d).cloned()) {
-                                self.enqueue(symbol, Vec::new());
-                            }
+                    // MIR asks `Symbols::union_method_calls` the same question.
+                    Some(callee @ Callee::Method { recv: Type::Union(_), body: None, .. }) => {
+                        let calls = self.typed.and_then(|t| self.symbols.union_method_calls(&callee, &t.types));
+                        for call in calls.unwrap_or_default() {
+                            self.enqueue(call.qualified, call.type_args);
                         }
                     }
                     // A primitive's operation or a builtin the compiler lowers

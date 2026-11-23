@@ -999,6 +999,14 @@ impl<'a> MirContext<'a> {
         self.symbols.function_value(name_node, type_args, typed).map(|f| f.symbol)
     }
 
+    /// What a method call on a union runs at this instance: one symbol per
+    /// member, in member order (`Symbols::union_method_calls`).
+    pub fn union_method_calls(&self, call: NodeId) -> Option<Vec<String>> {
+        let callee = self.call_targets.get(&call)?;
+        let calls = self.symbols.union_method_calls(&callee, self.type_defs)?;
+        Some(calls.into_iter().map(|c| c.symbol).collect())
+    }
+
     /// The `message()` symbol of each error the result at `node` can carry,
     /// one per union member in member order (`Symbols::error_messages`).
     pub fn error_messages(&self, node: NodeId) -> Option<Vec<String>> {
