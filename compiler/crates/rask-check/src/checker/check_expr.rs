@@ -2655,9 +2655,14 @@ impl TypeChecker {
                 }
                 // A literal, or a module const naming one (`[0; N]`); anything
                 // else keeps the 0 placeholder. A local of the same name is
-                // not the const.
+                // not the const. A literal that doesn't fit a `usize` (`-1`)
+                // was just reported, and an array of that length has no
+                // layout, so the expression has no type to hand on (#2051).
                 let len = match &count.kind {
-                    ExprKind::Int(n, _) => *n as usize,
+                    ExprKind::Int(n, _) => match usize::try_from(*n) {
+                        Ok(n) => n,
+                        Err(_) => return Type::Error,
+                    },
                     ExprKind::Ident(name) if self.lookup_local(name).is_none() => {
                         self.types.const_length(name).unwrap_or(0)
                     }

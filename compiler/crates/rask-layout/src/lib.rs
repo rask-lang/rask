@@ -505,7 +505,7 @@ fn size_align_in(ty: &Type, cache: &LayoutCache, on_unknown: &mut dyn Unknown) -
             let (_, size, align) = tuple_layout(parts);
             (size, align)
         }
-        Type::Array { elem, len } => array_layout(size_align_in(elem, cache, on_unknown)?, *len as u32),
+        Type::Array { elem, len } => array_layout(size_align_in(elem, cache, on_unknown)?, *len),
         Type::Fn { .. } => (w, w), // Function pointer
         Type::Named(id) => match cache.get(&LayoutKey::of(*id)) {
             Some(found) => found,
@@ -586,7 +586,7 @@ fn size_align_in(ty: &Type, cache: &LayoutCache, on_unknown: &mut dyn Unknown) -
             let l = wrapper_layout_in(ty, cache, on_unknown)?;
             (l.size, l.align)
         }
-        Type::SimdVector { elem, lanes } => simd_layout(size_align_in(elem, cache, on_unknown)?.0, *lanes as u32),
+        Type::SimdVector { elem, lanes } => simd_layout(size_align_in(elem, cache, on_unknown)?.0, *lanes),
         Type::Never => (0, 1),
         Type::None => (0, 1),
         Type::InterfaceObject { .. } => fat_pointer(w),

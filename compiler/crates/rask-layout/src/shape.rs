@@ -80,13 +80,26 @@ pub fn tuple_layout(parts: impl IntoIterator<Item = (u32, u32)>) -> (Vec<u32>, u
 }
 
 /// `[T; len]`: the elements back to back, so the stride is the element's size.
-pub fn array_layout(elem: (u32, u32), len: u32) -> (u32, u32) {
-    (elem.0 * len, elem.1)
+///
+/// Sizes are `u32`, so a value tops out at 4 GiB. The checker only builds
+/// array types from lengths that fit a `usize`; one whose bytes don't fit a
+/// `u32` reaches here as a compiler bug, and says so in every build profile
+/// rather than wrapping in release and panicking in debug.
+pub fn array_layout(elem: (u32, u32), len: usize) -> (u32, u32) {
+    let size = u32::try_from(len)
+        .ok()
+        .and_then(|len| elem.0.checked_mul(len))
+        .unwrap_or_else(|| panic!("[T; {len}] with {}-byte elements is over the 4 GiB a value can take", elem.0));
+    (size, elem.1)
 }
 
-/// A SIMD vector: its lanes' bytes, at natural alignment up to 32.
-pub fn simd_layout(elem_size: u32, lanes: u32) -> (u32, u32) {
-    let total = elem_size * lanes;
+/// A SIMD vector: its lanes' bytes, at natural alignment up to 32. Lane
+/// counts are small and fixed by the type's name, so overflow is a bug.
+pub fn simd_layout(elem_size: u32, lanes: usize) -> (u32, u32) {
+    let total = u32::try_from(lanes)
+        .ok()
+        .and_then(|lanes| elem_size.checked_mul(lanes))
+        .unwrap_or_else(|| panic!("a {lanes}-lane SIMD vector of {elem_size}-byte lanes overflows its size"));
     (total, total.min(32))
 }
 
@@ -109,7 +122,7 @@ pub fn size_align_of<T: Shaped>(ty: &T, target: Target) -> (u32, u32) {
         Shape::Buffer => BUFFER_SIZE_ALIGN,
         Shape::FatPointer => fat_pointer(word),
         Shape::Fixed { size, align } => (size, align),
-        Shape::Array(elem, len) => array_layout(size_align_of(elem, target), len),
+        Shape::Array(elem, len) => array_layout(size_align_of(elem, target), len as usize),
         Shape::Tuple(parts) => {
             let (_, size, align) = tuple_layout(parts.iter().map(|p| size_align_of(p, target)));
             (size, align)
@@ -118,7 +131,7 @@ pub fn size_align_of<T: Shaped>(ty: &T, target: Target) -> (u32, u32) {
             let w = wrapper_of(ty, target).expect("a wrapper has a layout");
             (w.size, w.align)
         }
-        Shape::Simd(elem, lanes) => simd_layout(size_of(elem, target), lanes),
+        Shape::Simd(elem, lanes) => simd_layout(size_of(elem, target), lanes as usize),
     }
 }
 
