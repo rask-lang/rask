@@ -1,0 +1,64 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A box read out of a value that holds strings leaves that value with it.
+//
+// `let l = try direct(n)` reads the box out of the `any Label or Refused`
+// and hands it on in a new result. The release pass counted the read as a
+// view of the old result, so it still released that result whole, and its
+// walk freed the box the new result now held: a double free. A box read out
+// of a struct is the same: taken, the struct's release skips its slot.
+// The strings are long enough to live on the heap.
+
+interface Label {
+    func text(self) -> string
+}
+
+struct Refused { why: string }
+extend Refused {
+    func message(self) -> string {
+        return self.why
+    }
+}
+
+struct Tag { name: string }
+Tag implements Label {
+    func text(self) -> string {
+        return self.name
+    }
+}
+
+func direct(n: i64) -> any Label or Refused {
+    if n < 0 {
+        return Refused(why: "negative-and-long-enough-to-be-on-the-heap")
+    }
+    return Tag(name: "direct-{n}-padded-past-the-inline-length")
+}
+
+func forward(n: i64) -> any Label or Refused {
+    let l = try direct(n)
+    return l
+}
+
+struct Holder { label: any Label, name: string }
+
+func label_of(take h: Holder) -> any Label {
+    assert h.name.len() > 0
+    return h.label
+}
+
+test "a box forwarded through try" {
+    let f = forward(7) catch e => Tag(name: "fallback-label-long-enough-for-heap")
+    assert f.text() == "direct-7-padded-past-the-inline-length"
+}
+
+test "a box taken out of a struct" {
+    let h = Holder(label: Tag(name: "held-label-padded-long-enough"), name: "holder-name-long-enough-heap")
+    let l = label_of(h)
+    assert l.text() == "held-label-padded-long-enough"
+}
+
+test "a box read through a struct field" {
+    let h = Holder(label: Tag(name: "held-label-padded-long-enough"), name: "holder-name-long-enough-heap")
+    assert h.label.text() == "held-label-padded-long-enough"
+    assert h.name == "holder-name-long-enough-heap"
+}

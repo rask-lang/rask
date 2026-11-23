@@ -1455,9 +1455,17 @@ fn insert_aggregate_release(
                         ev.push(ownership::Event::WriteThrough(*root));
                     }
                 }
-                MirStmtKind::InterfaceCall { interface_object, takes_receiver: true, .. } => {
-                    for v in lent_to_box.get(interface_object).into_iter().flatten() {
-                        hand_over(&mut ev, *v);
+                MirStmtKind::InterfaceCall { dst, interface_object, takes_receiver, .. } => {
+                    if *takes_receiver {
+                        for v in lent_to_box.get(interface_object).into_iter().flatten() {
+                            hand_over(&mut ev, *v);
+                        }
+                    }
+                    // What it returns is the frame's, as from any call. With no
+                    // event the `any Label or Refused` from `m.make(n)` was
+                    // released by nobody: the box in it, and `Refused`'s string.
+                    if let Some(dst) = dst.filter(|d| aggregates.contains(d)) {
+                        ev.push(ownership::Event::Make(dst));
                     }
                 }
                 MirStmtKind::InterfaceBox { dst, value, .. } => {
@@ -1844,7 +1852,7 @@ fn struct_field_parts(
         else {
             continue;
         };
-        let moves_out = matches!(ty_of.get(dst), Some(MirType::Container(_) | MirType::Heap(_)))
+        let moves_out = matches!(ty_of.get(dst), Some(MirType::Container(_) | MirType::Heap(_) | MirType::InterfaceObject { .. }))
             && matches!(ty_of.get(root), Some(MirType::Struct(_)))
             && once(dst)
             && !held.contains(&origin(*root));
@@ -1877,6 +1885,10 @@ fn struct_field_parts(
 /// - A container handle or a `Heap` block out of an aggregate is the
 ///   container the aggregate owns. `*h.inner` read after the release read
 ///   freed memory (#1256).
+/// - A box out of an aggregate is the box the aggregate owns, the same way:
+///   its release walk frees it. Counted as a view, `let l = try direct(n)`
+///   stored the box in a new result and released the old one whole, so the
+///   walk freed the box the new result held.
 /// - A closure out of an aggregate is the closure the aggregate owns, the
 ///   same way: the struct frees the block when it dies, so `let g = h.f`
 ///   has to keep `h` alive for as long as `g` is called (#1334).
@@ -1895,7 +1907,7 @@ fn part_of_field(
     }
     match ty_of.get(&dst) {
         Some(t) if aggregates.contains(&dst) && (aggregate_may_hold_string(t) || holds_a_handle(t)) => true,
-        Some(MirType::Ptr | MirType::Container(_) | MirType::Heap(_) | MirType::FuncPtr(_)) => true,
+        Some(MirType::Ptr | MirType::Container(_) | MirType::Heap(_) | MirType::FuncPtr(_) | MirType::InterfaceObject { .. }) => true,
         _ => false,
     }
 }
@@ -1917,7 +1929,7 @@ fn holds_a_handle(ty: &MirType) -> bool {
 /// Whether reading a field of `base` into `dst` reaches into `base`'s storage
 /// without being a part of it, rather than copying a scalar out of it.
 ///
-/// - A wrapper or an interface object read off one carries a handle with it:
+/// - A wrapper read off one carries a handle with it:
 ///   `h.v!` on a `Vec<i64>?` field reaches the vector through it.
 /// - Anything read off something that already reads into an aggregate is
 ///   still reading into it, whatever MIR types it as: `h.nested.get(0)? as
@@ -1937,7 +1949,7 @@ fn view_of_field(
     }
     matches!(
         ty_of.get(&dst),
-        Some(MirType::Option(_)) | Some(MirType::Result { .. }) | Some(MirType::InterfaceObject { .. })
+        Some(MirType::Option(_)) | Some(MirType::Result { .. })
     )
 }
 
