@@ -2477,7 +2477,12 @@ impl<'a> FunctionBuilder<'a> {
             // Whole-aggregate copy: rvalue produces a pointer to the source
             // aggregate, dst has its own storage (either a stack slot or an
             // external pointer for mutate-params).
-            (MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_),
+            //
+            // A box's fat pointer too. `c = mkn(i)` in a loop made `c` the
+            // address of the temporary's slot, the next iteration wrote the
+            // new box there, and the drop of `c`'s old box freed the new one:
+            // a use after free, and the old box leaked.
+            (MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_) | MirType::InterfaceObject { .. },
              MirRValue::Use(MirOperand::Local(_))) => true,
             // A whole wrapper from another of the same shape: a wrapper built
             // around a plain value is `WrapSome`, and a result from anything
