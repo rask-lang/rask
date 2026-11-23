@@ -80,6 +80,11 @@ impl<'a> Instance<'a> {
             // A call on a type parameter runs whatever this instance's type
             // declares for it.
             rask_check::Callee::Method { recv, method, package, body: None } => {
+                // A tuple, optional or result declares no methods: `k.hash()`
+                // with `K` a tuple runs the function the checker wrote for it.
+                if let Some(rask_check::WrapperMethod::Runs(sym)) = self.typed.wrapper_method(&recv, &method) {
+                    return Some(rask_check::Callee::Free(sym));
+                }
                 let body = self.typed.types.method_body(&recv, &method, package.as_deref());
                 let recv = self.typed.types.dispatch_receiver(&recv, &method);
                 rask_check::Callee::Method { recv, method, package, body }

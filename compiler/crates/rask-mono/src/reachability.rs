@@ -1496,6 +1496,13 @@ impl<'a> Monomorphizer<'a> {
                 }
 
                 match self.call_target(expr.id) {
+                    // A wrapper's method at an instance: the function the
+                    // checker wrote for its type (`Instance::call_target`).
+                    Some(callee @ Callee::Free(_)) => {
+                        if let Some(call) = self.typed.and_then(|t| self.symbols.free_call(&callee, Vec::new(), t)) {
+                            self.enqueue(call.qualified, call.type_args);
+                        }
+                    }
                     Some(callee @ Callee::Method { body: Some(_), .. }) => {
                         // A native has a declaration and no body to compile.
                         // MIR asks `Symbols::method_call` the same question.

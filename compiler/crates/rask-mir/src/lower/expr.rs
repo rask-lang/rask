@@ -6254,6 +6254,14 @@ impl<'a> MirLowerer<'a> {
             }
         }
 
+        // A tuple, optional or result declares no methods. Through a bound
+        // (`k.hash()` with `K: Hashable`), an instance where `K` is one runs
+        // the function the checker wrote for its type, or is the value itself
+        // when copying it already clones it (#1976).
+        if let Some(handled) = self.lower_wrapper_method(expr, object, &method, &all_args)? {
+            return Ok(handled);
+        }
+
         // CALL6: what dispatch actually resolved to, when MIR can confirm the
         // type exists here. The confirmation matters — the record is written
         // before monomorphization, so a receiver typed as a bare type parameter
@@ -7818,6 +7826,12 @@ impl<'a> MirLowerer<'a> {
         // is written down — and a machine subtraction on two nanosecond counts
         // is what it means. There's no function to call, so the lowering below
         // is the answer.
+        // `a == b` on a wrapper at an instance runs the function the checker
+        // wrote for it (`lower_wrapper_method`): a `(Vec<i64>, i64)` compared
+        // as bytes compared the vectors' addresses.
+        if matches!(self.ctx.call_targets.get(&call).as_deref(), Some(rask_check::Callee::Free(_))) {
+            return Ok(None);
+        }
         if let Some(target) = self.ctx.operator_targets.get(&call) {
             // OR12: `@builtin` is the conformance saying the arithmetic is the
             // compiler's — `instant - instant` is a machine subtraction on two
@@ -7986,6 +8000,46 @@ impl<'a> MirLowerer<'a> {
             rvalue: MirRValue::Cast { value, target_ty: to.clone() },
         }));
         MirOperand::Local(wide)
+    }
+
+    /// A method on a wrapper value at an instance of a generic body. The
+    /// instance's call target names the checker's function for the wrapper
+    /// (`Instance::call_target`); a clone that is a copy has none to name.
+    fn lower_wrapper_method(
+        &mut self,
+        expr: &Expr,
+        object: &Expr,
+        method: &str,
+        all_args: &[MirOperand],
+    ) -> Result<Option<super::TypedOperand>, LoweringError> {
+        let Some(typed) = self.ctx.typed else { return Ok(None) };
+        let Some(recv) = self.ctx.lookup_raw_type(object.id) else { return Ok(None) };
+        match typed.wrapper_method(&recv, method) {
+            Some(rask_check::WrapperMethod::IsCopy) => {
+                let ty = self.ctx.lookup_node_type(object.id).ok_or_else(|| {
+                    LoweringError::InvalidConstruct(format!("`.clone()` on a `{recv}` with no MIR type"))
+                })?;
+                Ok(Some((all_args[0].clone(), ty)))
+            }
+            Some(rask_check::WrapperMethod::Runs(_)) => {
+                let symbol = self.ctx.call_symbol(expr.id).ok_or_else(|| {
+                    LoweringError::InvalidConstruct(format!(
+                        "`.{method}()` on a `{recv}` names no function at this instance"
+                    ))
+                })?;
+                let ret_ty = self.ctx.lookup_node_type(expr.id).ok_or_else(|| {
+                    LoweringError::InvalidConstruct(format!("`.{method}()` on a `{recv}` has no MIR type"))
+                })?;
+                let out = self.builder.alloc_temp(ret_ty.clone());
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                    dst: Some(out),
+                    func: FunctionRef::borrowing(&symbol),
+                    args: all_args.to_vec(),
+                }));
+                Ok(Some((MirOperand::Local(out), ret_ty)))
+            }
+            None => Ok(None),
+        }
     }
 
     /// `x.hash()` on an integer, a bool or a char — FNV-1a over the value's

@@ -229,6 +229,21 @@ impl Interpreter {
             Value::TypeConstructor(kind) => {
                 return self.call_type_constructor_method(kind, method, args);
             }
+            // `T?` and `T or E` have no methods, so `.hash()` only reaches one
+            // through a bound (`K: Hashable`). The same mix the checker writes
+            // for native (`hash_by_shape`): a branch's position from 1 mixed
+            // with its payload's hash, an absent optional 0 (#1976).
+            Value::Enum { name, variant, fields, .. }
+                if method == "hash" && matches!(name.as_str(), "Option" | "Result") =>
+            {
+                let tag = match (name.as_str(), variant.as_str()) {
+                    ("Option", "None") => return Ok(Value::int(0)),
+                    ("Result", "Err") => 2,
+                    _ => 1,
+                };
+                let h = self.parts_hash(tag, &fields.clone())?;
+                return Ok(Value::int(h as i64));
+            }
             Value::Enum { name, variant, fields, .. } if name == "Result" => {
                 return self.call_result_method(variant, fields, method, args);
             }
