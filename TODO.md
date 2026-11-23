@@ -36,7 +36,6 @@ used to be here was typed by hand and had already gone stale.
 
 - [ ] **Conformance condition inference** — deferred from the interface review: `Ring<T> implements Interface { }` inferring its `where` clause from the block body (gradual-constraints machinery). Explicit `where` required everywhere for now (`type.generics/CC2`); relaxing to inference is purely additive.
 - [ ] **No unsafe/atomics memory model** — no written memory model or UB catalog for the unsafe/atomics boundary (#527).
-- [ ] **`x?` narrowing contradicts the no-flow-typing spec** — `if x?` narrows `x` at runtime on both backends, but the spec says there's no flow typing and the checker agrees elsewhere. Needs a ruling (#773).
 
 - [ ] **Partial moves out of owned values** — `Bag(items: src.items)` from `take src` is E0909 today: a field read is always a view. A function that owns the root should be able to move one field out and free the rest. The checker work is #1501.
 
