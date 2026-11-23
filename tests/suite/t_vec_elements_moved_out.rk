@@ -125,3 +125,33 @@ test "a container removed from a container is the caller's" {
     vv.pop()
     assert vv.len() == 1
 }
+
+// An adapter over an owning chain passes some items on and drops the rest;
+// the ones it drops are its to free, the ones the body keeps are the body's
+// (#2027). A chain that only lends can't be kept from at all (E0902).
+func long(c: string) -> string {
+    return "{c}-padded-well-past-the-inline-string-length"
+}
+
+test "a body keeps the last item an adapter passes on" {
+    mut src: Vec<Vec<i64>> = [[1, 2], [3, 4], [5, 6]]
+    mut keep: Vec<i64> = Vec.new()
+    for v in src.take_all().filter(|v| v[0] != 3) {
+        keep = v
+    }
+    assert keep[0] == 5
+
+    mut s2: Vec<string> = [long("a"), long("b"), long("c")]
+    mut k2 = ""
+    for s in s2.take_all().take(2) {
+        k2 = s
+    }
+    assert k2 == long("b")
+
+    mut s3: Vec<string> = [long("a"), long("b"), long("c")]
+    mut k3 = ""
+    for s in s3.take_all().skip(1).take_while(|s| s.len() > 3) {
+        k3 = s
+    }
+    assert k3 == long("c")
+}
