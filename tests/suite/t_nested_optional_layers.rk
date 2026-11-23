@@ -213,3 +213,30 @@ test "a list literal's none is the element type's outer none" {
     assert !(v[1] is none)
     assert v[2]!! == 3
 }
+
+struct Bad { code: i64 }
+extend Bad {
+    public func message(self) -> string { return "bad" }
+}
+
+func two_layers_or_bad(k: i64) -> i64?? or Bad {
+    let a: i64? = none
+    if k == 0 { return none }
+    if k == 1 { return a }
+    if k == 2 { return 5 }
+    return Bad(code: 1)
+}
+
+test "a return widens through both layers of an optional success side" {
+    // Returning into `i64?? or Bad` added one layer and stopped, so `a`
+    // and `5` were refused with E0308 (#2064).
+    let n = two_layers_or_bad(0) catch _ => { return }
+    assert n is none
+    let sn = two_layers_or_bad(1) catch _ => { return }
+    assert !(sn is none)
+    assert sn! is none
+    let s = two_layers_or_bad(2) catch _ => { return }
+    assert s!! == 5
+    let failed = two_layers_or_bad(3) catch _ => none
+    assert failed is none
+}

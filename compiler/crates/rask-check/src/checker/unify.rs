@@ -1511,8 +1511,10 @@ impl TypeChecker {
         span: Span,
     ) -> Result<bool, TypeError> {
         let resolved_expected = self.ctx.apply(&expected);
+        // The whole expression's type. Widening recurses into inner layers
+        // with the same node, and those calls mustn't replace it.
         if let (CoercionSite::Branch, Some(node)) = (site, value_node) {
-            self.arm_widenings.insert(node, expected.clone());
+            self.arm_widenings.entry(node).or_insert_with(|| expected.clone());
         }
 
         // CB1/CB2: a function where C wants a function pointer passes its
@@ -1595,16 +1597,17 @@ impl TypeChecker {
                     // `none` up against `E` (#383).
                     let ok_is_option = self.ctx.apply(ok).is_option();
                     let ret_is_option = matches!(self.ctx.apply(ret_err), Type::None);
+                    //
+                    // The success side is itself an optional slot, so the
+                    // value widens into it like into any other: `return a`
+                    // with `a: i64?` in an `i64?? or E` function gains the
+                    // one layer it lacks (OPT31, #2064).
                     if allow_wrap
                         && ok_is_option
                         && ret_is_option
                         && !resolved_expected.is_option()
                     {
-                        let wrapped = Type::Result {
-                            ok: Box::new(ret_ty),
-                            err: err.clone(),
-                        };
-                        return self.unify(&expected, &wrapped, span);
+                        return self.resolve_coercion(ret_ty, *ok.clone(), site, value_node, span);
                     }
                     self.unify(&expected, &ret_ty, span)
                 }
@@ -1734,13 +1737,11 @@ impl TypeChecker {
                             ok: ok.clone(),
                             err: Box::new(resolved_err),
                         }
-                    } else if resolved_ok.is_option() && !resolved_ret.is_option() {
-                        // `return k` in a `KV? or E` function fills the present
-                        // side — two layers to add, not one (#383).
-                        Type::Result {
-                            ok: Box::new(Type::option(ret_ty)),
-                            err: err.clone(),
-                        }
+                    } else if resolved_ok.is_option() {
+                        // `return k` in a `KV? or E` function fills the
+                        // present side, as many layers deep as the side has
+                        // (#383, #2064).
+                        return self.resolve_coercion(ret_ty, *ok.clone(), site, value_node, span);
                     } else {
                         Type::Result {
                             ok: Box::new(ret_ty),
