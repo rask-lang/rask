@@ -1981,14 +1981,25 @@ impl<'a> MirLowerer<'a> {
     /// The copy is a name of its own, so the parameter is only read, which
     /// is what a borrowed parameter is. A non-Copy parameter can only be
     /// returned when it was taken (`mem.parameters/PM6`), and moves out.
+    ///
+    /// A Copy part of a local (`return t.a`, `return v[0]` on a fixed array)
+    /// is copied the same way, as `let x = v[0]` is. Returned as is, the
+    /// release pass read the return as handing on the whole local, and the
+    /// parts left behind were never released (#2067).
     fn retain_returned_copy_param(&mut self, value: MirOperand, expr: &Expr) -> MirOperand {
         let mut root = expr;
-        while let ExprKind::Field { object, .. } = &root.kind {
-            root = object;
+        let mut part = false;
+        loop {
+            match &root.kind {
+                ExprKind::Field { object, .. } => root = object,
+                ExprKind::Index { object, .. } if self.is_fixed_array(object) => root = object,
+                _ => break,
+            }
+            part = true;
         }
         let ExprKind::Ident(name) = &root.kind else { return value };
         let Some(&(root_local, _)) = self.locals.get(name) else { return value };
-        if !self.builder.is_param(root_local) && !self.addressed_locals.contains(&root_local) {
+        if !part && !self.builder.is_param(root_local) && !self.addressed_locals.contains(&root_local) {
             return value;
         }
         let MirOperand::Local(returned) = value else { return value };
@@ -2015,6 +2026,14 @@ impl<'a> MirLowerer<'a> {
         }));
         self.retain_bound_copy(copy, &ty);
         MirOperand::Local(copy)
+    }
+
+    /// A fixed array, whose elements sit in the value itself. A vector's
+    /// element is read through a call, which hands back its own copy.
+    fn is_fixed_array(&self, expr: &Expr) -> bool {
+        self.ctx
+            .lookup_raw_type(expr.id)
+            .is_some_and(|t| matches!(t.as_ref(), rask_types::Type::Array { .. }))
     }
 
     /// Retain what `local` holds when the checker says `ty` is Copy: `local`
