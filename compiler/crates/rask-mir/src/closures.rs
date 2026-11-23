@@ -695,6 +695,7 @@ fn insert_drops(
     let mut owned: HashMap<LocalId, bool> =
         retain_loads_handed_on(func, callee_escapes).into_iter().map(|l| (l, true)).collect();
     owned.extend(clone_lent_params_handed_on(func, callee_escapes).into_iter().map(|l| (l, true)));
+    owned.extend(carry_closures_heap_environments_point_at(func).into_iter().map(|l| (l, true)));
     for block in &func.blocks {
         for stmt in &block.statements {
             match &stmt.kind {
@@ -900,6 +901,134 @@ fn retain_loads_handed_on(func: &mut MirFunction, callee_escapes: &HashMap<Strin
                 }
             }
             si += 1;
+        }
+    }
+    cloned
+}
+
+/// A closure a heap environment points at goes where that environment goes.
+///
+/// `|x| f(x)` over a borrowed `f` points at the caller's closure (CM3), and the
+/// caller's literal in `v.filter(|x| x > 1)` lives as long as the sequence
+/// (SL4). Pointing works while the result stays in the frame that made the
+/// literal. Returned, the frame freed the literal on its way out and the
+/// sequence called into the freed block. So a heap environment owns its own:
+/// a closure this frame made and reads nowhere else is carried in, anything
+/// else (a parameter, a closure read again, one made on the stack or in a
+/// loop that builds the environment more than once) is cloned for it. The
+/// clone points where the original points, so it keeps the same limit (CV2).
+///
+/// Returns the clones, which this frame owns until the environment takes them.
+fn carry_closures_heap_environments_point_at(func: &mut MirFunction) -> HashSet<LocalId> {
+    let is_closure = |func: &MirFunction, l: LocalId| matches!(func.local_ty(l), Some(crate::MirType::FuncPtr(_)));
+    let mut sites: Vec<(usize, usize, usize)> = Vec::new();
+    for (bi, block) in func.blocks.iter().enumerate() {
+        for (si, stmt) in block.statements.iter().enumerate() {
+            if let MirStmtKind::ClosureCreate { heap: true, captures, .. } = &stmt.kind {
+                for (ci, c) in captures.iter().enumerate() {
+                    if c.lent && !c.by_ref && is_closure(func, c.local_id) {
+                        sites.push((bi, si, ci));
+                    }
+                }
+            }
+        }
+    }
+    let mut cloned = HashSet::new();
+    if sites.is_empty() {
+        return cloned;
+    }
+
+    // Closures this frame made on the heap, and every name each goes by.
+    let made: HashMap<LocalId, bool> = func
+        .blocks
+        .iter()
+        .flat_map(|b| b.statements.iter())
+        .filter_map(|s| match &s.kind {
+            MirStmtKind::ClosureCreate { dst, heap: true, .. } => Some((*dst, true)),
+            _ => None,
+        })
+        .collect();
+    let aliases = closure_aliases(func, &made);
+    let names_of = |o: LocalId| -> HashSet<LocalId> {
+        let mut names: HashSet<LocalId> =
+            func.locals.iter().map(|l| l.id).filter(|l| aliases.origins(l) == [o]).collect();
+        names.insert(o);
+        names
+    };
+    let in_loop = |bi: usize| {
+        let here = func.blocks[bi].id;
+        crate::analysis::cfg::successors(&func.blocks[bi].terminator)
+            .into_iter()
+            .any(|s| crate::analysis::cfg::reachable_from(func, s).contains(&here))
+    };
+    // A read other than renaming it, arming or disarming its unwind slot,
+    // freeing it, or the capture at `at`.
+    let read_elsewhere = |names: &HashSet<LocalId>, at: (usize, usize)| {
+        func.blocks.iter().enumerate().any(|(bi, b)| {
+            b.statements.iter().enumerate().any(|(si, s)| {
+                if (bi, si) == at {
+                    return false;
+                }
+                match &s.kind {
+                    MirStmtKind::Assign { rvalue: crate::MirRValue::Use(MirOperand::Local(_)), .. }
+                    | MirStmtKind::Phi { .. }
+                    | MirStmtKind::UnwindArm { .. }
+                    | MirStmtKind::UnwindDisarm { .. }
+                    | MirStmtKind::ClosureDrop { .. } => false,
+                    _ => names.iter().any(|n| uses::stmt_reads(s, *n)),
+                }
+            }) || names.iter().any(|n| uses::terminator_reads(&b.terminator, *n))
+        })
+    };
+
+    let carry: Vec<bool> = sites
+        .iter()
+        .map(|&(bi, si, ci)| {
+            let MirStmtKind::ClosureCreate { captures, .. } = &func.blocks[bi].statements[si].kind else {
+                return false;
+            };
+            let [origin] = aliases.origins(&captures[ci].local_id) else { return false };
+            let captured_once = sites
+                .iter()
+                .filter(|&&(b, s, c)| match &func.blocks[b].statements[s].kind {
+                    MirStmtKind::ClosureCreate { captures, .. } => aliases.origins(&captures[c].local_id).contains(origin),
+                    _ => false,
+                })
+                .count()
+                == 1;
+            captured_once && !in_loop(bi) && !read_elsewhere(&names_of(*origin), (bi, si))
+        })
+        .collect();
+
+    let mut next = func.locals.iter().chain(func.params.iter()).map(|l| l.id.0).max().map_or(0, |m| m + 1);
+    // Inserting a clone shifts the statements after it, so go back to front.
+    for (&(bi, si, ci), carried) in sites.iter().zip(carry).rev() {
+        let MirStmtKind::ClosureCreate { captures, .. } = &func.blocks[bi].statements[si].kind else { continue };
+        let of = captures[ci].local_id;
+        let ty = func.local_ty(of).cloned().unwrap_or(crate::MirType::Ptr);
+        let keep = if carried {
+            of
+        } else {
+            let copy = LocalId(next);
+            next += 1;
+            func.locals.push(crate::MirLocal { id: copy, name: None, ty: ty.clone(), is_param: false });
+            func.blocks[bi].statements.insert(
+                si,
+                MirStmt::dummy(MirStmtKind::Call {
+                    dst: Some(copy),
+                    func: crate::FunctionRef::borrowing("rask_closure_clone"),
+                    args: vec![MirOperand::Local(of)],
+                }),
+            );
+            cloned.insert(copy);
+            copy
+        };
+        let at = if carried { si } else { si + 1 };
+        if let MirStmtKind::ClosureCreate { captures, .. } = &mut func.blocks[bi].statements[at].kind {
+            let cap = &mut captures[ci];
+            cap.local_id = keep;
+            cap.lent = false;
+            cap.owns = Some(ty);
         }
     }
     cloned
@@ -1332,7 +1461,16 @@ fn param_escapes_from(
                         CaptureRule::HeapClosure => *heap,
                         CaptureRule::EscapingClosure => leaving.contains(dst),
                     };
-                    if takes_it && captures.iter().any(|c| is_it(&c.local_id)) {
+                    // A heap environment gets a clone of a lent closure it
+                    // points at (`carry_closures_heap_environments_point_at`),
+                    // so for who frees it, that capture is only a read.
+                    let cloned_for_it = |c: &crate::stmt::ClosureCapture| {
+                        rule == CaptureRule::HeapClosure
+                            && c.lent
+                            && !c.by_ref
+                            && matches!(func.local_ty(c.local_id), Some(crate::MirType::FuncPtr(_)))
+                    };
+                    if takes_it && captures.iter().any(|c| is_it(&c.local_id) && !cloned_for_it(c)) {
                         return true;
                     }
                 }
