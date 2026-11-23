@@ -67,6 +67,24 @@ impl ToDiagnostic for crate::OwnershipError {
             .with_help(format!("put `{captured}` in a `Shared` and capture that; a `Shared` clones as a second reference"))
             .with_why("every closure can be cloned, and cloning one clones what it carries, so a closure may only carry Cloneable values [mem.closures/CV4]"),
 
+            RepeatNotCopy { ty, reason } => {
+                use crate::MoveReason;
+                let because = match reason {
+                    MoveReason::SizeExceedsThreshold { size, .. } => {
+                        format!("`{ty}` is {size} bytes, over the 16-byte copy threshold")
+                    }
+                    MoveReason::OwnsHeapMemory { .. } => format!("`{ty}` owns heap memory"),
+                    MoveReason::Unique { .. } => format!("`{ty}` is @unique"),
+                    MoveReason::Resource { .. } => format!("`{ty}` is a resource"),
+                    _ => format!("`{ty}` moves rather than copies"),
+                };
+                Diagnostic::error(format!("`[x; n]` repeats a `{ty}`, which isn't Copy"))
+                    .with_code("E0979")
+                    .with_primary(self.span, because)
+                    .with_help("build each element on its own: push them into a `Vec` in a loop")
+                    .with_why("every slot of `[x; n]` gets a copy of the same `x`, and a value that moves would end up with n owners [mem.value/VS11]")
+            }
+
             UseAfterMove { name, moved_at, reason }
                 if matches!(reason, crate::MoveReason::LinkDeleted) =>
             {

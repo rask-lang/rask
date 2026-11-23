@@ -116,6 +116,7 @@ Use it where staying small is API: math primitives, IDs, anything callers pass a
 | **VS8: Copy is structural** | Satisfied automatically if structure matches — no explicit `extend Copy` |
 | **VS9: Copy is special** | Compiler-known interface that affects codegen and assignment semantics |
 | **VS10: Unique overrides** | `@unique` overrides structural satisfaction |
+| **VS11: Array repeat copies** | `[x; n]` puts a copy of `x` in every slot, so `x`'s type must be Copy. A value that moves would have n owners; build such elements one at a time (a loop pushing into a `Vec`) |
 
 <!-- test: skip -->
 ```rask
@@ -216,6 +217,8 @@ FIX: shrink the type (id: u32 fits in 16), or remove @small and let Point
 | `@small` + `@unique` on one type | SM4 | Legal — size fence on a move-only type |
 | Removing `@small` from a type | SM1 | Non-breaking by itself; nothing changes until the type grows |
 | `@small` on generic type, one bad instantiation | SM3 | Error at that instantiation, naming the type arguments |
+| `[row; 3]` where `Row` holds a `Vec` | VS11 | Error: the three slots would share one buffer |
+| `[t; n]` with an unbounded type parameter `T` | VS11 | Error in the generic body; `T: Copy` makes it legal |
 
 ---
 

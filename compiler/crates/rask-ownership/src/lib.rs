@@ -4482,6 +4482,24 @@ impl<'a> OwnershipChecker<'a> {
             ExprKind::ArrayRepeat { value, count } => {
                 self.check_expr(value);
                 self.check_expr(count);
+                // mem.value/VS11: every slot gets a copy of the one value, so
+                // the value has to be Copy. A `Vec` repeated three times was
+                // one buffer with three owners, freed three times (#2050). A
+                // generic body is judged once with its unbounded parameters
+                // moving; its instances add nothing.
+                if self.instance.is_none() {
+                    if let Some(ty) = self.node_ty(&value.id).cloned() {
+                        if self.copy_verdict_params_move(&ty) == CopyVerdict::Move {
+                            self.errors.push(OwnershipError {
+                                kind: OwnershipErrorKind::RepeatNotCopy {
+                                    ty: self.program.types.resolve_type_names(&ty).to_string(),
+                                    reason: self.move_reason(&ty),
+                                },
+                                span: value.span,
+                            });
+                        }
+                    }
+                }
             }
             ExprKind::Tuple(_) => {
                 self.check_and_consume_parts(expr);

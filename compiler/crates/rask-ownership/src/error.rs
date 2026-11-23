@@ -70,6 +70,13 @@ pub enum OwnershipErrorKind {
         captured: String,
     },
 
+    /// mem.value/VS11: `[x; n]` copies `x` into every slot, and `x` moves.
+    #[error("`[x; n]` repeats a `{ty}`, which isn't Copy")]
+    RepeatNotCopy {
+        ty: String,
+        reason: MoveReason,
+    },
+
     /// mem.closures/CV4: a carrying closure holds a value that can't be
     /// cloned, so the closure itself couldn't be.
     #[error("a closure that carries its captures can't hold `{captured}`: `{ty}` isn't Cloneable")]
