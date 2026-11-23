@@ -931,6 +931,57 @@ impl Interpreter {
         self.wrap_as_newtype(&ty, val)
     }
 
+    /// `Atomic<T>.default()`: the cell holds `T`'s zero, read off the
+    /// checker's type for the call. Building a bare integer 0 for every
+    /// payload made `Atomic<bool>.default().load()` print `0` (#2001).
+    fn atomic_default(&self, call: rask_ast::NodeId) -> Result<Value, RuntimeError> {
+        use rask_types::{GenericArg, Type};
+        let payload = match self.node_types.get(&call) {
+            Some(Type::Generic { args, .. } | Type::UnresolvedGeneric { args, .. }) => match args.first() {
+                Some(GenericArg::Type(t)) => Some((**t).clone()),
+                _ => None,
+            },
+            _ => None,
+        };
+        let payload = payload.map(|t| match self.generic_frames.last().and_then(|f| f.as_deref()) {
+            Some(frame) => rask_check::substitute_type(&t, frame),
+            None => t,
+        });
+        let zero = payload.as_ref().and_then(|t| self.zero_of(t)).ok_or_else(|| {
+            RuntimeError::Panic(format!(
+                "`Atomic.default()` has no zero for {}; use `Atomic.new`",
+                payload.map_or("this payload".to_string(), |t| format!("`{t}`")),
+            ))
+        })?;
+        Ok(Value::Atomic(std::sync::Arc::new(std::sync::Mutex::new(zero))))
+    }
+
+    /// The all-zero value of a primitive or a newtype over one: 0, `false`,
+    /// `'\0'`, a null pointer. `None` for anything else.
+    fn zero_of(&self, ty: &rask_types::Type) -> Option<Value> {
+        use rask_types::Type;
+        Some(match ty {
+            Type::Bool => Value::Bool(false),
+            Type::Char => Value::Char('\0'),
+            Type::I128 => Value::Int128(0),
+            Type::U128 => Value::Uint128(0),
+            Type::F32 | Type::F64 => Value::Float(0.0, crate::value::FloatKind::from_type(ty)),
+            Type::RawPtr(_) => Value::RawPtr(crate::ptr::RawPtr::null()),
+            Type::Named(id) => match self.types.get(*id) {
+                Some(rask_types::TypeDef::NominalAlias { underlying, .. }) => {
+                    let inner = self.zero_of(underlying)?;
+                    return Some(self.wrap_as_newtype(ty, inner));
+                }
+                _ => return None,
+            },
+            Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::Isize
+            | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::Usize => {
+                Value::Int(0, crate::value::IntKind::from_type(ty, self.types.target()))
+            }
+            _ => return None,
+        })
+    }
+
     /// `val` as a value of `ty`, adding each newtype layer it lacks: an `i64`
     /// answered for `Outer` over `Inner` over `i64` becomes `Outer(Inner(n))`.
     fn wrap_as_newtype(&self, ty: &rask_types::Type, val: Value) -> Value {
@@ -1513,6 +1564,12 @@ impl Interpreter {
                     },
                 };
                 let (mut arg_vals, arg_places) = self.eval_call_args(args)?;
+
+                if method == "default"
+                    && matches!(receiver, Value::TypeConstructor(crate::value::TypeConstructorKind::Atomic))
+                {
+                    return self.atomic_default(expr.id).map_err(|e| RuntimeDiagnostic::new(e, expr.span));
+                }
 
                 // A stdlib parameter declared as one of its type's own
                 // parameters (`take value: T` of `Vec.push`, of `Shared.new`)

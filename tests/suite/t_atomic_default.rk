@@ -1,0 +1,32 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+// `Atomic<T>.default()` holds `T`'s own zero. The interpreter built an
+// integer 0 for every payload, so a bool atomic loaded as `0` and a char one
+// failed to compare with a char (#2001).
+import sync.Atomic
+
+func make<T>() -> Atomic<T> {
+    return Atomic<T>.default()
+}
+
+test "each primitive payload starts at its zero" {
+    let b = Atomic<bool>.default()
+    assert b.load() == false
+    assert "{b.load()}" == "false"
+    let i = Atomic<i32>.default()
+    assert i.load() == 0
+    let c = Atomic<char>.default()
+    assert c.load() == '\0'
+    let f = Atomic<f64>.default()
+    assert f.load() == 0.0
+}
+
+test "a default made in a generic body" {
+    let b: Atomic<bool> = make()
+    assert "{b.load()}" == "false"
+    b.store(true)
+    assert b.load()
+    let u: Atomic<u64> = make()
+    assert u.fetch_add(3) == 0
+    assert u.load() == 3
+}

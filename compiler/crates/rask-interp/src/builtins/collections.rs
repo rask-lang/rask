@@ -1250,12 +1250,6 @@ impl Interpreter {
                 })?;
                 Ok(Value::Atomic(Arc::new(Mutex::new(value))))
             }
-            // `default()` is primitive payloads only, and 0 is what every one
-            // of them starts at — `false` included, once the checker has said
-            // the payload is a bool.
-            (TypeConstructorKind::Atomic, "default") => {
-                Ok(Value::Atomic(Arc::new(Mutex::new(Value::int(0)))))
-            }
             _ => Err(RuntimeError::NoSuchMethod {
                 ty: format!("{:?}", kind),
                 method: method.to_string(),
