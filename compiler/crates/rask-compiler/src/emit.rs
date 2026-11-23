@@ -178,7 +178,13 @@ pub fn lower(input: &BackEnd, entry: &Entry) -> Result<Lowered, Vec<String>> {
         .keys()
         .map(|name| rask_mir::lower::const_init_fn_name(name))
         .collect();
-    let outside_roots = outside_roots(&input.mono, &const_init_thunks);
+    let outside_roots = outside_roots(&input.mono, &const_init_thunks, entry);
+    // Monomorphization made each instance for a call. Lowering can fuse that
+    // call away (`rows.skip(1).min_by_key(f)` becomes an index loop), and an
+    // instance nobody names then isn't a root: alive, `Vec_skip`'s loop body
+    // shared the `as_sequence` yield with a live `map` body and made it take
+    // rows it was only lent.
+    let made_for_calls = input.mono.functions.iter().map(|f| f.name.clone()).collect();
     let pipeline = rask_mir::PassManager::default_pipeline().run_with(
         &mut functions,
         rask_mir::transform::pass::PassContext {
@@ -188,6 +194,7 @@ pub fn lower(input: &BackEnd, entry: &Entry) -> Result<Lowered, Vec<String>> {
             const_init_thunks,
             vtable_bodies,
             outside_roots,
+            made_for_calls,
             ..Default::default()
         },
     );
@@ -282,14 +289,21 @@ pub fn emit_lowered(
 }
 
 /// The functions something other than the program's own calls runs: the
-/// entry points monomorphization started from, const init thunks, and every
-/// symbol codegen or the runtime reaches through a table rather than a call
-/// (vtable slots, handle releases, map key and codec functions).
+/// entry points monomorphization started from, what the runner replacing
+/// `main` calls by name, const init thunks, and every symbol codegen or the
+/// runtime reaches through a table rather than a call (vtable slots, handle
+/// releases, map key and codec functions).
 fn outside_roots(
     mono: &rask_mono::MonoProgram,
     const_init_thunks: &std::collections::HashSet<String>,
+    entry: &Entry,
 ) -> std::collections::HashSet<String> {
     let mut roots: std::collections::HashSet<String> = mono.roots.iter().cloned().collect();
+    match entry {
+        Entry::Main => {}
+        Entry::Tests(runs) | Entry::Benches(runs) => roots.extend(runs.iter().map(|(_, f)| f.clone())),
+        Entry::Claims(runs) => roots.extend(runs.iter().map(|c| c.fn_name.clone())),
+    }
     roots.extend(const_init_thunks.iter().cloned());
     roots.extend(mono.vtables.values().flat_map(|vt| vt.slots.iter().map(|s| s.symbol.clone())));
     roots.extend(mono.handle_releases.values().cloned());

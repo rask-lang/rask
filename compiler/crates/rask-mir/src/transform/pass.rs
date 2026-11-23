@@ -50,7 +50,8 @@ pub struct PassContext {
     /// runners, C exports, vtable slots, what codegen calls by name. Liveness
     /// starts here (`dead_fns`).
     pub outside_roots: HashSet<String>,
-    /// Functions that exist to be called: every one some body named before
+    /// Functions that exist to be called: every instance monomorphization
+    /// made (a call asked for it), every one some body named before
     /// inlining, and every copy closure specialization made. Anything else
     /// lowering made for its own reasons, so liveness starts there too
     /// (`dead_fns`).
@@ -276,7 +277,7 @@ pub struct InliningPass;
 impl MirPass for InliningPass {
     fn name(&self) -> &str { "inlining" }
     fn run(&self, fns: &mut Vec<MirFunction>, ctx: &mut PassContext) {
-        ctx.made_for_calls = crate::transform::dead_fns::named_anywhere(fns);
+        ctx.made_for_calls.extend(crate::transform::dead_fns::named_anywhere(fns));
         ctx.inline_regions = crate::transform::inline::inline_functions(fns);
     }
 }
