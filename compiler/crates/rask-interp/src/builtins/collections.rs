@@ -887,6 +887,10 @@ impl Interpreter {
                 let h = crate::builtins::fnv1a(&(slot as u64).to_le_bytes());
                 Ok(Value::Int(h as i64, crate::value::IntKind::U64))
             }
+            // A copy of the link names the same node (RK2). Falling through
+            // copied the node instead, so a struct's derived clone held a node
+            // no rack knew about and kept it after the delete (#2070).
+            "clone" if args.is_empty() => Ok(Value::Link { rack_id, node: Arc::clone(node) }),
             _ => {
                 // Fall through to the node's own methods, so `l.take_damage(3)`
                 // works the way `l.health` does.
