@@ -82,6 +82,28 @@ pub(crate) fn show_diagnostic_multi(
     }
 }
 
+/// Show an error the program hit while running, placed by its span's file id:
+/// in a package, a panic may come from any of its files.
+pub(crate) fn show_runtime_diagnostic(
+    diagnostic: &Diagnostic,
+    source_files: &[(std::path::PathBuf, String)],
+    format: Format,
+) {
+    match format {
+        Format::Human => show_diagnostic_multi(diagnostic, source_files),
+        Format::Json => {
+            let named: Vec<(String, &str)> = source_files
+                .iter()
+                .map(|(path, text)| (path.to_string_lossy().into_owned(), text.as_str()))
+                .collect();
+            let sources = sources_for(&named);
+            let head = named.first().map(|(name, _)| name.as_str()).unwrap_or("");
+            let report = json::to_json_report(std::slice::from_ref(diagnostic), &sources, head, "runtime");
+            println!("{}", json::to_json_string(&report));
+        }
+    }
+}
+
 /// Show multiple diagnostics. In JSON mode, emit a single structured report.
 pub(crate) fn show_diagnostics(
     diagnostics: &[Diagnostic],
