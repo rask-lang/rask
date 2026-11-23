@@ -50,8 +50,11 @@ pub struct PassContext {
     /// runners, C exports, vtable slots, what codegen calls by name. Liveness
     /// starts here (`dead_fns`).
     pub outside_roots: HashSet<String>,
-    /// Every function some body named before inlining (`dead_fns`).
-    pub named_before_inlining: HashSet<String>,
+    /// Functions that exist to be called: every one some body named before
+    /// inlining, and every copy closure specialization made. Anything else
+    /// lowering made for its own reasons, so liveness starts there too
+    /// (`dead_fns`).
+    pub made_for_calls: HashSet<String>,
 }
 
 /// Convenience alias.
@@ -273,7 +276,7 @@ pub struct InliningPass;
 impl MirPass for InliningPass {
     fn name(&self) -> &str { "inlining" }
     fn run(&self, fns: &mut Vec<MirFunction>, ctx: &mut PassContext) {
-        ctx.named_before_inlining = crate::transform::dead_fns::named_anywhere(fns);
+        ctx.made_for_calls = crate::transform::dead_fns::named_anywhere(fns);
         ctx.inline_regions = crate::transform::inline::inline_functions(fns);
     }
 }
@@ -284,7 +287,7 @@ pub struct DeadFunctionPass;
 impl MirPass for DeadFunctionPass {
     fn name(&self) -> &str { "dead-functions" }
     fn run(&self, fns: &mut Vec<MirFunction>, ctx: &mut PassContext) {
-        crate::transform::dead_fns::remove_dead_functions(fns, &ctx.named_before_inlining, &ctx.outside_roots);
+        crate::transform::dead_fns::remove_dead_functions(fns, &ctx.made_for_calls, &ctx.outside_roots);
     }
 }
 
@@ -366,8 +369,13 @@ pub struct ClosureSpecializationPass;
 
 impl MirPass for ClosureSpecializationPass {
     fn name(&self) -> &str { "closure_specialize" }
-    fn run(&self, fns: &mut Vec<MirFunction>, _ctx: &mut PassContext) {
+    fn run(&self, fns: &mut Vec<MirFunction>, ctx: &mut PassContext) {
+        let before: HashSet<String> = fns.iter().map(|f| f.name.clone()).collect();
         crate::transform::closure_specialize::specialize_adapters(fns);
+        // A copy made here was made for the call sites it serves. Read as
+        // unnamed before inlining, one serving only a dead function stayed
+        // as a root of its own.
+        ctx.made_for_calls.extend(fns.iter().map(|f| &f.name).filter(|n| !before.contains(*n)).cloned());
     }
 }
 

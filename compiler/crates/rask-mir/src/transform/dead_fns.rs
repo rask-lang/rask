@@ -13,9 +13,10 @@
 //!
 //! Liveness starts from two kinds of root. One is what the caller says runs
 //! from outside the program's own calls (`PassContext::outside_roots`). The
-//! other is every function no body named before inlining: lowering made it for
-//! something other than a call (a const's init thunk, drop glue codegen calls
-//! by name), and inlining can't have been what orphaned it.
+//! other is every function that wasn't made for a call: named by no body
+//! before inlining and not a specialized copy. Lowering made it for something
+//! else (a const's init thunk, drop glue codegen calls by name), and inlining
+//! can't have been what orphaned it.
 
 use std::collections::HashSet;
 
@@ -39,17 +40,17 @@ pub(crate) fn named_anywhere(fns: &[MirFunction]) -> HashSet<String> {
     fns.iter().flat_map(named_by).map(str::to_string).collect()
 }
 
-/// Drop every function no root reaches. `named_before` is `named_anywhere`
-/// taken before inlining.
+/// Drop every function no root reaches. `made_for_calls` is `named_anywhere`
+/// taken before inlining, plus the copies closure specialization made.
 pub(crate) fn remove_dead_functions(
     fns: &mut Vec<MirFunction>,
-    named_before: &HashSet<String>,
+    made_for_calls: &HashSet<String>,
     outside_roots: &HashSet<String>,
 ) {
     let mut live: HashSet<&str> = HashSet::new();
     let mut queue: Vec<&str> = fns
         .iter()
-        .filter(|f| f.is_extern_c || !named_before.contains(&f.name) || outside_roots.contains(&f.name))
+        .filter(|f| f.is_extern_c || !made_for_calls.contains(&f.name) || outside_roots.contains(&f.name))
         .map(|f| f.name.as_str())
         .collect();
     let by_name: std::collections::HashMap<&str, &MirFunction> = fns.iter().map(|f| (f.name.as_str(), f)).collect();
