@@ -3,6 +3,9 @@
 // A `mutate` argument that is a field of a collection element writes into the
 // element. Natively the field was copied into a scratch slot and the callee
 // wrote the copy, so `setit(mutate v[0].f, 12)` left `v[0].f` alone (#2020).
+// A method's `mutate self` on such a field is the same write: `rows[0].inner
+// .tick()` left the count where it was, directly and through an interface's
+// default method (#1990).
 
 struct Inner {
     a: i64
@@ -16,6 +19,21 @@ struct Row {
     items: Vec<i64>
     name: string
     f: func() -> i64
+}
+
+interface Ticks {
+    func tick(mutate self)
+
+    func tick_twice(mutate self) {
+        self.tick()
+        self.tick()
+    }
+}
+
+Inner implements Ticks {
+    func tick(mutate self) {
+        self.a = self.a + 1
+    }
 }
 
 func bump(mutate x: i64) {
@@ -76,4 +94,14 @@ test "fields of a map value" {
     widen(mutate m["k"].inner)
     assert m["k"].n == 6
     assert m["k"].inner.c == 99
+}
+
+test "a method on a struct field of a vector element" {
+    mut rows: Vec<Row> = Vec.new()
+    rows.push(row(1))
+    rows[0].inner.tick()
+    assert rows[0].inner.a == 2
+    rows[0].inner.tick_twice()
+    assert rows[0].inner.a == 4
+    assert rows[0].inner.c == 3
 }
