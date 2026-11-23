@@ -1462,9 +1462,10 @@ fn insert_for_function(
     // fresh one on the other, and only the second is this frame's.
     let (mut tracked, mut made_here) =
         containers_and_makers(func, all, handing_over, interface_handing, targets);
-    for (id, free) in task_captures_the_body_frees(func, keeps) {
-        tracked.insert(id, free);
-        made_here.insert(id);
+    let captured = task_captures_the_body_frees(func, keeps);
+    for (id, free) in &captured {
+        tracked.insert(*id, free);
+        made_here.insert(*id);
     }
     let owned = params_this_frame_owns(func, kept);
     if made_here.is_empty() && owned.is_empty() {
@@ -1477,7 +1478,10 @@ fn insert_for_function(
         return;
     }
     let passed = pass_edges(func, handing_over, targets);
-    if !owned.is_empty() {
+    // A capture is followed like a parameter: `mut w = v` in the task block
+    // moves it, and `return w` hands it on. Untracked, `w` read as somebody
+    // else's and `v` was freed under the vector the task returned.
+    if !owned.is_empty() || !captured.is_empty() {
         for (id, free) in &owned {
             tracked.insert(*id, free);
         }
