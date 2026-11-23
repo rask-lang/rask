@@ -882,6 +882,8 @@ void    **rask_vec_link_edges(RaskVec *v);
 // Links inside container elements of struct type (`Vec<Cursor>`): the element
 // map's `RASK_OWNED_LINK` entries say where they sit, tag guards included.
 void      rask_elem_links(char *elem, const RaskElemStrs *strs, RaskLinkSlotFn fn, void *ctx);
+void      rask_elem_containers(char *elem, const RaskElemStrs *strs,
+                               RaskLinkSlotFn vec_fn, RaskLinkSlotFn map_fn, void *ctx);
 // The links of a value behind a tag (`cur: Cursor?`, an enum variant's
 // fields) whose variant is live, within `[lo, hi)` of the value: the entries
 // of an element map that sit under a guard.

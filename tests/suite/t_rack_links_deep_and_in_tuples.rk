@@ -23,10 +23,11 @@ struct Pin {
 
 // The link at the bottom of the chain of single-child trees.
 func innermost_link_is_none(t: Tree) -> bool {
-    if t.kids.len() == 0 {
-        return t.at is none
+    mut at = t.clone()
+    while at.kids.len() > 0 {
+        at = at.kids[0].clone()
     }
-    return innermost_link_is_none(t.kids[0])
+    return at.at is none
 }
 
 func nested_link_survives(depth: i32) -> bool {

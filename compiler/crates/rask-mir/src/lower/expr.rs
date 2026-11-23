@@ -433,6 +433,22 @@ impl<'a> MirLowerer<'a> {
         )
     }
 
+    /// Is this receiver a handle that owns nothing (`Link<T>`, or `Link<T>?`)?
+    /// Its clone is the same word: the rack owns the node. A handle that
+    /// releases what it holds has no structural `clone` to reach here, and one
+    /// that counts (`Sender`) declares its own.
+    fn receiver_is_unowned_handle(&self, object: &Expr) -> bool {
+        use rask_types::Type;
+        let Some(ty) = self.ctx.lookup_raw_type(object.id) else { return false };
+        let ty = ty.as_option().unwrap_or(&ty);
+        let (Type::Named(id) | Type::Generic { base: id, .. }) = ty else { return false };
+        self.ctx
+            .type_defs
+            .get(*id)
+            .and_then(|def| def.runtime_handle())
+            .is_some_and(|h| h.release.is_none())
+    }
+
     /// Does this Vec receiver hold string elements? Drives the dispatch choice
     /// for the runtime entry points that need a real string compare.
     fn vec_elem_is_buffer(&self, object: &Expr) -> bool {
@@ -6509,7 +6525,7 @@ impl<'a> MirLowerer<'a> {
             // dropped, and `t57_spawn.rk` died on a signal 11.
             //
             // Unknown means not a scalar, which leaves today's behaviour.
-            if self.receiver_is_copy_scalar(object) {
+            if self.receiver_is_copy_scalar(object) || self.receiver_is_unowned_handle(object) {
                 return Ok((all_args[0].clone(), obj_ty));
             }
             // A buffer's clone shares it: one more count, whether the bytes

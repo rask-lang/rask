@@ -824,7 +824,7 @@ int64_t rask_vec_remove_at(RaskVec *v, int64_t index, void *out) {
 // containers, and the same tag guards decide whether an enum payload's link is
 // live.
 
-static void links_walk_from(char *elem, const int32_t *entries, int64_t count,
+static void slots_walk_from(char *elem, const int32_t *entries, int64_t count, uint32_t want,
                             RaskLinkSlotFn fn, void *ctx) {
     if (!elem || !entries) return;
     for (int64_t i = 0; i < count; i++) {
@@ -835,7 +835,7 @@ static void links_walk_from(char *elem, const int32_t *entries, int64_t count,
             int live = rask_owned_guard(elem, entries, count, &i, &body);
             if (live < 0) return;
             if (live) {
-                links_walk_from(elem, entries + i + 1, body, fn, ctx);
+                slots_walk_from(elem, entries + i + 1, body, want, fn, ctx);
             }
             i += body;
             continue;
@@ -848,7 +848,7 @@ static void links_walk_from(char *elem, const int32_t *entries, int64_t count,
             i += body;
             continue;
         }
-        if (kind == RASK_OWNED_LINK) fn((void **)(elem + (e & RASK_OWNED_OFFSET_MASK)), ctx);
+        if (kind == want) fn((void **)(elem + (e & RASK_OWNED_OFFSET_MASK)), ctx);
     }
 }
 
@@ -889,7 +889,16 @@ void rask_guarded_links(char *base, const int32_t *entries, int64_t count,
 }
 
 void rask_elem_links(char *elem, const RaskElemStrs *strs, RaskLinkSlotFn fn, void *ctx) {
-    if (strs) links_walk_from(elem, strs->offsets, strs->count, fn, ctx);
+    if (strs) slots_walk_from(elem, strs->offsets, strs->count, RASK_OWNED_LINK, fn, ctx);
+}
+
+// The vectors and maps an element owns, each slot handed over once: `vec_fn`
+// for a `Vec`, `map_fn` for a `Map`. Either may be NULL.
+void rask_elem_containers(char *elem, const RaskElemStrs *strs,
+                          RaskLinkSlotFn vec_fn, RaskLinkSlotFn map_fn, void *ctx) {
+    if (!strs) return;
+    if (vec_fn) slots_walk_from(elem, strs->offsets, strs->count, RASK_OWNED_VEC, vec_fn, ctx);
+    if (map_fn) slots_walk_from(elem, strs->offsets, strs->count, RASK_OWNED_MAP, map_fn, ctx);
 }
 
 static int32_t elem_strs_links(const RaskElemStrs *s) {

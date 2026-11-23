@@ -3117,11 +3117,13 @@ impl TypeChecker {
                     _ => false,
                 })
             }
-            // A program's generic type clones when its own declaration does
-            // and each argument does: `Vec<List<T>>` inside `List<T>`.
-            Type::Generic { base, args }
-                if method == "clone"
-                    && !matches!(self.types.declared_by(*base), super::type_table::TypeOwner::Stdlib) =>
+            // Any other generic type clones when its own declaration does and
+            // each argument does: `Vec<List<T>>` inside `List<T>`, or a
+            // `Link<Leaf>?` edge. Limited to the program's own types, a struct
+            // holding a link derived no `clone`, and native copied it in place:
+            // the copy shared the source's vectors and read them after the
+            // source was freed (#1972).
+            Type::Generic { base, args } if method == "clone" =>
             {
                 self.type_has_method_in(&Type::Named(*base), method, params)
                     && args.iter().all(|a| match a {
