@@ -288,6 +288,11 @@ pub struct TypeChecker {
     /// String slices as values (`slices.rs`).
     pub(super) reads_as: ReadsAs,
     pub(super) filed_methods: type_defs::FiledMethods,
+    /// Operator conformances whose block left the method to the type's own:
+    /// (type, operator method, the name the conformance files it under).
+    pub(super) operators_left_to_inherent: Vec<(rask_types::TypeId, String, String)>,
+    /// The `extend` block (no interface) each type's method was declared in.
+    pub(super) inherent_method_blocks: HashMap<(rask_types::TypeId, String), NodeId>,
     /// Each range index's start, end and `..=`, for the slice call it becomes.
     /// Scope stack for local variable types (innermost scope last).
     /// Tuple: (type, binding kind). Const bindings and default params are read-only.
@@ -734,6 +739,8 @@ impl TypeChecker {
             sequence_coercions: HashMap::new(),
             reads_as: ReadsAs::default(),
             filed_methods: Default::default(),
+            operators_left_to_inherent: Vec::new(),
+            inherent_method_blocks: HashMap::new(),
             local_types: Vec::new(),
             borrow_stack: Vec::new(),
 

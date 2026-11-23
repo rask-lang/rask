@@ -77,8 +77,10 @@ impl TypeChecker {
     /// own (`render$0`, `render$1`, in declaration order). The declarations
     /// and the calls are rewritten to that name (`FiledMethods`), so the
     /// backends see one name per body. A type with one conformance keeps the
-    /// plain name. Runs once every block is registered, so the answer doesn't
-    /// depend on which block came first.
+    /// plain name. An operator conformance that left its method to an
+    /// `extend` block gets that method filed under its name (`mul$V2`), as if
+    /// written in the block. Runs once every block is registered, so the
+    /// answer doesn't depend on which block came first.
     pub(super) fn file_conformance_methods(&mut self) {
         let resolved: Vec<((rask_types::TypeId, String), Vec<Vec<Type>>)> = self
             .types
@@ -127,6 +129,18 @@ impl TypeChecker {
                 }
             }
             self.types.filed_methods.entry((type_id, plain)).or_default().extend(filed_all);
+        }
+        for (type_id, op, filed) in std::mem::take(&mut self.operators_left_to_inherent) {
+            let Some(&decl) = self.inherent_method_blocks.get(&(type_id, op.clone())) else { continue };
+            let Some(TypeDef::Struct { methods, .. } | TypeDef::Enum { methods, .. } | TypeDef::NominalAlias { methods, .. }) =
+                self.types.get_mut(type_id)
+            else {
+                continue;
+            };
+            let Some(sig) = methods.iter_mut().find(|m| m.name == op) else { continue };
+            sig.name = filed.clone();
+            self.filed_methods.decls.insert((decl, op.clone()), filed.clone());
+            self.types.filed_methods.entry((type_id, op)).or_default().push(filed);
         }
     }
 
@@ -1594,6 +1608,25 @@ impl TypeChecker {
                 }
                 self.filed_methods.decls.insert((decl_id, plain), filed.clone());
                 sig.name = filed;
+            }
+        }
+        // G1: an empty operator conformance answers with the type's own
+        // method (`V2 implements Mul<V2> { }` beside `extend V2 { func mul(…)
+        // }`). That method is filed under the conformance's name, the same as
+        // one written in the block, once every block is in
+        // (`file_conformance_methods`); left plain, a call through a bound
+        // asked for `V2_mul$V2` and nothing generated it (#1946).
+        if let Some((t, name)) = &interface {
+            if let Some(op) = rask_stdlib::operators::operator_interface_method(name) {
+                if !i.methods.iter().any(|m| m.name == op) {
+                    if let Some(filed) = rask_stdlib::operators::conformance_method_name(&i.target_ty, t, name, op) {
+                        self.operators_left_to_inherent.push((type_id, op.to_string(), filed));
+                    }
+                }
+            }
+        } else {
+            for sig in &new_methods {
+                self.inherent_method_blocks.entry((type_id, sig.name.clone())).or_insert(decl_id);
             }
         }
         // E12b: a `decode` in a `Decode` block is how the type decodes, an
