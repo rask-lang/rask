@@ -1579,6 +1579,13 @@ fn insert_aggregate_release(
                         ev.push(ownership::Event::Make(dst));
                     }
                 }
+                // A box read out of a wrapper and dropped by `interface_drop`
+                // was taken out of it: that drop is the box's one free, and the
+                // wrapper holds nothing more on this path. Released as well,
+                // the wrapper's walk would free the box a second time.
+                MirStmtKind::InterfaceDrop { interface_object, .. } => {
+                    hand_over(&mut ev, *interface_object);
+                }
                 MirStmtKind::InterfaceBox { dst, value, .. } => {
                     let v = uses::operand_local(value).filter(|v| is_tracked(v));
                     if reaches_a_drop(*dst) {

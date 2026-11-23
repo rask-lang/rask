@@ -372,11 +372,9 @@ fn hands_one_back(func: &MirFunction, fresh: &HashSet<LocalId>) -> Option<bool> 
 /// well is a double free. And one box-typed read per wrapper only, the same
 /// discipline `boxes_handed_over` keeps — two reads name one box.
 ///
-/// A wrapper nothing else releases, though. A struct or an enum gives back
-/// its fields when it dies, and so does a `T?` or `T or E` whose other side
-/// holds a string or a block: `rc_insert` tracks it, and the release walk
-/// reaches an interface-object payload through the vtable's `owned_release`,
-/// block and contents both, which is more than an `InterfaceDrop` does.
+/// Not a struct or enum that releases its own fields, though
+/// (`released_with_the_box`): the release walk reaches an interface-object
+/// field through the vtable's `owned_release`, block and contents both.
 /// Letting this rule match one of those gave the block two owners, and the
 /// one that ran first was the weaker one:
 ///
@@ -396,7 +394,7 @@ fn boxes_parked_in_a_wrapper(func: &MirFunction, fresh: &HashSet<LocalId>) -> Ha
         let MirStmtKind::Store { addr, value: MirOperand::Local(v), .. } = &stmt.kind else {
             continue;
         };
-        if releases_its_own_fields(&ty_of, addr) {
+        if released_with_the_box(&ty_of, addr) {
             continue;
         }
         if fresh.contains(v) && is_box(&ty_of, v) {
@@ -406,16 +404,24 @@ fn boxes_parked_in_a_wrapper(func: &MirFunction, fresh: &HashSet<LocalId>) -> Ha
     out
 }
 
-/// Does this aggregate give back what its fields hold when it dies?
+/// Would the box in this aggregate be freed by somebody else's release?
 ///
-/// Exactly when `rc_insert` tracks it: that pass puts the `RcDecContents` on
-/// it, and codegen's walk frees every box it reaches. `any Label or Refused`
-/// is tracked for `Refused`'s string and its release frees the box too, so a
-/// `catch` that dropped the payload as well freed it twice. `any Label?` and
-/// `i64 or any Error` hold nothing else, nobody releases them, and the box is
-/// the frame's to free.
-fn releases_its_own_fields(ty_of: &HashMap<LocalId, MirType>, id: &LocalId) -> bool {
-    ty_of.get(id).is_some_and(crate::transform::rc_insert::aggregate_may_hold_string)
+/// A struct or enum that `rc_insert` tracks gives back its fields when it
+/// dies, and the release walk frees every box it reaches. Taking the box out
+/// of one of those as well gave it two owners (#1161).
+///
+/// Not a `T?` or `T or E`. Its payload is all it holds on the path that reads
+/// it, so the read takes the whole of it: `rc_insert` reads this pass's drop
+/// of the payload as the payload's hand-over and releases the wrapper on the
+/// other paths only. Left to the wrapper, the box was released when the
+/// wrapper was, and a name still reading the box kept that release from
+/// happening at all: `last = try direct(i)` in a loop that calls
+/// `last.text()` first leaked every box but the last (#2060).
+fn released_with_the_box(ty_of: &HashMap<LocalId, MirType>, id: &LocalId) -> bool {
+    match ty_of.get(id) {
+        Some(MirType::Option(_) | MirType::Result { .. }) | None => false,
+        Some(ty) => crate::transform::rc_insert::aggregate_may_hold_string(ty),
+    }
 }
 
 /// The one name that ends up owning the box in `wrapper`'s payload.
@@ -434,7 +440,7 @@ fn box_read_out_of(
     wrapper: LocalId,
     ty_of: &HashMap<LocalId, MirType>,
 ) -> Option<LocalId> {
-    if releases_its_own_fields(ty_of, &wrapper) {
+    if released_with_the_box(ty_of, &wrapper) {
         return None;
     }
     let carriers = names_the_aggregate_reaches(func, wrapper);

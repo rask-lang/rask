@@ -2083,6 +2083,7 @@ fn containers_and_makers(
             }
         }
     }
+    unwrap_for.extend(wrappers_filled_here(func, &fresh, &edges));
     // What comes out of such a wrapper is the container, and it is this frame's
     // now. Read as a field of the returned aggregate — the tag beside it is not
     // pointer-shaped, so the payload is the only slot this can pick up (#1117).
@@ -2156,6 +2157,103 @@ fn containers_and_makers(
         .chain(unwrapped)
         .collect();
     (fresh, made_here)
+}
+
+/// `T?` and `T or E` wrappers this frame built around a container it made,
+/// and the names that copy one, with that container's free.
+///
+/// The same wrapper a callee hands back (`HandBack::wrapped`) once the callee
+/// is inlined: `return v` became a store of `v` into a slot of the frame's
+/// own. Called, what the caller unwraps is the caller's; inlined, it read as a
+/// part of the wrapper, and a loop that carried it past the turn that refilled
+/// the slot leaked it every turn (#2060).
+///
+/// Only where every container stored as the payload is one this frame made,
+/// and every definition of a copy is such a wrapper: one path handing back
+/// somebody else's makes the payload somebody else's on that path.
+fn wrappers_filled_here(
+    func: &MirFunction,
+    fresh: &HashMap<LocalId, &'static str>,
+    edges: &Passes,
+) -> HashMap<LocalId, &'static str> {
+    /// What a wrapper may hold as its payload.
+    #[derive(Clone, Copy, PartialEq)]
+    enum Holds {
+        /// Nothing: a `none` or the error side.
+        Empty,
+        Made(&'static str),
+        Foreign,
+    }
+    let join = |a: Holds, b: Holds| match (a, b) {
+        (Holds::Empty, x) | (x, Holds::Empty) => x,
+        (Holds::Made(f), Holds::Made(g)) if f == g => Holds::Made(f),
+        _ => Holds::Foreign,
+    };
+    let payload_of = |l: LocalId| match func.local_ty(l) {
+        Some(MirType::Option(inner)) => Some((**inner).clone()),
+        Some(MirType::Result { ok, .. }) => Some((**ok).clone()),
+        _ => None,
+    };
+    let mut made = fresh.clone();
+    follow_copies_and_passes(func, &mut made, edges);
+    let stmts = || func.blocks.iter().flat_map(|b| b.statements.iter());
+    let defined: HashSet<LocalId> = stmts().filter_map(crate::analysis::uses::stmt_def).collect();
+    // A slot the frame fills field by field. Assigned whole, it is a copy.
+    let mut holds: HashMap<LocalId, Holds> = HashMap::new();
+    for st in stmts() {
+        let MirStmtKind::Store { addr, value, .. } = &st.kind else { continue };
+        if defined.contains(addr) {
+            continue;
+        }
+        let Some(payload @ MirType::Container(_)) = payload_of(*addr) else { continue };
+        let this = match value {
+            MirOperand::Local(v) if func.local_ty(*v) == Some(&payload) => match made.get(v) {
+                Some(f) => Holds::Made(f),
+                None => Holds::Foreign,
+            },
+            _ => Holds::Empty,
+        };
+        let slot = holds.entry(*addr).or_insert(Holds::Empty);
+        *slot = join(*slot, this);
+    }
+    if holds.is_empty() {
+        return HashMap::new();
+    }
+    // A copy holds what every wrapper copied into it may hold.
+    for _ in 0..=func.locals.len() {
+        let mut next: HashMap<LocalId, Holds> = HashMap::new();
+        for st in stmts() {
+            let Some(d) = crate::analysis::uses::stmt_def(st) else { continue };
+            if payload_of(d).is_none() {
+                continue;
+            }
+            let this = match &st.kind {
+                MirStmtKind::Assign { rvalue: MirRValue::Use(MirOperand::Local(src)), .. } => {
+                    holds.get(src).copied().unwrap_or(Holds::Foreign)
+                }
+                _ => Holds::Foreign,
+            };
+            let slot = next.entry(d).or_insert(Holds::Empty);
+            *slot = join(*slot, this);
+        }
+        let mut changed = false;
+        for (d, h) in next {
+            if holds.get(&d) != Some(&h) {
+                holds.insert(d, h);
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    holds
+        .into_iter()
+        .filter_map(|(w, h)| match h {
+            Holds::Made(f) => Some((w, f)),
+            _ => None,
+        })
+        .collect()
 }
 
 /// `follow_copies`, also through calls that may hand back their argument.
