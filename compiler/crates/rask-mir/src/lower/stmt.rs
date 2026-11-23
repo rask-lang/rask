@@ -331,7 +331,9 @@ impl<'a> MirLowerer<'a> {
         // so writing a new one over it gives the old one back the same way.
         // Left out, `p.run = || …` leaked the closure it replaced. An array's
         // elements are walked like a tuple's; left out, `b.v = [s1, s2]` on a
-        // `[string; 2]` field leaked the strings it replaced.
+        // `[string; 2]` field leaked the strings it replaced. A box or a
+        // `Heap` block in a field is the aggregate's the same way; left out,
+        // `h.label = Tag(…)` leaked the box it replaced.
         // An optional or a result whose payload is Copy: reading one out
         // (`take self.spare`) copies it with references of its own, so what the
         // slot holds is still its own to give back. A non-Copy payload may have
@@ -349,6 +351,7 @@ impl<'a> MirLowerer<'a> {
                 fty,
                 MirType::Buffer | MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_)
                     | MirType::Array { .. } | MirType::FuncPtr(_)
+                    | MirType::InterfaceObject { .. } | MirType::Heap(_)
             ))
         .then(|| fty.clone())
     }

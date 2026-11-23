@@ -1,0 +1,57 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A box or a `Heap` block in a struct field, written over.
+//
+// Writing a new value into a field gives back what the field held first. The
+// release before the store covered strings, containers and aggregates but not
+// boxes or blocks, so `h.label = Tag(…)` leaked the box it replaced. A field
+// moved out first and then refilled must not be released twice. The strings
+// are long enough to live on the heap.
+
+import memory.Heap
+
+interface Label {
+    func text(self) -> string
+}
+
+struct Tag { name: string }
+Tag implements Label {
+    func text(self) -> string { return self.name }
+}
+
+struct Holder { label: any Label, name: string }
+
+struct Node { value: string }
+struct Cell { inner: Heap<Node> }
+
+func mk(s: string) -> any Label {
+    return Tag(name: "{s}-padded-long-enough-to-be-on-the-heap")
+}
+
+test "a box field written over" {
+    mut h = Holder(label: mk("first"), name: "holder-name-long-enough-for-heap")
+    h.label = mk("second")
+    assert h.label.text() == "second-padded-long-enough-to-be-on-the-heap"
+}
+
+test "a box field written over in a loop" {
+    mut h = Holder(label: mk("start"), name: "holder-name-long-enough-for-heap")
+    for i in 0..4 {
+        h.label = mk("turn-{i}")
+    }
+    assert h.label.text() == "turn-3-padded-long-enough-to-be-on-the-heap"
+}
+
+test "a box field moved out and refilled" {
+    mut h = Holder(label: mk("first"), name: "holder-name-long-enough-for-heap")
+    let old = h.label
+    h.label = mk("second")
+    assert old.text() == "first-padded-long-enough-to-be-on-the-heap"
+    assert h.label.text() == "second-padded-long-enough-to-be-on-the-heap"
+}
+
+test "a heap field written over" {
+    mut c = Cell(inner: Heap(Node(value: "first-node-padded-long-enough-heap")))
+    c.inner = Heap(Node(value: "second-node-padded-long-enough-heap"))
+    assert c.inner.value == "second-node-padded-long-enough-heap"
+}
