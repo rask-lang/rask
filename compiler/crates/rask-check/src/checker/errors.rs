@@ -1929,6 +1929,7 @@ impl TypeError {
             TypeError::TypeArgCount { name, params, expected, found, site, .. } => {
                 TypeError::TypeArgCount { name, params, expected, found, site, span }
             }
+            TypeError::ArrayTooLarge { ty, bytes, .. } => TypeError::ArrayTooLarge { ty, bytes, span },
             other => other,
         }
     }

@@ -31,6 +31,11 @@ use rask_ast::{
     Span,
 };
 
+/// The longest `[x; n]` written out as one store per element. Longer ones
+/// fill in a loop: straight-line stores beat a loop's branch for a handful of
+/// elements, and past that they only grow the function.
+const REPEAT_UNROLLED_UP_TO: u32 = 16;
+
 /// What `emit_is_test` found out: whether the value matched, and for a
 /// flat `T? or E` leaf, the inner `T?` the payload binds out of, with `T`.
 pub(super) struct PatternTest {
@@ -2091,7 +2096,7 @@ impl<'a> MirLowerer<'a> {
     /// of the same name as the const is not the const.
     fn constant_array_length(&self, count: &Expr) -> Option<u32> {
         match &count.kind {
-            ExprKind::Int(n, _) => Some(*n as u32),
+            ExprKind::Int(n, _) => u32::try_from(*n).ok(),
             ExprKind::Ident(name) => {
                 let (own, fact) = self.const_facts.get(name)?;
                 let still_the_const = self.locals.get(name).is_none_or(|(l, _)| own.contains(l));
@@ -2104,6 +2109,60 @@ impl<'a> MirLowerer<'a> {
         }
     }
 
+    /// `array[i] = val` for every `i` below `len`, as a loop.
+    ///
+    /// One store per element made `[0u8; 1000000000]` a billion statements,
+    /// and the compiler ran out of memory before anything could refuse it
+    /// (#2055). Storing a value that is still needed afterwards is a copy to
+    /// the release pass, so each turn takes a reference of its own, the way
+    /// the unrolled stores do.
+    fn fill_in_a_loop(&mut self, array: crate::LocalId, val: MirOperand, elem_size: u32, len: u32) {
+        let i = self.builder.alloc_temp(MirType::I64);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: i,
+            rvalue: MirRValue::Use(MirOperand::Constant(MirConst::Int(0))),
+        }));
+        let check = self.builder.create_block();
+        let body = self.builder.create_block();
+        let done = self.builder.create_block();
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: check }));
+
+        self.builder.switch_to_block(check);
+        let more = self.builder.alloc_temp(MirType::Bool);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: more,
+            rvalue: MirRValue::BinaryOp {
+                op: crate::operand::BinOp::Lt,
+                left: MirOperand::Local(i),
+                right: MirOperand::Constant(MirConst::Int(i64::from(len))),
+            },
+        }));
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
+            cond: MirOperand::Local(more),
+            then_block: body,
+            else_block: done,
+        }));
+
+        self.builder.switch_to_block(body);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::ArrayStore {
+            base: array,
+            index: MirOperand::Local(i),
+            elem_size,
+            value: val,
+        }));
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: i,
+            rvalue: MirRValue::BinaryOp {
+                op: crate::operand::BinOp::Add,
+                left: MirOperand::Local(i),
+                right: MirOperand::Constant(MirConst::Int(1)),
+            },
+        }));
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: check }));
+
+        self.builder.switch_to_block(done);
+    }
+
     fn lower_array_repeat(&mut self, value: &Expr, count: &Expr) -> Result<TypedOperand, LoweringError> {
             // Constant count → expand to a fixed-size array (same as literal)
             if let Some(len) = self.constant_array_length(count) {
@@ -2111,14 +2170,23 @@ impl<'a> MirLowerer<'a> {
                 let elem_size = rask_layout::size_of(&elem_ty, self.ctx.target());
                 let array_ty = MirType::Array { elem: Box::new(elem_ty), len };
                 let result_local = self.builder.alloc_temp(array_ty.clone());
-                for i in 0..len {
-                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-                        addr: result_local,
-                        offset: i * elem_size,
-                        value: val.clone(),
-                        store_size: elem_size,
-                        field: None,
-                    }));
+                // The array starts here, as a literal does. The loop's stores
+                // index at run time, so they can't say so themselves, and the
+                // release pass never took the filled array for a value of its
+                // own: its strings were never released.
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::ZeroAggregate { local: result_local }));
+                if len <= REPEAT_UNROLLED_UP_TO {
+                    for i in 0..len {
+                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+                            addr: result_local,
+                            offset: i * elem_size,
+                            value: val.clone(),
+                            store_size: elem_size,
+                            field: None,
+                        }));
+                    }
+                } else {
+                    self.fill_in_a_loop(result_local, val, elem_size, len);
                 }
                 return Ok((MirOperand::Local(result_local), array_ty));
             }
