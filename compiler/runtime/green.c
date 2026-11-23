@@ -67,6 +67,13 @@
 #include <errno.h>
 #include <time.h>
 
+#if defined(__has_include)
+#if __has_include(<valgrind/valgrind.h>)
+#include <valgrind/valgrind.h>
+#define RASK_VALGRIND 1
+#endif
+#endif
+
 #define DEQUE_CAP 1024
 
 // ─── Green task ─────────────────────────────────────────────
@@ -722,6 +729,9 @@ static __thread const char *tl_stack_hi;
 // on it, and an ensure that ran off its end would otherwise write into the
 // heap below.
 static __thread char *tl_alt_map;
+#ifdef RASK_VALGRIND
+static __thread unsigned tl_alt_valgrind_id;
+#endif
 
 // The bounds of the calling thread's stack, or 0 when the platform won't say.
 static int thread_stack_bounds(const char **lo, const char **hi) {
@@ -819,12 +829,21 @@ void rask_stack_guard_thread_init(void) {
         return;
     }
     tl_alt_map = map;
+#ifdef RASK_VALGRIND
+    // The overflow handler longjmps from here back to the thread's own stack.
+    // Unregistered, valgrind reads that jump as the stack shrinking across
+    // everything between the two and marks it all uninitialised.
+    tl_alt_valgrind_id = VALGRIND_STACK_REGISTER(alt.ss_sp, (char *)alt.ss_sp + alt.ss_size);
+#endif
 }
 
 void rask_stack_guard_thread_exit(void) {
     if (tl_alt_map) {
         stack_t off = { .ss_flags = SS_DISABLE };
         sigaltstack(&off, NULL);
+#ifdef RASK_VALGRIND
+        VALGRIND_STACK_DEREGISTER(tl_alt_valgrind_id);
+#endif
         munmap(tl_alt_map, OVERFLOW_ALT_STACK + sysconf(_SC_PAGESIZE));
         tl_alt_map = NULL;
     }
