@@ -595,6 +595,11 @@ fn size_align_in(ty: &Type, cache: &LayoutCache, on_unknown: &mut dyn Unknown) -
     })
 }
 
+/// A byte count as a size, held at `u32::MAX` past it (see `align_up`).
+fn saturate(bytes: u64) -> u32 {
+    u32::try_from(bytes).unwrap_or(u32::MAX)
+}
+
 fn align_up_u64(val: u64, align: u64) -> u64 {
     val.div_ceil(align) * align
 }
@@ -940,7 +945,7 @@ fn struct_layout(
         }
 
         // S3: Align offset for this field
-        let offset = align_up(bit_offset.div_ceil(8) as u32, align);
+        let offset = align_up(saturate(bit_offset.div_ceil(8)), align);
 
         field_layouts.push(FieldLayout {
             name,
@@ -956,9 +961,9 @@ fn struct_layout(
             bits: None,
         });
 
-        bit_offset = (offset + size) as u64 * 8;
+        bit_offset = (u64::from(offset) + u64::from(size)) * 8;
     }
-    let offset = bit_offset.div_ceil(8) as u32;
+    let offset = saturate(bit_offset.div_ceil(8));
 
     if let Some(n) = request.align {
         max_align = max_align.max(n);
@@ -1138,7 +1143,7 @@ fn enum_layout(
                     bits: None,
                 });
 
-                field_offset += size;
+                field_offset = field_offset.saturating_add(size);
             }
             payload_size = align_up(field_offset, payload_align);
         }
@@ -1168,7 +1173,7 @@ fn enum_layout(
     }
 
     // E4: Total size = tag + padding + max(all variant payloads)
-    let total_size = align_up(payload_offset + max_payload_size, enum_align);
+    let total_size = align_up(payload_offset.saturating_add(max_payload_size), enum_align);
 
     EnumLayout {
         key: None,
@@ -1374,6 +1379,10 @@ mod tests {
         assert_eq!(align_up(5, 4), 8);
         assert_eq!(align_up(6, 8), 8);
         assert_eq!(align_up(9, 8), 16);
+        // Past a u32, held at the top rather than wrapped (#2061).
+        assert_eq!(align_up(u32::MAX - 2, 8), u32::MAX);
+        let three_gb = crate::shape::array_layout((1, 1), 3_000_000_000);
+        assert_eq!(crate::shape::tuple_layout([three_gb, three_gb]).1, u32::MAX);
     }
 
     // ── type_size_align ─────────────────────────────────────────

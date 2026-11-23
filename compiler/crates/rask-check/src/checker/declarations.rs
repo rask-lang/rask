@@ -382,6 +382,9 @@ impl TypeChecker {
             DeclKind::Struct(s) => {
                 self.check_declared_type_name(&s.name, "struct", decl.span, s.fields.is_empty());
                 let id = self.register_struct(s);
+                if s.type_params.is_empty() {
+                    self.pending_value_sizes.push((Type::Named(id), decl.span));
+                }
                 self.types.record_declared_type(decl.id, id);
                 self.types.record_param_bounds(id, &s.type_params);
                 self.types.record_method_decl(id, decl.id);
@@ -390,6 +393,9 @@ impl TypeChecker {
             DeclKind::Enum(e) => {
                 self.check_declared_type_name(&e.name, "enum", decl.span, false);
                 let id = self.register_enum(e, decl.span);
+                if e.type_params.is_empty() {
+                    self.pending_value_sizes.push((Type::Named(id), decl.span));
+                }
                 self.types.record_declared_type(decl.id, id);
                 self.types.record_param_bounds(id, &e.type_params);
                 self.types.record_method_decl(id, decl.id);
@@ -409,6 +415,7 @@ impl TypeChecker {
             DeclKind::Union(u) => {
                 self.check_declared_type_name(&u.name, "union", decl.span, false);
                 let id = self.register_union(u);
+                self.pending_value_sizes.push((Type::Named(id), decl.span));
                 self.types.record_declared_type(decl.id, id);
             }
             // AN6: annotations register as nominal struct types so

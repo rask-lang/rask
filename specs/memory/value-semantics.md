@@ -117,7 +117,7 @@ Use it where staying small is API: math primitives, IDs, anything callers pass a
 | **VS9: Copy is special** | Compiler-known interface that affects codegen and assignment semantics |
 | **VS10: Unique overrides** | `@unique` overrides structural satisfaction |
 | **VS11: Array repeat copies** | `[x; n]` puts a copy of `x` in every slot, so `x`'s type must be Copy. A value that moves would have n owners; build such elements one at a time (a loop pushing into a `Vec`). The length is part of the array's type, so `n` is a literal or a module `const` (E0984) |
-| **VS12: A value is at most 4 GiB** | A size is a 32-bit count. An array type or an `[x; n]` over that is a compile error; that many elements belong in a `Vec` |
+| **VS12: A value is at most 4 GiB** | A size is a 32-bit count. A type over that is a compile error (E0980): an array, or a struct, tuple or enum whose parts add up past it. Large parts belong on the heap, in a `Vec` or a `Heap` |
 
 <!-- test: skip -->
 ```rask
@@ -221,6 +221,7 @@ FIX: shrink the type (id: u32 fits in 16), or remove @small and let Point
 | `[row; 3]` where `Row` holds a `Vec` | VS11 | Error: the three slots would share one buffer |
 | `[t; n]` with an unbounded type parameter `T` | VS11 | Error in the generic body; `T: Copy` makes it legal |
 | `[0i64; 600000000]` | VS12 | Error: 4.8 GB is over the 4 GiB a value can take |
+| A struct of two `[u8; 3000000000]` fields | VS12 | Error: each fits, the struct doesn't |
 
 ---
 

@@ -1584,6 +1584,11 @@ impl TypeChecker {
                         self.ctx.add_constraint(TypeConstraint::Equal(built.clone(), base_ty, base.span));
                     }
                 }
+                // A declared struct is measured at its declaration; a generic
+                // one only has a size once its arguments are known.
+                if matches!(built, Type::Generic { .. }) {
+                    self.pending_value_sizes.push((built.clone(), expr.span));
+                }
                 built
             }
 
@@ -1624,7 +1629,9 @@ impl TypeChecker {
                 if elem_types.is_empty() {
                     Type::Unit
                 } else {
-                    Type::Tuple(elem_types)
+                    let ty = Type::Tuple(elem_types);
+                    self.pending_value_sizes.push((ty.clone(), expr.span));
+                    ty
                 }
             }
 
@@ -2702,11 +2709,9 @@ impl TypeChecker {
                     self.errors.push(TypeError::ArrayRepeatCount { comptime_param, span: count.span });
                     return Type::Error;
                 };
-                self.pending_array_sizes.push((elem_ty.clone(), len, expr.span));
-                Type::Array {
-                    elem: Box::new(elem_ty),
-                    len,
-                }
+                let ty = Type::Array { elem: Box::new(elem_ty), len };
+                self.pending_value_sizes.push((ty.clone(), expr.span));
+                ty
             }
 
 
@@ -6981,17 +6986,19 @@ impl TypeChecker {
     /// A range counts: its bounds are numbers or chars. `"a".."z"` was a
     /// `Range<string>` that native walked as nothing and the interpreter
     /// refused at run time.
-    /// VS12: an array repeat over the 4 GiB a value can take. Sized here
-    /// rather than where it's checked: the element is usually a literal whose
-    /// type the defaults only just settled (`[0; N]`).
-    pub(super) fn validate_pending_array_sizes(&mut self) {
-        for (elem, len, span) in std::mem::take(&mut self.pending_array_sizes) {
-            let elem = self.ctx.apply(&elem);
-            if let Some(bytes) = self.types.array_bytes(&elem, len) {
-                if bytes > u64::from(u32::MAX) {
-                    let ty = Type::Array { elem: Box::new(elem), len };
-                    self.errors.push(TypeError::ArrayTooLarge { ty, bytes, span });
-                }
+    /// VS12: a value over the 4 GiB a value can take. Sized here rather than
+    /// where it's checked: an element is usually a literal whose type the
+    /// defaults only just settled (`[0; N]`). Each type is reported once, at
+    /// its declaration when it has one.
+    pub(super) fn validate_pending_value_sizes(&mut self) {
+        let mut seen = std::collections::HashSet::new();
+        for (ty, span) in std::mem::take(&mut self.pending_value_sizes) {
+            let ty = self.ctx.apply(&ty);
+            if !seen.insert(ty.clone()) {
+                continue;
+            }
+            if let Some(bytes) = self.types.too_large(&ty) {
+                self.errors.push(TypeError::ValueTooLarge { ty, bytes, span });
             }
         }
     }

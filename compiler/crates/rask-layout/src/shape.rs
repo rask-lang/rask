@@ -74,7 +74,7 @@ pub fn tuple_layout(parts: impl IntoIterator<Item = (u32, u32)>) -> (Vec<u32>, u
         max_align = max_align.max(align);
         offset = align_up(offset, align);
         offsets.push(offset);
-        offset += size;
+        offset = offset.saturating_add(size);
     }
     (offsets, align_up(offset, max_align), max_align)
 }
@@ -82,7 +82,8 @@ pub fn tuple_layout(parts: impl IntoIterator<Item = (u32, u32)>) -> (Vec<u32>, u
 /// `[T; len]`: the elements back to back, so the stride is the element's size.
 ///
 /// Sizes are `u32`, so a value tops out at 4 GiB. An array over that comes
-/// back as `u32::MAX`: the checker reports it (E0980), and the passes that
+/// back as `u32::MAX`, as does a struct, tuple or enum whose parts add up past
+/// it: the checker reports it (E0980), and the passes that
 /// still run on a program with errors, to find more of them, ask its layout
 /// too. `[0; 3000000000]` panicked the compiler in the ownership check's copy
 /// verdict when this panicked instead.
@@ -106,8 +107,14 @@ pub fn widest(parts: impl IntoIterator<Item = (u32, u32)>) -> (u32, u32) {
     parts.into_iter().fold((0, 1), |(size, align), (s, a)| (size.max(s), align.max(a)))
 }
 
+/// Rounds `val` up to a multiple of `align`. A size past `u32::MAX` stays
+/// there, the mark the checker reports as too large (E0980): wrapped, two
+/// 3 GB arrays in a struct came out 1.7 GB and the compiler hung (#2061).
 pub(crate) fn align_up(val: u32, align: u32) -> u32 {
-    (val + align - 1) & !(align - 1)
+    match val.checked_add(align - 1) {
+        Some(v) => v & !(align - 1),
+        None => u32::MAX,
+    }
 }
 
 /// Size and alignment of `ty` for this target.

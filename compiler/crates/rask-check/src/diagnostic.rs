@@ -3335,12 +3335,18 @@ impl ToDiagnostic for crate::TypeError {
                         .with_help("for a count known only at run time, push the elements into a `Vec`"),
                 }
             }
-            ArrayTooLarge { ty, bytes, span } => {
-                Diagnostic::error(format!("`{}` is too large for a value", ty))
+            ValueTooLarge { ty, bytes, span } => {
+                let d = Diagnostic::error(format!("`{}` is too large for a value", ty))
                     .with_code("E0980")
-                    .with_primary(*span, format!("{} bytes", bytes))
-                    .with_why("a value's size is a 32-bit count, so one value holds at most 4 GiB")
-                    .with_help("keep this many elements in a `Vec`, which holds them on the heap")
+                    .with_why("a value's size is a 32-bit count, so one value holds at most 4 GiB");
+                match bytes {
+                    Some(bytes) => d
+                        .with_primary(*span, format!("{} bytes", bytes))
+                        .with_help("keep this many elements in a `Vec`, which holds them on the heap"),
+                    None => d
+                        .with_primary(*span, "its parts add up to over 4 GiB")
+                        .with_help("keep the large parts on the heap, in a `Vec` or a `Heap`"),
+                }
             }
             IntLiteralOutOfRange { literal, ty, min, max, span } => {
                 let label = format!("`{}` doesn't fit in `{}`", literal, ty);

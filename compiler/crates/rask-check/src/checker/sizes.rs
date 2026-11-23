@@ -47,6 +47,55 @@ impl crate::TypeTable {
         Some(u64::from(size).saturating_mul(len as u64))
     }
 
+    /// VS12: whether `ty` is over the 4 GiB a value can take. `Some(Some(bytes))`
+    /// for an array, whose size is exact; `Some(None)` for a struct, tuple,
+    /// enum or union whose parts add up past it, which layout holds at
+    /// `u32::MAX`. A type with a part already over is left to that part's
+    /// report, so two 3 GB arrays in a struct are one error, at the struct.
+    pub(crate) fn too_large(&self, ty: &Type) -> Option<Option<u64>> {
+        if let Type::Array { elem, len } = ty {
+            let bytes = self.array_bytes(elem, *len)?;
+            return (bytes > u64::from(u32::MAX) && !self.at_cap(elem)).then_some(Some(bytes));
+        }
+        if !self.at_cap(ty) {
+            return None;
+        }
+        let part_sizes: Vec<u32> = match ty {
+            Type::Tuple(elems) => elems.iter().filter_map(|e| self.size_align(e, &rask_layout::no_params)).map(|(s, _)| s).collect(),
+            Type::Named(_) | Type::Generic { .. } => {
+                let (id, args) = match ty {
+                    Type::Named(id) => (*id, Vec::new()),
+                    Type::Generic { base, args } => (*base, type_args_of(args)),
+                    _ => unreachable!(),
+                };
+                match self.get(id) {
+                    Some(TypeDef::Struct { .. }) => {
+                        self.struct_layout(id, &args)?.fields.iter().map(|f| f.size).collect()
+                    }
+                    Some(TypeDef::Enum { .. }) => self
+                        .enum_layout(id, &args)?
+                        .variants
+                        .iter()
+                        .flat_map(|v| v.fields.iter().map(|f| f.size))
+                        .collect(),
+                    Some(TypeDef::Union { fields, .. }) => fields
+                        .iter()
+                        .filter_map(|(_, f)| self.size_align(f, &rask_layout::no_params))
+                        .map(|(s, _)| s)
+                        .collect(),
+                    _ => Vec::new(),
+                }
+            }
+            _ => Vec::new(),
+        };
+        (!part_sizes.contains(&u32::MAX)).then_some(None)
+    }
+
+    /// Whether layout held `ty`'s size at the 4 GiB cap.
+    fn at_cap(&self, ty: &Type) -> bool {
+        self.size_align(ty, &rask_layout::no_params).is_some_and(|(size, _)| size == u32::MAX)
+    }
+
     /// `size_align` for the copy rule, which has to answer inside a generic
     /// body too: a type parameter counts as a word there.
     ///

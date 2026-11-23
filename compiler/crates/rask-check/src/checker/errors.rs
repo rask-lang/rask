@@ -1615,10 +1615,11 @@ pub enum TypeError {
         span: Span,
     },
 
-    #[error("`{ty}` is {bytes} bytes, over the 4 GiB a value can take")]
-    ArrayTooLarge {
+    #[error("`{ty}` is over the 4 GiB a value can take")]
+    ValueTooLarge {
         ty: Type,
-        bytes: u64,
+        /// The exact size, for an array; layout holds anything else at the cap.
+        bytes: Option<u64>,
         span: Span,
     },
 
@@ -1938,7 +1939,7 @@ impl TypeError {
             TypeError::TypeArgCount { name, params, expected, found, site, .. } => {
                 TypeError::TypeArgCount { name, params, expected, found, site, span }
             }
-            TypeError::ArrayTooLarge { ty, bytes, .. } => TypeError::ArrayTooLarge { ty, bytes, span },
+            TypeError::ValueTooLarge { ty, bytes, .. } => TypeError::ValueTooLarge { ty, bytes, span },
             other => other,
         }
     }
@@ -1963,7 +1964,7 @@ impl TypeError {
             | ErrorInterfaceMissing { ty, .. }
             | InfiniteType { ty, .. }
             | IntLiteralOutOfRange { ty, .. }
-            | ArrayTooLarge { ty, .. }
+            | ValueTooLarge { ty, .. }
             | NoSuchField { ty, .. }
             | NoSuchMethod { ty, .. }
             | NotCallable { ty, .. }
