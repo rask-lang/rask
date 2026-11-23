@@ -57,3 +57,48 @@ test "a method returns any of an interface declared below" {
     let s = make(4)
     assert s.label().text() == "square-with-a-long-enough-label-4"
 }
+
+// The box a vtable call hands back is the caller's to free. Only a box built
+// in this frame or returned by a named function was, so every `s.label()`
+// on an `any Shape` leaked the label.
+struct Refused { why: string }
+
+extend Refused {
+    func message(self) -> string {
+        return self.why
+    }
+}
+
+interface Maker {
+    func make(self, n: i64) -> any Label or Refused
+}
+
+struct Tagger { prefix: string }
+
+Tagger implements Maker {
+    func make(self, n: i64) -> any Label or Refused {
+        if n < 0 {
+            return Refused(why: "negative-and-long-enough-to-be-on-the-heap")
+        }
+        return Tag(name: "{self.prefix}-{n}-padded-past-the-inline-length")
+    }
+}
+
+func tagger() -> any Maker {
+    return Tagger(prefix: "t")
+}
+
+test "a label a vtable call handed back is freed" {
+    let s = make(5)
+    for i in 0..3 {
+        let l = s.label()
+        assert l.text().len() > 0
+    }
+}
+
+test "a boxed label behind a vtable call's error side" {
+    let m = tagger()
+    let l = try m.make(2)
+    assert l.text() == "t-2-padded-past-the-inline-length"
+    assert m.make(-1) is Refused
+}

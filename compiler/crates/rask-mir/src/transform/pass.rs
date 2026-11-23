@@ -44,6 +44,8 @@ pub struct PassContext {
     /// function's name. Lowering made them from the const declarations, so
     /// it says which they are; `const_free` reads them.
     pub const_init_thunks: HashSet<String>,
+    /// What each vtable slot calls, from monomorphization's vtables.
+    pub vtable_bodies: crate::vtable_layout::VtableBodies,
 }
 
 /// Convenience alias.
@@ -89,20 +91,12 @@ impl PassManager {
     /// prints after every pass. Restrict to one function with
     /// `RASK_DUMP_FN=<function name>`.
     pub fn run(&self, fns: &mut Vec<MirFunction>) -> PipelineResult {
-        self.run_with(fns, rask_ast::Target::default(), HashSet::new(), crate::CopyLayouts::default(), HashSet::new())
+        self.run_with(fns, PassContext::default())
     }
 
-    /// `run`, told which struct layouts hold a rack and which functions are
-    /// const init thunks.
-    pub fn run_with(
-        &self,
-        fns: &mut Vec<MirFunction>,
-        target: rask_ast::Target,
-        rack_holders: HashSet<u32>,
-        copy_layouts: crate::CopyLayouts,
-        const_init_thunks: HashSet<String>,
-    ) -> PipelineResult {
-        let mut ctx = PassContext { target, rack_holders, copy_layouts, const_init_thunks, ..PassContext::default() };
+    /// `run`, starting from what the caller knows about the program: the
+    /// target, rack-holding layouts, const init thunks, vtables.
+    pub fn run_with(&self, fns: &mut Vec<MirFunction>, mut ctx: PassContext) -> PipelineResult {
         let dump_after = std::env::var("RASK_DUMP_PASS").ok();
         let dump_fn = std::env::var("RASK_DUMP_FN").ok();
         for pass in &self.passes {
@@ -258,8 +252,8 @@ pub struct InterfaceDropInsertionPass;
 
 impl MirPass for InterfaceDropInsertionPass {
     fn name(&self) -> &str { "interface_drop_insertion" }
-    fn run(&self, fns: &mut Vec<MirFunction>, _ctx: &mut PassContext) {
-        crate::insert_interface_drops(fns);
+    fn run(&self, fns: &mut Vec<MirFunction>, ctx: &mut PassContext) {
+        crate::insert_interface_drops(fns, &ctx.vtable_bodies);
     }
 }
 

@@ -170,12 +170,22 @@ pub fn lower(input: &BackEnd, entry: &Entry) -> Result<Lowered, Vec<String>> {
         .keys()
         .map(|name| rask_mir::lower::const_init_fn_name(name))
         .collect();
+    let mut vtable_bodies = rask_mir::vtable_layout::VtableBodies::default();
+    for ((_, interface), vtable) in &input.mono.vtables {
+        for slot in &vtable.slots {
+            vtable_bodies.insert(interface, &slot.method, slot.symbol.clone());
+        }
+    }
     let pipeline = rask_mir::PassManager::default_pipeline().run_with(
         &mut functions,
-        target,
-        rack_holders,
-        copy_layouts,
-        const_init_thunks,
+        rask_mir::transform::pass::PassContext {
+            target,
+            rack_holders,
+            copy_layouts,
+            const_init_thunks,
+            vtable_bodies,
+            ..Default::default()
+        },
     );
 
     for func in &mut functions {

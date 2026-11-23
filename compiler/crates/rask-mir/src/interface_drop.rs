@@ -50,13 +50,14 @@
 
 use std::collections::{HashMap, HashSet};
 
+use crate::vtable_layout::VtableBodies;
 use crate::{
     BlockId, LocalId, MirFunction, MirOperand, MirRValue, MirStmt, MirStmtKind,
     MirTerminatorKind, MirType,
 };
 
 /// Insert `InterfaceDrop` for every non-escaping interface-object local, across all functions.
-pub fn insert_interface_drops(fns: &mut [MirFunction]) {
+pub fn insert_interface_drops(fns: &mut [MirFunction], vtables: &VtableBodies) {
     // Which callees keep an argument, read off their bodies — the same map the
     // closure pass uses, and for the same reason. Passing a box to a function
     // used to count as handing it over, so `io.copy(src, dst)` left both
@@ -74,10 +75,10 @@ pub fn insert_interface_drops(fns: &mut [MirFunction]) {
     // returns it, and the caller read the box out of the wrapper and dropped
     // nothing — a boxed error leaked on every failing call, which is every
     // `or Error` in the language.
-    let hands_back = functions_handing_back_a_interface_box(fns);
+    let hands_back = functions_handing_back_a_interface_box(fns, vtables);
     let targets = crate::closure_targets::ClosureTargets::build(fns);
     for func in fns.iter_mut() {
-        insert_for_function(func, &callee_escapes, &hands_back, &targets);
+        insert_for_function(func, &callee_escapes, &hands_back, &targets, vtables);
     }
 }
 
@@ -85,7 +86,7 @@ pub fn insert_interface_drops(fns: &mut [MirFunction]) {
 ///
 /// A fixed point, because handing one back is transitive: a wrapper that just
 /// forwards what it called joins the set on a later pass.
-fn functions_handing_back_a_interface_box(fns: &[MirFunction]) -> HashSet<String> {
+fn functions_handing_back_a_interface_box(fns: &[MirFunction], vtables: &VtableBodies) -> HashSet<String> {
     let targets = crate::closure_targets::ClosureTargets::build(fns);
     let mut names: HashSet<String> = HashSet::new();
     loop {
@@ -100,7 +101,7 @@ fn functions_handing_back_a_interface_box(fns: &[MirFunction]) -> HashSet<String
             // *name* holds it is the same question the caller's side asks, so
             // ask it the same way: an interface-object destination is the box, and
             // a wrapper destination holds it in its payload.
-            fresh.extend(boxes_handed_over(func, &names, &targets));
+            fresh.extend(boxes_handed_over(func, &names, &targets, vtables));
             fresh.extend(boxes_parked_in_a_wrapper(func, &fresh));
             if fresh.is_empty() {
                 continue;
@@ -361,6 +362,7 @@ fn boxes_handed_over(
     func: &MirFunction,
     hands_back: &HashSet<String>,
     targets: &crate::closure_targets::ClosureTargets,
+    vtables: &VtableBodies,
 ) -> HashSet<LocalId> {
     let ty_of = local_types(func);
     let mut out: HashSet<LocalId> = HashSet::new();
@@ -379,6 +381,19 @@ fn boxes_handed_over(
                 targets
                     .known(&func.name, *closure)
                     .is_some_and(|bodies| bodies.iter().all(|b| hands_back.contains(b))),
+            ),
+            // A call through a vtable counts when every body it may land in
+            // hands one back. `s.label()` on an `any Shape` whose `label`
+            // returns `any Label` built a fresh box in the method, and the
+            // caller dropped nothing: it leaked on every call.
+            MirStmtKind::InterfaceCall { dst: Some(dst), interface_object, method_name, .. } => (
+                dst,
+                match ty_of.get(interface_object) {
+                    Some(MirType::InterfaceObject { interface_name }) => vtables
+                        .bodies(interface_name, method_name)
+                        .is_some_and(|bodies| bodies.iter().all(|b| hands_back.contains(b))),
+                    _ => false,
+                },
             ),
             _ => continue,
         };
@@ -402,9 +417,10 @@ fn insert_for_function(
     callee_escapes: &HashMap<String, Vec<bool>>,
     hands_back: &HashSet<String>,
     targets: &crate::closure_targets::ClosureTargets,
+    vtables: &VtableBodies,
 ) {
     let mut interface_locals = collect_fresh_interface_locals(func);
-    interface_locals.extend(boxes_handed_over(func, hands_back, targets));
+    interface_locals.extend(boxes_handed_over(func, hands_back, targets, vtables));
     if interface_locals.is_empty() {
         return;
     }
@@ -438,7 +454,7 @@ fn insert_for_function(
             made.insert(*dst);
         }
     }
-    made.extend(boxes_handed_over(func, hands_back, targets));
+    made.extend(boxes_handed_over(func, hands_back, targets, vtables));
     made.extend(boxes_parked_in_a_wrapper(func, &interface_locals));
 
     let facts = box_facts(func, &interface_locals, &made, callee_escapes);
@@ -860,7 +876,7 @@ mod tests {
                 terminator: MirTerminator::dummy(MirTerminatorKind::Return { value: None }),
             }],
         );
-        insert_interface_drops(std::slice::from_mut(&mut f));
+        insert_interface_drops(std::slice::from_mut(&mut f), &VtableBodies::default());
         assert!(has_interface_drop(&f.blocks[0].statements, local(0)));
     }
 
@@ -883,7 +899,7 @@ mod tests {
                 terminator: MirTerminator::dummy(MirTerminatorKind::Return { value: None }),
             }],
         );
-        insert_interface_drops(std::slice::from_mut(&mut f));
+        insert_interface_drops(std::slice::from_mut(&mut f), &VtableBodies::default());
         assert_eq!(drops_of(&f.blocks[0].statements, &[local(0), local(1)]), 1, "one drop, under either name");
     }
 
@@ -899,7 +915,7 @@ mod tests {
                 }),
             }],
         );
-        insert_interface_drops(std::slice::from_mut(&mut f));
+        insert_interface_drops(std::slice::from_mut(&mut f), &VtableBodies::default());
         assert!(!has_interface_drop(&f.blocks[0].statements, local(0)));
     }
 
@@ -922,7 +938,7 @@ mod tests {
                 terminator: MirTerminator::dummy(MirTerminatorKind::Return { value: None }),
             }],
         );
-        insert_interface_drops(std::slice::from_mut(&mut f));
+        insert_interface_drops(std::slice::from_mut(&mut f), &VtableBodies::default());
         assert!(!has_interface_drop(&f.blocks[0].statements, local(0)));
     }
 
@@ -943,7 +959,7 @@ mod tests {
                 terminator: MirTerminator::dummy(MirTerminatorKind::Return { value: None }),
             }],
         );
-        insert_interface_drops(std::slice::from_mut(&mut f));
+        insert_interface_drops(std::slice::from_mut(&mut f), &VtableBodies::default());
         assert!(!has_interface_drop(&f.blocks[0].statements, local(0)));
     }
 
@@ -989,7 +1005,7 @@ mod tests {
                 },
             ],
         );
-        insert_interface_drops(std::slice::from_mut(&mut f));
+        insert_interface_drops(std::slice::from_mut(&mut f), &VtableBodies::default());
         assert_eq!(drops_of(&f.blocks[2].statements, &[local(0), local(1)]), 1, "back-edge block should drop the loop-local interface object once");
         assert_eq!(drops_of(&f.blocks[3].statements, &[local(0), local(1)]), 0, "and the exit nothing more");
     }
@@ -1039,7 +1055,7 @@ mod tests {
                 },
             ],
         );
-        insert_interface_drops(std::slice::from_mut(&mut f));
+        insert_interface_drops(std::slice::from_mut(&mut f), &VtableBodies::default());
         let all: Vec<MirStmt> = f.blocks.iter().flat_map(|b| b.statements.clone()).collect();
         assert_eq!(drops_of(&all, &[local(0), local(1)]), 1, "one drop in all, not a second at a branch mistaken for a back edge");
     }
@@ -1085,7 +1101,7 @@ mod tests {
                 terminator: MirTerminator::dummy(MirTerminatorKind::Return { value: None }),
             }],
         );
-        insert_interface_drops(std::slice::from_mut(&mut f));
+        insert_interface_drops(std::slice::from_mut(&mut f), &VtableBodies::default());
         assert!(!has_interface_drop(&f.blocks[0].statements, local(0)), "a field read is a borrow, not a fresh allocation");
         assert!(!has_interface_drop(&f.blocks[0].statements, local(1)), "same here — this pass must not touch the struct's own field");
     }
