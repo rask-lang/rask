@@ -1721,7 +1721,7 @@ fn insert_aggregate_release(
     // the struct skips it. In front of the hand-over, and in front of a
     // release at the same spot.
     let mut clears: HashMap<usize, Vec<(usize, MirStmt)>> = HashMap::new();
-    for (bi, si, name, holders) in &plan.moved_out {
+    for (bi, si, name, holders, guard) in &plan.moved_out {
         let Some((root, offset)) = slot_parts.get(name) else { continue };
         let block = &func.blocks[*bi];
         let span = block.statements.get(*si).map(|s| s.span).unwrap_or(block.terminator.span);
@@ -1730,9 +1730,9 @@ fn insert_aggregate_release(
         if !copies.contains(root) {
             copies.push(*root);
         }
-        for addr in copies {
-            clears.entry(*bi).or_default().push((
-                shifted.at(*bi, *si),
+        let empty: Vec<MirStmt> = copies
+            .into_iter()
+            .map(|addr| {
                 MirStmt::new(
                     MirStmtKind::Store {
                         addr,
@@ -1742,8 +1742,11 @@ fn insert_aggregate_release(
                         field: None,
                     },
                     span,
-                ),
-            ));
+                )
+            })
+            .collect();
+        for stmt in guards.wrap(*guard, empty) {
+            clears.entry(*bi).or_default().push((shifted.at(*bi, *si), stmt));
         }
     }
     let mut on_edges: Vec<(BlockId, BlockId, Vec<MirStmt>)> = Vec::new();
@@ -1860,6 +1863,27 @@ fn struct_field_parts(
             out.insert(*dst, (*root, *offset));
         }
     }
+    // A phi, or a name written more than once, is a join: an inlined
+    // callee's result, or an `if` that gives the field on one branch and
+    // something else on the other. It stands for the field when every copy
+    // into it that is a field is that one field; the planner says on which
+    // paths it holds it.
+    let mut join_copies: HashMap<LocalId, Vec<LocalId>> = HashMap::new();
+    for stmt in func.blocks.iter().flat_map(|b| b.statements.iter()) {
+        match &stmt.kind {
+            MirStmtKind::Assign { dst, rvalue: MirRValue::Use(MirOperand::Local(src)) } if !once(dst) => {
+                join_copies.entry(*dst).or_default().push(*src);
+            }
+            MirStmtKind::Phi { dst, args } => {
+                let srcs = args.iter().filter_map(|(_, a)| match a {
+                    MirOperand::Local(l) => Some(*l),
+                    _ => None,
+                });
+                join_copies.entry(*dst).or_default().extend(srcs);
+            }
+            _ => {}
+        }
+    }
     // A copy of one is the same field.
     loop {
         let mut grew = false;
@@ -1869,6 +1893,16 @@ fn struct_field_parts(
                     out.insert(*dst, part);
                     grew = true;
                 }
+            }
+        }
+        for (dst, srcs) in &join_copies {
+            if out.contains_key(dst) {
+                continue;
+            }
+            let parts: HashSet<(LocalId, u32)> = srcs.iter().filter_map(|s| out.get(s).copied()).collect();
+            if parts.len() == 1 {
+                out.insert(*dst, *parts.iter().next().unwrap());
+                grew = true;
             }
         }
         if !grew {

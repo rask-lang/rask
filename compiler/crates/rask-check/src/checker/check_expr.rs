@@ -8218,17 +8218,32 @@ impl TypeChecker {
     /// Each arm used to be made equal to the others before anything knew the
     /// target, so `none` and `5` never met in the middle (#1692).
     pub(super) fn join_arms(&mut self, arms: Vec<(Type, rask_ast::NodeId)>, span: Span) -> Type {
-        let Some((first, _)) = arms.first().cloned() else {
+        if arms.is_empty() {
             return self.ctx.fresh_var();
-        };
+        }
         let optional_arm = arms
             .iter()
             .position(|(ty, _)| self.ctx.apply(ty).as_option().is_some());
         let Some(target_at) = optional_arm else {
-            for (ty, _) in arms.into_iter().skip(1) {
-                self.ctx.add_constraint(TypeConstraint::Equal(first.clone(), ty, span));
+            // An arm that already is an `any Interface` is what the others
+            // join into, and each of them is boxed once its type settles.
+            // `if c { h.label } else { Tag(…) }` took the first arm's type
+            // and boxed neither, so the `else` value was a bare struct where
+            // the box goes, and the first call through it read a vtable out
+            // of the struct.
+            let target_at = arms
+                .iter()
+                .position(|(ty, _)| matches!(self.ctx.apply(ty), Type::InterfaceObject { .. }))
+                .unwrap_or(0);
+            let target = arms[target_at].0.clone();
+            for (i, (ty, node)) in arms.into_iter().enumerate() {
+                if i == target_at {
+                    continue;
+                }
+                self.pending_interface_coercions.push((node, target.clone(), ty.clone()));
+                self.ctx.add_constraint(TypeConstraint::Equal(target.clone(), ty, span));
             }
-            return first;
+            return target;
         };
         let target = arms[target_at].0.clone();
         for (i, (ty, node)) in arms.into_iter().enumerate() {

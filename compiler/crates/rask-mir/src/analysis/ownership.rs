@@ -816,7 +816,11 @@ fn written_through(st: &mut State, n: LocalId) {
 /// the frame owns it outright here. Only then is it the field that leaves:
 /// where the struct is ours only under a flag, or may be somebody else's, the
 /// pass has no single place to empty the slot, and the whole goes with it.
-fn field_taken_from(st: &State, moved: &BTreeSet<LocalId>, n: LocalId) -> Option<Value> {
+/// The struct value `n` takes a field out of, and the flag it is ours under
+/// when it is ours on only some paths. A join only narrows a name to one
+/// part of a flagged value when it holds that part wherever the flag is set
+/// (`join`), so the field leaves under the same flag.
+fn field_taken_from(st: &State, moved: &BTreeSet<LocalId>, n: LocalId) -> Option<(Value, Option<GuardKey>)> {
     if !moved.contains(&n) {
         return None;
     }
@@ -824,7 +828,7 @@ fn field_taken_from(st: &State, moved: &BTreeSet<LocalId>, n: LocalId) -> Option
     let Some(Bind::Part(v)) = (held.len() == 1).then(|| *held.iter().next().unwrap()) else {
         return None;
     };
-    (st.owned(v) && !st.guard.contains_key(&v)).then_some(v)
+    st.owned(v).then(|| (v, st.guard.get(&v).copied()))
 }
 
 fn hand_over(st: &mut State, moved: &BTreeSet<LocalId>, n: LocalId) {
@@ -1300,13 +1304,18 @@ pub struct Plan {
     /// The drop flags `releases` and `unwind` name by index.
     pub guards: Vec<Guard>,
     /// Hand-overs of a `Facts::moved_parts` name that took a field out of a
-    /// struct the frame owns: `(block, statement, name, holders)`, by index.
+    /// struct the frame owns (`MovedOut`), by index.
     /// The statement index is the block's length for the terminator. The
     /// holders are every name that holds the struct's bytes there: copies of an
     /// aggregate are copies of its bytes, so the field is emptied in each, and
     /// whichever one the struct is released under later skips it.
-    pub moved_out: Vec<(usize, usize, LocalId, Vec<LocalId>)>,
+    pub moved_out: Vec<MovedOut>,
 }
+
+/// `(block, statement, name, holders, guard)`: see `Plan::moved_out`. The
+/// guard is the flag the struct is ours under, when it is ours on only some
+/// of the paths there.
+pub type MovedOut = (usize, usize, LocalId, Vec<LocalId>, Option<usize>);
 
 /// Where each value this frame owns is released, and under which name.
 pub fn plan(func: &MirFunction, facts: &Facts, placement: Placement) -> Plan {
@@ -1429,12 +1438,12 @@ pub fn plan(func: &MirFunction, facts: &Facts, placement: Placement) -> Plan {
         eprintln!("flags {:?}", defs);
     }
     let unwind = unwind_marks(func, facts, &sh, &live, &entries, &exits, &kills, &mut flags);
-    let guards = flags.guards(func, &defs);
     let moved_out = if facts.moved_parts.is_empty() {
         Vec::new()
     } else {
-        fields_moved_out(func, facts, &live, &entries, &kills)
+        fields_moved_out(func, facts, &live, &entries, &kills, &mut flags)
     };
+    let guards = flags.guards(func, &defs);
     Plan { releases: out, unwind, guards, moved_out }
 }
 
@@ -1446,8 +1455,9 @@ fn fields_moved_out(
     live: &Live,
     entries: &[Option<State>],
     kills: &Kills,
-) -> Vec<(usize, usize, LocalId, Vec<LocalId>)> {
-    let note = |st: &State, events: &[Event], bi: usize, si: usize, out: &mut Vec<(usize, usize, LocalId, Vec<LocalId>)>| {
+    flags: &mut FlagIndex,
+) -> Vec<MovedOut> {
+    let mut note = |st: &State, events: &[Event], bi: usize, si: usize, out: &mut Vec<MovedOut>| {
         for ev in events {
             let names: Vec<LocalId> = match ev {
                 Event::HandOver(n) => vec![*n],
@@ -1455,9 +1465,9 @@ fn fields_moved_out(
                 _ => continue,
             };
             for n in names {
-                let Some(v) = field_taken_from(st, &facts.moved_parts, n) else { continue };
-                if !out.iter().any(|(b, s, m, _)| (*b, *s, *m) == (bi, si, n)) {
-                    out.push((bi, si, n, st.holders(v)));
+                let Some((v, g)) = field_taken_from(st, &facts.moved_parts, n) else { continue };
+                if !out.iter().any(|(b, s, m, _, _)| (*b, *s, *m) == (bi, si, n)) {
+                    out.push((bi, si, n, st.holders(v), flags.of(g)));
                 }
             }
         }
