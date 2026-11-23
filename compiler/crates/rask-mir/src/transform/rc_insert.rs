@@ -2167,12 +2167,14 @@ fn retain_params_handed_over(
     }
 }
 
-/// Does `stmt` pass `local` to a call at a parameter the callee keeps?
-fn handed_to_a_keeper(stmt: &MirStmt, local: LocalId, own: &HashSet<String>) -> bool {
-    let MirStmtKind::Call { func: fref, args, .. } = &stmt.kind else { return false };
-    args.iter().enumerate().any(|(i, arg)| {
-        uses::operand_local(arg) == Some(local) && crate::own_names::keeps_argument(fref, i, own)
-    })
+/// How many of `stmt`'s arguments pass `local` to a parameter the callee
+/// keeps. `m.insert(x, x)` is two: the map holds two references.
+fn keeper_slots(stmt: &MirStmt, local: LocalId, own: &HashSet<String>) -> usize {
+    let MirStmtKind::Call { func: fref, args, .. } = &stmt.kind else { return 0 };
+    args.iter()
+        .enumerate()
+        .filter(|(i, arg)| uses::operand_local(arg) == Some(local) && crate::own_names::keeps_argument(fref, *i, own))
+        .count()
 }
 
 /// Take a reference before giving a string this frame owns to a call that
@@ -2182,7 +2184,9 @@ fn handed_to_a_keeper(stmt: &MirStmt, local: LocalId, own: &HashSet<String>) -> 
 /// at the string's last use and is why `insert_rc_dec` releases nothing there.
 /// Anywhere earlier, the frame still needs its own: `v.push(s)` in a loop, or
 /// `v.push(s)` then `println(s)`, gave the vector copies of one reference and
-/// the second free read a dead buffer (#1341).
+/// the second free read a dead buffer (#1341). The frame's reference covers
+/// one slot, so a call that keeps the string twice (`m.insert(x, x)`) takes
+/// one more for each further slot (#2029).
 fn retain_locals_handed_over_while_live(
     func: &mut MirFunction,
     string_locals: &[LocalId],
@@ -2202,11 +2206,16 @@ fn retain_locals_handed_over_while_live(
         for (si, stmt) in block.statements.iter().enumerate() {
             let MirStmtKind::Call { .. } = &stmt.kind else { continue };
             for &local in &strings {
-                if !handed_to_a_keeper(stmt, local, own) {
+                let slots = keeper_slots(stmt, local, own);
+                if slots == 0 {
                     continue;
                 }
+                let retain = MirStmt::new(MirStmtKind::RcInc { local }, stmt.span);
+                for _ in 1..slots {
+                    insertions.push((si, retain.clone()));
+                }
                 if views.contains(&local) {
-                    insertions.push((si, MirStmt::new(MirStmtKind::RcInc { local }, stmt.span)));
+                    insertions.push((si, retain));
                     continue;
                 }
                 let mut used_after = None;
@@ -2225,7 +2234,7 @@ fn retain_locals_handed_over_while_live(
                         || live.live_at_exit(block.id, local)
                 });
                 if used_after {
-                    insertions.push((si, MirStmt::new(MirStmtKind::RcInc { local }, stmt.span)));
+                    insertions.push((si, retain));
                 }
             }
         }
@@ -2450,7 +2459,7 @@ fn overwritten_places(
                 match (last_read, start) {
                     (Some(i), _) => {
                         let stmt = &block.statements[i];
-                        if handed_to_a_keeper(stmt, local, own) {
+                        if keeper_slots(stmt, local, own) > 0 {
                             // Its last use gave the reference away.
                         } else {
                             out.push((bi, after_increments(block, i + 1), local));
@@ -2523,7 +2532,7 @@ fn dies_in_block(
             //
             // The last use gives the reference to a call that keeps it, so
             // there is nothing left here to release.
-            if handed_to_a_keeper(stmt, local, own) {
+            if keeper_slots(stmt, local, own) > 0 {
                 return None;
             }
             return Some(after_increments(block, si + 1));
