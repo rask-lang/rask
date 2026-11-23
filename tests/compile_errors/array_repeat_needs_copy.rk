@@ -3,7 +3,11 @@
 //
 // `[row("a", 2); 3]` compiled and put the same `Row` in all three slots, so
 // the array's release freed its one `tags` buffer three times and native
-// segfaulted (#2050). Copy values still repeat.
+// segfaulted (#2050). A `Shared` is a counted reference, and copying it into
+// slots takes no references, so it doesn't repeat either, nor pass a `T: Copy`
+// bound. Copy values still repeat.
+
+import sync.Shared
 
 struct Row { public name: string, public tags: Vec<i64> }
 
@@ -30,5 +34,11 @@ func main() {
     let zeros = [0i64; 4]
     let names = ["x"; 3]
     let pairs = fill_copy((1, 2))
+    let sh = Shared.new(1)
+    // ERROR: `Shared<i64, Readers>` isn't Copy [E0979]
+    let boxes = [sh; 2]
+    // ERROR: `Shared<i64, Readers>` isn't Copy [E0333]
+    let more = fill_copy(Shared.new(2))
+    println("{boxes.len()} {more.len()}")
     println("{v.len()} {zeros.len()} {names.len()} {pairs.len()}")
 }

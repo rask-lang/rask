@@ -145,6 +145,12 @@ impl TypeTable {
         if self.is_lang(ty, rask_types::LangItem::Sequence) || self.is_lang(ty, rask_types::LangItem::SequenceMut) {
             return Move;
         }
+        // A `Shared` is a counted reference to its box: a second copy is a
+        // reference the count never took, so `[sh; 2]` released one box
+        // twice. Its declaration has no fields for the rule below to read.
+        if self.shared_args(ty).is_some() {
+            return Move;
+        }
         let verdict = |t: &Type| self.copy_verdict_for(t, is_param, param_is_copy, params_move);
         let size = || self.copy_size(ty, is_param);
         match ty {
@@ -263,8 +269,16 @@ impl TypeTable {
             Type::SimdVector { .. } => Move,
 
             // An unresolved `Link` is still a `Link`, however it was spelled.
+            // The channel ends stay unresolved by name (`Sender<T>`), and each
+            // copy of one would be a reference the count never took.
             Type::UnresolvedGeneric { name, .. } => {
-                if name.as_str() == "Link" { Copy } else { Unknown }
+                if name.as_str() == "Link" {
+                    Copy
+                } else if self.resolve_name(name).is_some_and(|id| self.is_handle(id)) {
+                    Move
+                } else {
+                    Unknown
+                }
             }
             // A type parameter is Copy where its bound says so (`T: Copy`);
             // the caller knows which names those are. Without the bound it

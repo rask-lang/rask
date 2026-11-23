@@ -689,7 +689,7 @@ impl TypeTable {
     }
 
     /// Resolve a type name from the current scope.
-    fn resolve_name(&self, name: &str) -> Option<TypeId> {
+    pub(crate) fn resolve_name(&self, name: &str) -> Option<TypeId> {
         self.primary_names()
             .get(name)
             .or_else(|| self.fallback_names().get(name))

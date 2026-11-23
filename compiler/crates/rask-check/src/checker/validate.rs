@@ -109,9 +109,16 @@ impl TypeChecker {
                 Type::UnresolvedGeneric { .. } => crate::interfaces::Collection::of(&self.types, &ty),
                 _ => None,
             };
+            // A compiler-provided generic (`Shared<T, S>`, `Sender<T>`) also
+            // stays in its written spelling, which has no methods to read but
+            // does answer `Copy`: the copy rule knows each of them. Skipped,
+            // `fill<T: Copy>(sh)` copied one counted box into two slots.
+            let copy_only = matches!(ty, Type::UnresolvedGeneric { .. })
+                && written_collection.is_none()
+                && self.types.copy_verdict_with(&ty, &rask_layout::no_params, &|_| false) == crate::CopyVerdict::Move;
             match &ty {
                 Type::Var(_) | Type::Error => continue,
-                Type::UnresolvedGeneric { .. } if written_collection.is_some() => {}
+                Type::UnresolvedGeneric { .. } if written_collection.is_some() || copy_only => {}
                 Type::UnresolvedNamed(_) | Type::UnresolvedGeneric { .. } => continue,
                 _ => {}
             }
@@ -147,6 +154,7 @@ impl TypeChecker {
                 interfaces
                     .into_iter()
                     .filter(|t| checker.names_an_interface(t))
+                    .filter(|t| !copy_only || self.types.interface_name(t) == "Copy")
                     .filter(|t| match &written_collection {
                         Some(c) => c.contract(&self.types.interface_name(t)).is_some(),
                         None => true,
