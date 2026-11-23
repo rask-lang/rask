@@ -8,6 +8,7 @@ pub mod claim_steps;
 pub mod closure_specialize;
 pub mod clone_elision;
 pub mod dce;
+pub mod dead_fns;
 pub mod inline;
 pub mod pass;
 pub mod rc_elide;

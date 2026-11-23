@@ -1,0 +1,43 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+// Flattening a sequence of sequences that `map` built over each row.
+//
+// Inlining folded `Vec.map` into main and left the function itself in place
+// with nobody calling it. Closure specialization still gave it `__for` copies
+// of the map closures, and those copies, unreachable, read as keeping the row
+// they were handed. The row-yield body the live chain runs shares the
+// `as_sequence` loop with them, so it had to agree and take each row too, and
+// `as_sequence` hands its rows over without copying them: every row was freed
+// by the chain and again by `g`. Natively that was a SIGSEGV after the output.
+
+test "rows mapped to strings, flattened into a vector" {
+    let g: Vec<Vec<i64>> = [[1, 2], [3]]
+    let all = g.map(|r| r.map(|x| "{x}")).flatten().to_vec()
+    assert all.len() == 3
+    assert all[2] == "3"
+    assert g[0].len() == 2
+}
+
+test "rows mapped to numbers, flattened into a vector" {
+    let g: Vec<Vec<i64>> = [[1, 2], [3]]
+    let all = g.map(|r| r.map(|x| x * 2)).flatten().to_vec()
+    assert all.len() == 3
+    assert all[1] == 4
+}
+
+test "rows mapped and flattened into a loop that keeps each item" {
+    let g: Vec<Vec<i64>> = [[1, 2], [3]]
+    mut out: Vec<string> = Vec.new()
+    for s in g.map(|r| r.map(|x| "{x}")).flatten() {
+        out.push(s)
+    }
+    assert out.len() == 3
+    assert out[0] == "1"
+}
+
+test "inner items the chain made may be kept" {
+    let g: Vec<Vec<i64>> = [[1, 2], [3]]
+    let got = g.map(|r| r.map(|x| [x, x])).flatten().find(|v| v[0] > 1)
+    assert got!.len() == 2
+    assert got![0] == 2
+}

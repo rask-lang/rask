@@ -117,6 +117,10 @@ pub struct Monomorphizer<'a> {
     pub too_deep: Option<Vec<String>>,
     /// Resulting instantiated functions
     pub results: Vec<MonoFunction>,
+    /// The functions something outside the program's own calls runs: the
+    /// entry, test runners, C exports, the error message main prints. Nothing
+    /// in a body names them, so they are where liveness starts.
+    pub roots: Vec<String>,
     /// The key `hash`/`eq` each map-building call needs (`note_map_key_fns`).
     pub map_key_fns: HashMap<NodeId, crate::MapKeyFns>,
     /// The field defaults each decoded struct calls (`note_decode_defaults`).
@@ -417,6 +421,7 @@ impl<'a> Monomorphizer<'a> {
             shown: HashMap::new(),
             too_deep: None,
             results: Vec::new(),
+            roots: Vec::new(),
             bound_symbols: HashMap::new(),
             map_key_fns: HashMap::new(),
             decode_defaults: HashMap::new(),
@@ -623,7 +628,7 @@ impl<'a> Monomorphizer<'a> {
         for decl in self.decls {
             let DeclKind::Fn(f) = &decl.kind else { continue };
             if !f.body.is_empty() && f.type_params.is_empty() {
-                self.enqueue(f.name.clone(), Vec::new());
+                self.enqueue_root(f.name.clone());
             }
         }
     }
@@ -632,7 +637,7 @@ impl<'a> Monomorphizer<'a> {
         for decl in self.decls {
             let DeclKind::Fn(f) = &decl.kind else { continue };
             if f.abi.as_deref() == Some("C") && !f.body.is_empty() && f.type_params.is_empty() {
-                self.enqueue(f.name.clone(), Vec::new());
+                self.enqueue_root(f.name.clone());
             }
         }
     }
@@ -646,14 +651,14 @@ impl<'a> Monomorphizer<'a> {
             .map(|(symbol, _)| symbol.clone())
             .collect();
         for symbol in entries {
-            self.enqueue(symbol, Vec::new());
+            self.enqueue_root(symbol);
         }
     }
 
     /// Seed the work queue with main()
     pub fn add_entry(&mut self, name: &str) -> bool {
         if self.fn_table.contains_key(name) {
-            self.enqueue(name.to_string(), Vec::new());
+            self.enqueue_root(name.to_string());
             self.add_entry_error_message_roots(name);
             true
         } else {
@@ -683,9 +688,14 @@ impl<'a> Monomorphizer<'a> {
                 _ => format!("{}_message", arm),
             };
             if self.method_table.contains_key(&name) {
-                self.enqueue(name, Vec::new());
+                self.enqueue_root(name);
             }
         }
+    }
+
+    fn enqueue_root(&mut self, name: String) {
+        self.roots.push(mangle_name(&name, &[], self.typed.map(|t| &t.types)));
+        self.enqueue(name, Vec::new());
     }
 
     fn map_key_fns_here(&mut self) -> &mut HashMap<NodeId, crate::MapKeyFns> {

@@ -178,6 +178,7 @@ pub fn lower(input: &BackEnd, entry: &Entry) -> Result<Lowered, Vec<String>> {
         .keys()
         .map(|name| rask_mir::lower::const_init_fn_name(name))
         .collect();
+    let outside_roots = outside_roots(&input.mono, &const_init_thunks);
     let pipeline = rask_mir::PassManager::default_pipeline().run_with(
         &mut functions,
         rask_mir::transform::pass::PassContext {
@@ -186,6 +187,7 @@ pub fn lower(input: &BackEnd, entry: &Entry) -> Result<Lowered, Vec<String>> {
             copy_layouts,
             const_init_thunks,
             vtable_bodies,
+            outside_roots,
             ..Default::default()
         },
     );
@@ -277,6 +279,26 @@ pub fn emit_lowered(
         Err(errors) => errors,
     };
     Emitted { diagnostics, errors }
+}
+
+/// The functions something other than the program's own calls runs: the
+/// entry points monomorphization started from, const init thunks, and every
+/// symbol codegen or the runtime reaches through a table rather than a call
+/// (vtable slots, handle releases, map key and codec functions).
+fn outside_roots(
+    mono: &rask_mono::MonoProgram,
+    const_init_thunks: &std::collections::HashSet<String>,
+) -> std::collections::HashSet<String> {
+    let mut roots: std::collections::HashSet<String> = mono.roots.iter().cloned().collect();
+    roots.extend(const_init_thunks.iter().cloned());
+    roots.extend(mono.vtables.values().flat_map(|vt| vt.slots.iter().map(|s| s.symbol.clone())));
+    roots.extend(mono.handle_releases.values().cloned());
+    roots.extend(mono.map_key_fns.values().flat_map(|k| [k.hash.clone(), k.eq.clone()]));
+    roots.extend(mono.decode_defaults.values().cloned());
+    roots.extend(mono.claim_generators.values().cloned());
+    roots.extend(mono.custom_decodes.values().map(|d| d.adapter.clone()));
+    roots.extend(mono.custom_encodes.values().cloned());
+    roots
 }
 
 /// Every function `root` can reach, by name, in name order: what it calls,

@@ -96,6 +96,9 @@ pub struct MonoProgram {
     pub vtables: HashMap<(Type, String), VTable>,
     /// Every function's symbol by its declaration, and what a call runs.
     pub symbols: Symbols,
+    /// The functions run from outside the program's own calls
+    /// (`Monomorphizer::roots`).
+    pub roots: Vec<String>,
 }
 
 /// Everything recorded per node, for the whole program: the checker's records
@@ -972,6 +975,7 @@ fn monomorphize_inner(
         custom_encodes: mono.custom_encodes,
         vtables: mono.vtables,
         symbols: mono.symbols,
+        roots: mono.roots,
     })
 }
 

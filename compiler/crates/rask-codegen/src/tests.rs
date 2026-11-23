@@ -2130,6 +2130,7 @@ mod tests {
         rask_mono::MonoProgram {
         vtables: Default::default(),
         symbols: Default::default(),
+        roots: Vec::new(),
             functions: vec![],
             struct_layouts: vec![],
             enum_layouts: vec![],
@@ -2148,6 +2149,7 @@ mod tests {
         rask_mono::MonoProgram {
         vtables: Default::default(),
         symbols: Default::default(),
+        roots: Vec::new(),
             functions: vec![],
             struct_layouts: vec![
                 rask_layout::StructLayout {
@@ -2204,6 +2206,7 @@ mod tests {
             handle_releases: Default::default(),
         vtables: Default::default(),
         symbols: Default::default(),
+        roots: Vec::new(),
             functions: vec![],
             struct_layouts: vec![],
             enum_layouts: vec![
