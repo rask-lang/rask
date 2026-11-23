@@ -1,0 +1,43 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+// A write through a `with` binding to an element is the last thing done to
+// the struct that holds the vector. The struct was released before the write,
+// which then went into freed memory (#2074). The memcheck gate sees it.
+
+struct Item {
+    n: i64
+}
+
+struct Holder {
+    items: Vec<Item>
+}
+
+func poke(start: i64) -> i64 {
+    mut t = Holder(items: Vec.new())
+    t.items.push(Item(n: start))
+    with t.items[0] as k {
+        k.n = start + 5
+    }
+    return start
+}
+
+func poke_then_read(start: i64) -> i64 {
+    mut t = Holder(items: Vec.new())
+    t.items.push(Item(n: start))
+    with t.items[0] as k {
+        k.n = start + 5
+    }
+    return t.items[0].n
+}
+
+test "a write through the binding is the holder's last use" {
+    mut total = 0
+    for i in 0..20 {
+        total += poke(i)
+    }
+    assert total == 190
+}
+
+test "the write lands in the element" {
+    assert poke_then_read(1) == 6
+}

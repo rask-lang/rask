@@ -1871,8 +1871,14 @@ fn insert_aggregate_release(
                         // `a.text = t` as the last thing done to `a` put the
                         // release between the slot's release and the store,
                         // freeing the old string twice and leaking `t`.
+                        // A store through an element bound where it sits
+                        // writes the collection's storage, so whatever the
+                        // binding views has to be alive for it (#2074).
                         Some((addr, _, value)) if addr == *name => {
-                            uses::operand_local(value) == Some(*name) || replaces || through_pointer(addr)
+                            uses::operand_local(value) == Some(*name)
+                                || replaces
+                                || through_pointer(addr)
+                                || places.contains(&addr)
                         }
                         _ => uses::stmt_reads(stmt, *name),
                     } || copy_reads.get(&si) == Some(name)
