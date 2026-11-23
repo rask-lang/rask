@@ -5848,6 +5848,17 @@ func main() {
 }
 "#;
 
+const PANIC_IN_A_CLOSURE_SRC: &str = r#"
+func main() {
+    let f = |x: i64| -> i64 {
+        assert x > 100
+        return x
+    }
+    println("{f(3)}")
+    return
+}
+"#;
+
 /// A panic several frames down names the line it happened on.
 ///
 /// Every `call_*` helper below `call_function` hands back a bare
@@ -5856,14 +5867,17 @@ func main() {
 /// A `v!` on line 4 was reported at the `println` on line 12, two frames away,
 /// while native named line 4 (#1110).
 ///
-/// Both spellings: a plain call and a method call, which reach `call_function`
-/// through different helpers and lost the span in different places.
+/// Three spellings: a plain call, a method call and a closure call, which go
+/// through different helpers and lost the span in different places. The
+/// closure call kept the line inside the body and then dropped it at the call
+/// site.
 #[test]
 fn panic_reports_the_line_it_happened_on() {
     // The line each source panics on, and the line its `main` calls from.
     for (src, want, not_want) in [
         (PANIC_IN_A_CALLEE_SRC, 4, 12),
         (PANIC_IN_A_METHOD_SRC, 9, 14),
+        (PANIC_IN_A_CLOSURE_SRC, 4, 7),
     ] {
         for interp in [false, true] {
             let backend = if interp { "interp" } else { "native" };

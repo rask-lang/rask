@@ -1412,9 +1412,13 @@ impl Interpreter {
                             .collect(),
                         _ => arg_vals,
                     };
-                    return self
-                        .call_closure(func_val, arg_vals, places.slots)
-                        .map_err(|e| RuntimeDiagnostic::new(e, expr.span));
+                    // A panic inside the body is reported on its own line,
+                    // as a named function's is.
+                    let outer = self.failed_call_span.take();
+                    let result = self.call_closure(func_val, arg_vals, places.slots);
+                    let inner = self.failed_call_span.take();
+                    self.failed_call_span = outer;
+                    return result.map_err(|e| RuntimeDiagnostic::new(e, inner.unwrap_or(expr.span)));
                 }
                 if let Value::Function { name, .. } = &func_val {
                     if let Some(decl) = self.functions.get(name) {
