@@ -8,6 +8,11 @@
 // when the load itself was returned, so the function freed nothing, its
 // caller thought it had been given a borrow and freed nothing either, and the
 // vector leaked (#2034). The strings are long enough to live on the heap.
+//
+// The walk back from the return went through copies only. Two `break`s that
+// meet before the return join in a phi, and a result a later closure reads
+// lives in a cell of its own, so the value went cell to cell. Either way the
+// load wasn't seen as handed back, and the result leaked.
 
 func returned() -> Vec<string> {
     let r = loop {
@@ -55,6 +60,45 @@ func on_one_path(k: bool) -> Vec<string> {
     return Vec.new()
 }
 
+func either(k: bool) -> Vec<string> {
+    let r = loop {
+        mut v: Vec<string> = Vec.new()
+        v.push("either-heap-string-padded-past-inline-x")
+        let f = || v.len()
+        assert f() == 1
+        if k { break v }
+        break Vec.new()
+    }
+    return r
+}
+
+func one_of_two(k: bool) -> Vec<string> {
+    let r = loop {
+        mut v: Vec<string> = Vec.new()
+        mut w: Vec<string> = Vec.new()
+        v.push("v-heap-string-padded-past-inline-xxxxx")
+        w.push("w-heap-string-padded-past-inline-xxxxx")
+        let f = || v.len() + w.len()
+        assert f() == 2
+        if k { break v }
+        break w
+    }
+    return r
+}
+
+func read_after() -> Vec<string> {
+    let r = loop {
+        mut v: Vec<string> = Vec.new()
+        v.push("after-heap-string-padded-past-inline-xx")
+        let f = || v.len()
+        assert f() == 1
+        break v
+    }
+    let g = || r.len()
+    assert g() == 1
+    return r
+}
+
 test "a broken-out vector returned" {
     assert returned()[0] == "returned-heap-string-padded-past-inline"
 }
@@ -70,4 +114,15 @@ test "a broken-out vector passed on, then returned" {
 test "a broken-out vector returned on one path" {
     assert on_one_path(true).len() == 1
     assert on_one_path(false).len() == 0
+}
+
+test "two breaks that meet before the return" {
+    assert either(true).len() == 1
+    assert either(false).len() == 0
+    assert one_of_two(true)[0].starts_with("v-")
+    assert one_of_two(false)[0].starts_with("w-")
+}
+
+test "a broken-out vector a later closure reads" {
+    assert read_after().len() == 1
 }

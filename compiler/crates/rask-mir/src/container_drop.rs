@@ -2240,9 +2240,9 @@ fn follow_copies(func: &MirFunction, fresh: &mut HashMap<LocalId, &'static str>)
 /// value group made a vector that used to be freed once stop being freed at all
 /// (t26 went from 4 leaked allocations to 6, t31 from 21 to 40).
 ///
-/// A load reaches the return through plain copies when a loop hands it out:
-/// `break v` lowers to `_24 = *cell; _25 = _24; … return _26`, and the
-/// caller of such a function freed nothing (#2034).
+/// A load reaches the return through plain copies and joins when a loop hands
+/// it out: `break v` lowers to `_24 = *cell; _25 = _24; … return _26`, and
+/// the caller of such a function freed nothing (#2034).
 fn fresh_through_cells(
     func: &MirFunction,
     all: &[MirFunction],
@@ -2291,42 +2291,79 @@ fn fresh_through_cells(
         .collect();
 
     // Every local whose value goes on to be returned, or wrapped for the
-    // return, through nothing but copies.
+    // return, through nothing but copies and joins. Two `break`s meet in a
+    // phi before the return: `let r = loop { … if k { break v } break
+    // Vec.new() }` returned neither as this frame's, and the caller freed
+    // nothing either way.
     let mut handed_back: HashSet<LocalId> = returned.union(&wrapped).copied().collect();
     let mut changed = true;
     while changed {
         changed = false;
         for stmt in func.blocks.iter().flat_map(|b| b.statements.iter()) {
-            if let MirStmtKind::Assign { dst, rvalue: MirRValue::Use(MirOperand::Local(src)) } = &stmt.kind {
-                if handed_back.contains(dst) && handed_back.insert(*src) {
-                    changed = true;
+            let srcs: Vec<LocalId> = match &stmt.kind {
+                MirStmtKind::Assign { dst, rvalue: MirRValue::Use(MirOperand::Local(src)) }
+                    if handed_back.contains(dst) =>
+                {
+                    vec![*src]
                 }
+                MirStmtKind::Phi { dst, args } if handed_back.contains(dst) => args
+                    .iter()
+                    .filter_map(|(_, op)| match op {
+                        MirOperand::Local(src) => Some(*src),
+                        _ => None,
+                    })
+                    .collect(),
+                // And back through a cell the one value it holds: `r` captured
+                // after `let r = loop { … break v }` puts the load out of
+                // `v`'s cell into `r`'s, and returns a load out of that.
+                MirStmtKind::Assign { dst, rvalue: MirRValue::Deref(MirOperand::Local(addr)) }
+                    if handed_back.contains(dst) =>
+                {
+                    match stores.get(addr).map(Vec::as_slice) {
+                        Some([MirOperand::Local(src)]) => vec![*src],
+                        _ => continue,
+                    }
+                }
+                _ => continue,
+            };
+            for src in srcs {
+                changed |= handed_back.insert(src);
             }
         }
     }
 
-    let mut out = Vec::new();
-    for (cell, values) in &stores {
-        let [MirOperand::Local(src)] = values.as_slice() else { continue };
-        let Some(free) = fresh.get(src).copied() else { continue };
-        if !cell_stays_owned_through_closures(func, all, *cell) {
-            continue;
-        }
-        for block in &func.blocks {
-            for stmt in &block.statements {
-                if let MirStmtKind::Assign {
-                    dst,
-                    rvalue: MirRValue::Deref(MirOperand::Local(addr)),
-                } = &stmt.kind
-                {
-                    if addr == cell && handed_back.contains(dst) {
-                        out.push((*dst, free));
+    // A load found fresh can be what the next cell holds, so this runs until
+    // no cell gives up another.
+    let mut known = fresh.clone();
+    let mut out: Vec<(LocalId, &'static str)> = Vec::new();
+    loop {
+        let found = out.len();
+        for (cell, values) in &stores {
+            let [MirOperand::Local(src)] = values.as_slice() else { continue };
+            let Some(free) = known.get(src).copied() else { continue };
+            if !cell_stays_owned_through_closures(func, all, *cell) {
+                continue;
+            }
+            for block in &func.blocks {
+                for stmt in &block.statements {
+                    if let MirStmtKind::Assign {
+                        dst,
+                        rvalue: MirRValue::Deref(MirOperand::Local(addr)),
+                    } = &stmt.kind
+                    {
+                        if addr == cell && handed_back.contains(dst) && !known.contains_key(dst) {
+                            known.insert(*dst, free);
+                            out.push((*dst, free));
+                        }
                     }
                 }
             }
         }
+        if out.len() == found {
+            return out;
+        }
+        follow_copies(func, &mut known);
     }
-    out
 }
 
 /// Containers this frame owns that live in a capture cell and never leave.
