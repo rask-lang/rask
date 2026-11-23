@@ -351,6 +351,16 @@ fn retain_views_handed_over(
     // way in; retaining on the view's edge would make every join owned
     // (#1904).
     let mut views: HashSet<LocalId> = HashSet::new();
+    // A capture a loop body's `return` moves out is handed over, not lent.
+    let moved_captures: HashSet<LocalId> = func
+        .blocks
+        .iter()
+        .flat_map(|b| b.statements.iter())
+        .filter_map(|s| match s.kind {
+            MirStmtKind::MovedOut { local } => Some(local),
+            _ => None,
+        })
+        .collect();
     // A parameter the caller didn't give up is the caller's storage: a
     // borrowed or `mutate` one reaches a keeper only as a copy of a Copy
     // value (or, `mutate`, moved out and refilled), and the caller still
@@ -382,7 +392,7 @@ fn retain_views_handed_over(
                 // (`container_drop::task_captures_given_away`), so handing it
                 // on is a move.
                 MirStmtKind::LoadCapture { dst, access, .. } => {
-                    (*access != crate::CaptureAccess::Taken).then_some(*dst)
+                    (*access != crate::CaptureAccess::Taken && !moved_captures.contains(dst)).then_some(*dst)
                 }
                 // An element bound where it sits: the collection keeps it.
                 MirStmtKind::BindPlace { dst, .. } => Some(*dst),

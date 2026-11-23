@@ -664,6 +664,9 @@ impl<'a> MirLowerer<'a> {
 
             StmtKind::Return(opt_expr) => {
                 let mut returned_ty = None;
+                // The body's captures this return moves, marked once the
+                // value is in the slot (`MovedOut` below).
+                let mut moved_captures: Vec<crate::LocalId> = Vec::new();
                 // In a `for` body over a sequence, the loop's variables this
                 // return moves leave the frame on its early exit.
                 if let (Some(e), Some(_)) = (opt_expr, &self.seq_moved_names) {
@@ -678,6 +681,7 @@ impl<'a> MirLowerer<'a> {
                         })
                         .cloned()
                         .collect();
+                    moved_captures = moved.iter().filter_map(|n| self.locals.get(n).map(|(id, _)| *id)).collect();
                     if let Some(names) = self.seq_moved_names.as_mut() {
                         names.extend(moved);
                     }
@@ -761,6 +765,15 @@ impl<'a> MirLowerer<'a> {
                             dst: dst_local,
                             rvalue: MirRValue::Use(val),
                         }));
+                    }
+                    // The body reaches the frame's variable through a borrowed
+                    // capture, which reads as a view: the slot would get a copy
+                    // with references of its own while the frame, told the
+                    // variable moved, released nothing, and the original's
+                    // strings and vectors leaked. Marked here, the capture
+                    // hands its value on instead.
+                    for local in moved_captures {
+                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::MovedOut { local }));
                     }
                     self.inline_return_taken =
                         Some(returned_ty.unwrap_or(MirType::Void));
