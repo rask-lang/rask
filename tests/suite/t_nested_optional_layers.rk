@@ -275,3 +275,19 @@ test "an if arm one layer short is the other arm's present branch" {
     let w = if inner? { inner } else { other }
     assert w is none
 }
+
+test "get on a present none element is present" {
+    mut opts = Vec<f32?>.new()
+    opts.push(1.5)
+    opts.push(none)
+    assert !(opts.get(1) is none)
+    let g = opts.get(1)
+    assert !(g is none)
+    assert g! is none
+    mut seen = false
+    if opts.get(1)? as inner {
+        seen = inner is none
+    }
+    assert seen
+    assert opts.get(5) is none
+}
