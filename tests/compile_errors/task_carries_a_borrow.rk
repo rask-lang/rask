@@ -1,0 +1,109 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Rejects: a task that may outlive its block reading something it borrows
+//
+// A detached task read the caller's `items` after the function returned and
+// the caller freed them (#2033). A task whose handle can leave the block
+// carries its captures, and a borrowed parameter isn't the function's to hand
+// over. Nor is a `for` item the collection still holds: the task freed each
+// element and the vector freed them again. Copy values, owned (`take`)
+// values and tasks joined in their block are fine. In a generic body it
+// depends on `T`, so the call that makes `T` a `Vec` is the one reported.
+
+func detached_reads(items: Vec<i64>) {
+    spawn {
+        // ERROR: the caller only lent [E0862]
+        println("{items.len()}")
+    }.detach()
+}
+
+func detached_calls(f: func() -> i64) {
+    spawn {
+        // ERROR: the caller only lent [E0862]
+        println("{f()}")
+    }.detach()
+}
+
+func detached_per_item(vs: Vec<Vec<i64>>) {
+    for v in vs {
+        spawn {
+            // ERROR: `vs` still holds it [E0862]
+            println("{v.len()}")
+        }.detach()
+    }
+}
+
+func owned_items(take vs: Vec<Vec<i64>>) {
+    for v in vs.take_all() {
+        spawn {
+            println("{v.len()}")
+        }.detach()
+    }
+}
+
+func joined_per_item(vs: Vec<Vec<i64>>) -> i64 {
+    mut total = 0
+    for v in vs {
+        let h = spawn { return v.len().wrap<i64>() }
+        total += h.join()!
+    }
+    return total
+}
+
+func copy_param(n: i64) {
+    spawn {
+        println("{n}")
+    }.detach()
+}
+
+func owned_param(take items: Vec<i64>) {
+    spawn {
+        println("{items.len()}")
+    }.detach()
+}
+
+func joined(items: Vec<i64>) -> i64 {
+    let h = spawn { return items.len().wrap<i64>() }
+    return h.join()!
+}
+
+func joined_in_match(items: Vec<i64>) -> i64 {
+    let h = spawn { return items.len().wrap<i64>() }
+    match h.join() {
+        i64 as n => return n
+        JoinError as _ => return 0
+    }
+}
+
+func detached_in_with(mutate rows: Vec<Vec<i64>>) {
+    with rows[0] as row {
+        spawn {
+            // ERROR: `row` is inside `rows` [E0862]
+            println("{row.len()}")
+        }.detach()
+    }
+}
+
+func keep<T>(x: T) {
+    spawn {
+        let y = x
+    }.detach()
+}
+
+func main() {
+    using Multitasking {
+        let v: Vec<i64> = [1, 2]
+        detached_reads(v)
+        detached_calls(|| 1)
+        copy_param(3)
+        owned_param([4])
+        println("{joined(v)} {joined_in_match(v)}")
+        detached_per_item([[1], [2, 3]])
+        owned_items([[4]])
+        mut rows: Vec<Vec<i64>> = [[5]]
+        detached_in_with(mutate rows)
+        println("{joined_per_item([[5, 6]])}")
+        keep(7)
+        // ERROR: makes `x` a `Vec<i64>` [E0862]
+        keep(v)
+    }
+}

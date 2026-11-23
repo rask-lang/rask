@@ -21,7 +21,7 @@ pub use field_reuse::field_reuses;
 
 pub use state::{BindingState, BorrowMode, BorrowScope, ActiveBorrow};
 pub use error::{
-    AccessKind, EnsureHold, LinearDiscardPosition, LinkEscape, MoveReason, OwnershipError, OwnershipErrorKind,
+    AccessKind, EnsureHold, Lender, LinearDiscardPosition, LinkEscape, MoveReason, OwnershipError, OwnershipErrorKind,
     PointerLoss, PointerSink, Sink,
 };
 
@@ -552,6 +552,12 @@ pub struct OwnershipChecker<'a> {
     /// The type parameters the body being walked can name: its own and its
     /// owner's.
     type_params_in_scope: Vec<String>,
+    /// The function whose body is being walked.
+    current_fn: Option<rask_ast::NodeId>,
+    /// Borrowed captures of a leaving task whose type names a type parameter.
+    /// Whether one is Copy depends on the call, so each instantiation is asked
+    /// (`check_generic_task_borrows`).
+    generic_task_borrows: Vec<GenericTaskBorrow>,
     /// The parameters an `extend` header brings into scope, while its methods
     /// are walked (`rask_check::header_type_params`).
     header_type_params: Vec<String>,
@@ -604,6 +610,16 @@ struct Instance {
     subst: HashMap<String, Type>,
     /// The body's expression types with `subst` applied, where that changed them.
     node_types: HashMap<rask_ast::NodeId, Type>,
+}
+
+/// A leaving task in a generic body reads a borrowed name of type `ty`, which
+/// mentions a type parameter.
+struct GenericTaskBorrow {
+    func: rask_ast::NodeId,
+    name: String,
+    lender: Lender,
+    ty: Type,
+    at: Span,
 }
 
 /// A generic instantiation waiting to be re-checked.
@@ -877,6 +893,8 @@ impl<'a> OwnershipChecker<'a> {
             bodyless_methods: HashSet::new(),
             method_resizes: HashMap::new(),
             type_params_in_scope: Vec::new(),
+            current_fn: None,
+            generic_task_borrows: Vec::new(),
             header_type_params: Vec::new(),
             return_moves: HashMap::new(),
             closure_writes_a_capture: HashSet::new(),
@@ -1270,6 +1288,7 @@ impl<'a> OwnershipChecker<'a> {
         self.check_generic_size_fences(decls);
         self.check_linear_instantiations(decls);
         self.check_generic_takes(decls);
+        self.check_generic_task_borrows(decls);
         self.check_generic_element_uses(decls);
         OwnershipResult {
             errors: self.errors,
@@ -1628,6 +1647,63 @@ impl<'a> OwnershipChecker<'a> {
         }
     }
 
+    /// conc.async/S5 in a generic body. A task that leaves its block may read
+    /// a borrowed `x: T` when `T` is Copy, since the task gets its own copy,
+    /// and must not otherwise. Each call that fixes `T` is asked, and one
+    /// supplying a type that moves is reported there.
+    fn check_generic_task_borrows(&mut self, decls: &[Decl]) {
+        if self.generic_task_borrows.is_empty() {
+            return;
+        }
+        let generic_fns = generic_bodies(decls);
+        let mut queue: std::collections::VecDeque<InstanceJob> = std::collections::VecDeque::new();
+        for decl in decls {
+            for stmt in decl_body(decl) {
+                rask_ast::visit::walk_stmt(stmt, &mut |e| {
+                    if let Some(job) = self.instance_at(e, &generic_fns, &HashMap::new(), None, false) {
+                        queue.push_back(job);
+                    }
+                });
+            }
+        }
+        let mut seen: HashSet<(String, String)> = HashSet::new();
+        let mut found = Vec::new();
+        while let Some(job) = queue.pop_front() {
+            if !seen.insert((callee_label(&job), render_subst(&job.subst, self.program))) {
+                continue;
+            }
+            for b in self.generic_task_borrows.iter().filter(|b| b.func == job.func.id) {
+                let ty = rask_check::substitute_type(&b.ty, &job.subst);
+                // Still a parameter: the caller is generic itself, and its
+                // own callers fix it.
+                if ty.mentions_type_param(&is_type_param_name) || matches!(ty, Type::Error | Type::Var(_)) {
+                    continue;
+                }
+                if self.is_copy(&ty) || self.is_link_type(&ty) {
+                    continue;
+                }
+                found.push(OwnershipError {
+                    kind: OwnershipErrorKind::TaskBorrowInGenericInstance {
+                        chain: job.chain.clone(),
+                        name: b.name.clone(),
+                        lender: b.lender.clone(),
+                        type_arg: format!("{}", self.program.types.resolve_type_names(&ty)),
+                        read_at: b.at,
+                    },
+                    span: job.call_span,
+                });
+            }
+            for stmt in &job.func.body {
+                rask_ast::visit::walk_stmt(stmt, &mut |e| {
+                    if let Some(inner) = self.instance_at(e, &generic_fns, &job.subst, Some(&job), false) {
+                        queue.push_back(inner);
+                    }
+                });
+            }
+        }
+        self.errors.extend(found);
+    }
+
     /// mem.resources/RC5 in a generic body. `v.clear()` on a `Vec<T>` is fine
     /// for most `T` and drops what must be consumed for a linear one, so each
     /// call that fixes `T` is asked, the way `check_generic_takes` asks.
@@ -1961,6 +2037,7 @@ impl<'a> OwnershipChecker<'a> {
         params.extend(owner_params.iter().map(|p| p.name.clone()));
         params.extend(rask_ast::type_params::signature_type_param_names(fn_decl));
         self.type_params_in_scope = params;
+        self.current_fn = Some(fn_decl.id);
         self.copy_params = owner_params
             .iter()
             .chain(&fn_decl.type_params)
@@ -4639,10 +4716,29 @@ impl<'a> OwnershipChecker<'a> {
                 // value is copied in, so it crosses.
                 if is_task && !borrows_frame && self.instance.is_none() {
                     for name in &captures {
-                        if self.outlives_this_call(name) && !self.capture_is_copy(name) {
-                            let at = Self::first_use(body, name).map_or(expr.span, |e| e.span);
+                        if self.capture_is_copy(name) {
+                            continue;
+                        }
+                        if let Some(lender) = self.lender_of(name) {
+                            let first = Self::first_use(body, name);
+                            let at = first.map_or(expr.span, |e| e.span);
+                            // `x: T` is Copy for some `T` and not others, so
+                            // each call that fixes `T` decides.
+                            let generic = first.and_then(|e| self.program.node_types.get(&e.id)).filter(|t| {
+                                t.mentions_type_param(&|n| self.type_params_in_scope.iter().any(|p| p == n))
+                            });
+                            if let (Some(ty), Some(func)) = (generic, self.current_fn) {
+                                self.generic_task_borrows.push(GenericTaskBorrow {
+                                    func,
+                                    name: name.clone(),
+                                    lender,
+                                    ty: ty.clone(),
+                                    at,
+                                });
+                                continue;
+                            }
                             self.errors.push(OwnershipError {
-                                kind: OwnershipErrorKind::TaskCapturesLentParam { name: name.clone() },
+                                kind: OwnershipErrorKind::TaskCapturesBorrow { name: name.clone(), lender },
                                 span: at,
                             });
                         }
@@ -9932,6 +10028,20 @@ impl<'a> OwnershipChecker<'a> {
     /// scope wins, so a `let k` shadowing parameter `k` is the body's.
     fn body_local_block(&self, name: &str) -> Option<u32> {
         self.binding_decl_blocks.get(name).filter(|d| !d.param).map(|d| d.block)
+    }
+
+    /// Whose `name` is, when it's only borrowed here: a lent parameter, a
+    /// `for` item the collection still holds, a `with` binding. A task that
+    /// leaves would carry it and free it (S6) while its owner still has it:
+    /// `for v in vs { spawn { v.len() }.detach() }` freed every element twice.
+    fn lender_of(&self, name: &str) -> Option<crate::Lender> {
+        if self.outlives_this_call(name) {
+            return Some(crate::Lender::Caller);
+        }
+        if let Some((_, from, _)) = self.borrowed_loop_items.get(name) {
+            return Some(crate::Lender::Loop(from.clone()));
+        }
+        self.borrowed_with.get(name).map(|(_, from)| crate::Lender::With(from.clone()))
     }
 
     /// A borrowed or `mutate` parameter, not shadowed by a local of the same name.

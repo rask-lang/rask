@@ -67,13 +67,53 @@ impl ToDiagnostic for crate::OwnershipError {
             .with_help(format!("put `{captured}` in a `Shared` and capture that; a `Shared` clones as a second reference"))
             .with_why("every closure can be cloned, and cloning one clones what it carries, so a closure may only carry Cloneable values [mem.closures/CV4]"),
 
-            TaskCapturesLentParam { name } => Diagnostic::error(format!(
-                "a task that outlives this call reads `{name}`, which the caller only lent"
-            ))
-            .with_code("E0862")
-            .with_primary(self.span, format!("`{name}` is the caller's, and the task may run after they free it"))
-            .with_help(format!("take it: `take {name}: …` in the signature moves it into the task; or clone what the task needs before the spawn; or join the task in this block so it borrows"))
-            .with_why("a task whose handle leaves the block that spawned it carries what it names, and a borrowed or `mutate` parameter isn't this function's to carry [conc.async/S5]"),
+            TaskCapturesBorrow { name, lender } => {
+                use crate::Lender;
+                let (owner, help) = match lender {
+                    Lender::Caller => (
+                        "the caller's, and the task may run after they free it".to_string(),
+                        format!("take it: `take {name}: …` in the signature moves it into the task; or clone what the task needs before the spawn; or join the task in this block so it borrows"),
+                    ),
+                    Lender::Loop(from) => (
+                        format!("an element `{from}` still holds, and the task may run after `{from}` is freed"),
+                        format!("clone it for the task (`let mine = {name}.clone()` before the spawn); or walk `{from}.take_all()` so the loop owns each item; or join the task inside the loop so it borrows"),
+                    ),
+                    Lender::With(from) => (
+                        format!("inside `{from}`, and the task may run after the block lets go of it"),
+                        format!("clone what the task needs before the spawn; or join the task inside the block so it borrows"),
+                    ),
+                };
+                Diagnostic::error(format!("a task that outlives this block reads `{name}`, which is only borrowed"))
+                    .with_code("E0862")
+                    .with_primary(self.span, format!("`{name}` is {owner}"))
+                    .with_help(help)
+                    .with_why("a task whose handle leaves the block that spawned it carries what it names, and a borrow isn't this block's to carry [conc.async/S5]")
+            }
+
+            TaskBorrowInGenericInstance { chain, name, lender, type_arg, read_at } => {
+                use crate::Lender;
+                let func = chain.last().map(String::as_str).unwrap_or("?");
+                let via = if chain.len() > 1 {
+                    format!(" (reached through {})", chain.iter().map(|c| format!("`{}`", c)).collect::<Vec<_>>().join(" → "))
+                } else {
+                    String::new()
+                };
+                let whose = match lender {
+                    Lender::Caller => "the caller's".to_string(),
+                    Lender::Loop(from) => format!("an element `{from}` still holds"),
+                    Lender::With(from) => format!("borrowed inside `{from}`"),
+                };
+                Diagnostic::error(format!(
+                    "a task in `{func}` outlives its block and reads `{name}`, which is only borrowed and here a `{type_arg}`"
+                ))
+                .with_code("E0862")
+                .with_primary(self.span, format!("this call makes `{name}` a `{type_arg}`{via}"))
+                .with_secondary(*read_at, format!("`{name}` is {whose}, and the task may run after it's freed"))
+                .with_help(format!(
+                    "take it in `{func}` (`take {name}: …`) so the task owns it, or join the task in the block that spawns it, or bound the parameter `Copy`"
+                ))
+                .with_why("a task whose handle leaves the block that spawned it carries what it names. A Copy value is copied in; anything else would be freed twice, and a generic body is asked for each type it's called with [conc.async/S5, type.generics/G6]")
+            }
 
             RepeatNotCopy { ty, reason } => {
                 use crate::MoveReason;
