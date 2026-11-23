@@ -1949,6 +1949,11 @@ impl TypeChecker {
                     self.pending_catch_void_checks.push((ok_ty.clone(), expr.span));
                     return ok_ty;
                 }
+                // The handler's value stands in for the success value, so an
+                // erased success type boxes it. Without this `catch e => Tag(…)`
+                // on an `any Label or E` handed the bare struct on as the box.
+                let expected = self.ctx.apply(&ok_ty);
+                self.note_interface_coercion(&clause.body, &expected, &resolved_body);
                 self.ctx.add_constraint(TypeConstraint::Equal(
                     ok_ty.clone(),
                     body_ty,

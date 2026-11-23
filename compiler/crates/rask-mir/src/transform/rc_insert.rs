@@ -1974,7 +1974,7 @@ fn store_is_narrow(stmt: &MirStmt, ty_of: &HashMap<LocalId, MirType>) -> bool {
 
 /// Shapes that can hold a string somewhere inside them. The layouts that would
 /// settle it live in codegen, so this only rules out what it can.
-fn aggregate_may_hold_string(ty: &MirType) -> bool {
+pub(crate) fn aggregate_may_hold_string(ty: &MirType) -> bool {
     match ty {
         MirType::Struct(_) | MirType::Enum(_) => true,
         MirType::Tuple(elems) => elems.iter().any(slot_is_releasable),
