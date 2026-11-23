@@ -624,40 +624,16 @@ void rask_link_forget_struct(void *base, int64_t field_count, const int32_t *fie
     }
 }
 
-static void register_nested_vec_cb(void **slot, void *ctx) {
-    (void)ctx;
-    rask_link_register_vec((RaskVec *)*slot);
-}
-
-static void register_nested_map_cb(void **slot, void *ctx) {
-    (void)ctx;
-    rask_link_register_map((RaskMap *)*slot);
-}
-
-static void register_value_containers_cb(char *value, void *ctx) {
-    rask_elem_containers(value, (const RaskElemStrs *)ctx,
-                         register_nested_vec_cb, register_nested_map_cb, NULL);
-}
-
-// Record every link already sitting in a container, and in the containers its
-// elements own.
+// Record every link already sitting in a container.
 //
 // For a container that arrives whole rather than element by element — the
 // classic being `h.list = h.list.filter(…)`, where `filter` builds a fresh
-// vector whose entries no push ever recorded. A clone is one too, all the way
-// down: `rask_vec_clone` copies the vectors inside each element, and nothing
-// recorded the links in those copies. Deleting a leaf left a cloned tree's
-// deeper links naming the freed node (#1972). Recording a link twice keeps one
-// record, so the walk can't tell, and needn't, which inner containers were
-// recorded already.
+// vector whose entries no push ever recorded. A clone records itself this way
+// (`rask_vec_clone`), so the inner vectors a deep clone makes are recorded one
+// by one as they are made.
 void rask_link_register_vec(RaskVec *v) {
     if (!v) return;
     int64_t n = rask_vec_len(v);
-    const RaskElemStrs *strs = rask_vec_elem_strs(v);
-    for (int64_t i = 0; i < n; i++) {
-        rask_elem_containers(rask_vec_get_unchecked(v, i), strs,
-                             register_nested_vec_cb, register_nested_map_cb, NULL);
-    }
     if (rask_vec_holds_struct_links(v)) {
         for (int64_t i = 0; i < n; i++) {
             rask_link_register_element_fields(v, rask_vec_get_unchecked(v, i));
@@ -665,8 +641,10 @@ void rask_link_register_vec(RaskVec *v) {
         return;
     }
     // An element that owns anything isn't a bare link; reading its first word
-    // as one would follow a string or a handle.
-    if (rask_vec_elem_strs(v)->count > 0) return;
+    // as one would follow a string or a handle. A vector with no list at all
+    // is one the compiler asked about because its type holds links.
+    const RaskElemStrs *strs = rask_vec_elem_strs(v);
+    if (strs->count > 0 && !rask_elem_strs_are_links(strs)) return;
     for (int64_t i = 0; i < n; i++) {
         void *elem;
         memcpy(&elem, rask_vec_get_unchecked(v, i), sizeof(elem));
@@ -676,12 +654,12 @@ void rask_link_register_vec(RaskVec *v) {
 
 void rask_link_register_map(RaskMap *m) {
     if (!m) return;
-    rask_map_each_value(m, register_value_containers_cb, (void *)rask_map_val_strs(m));
     if (rask_map_holds_struct_links(m)) {
         rask_map_each_value(m, register_entry_cb, m);
         return;
     }
-    if (rask_map_val_strs(m)->count > 0) return;
+    const RaskElemStrs *strs = rask_map_val_strs(m);
+    if (strs->count > 0 && !rask_elem_strs_are_links(strs)) return;
     RaskVec *vals = rask_map_values(m);
     int64_t n = rask_vec_len(vals);
     for (int64_t i = 0; i < n; i++) {

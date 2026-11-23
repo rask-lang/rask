@@ -7,6 +7,9 @@
 // source's vectors and read them after the source was freed (#1972). With the
 // clone deep, the vectors it makes inside each element have to be recorded
 // with the rack too, or a delete leaves the clone's deeper links dangling.
+// Each cloned container records itself, so a link one container down is
+// found however the levels are spelled, and a `Vec<i64>` beside a link is
+// never read as one.
 import memory.Link
 import memory.Rack
 
@@ -17,6 +20,35 @@ struct Leaf {
 struct Tree {
     at: Link<Leaf>?
     kids: Vec<Tree>
+}
+
+struct Mid {
+    links: Vec<Link<Leaf>>
+    nums: Vec<i64>
+}
+
+struct Outer {
+    items: Vec<Mid>
+}
+
+struct Grid {
+    rows: Vec<Vec<Link<Leaf>>>
+}
+
+enum Node {
+    Tip(Link<Leaf>?)
+    Branch(Vec<Node>)
+}
+
+func first_tip_none(n: Node) -> bool {
+    match n {
+        Node.Tip(l) => {
+            return l is none
+        }
+        Node.Branch(v) => {
+            return first_tip_none(v[0].clone())
+        }
+    }
 }
 
 func depth(t: Tree) -> i64 {
@@ -79,4 +111,54 @@ test "a delete reaches the links deep inside a clone" {
     leaves.delete(a)
     assert t.kids[0].kids[0].kids[0].at is none
     assert c.kids[0].kids[0].kids[0].at is none
+}
+
+test "a clone's links one container down leave with their node" {
+    mut leaves: Rack<Leaf> = Rack.new()
+    let a = leaves.insert(Leaf(id: 1))
+    let b = leaves.insert(Leaf(id: 2))
+    mut ls: Vec<Link<Leaf>> = Vec.new()
+    ls.push(a)
+    ls.push(b)
+    mut items: Vec<Mid> = Vec.new()
+    items.push(Mid(links: ls, nums: Vec.from([123456, 7777777])))
+    let o = Outer(items: items)
+    let o2 = o.clone()
+    leaves.delete(a)
+    let _z = leaves.insert(Leaf(id: 50))
+    assert o.items[0].links.len() == 1
+    assert o2.items[0].links.len() == 1
+    assert o2.items[0].links[0].id == 2
+    assert o2.items[0].nums[1] == 7777777
+}
+
+test "a clone of a vector of vectors of links" {
+    mut leaves: Rack<Leaf> = Rack.new()
+    let a = leaves.insert(Leaf(id: 1))
+    let b = leaves.insert(Leaf(id: 2))
+    mut row: Vec<Link<Leaf>> = Vec.new()
+    row.push(a)
+    row.push(b)
+    mut rows: Vec<Vec<Link<Leaf>>> = Vec.new()
+    rows.push(row)
+    let g = Grid(rows: rows)
+    let g2 = g.clone()
+    leaves.delete(b)
+    assert g.rows[0].len() == 1
+    assert g2.rows[0].len() == 1
+}
+
+test "a clone of a recursive enum loses its deep link" {
+    mut leaves: Rack<Leaf> = Rack.new()
+    let a = leaves.insert(Leaf(id: 1))
+    let o: Link<Leaf>? = a
+    mut inner: Vec<Node> = Vec.new()
+    inner.push(Node.Tip(o))
+    mut outer: Vec<Node> = Vec.new()
+    outer.push(Node.Branch(inner))
+    let t = Node.Branch(outer)
+    let t2 = t.clone()
+    leaves.delete(a)
+    assert first_tip_none(t.clone())
+    assert first_tip_none(t2.clone())
 }

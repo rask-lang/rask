@@ -7997,7 +7997,7 @@ impl<'a> FunctionBuilder<'a> {
         args.truncate(first);
         for a in &mir_args[first..] {
             let MirOperand::Constant(MirConst::Elem(ty)) = a else { unreachable!() };
-            let map = Self::element_owned_offsets(Some(ty), ctx)
+            let map = crate::elem_offsets::container_elem_offsets(ty, ctx.shapes())
                 .filter(|offs| !offs.is_empty())
                 .and_then(|offs| {
                     let at = Self::element_offsets_global(builder, &offs, ctx)?;

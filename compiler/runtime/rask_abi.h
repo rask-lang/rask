@@ -101,6 +101,11 @@
 #define RASK_OWNED_HANDLE_INDEX_SHIFT 20
 #define RASK_OWNED_HANDLE_OFFSET_MASK 1048575
 
+// The element *is* a link (`Vec<Link<T>>`, a `Map` of them): the whole
+// list, alone. Owns nothing; it lets a container that arrives whole, a
+// clone above all, record its own edges (#1972).
+#define RASK_OWNED_ELEM_LINK 10
+
 // Word indexes into a vtable (`rask_mir::vtable_layout`): the concrete
 // value's size and alignment, which size an interface box's block, and
 // the release for a value the box owns.

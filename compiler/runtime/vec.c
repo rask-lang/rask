@@ -824,7 +824,7 @@ int64_t rask_vec_remove_at(RaskVec *v, int64_t index, void *out) {
 // containers, and the same tag guards decide whether an enum payload's link is
 // live.
 
-static void slots_walk_from(char *elem, const int32_t *entries, int64_t count, uint32_t want,
+static void links_walk_from(char *elem, const int32_t *entries, int64_t count,
                             RaskLinkSlotFn fn, void *ctx) {
     if (!elem || !entries) return;
     for (int64_t i = 0; i < count; i++) {
@@ -835,7 +835,7 @@ static void slots_walk_from(char *elem, const int32_t *entries, int64_t count, u
             int live = rask_owned_guard(elem, entries, count, &i, &body);
             if (live < 0) return;
             if (live) {
-                slots_walk_from(elem, entries + i + 1, body, want, fn, ctx);
+                links_walk_from(elem, entries + i + 1, body, fn, ctx);
             }
             i += body;
             continue;
@@ -848,7 +848,7 @@ static void slots_walk_from(char *elem, const int32_t *entries, int64_t count, u
             i += body;
             continue;
         }
-        if (kind == want) fn((void **)(elem + (e & RASK_OWNED_OFFSET_MASK)), ctx);
+        if (kind == RASK_OWNED_LINK) fn((void **)(elem + (e & RASK_OWNED_OFFSET_MASK)), ctx);
     }
 }
 
@@ -889,16 +889,7 @@ void rask_guarded_links(char *base, const int32_t *entries, int64_t count,
 }
 
 void rask_elem_links(char *elem, const RaskElemStrs *strs, RaskLinkSlotFn fn, void *ctx) {
-    if (strs) slots_walk_from(elem, strs->offsets, strs->count, RASK_OWNED_LINK, fn, ctx);
-}
-
-// The vectors and maps an element owns, each slot handed over once: `vec_fn`
-// for a `Vec`, `map_fn` for a `Map`. Either may be NULL.
-void rask_elem_containers(char *elem, const RaskElemStrs *strs,
-                          RaskLinkSlotFn vec_fn, RaskLinkSlotFn map_fn, void *ctx) {
-    if (!strs) return;
-    if (vec_fn) slots_walk_from(elem, strs->offsets, strs->count, RASK_OWNED_VEC, vec_fn, ctx);
-    if (map_fn) slots_walk_from(elem, strs->offsets, strs->count, RASK_OWNED_MAP, map_fn, ctx);
+    if (strs) links_walk_from(elem, strs->offsets, strs->count, fn, ctx);
 }
 
 static int32_t elem_strs_links(const RaskElemStrs *s) {
@@ -906,6 +897,11 @@ static int32_t elem_strs_links(const RaskElemStrs *s) {
         if (((uint32_t)s->offsets[i] >> RASK_OWNED_KIND_SHIFT) == RASK_OWNED_LINK) return 2;
     }
     return 1;
+}
+
+int64_t rask_elem_strs_are_links(const RaskElemStrs *s) {
+    return s && s->offsets && s->count == 1
+        && ((uint32_t)s->offsets[0] >> RASK_OWNED_KIND_SHIFT) == RASK_OWNED_ELEM_LINK;
 }
 
 int64_t rask_vec_holds_struct_links(RaskVec *v) {
@@ -969,6 +965,13 @@ RaskVec *rask_vec_clone(const RaskVec *src) {
     }
     dst->len = src->len;
     vec_retain_elems(dst, 0, dst->len);
+    // The copy holds the same links as the source, and the rack has to hear
+    // about it or a delete leaves the copy naming a freed node. A deep clone
+    // gets here once per vector it makes, the ones inside elements included,
+    // so every level is recorded once (#1972).
+    if (rask_vec_holds_struct_links(dst) || rask_elem_strs_are_links(&dst->strs)) {
+        rask_link_register_vec(dst);
+    }
     return dst;
 }
 

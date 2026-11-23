@@ -106,6 +106,10 @@ runtime_constants! {
     RASK_OWNED_HANDLE = 9;
     RASK_OWNED_HANDLE_INDEX_SHIFT = 20;
     RASK_OWNED_HANDLE_OFFSET_MASK = 0xF_FFFF;
+    /// The element *is* a link (`Vec<Link<T>>`, a `Map` of them): the whole
+    /// list, alone. Owns nothing; it lets a container that arrives whole, a
+    /// clone above all, record its own edges (#1972).
+    RASK_OWNED_ELEM_LINK = 10;
 
     /// Word indexes into a vtable (`rask_mir::vtable_layout`): the concrete
     /// value's size and alignment, which size an interface box's block, and

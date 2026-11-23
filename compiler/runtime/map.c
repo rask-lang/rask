@@ -758,6 +758,9 @@ RaskMap *rask_map_clone(const RaskMap *m) {
     }
     rask_realloc(key_copy, m->key_size, 0);
     rask_realloc(val_copy, m->val_size, 0);
+    // `rask_map_insert` recorded values holding links; values that are links
+    // are recorded here, as `rask_vec_clone` does (#1972).
+    if (rask_elem_strs_are_links(&dst->val_strs)) rask_link_register_map(dst);
     return dst;
 }
 

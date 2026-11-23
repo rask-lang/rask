@@ -2641,7 +2641,7 @@ fn collect_element_offsets(
                 let rask_mir::MirOperand::Constant(rask_mir::MirConst::Elem(ty)) = arg else {
                     continue;
                 };
-                if let Some(offs) = crate::elem_offsets::owned_offsets(ty, shapes) {
+                if let Some(offs) = crate::elem_offsets::container_elem_offsets(ty, shapes) {
                     lists.push(offs);
                 }
             }
