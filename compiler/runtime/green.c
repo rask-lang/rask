@@ -694,11 +694,11 @@ void rask_preempt_point(void) {
 
 // ─── Stack overflow ─────────────────────────────────────────
 
-// Whether `addr` is in the guard page below the running task's stack, for
-// the overflow handler (stack_guard.c).
-int rask_task_in_guard(const void *addr) {
+// The running task's stack, for the overflow handler (stack_guard.c): 0 when
+// no task is running.
+int rask_task_stack(char **reserve, char **top) {
     GreenTask *t = tl_current_task;
-    return t && rask_fiber_in_guard(&t->fiber, addr);
+    return t && rask_fiber_stack(&t->fiber, reserve, top);
 }
 
 // ─── Deadlock ───────────────────────────────────────────────

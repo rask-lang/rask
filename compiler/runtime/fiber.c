@@ -67,6 +67,9 @@ void __sanitizer_finish_switch_fiber(void *fake_stack_save, const void **bottom_
 #endif
 
 #define FIBER_STACK_SIZE (1024 * 1024)
+// The whole mapping: from the bottom, the guard page, the reserve
+// (stack_guard.c), then FIBER_STACK_SIZE less a page of stack proper.
+#define FIBER_MAP_SIZE (FIBER_STACK_SIZE + RASK_STACK_RESERVE)
 
 // ─── The switch ─────────────────────────────────────────────
 //
@@ -249,15 +252,15 @@ static void *stack_get(void) {
 #ifdef MAP_STACK
     flags |= MAP_STACK;
 #endif
-    base = mmap(NULL, FIBER_STACK_SIZE, PROT_READ | PROT_WRITE, flags, -1, 0);
+    base = mmap(NULL, FIBER_MAP_SIZE, PROT_READ | PROT_WRITE, flags, -1, 0);
     if (base == MAP_FAILED) {
         fprintf(stderr,
                 "rask: out of address space for a task stack (%d KiB each)\n",
-                FIBER_STACK_SIZE / 1024);
+                FIBER_MAP_SIZE / 1024);
         abort();
     }
-    // The guard: the stack grows down into it.
-    if (mprotect(base, page_size(), PROT_NONE) != 0) {
+    // The guard and the reserve: the stack grows down into them.
+    if (mprotect(base, page_size() + RASK_STACK_RESERVE, PROT_NONE) != 0) {
         fprintf(stderr, "rask: could not protect a task stack's guard page\n");
         abort();
     }
@@ -271,14 +274,14 @@ static void stack_put(void *base) {
         base = NULL;
     }
     pthread_mutex_unlock(&pool_lock);
-    if (base) munmap(base, FIBER_STACK_SIZE);
+    if (base) munmap(base, FIBER_MAP_SIZE);
 }
 
-int rask_fiber_in_guard(const RaskFiber *f, const void *addr) {
+int rask_fiber_stack(const RaskFiber *f, char **reserve, char **top) {
     if (!f || !f->stack) return 0;
-    const char *lo = (const char *)f->stack;
-    const char *p = (const char *)addr;
-    return p >= lo && p < lo + page_size();
+    *reserve = (char *)f->stack + page_size();
+    *top = (char *)f->stack + FIBER_MAP_SIZE;
+    return 1;
 }
 
 // ─── Fibers ─────────────────────────────────────────────────
@@ -305,14 +308,14 @@ void rask_fiber_init_thread(RaskFiber *f) {
 void rask_fiber_init(RaskFiber *f, void (*entry)(void *), void *arg) {
     memset(f, 0, sizeof(*f));
     f->stack = stack_get();
-    char *top = (char *)f->stack + FIBER_STACK_SIZE;
+    char *top = (char *)f->stack + FIBER_MAP_SIZE;
     f->sp = initial_frame(top, entry, arg);
 #ifdef RASK_TSAN
     f->tsan = __tsan_create_fiber(0);
 #endif
 #ifdef RASK_ASAN
     f->asan_bottom = (char *)f->stack + page_size();
-    f->asan_size = FIBER_STACK_SIZE - page_size();
+    f->asan_size = FIBER_MAP_SIZE - page_size();
 #endif
 #ifdef RASK_VALGRIND
     f->valgrind_id = VALGRIND_STACK_REGISTER((char *)f->stack + page_size(), top);

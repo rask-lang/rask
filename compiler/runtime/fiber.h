@@ -38,6 +38,11 @@ void rask_fiber_started(void);
 _Noreturn void rask_fiber_switch_final(RaskFiber *from, RaskFiber *to);
 
 // Whether `addr` is in `f`'s guard page — a stack overflow.
-int rask_fiber_in_guard(const RaskFiber *f, const void *addr);
+// S5: the room an overflow panic runs in, just above a stack's guard page.
+// PROT_NONE until the stack overflows into it (stack_guard.c).
+#define RASK_STACK_RESERVE (256 * 1024)
+
+// A fiber's reserve and the top of its stack, or 0 for a thread's own.
+int rask_fiber_stack(const RaskFiber *f, char **reserve, char **top);
 
 #endif // RASK_FIBER_H

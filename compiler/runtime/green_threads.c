@@ -127,8 +127,9 @@ void rask_preempt_point(void) {
 }
 
 // A task is a thread here, so its overflow is the thread's own (stack_guard.c).
-int rask_task_in_guard(const void *addr) {
-    (void)addr;
+int rask_task_stack(char **reserve, char **top) {
+    (void)reserve;
+    (void)top;
     return 0;
 }
 

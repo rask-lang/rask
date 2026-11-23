@@ -109,7 +109,11 @@ static void ffi_boundary_abort(const char *msg) {
 }
 
 // Retrieve the panic message after longjmp. Transfers ownership to caller.
+//
+// Every catcher calls this on landing, so it is also where an overflow's
+// reserve closes again: the panic that ran in it is over.
 char *rask_panic_take_message(void) {
+    rask_stack_guard_rearm();
     char *msg = panic_ctx.message;
     panic_ctx.message = NULL;
     return msg;
@@ -600,6 +604,7 @@ RaskCaughtPanic *rask_panic_catch(void (*fn)(void *, void *), void *a, void *b) 
         panic_ctx.access_floor = tl_held_access;
         fn(a, b);
     } else {
+        rask_stack_guard_rearm();
         caught = (RaskCaughtPanic *)malloc(sizeof(RaskCaughtPanic));
         caught->message = panic_ctx.message ? panic_ctx.message : strdup("(unknown panic)");
         caught->located = panic_ctx.located;
