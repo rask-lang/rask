@@ -68,7 +68,7 @@ pub fn insert_interface_drops(fns: &mut [MirFunction], vtables: &VtableBodies) {
     // A parameter captured by *any* closure counts as escaping here. Erring
     // that way leaks; erring the other way is a double free.
     let callee_escapes =
-        crate::closures::build_callee_escape_map(fns, crate::closures::CaptureRule::AnyClosure);
+        crate::closures::build_callee_escape_map(fns, crate::closures::CaptureRule::AnyClosure, vtables);
     // And which functions hand a fresh box *back*, which makes their caller the
     // owner. `return Boom.Bad` in a `-> i64 or Error` boxes the enum and
     // returns it, and the caller read the box out of the wrapper and dropped

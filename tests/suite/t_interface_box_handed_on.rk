@@ -1,0 +1,88 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A box a method hands on, through another vtable or to a closure.
+//
+// Whether a caller frees a box it passed is the callee's answer: does the
+// body keep it. A body that passed it to a method on an `any Sink`, or to a
+// closure parameter, read as keeping nothing, because the map of what each
+// body keeps had no case for a vtable call and took a closure call it
+// couldn't place as a borrow. The caller freed the box, and the vector the
+// box had been pushed into freed it again. The tags are long enough to live
+// on the heap.
+
+interface Other {
+    func label(self) -> string
+}
+
+struct Sq { tag: string }
+Sq implements Other {
+    func label(self) -> string {
+        return self.tag
+    }
+}
+
+interface Sink {
+    func put(mutate self, take o: any Other) -> i64
+}
+
+struct Pile { items: Vec<any Other> }
+Pile implements Sink {
+    func put(mutate self, take o: any Other) -> i64 {
+        self.items.push(o)
+        return self.items.len().to<i64>()!
+    }
+}
+
+interface Keeper {
+    func keep(mutate self, take o: any Other) -> i64
+}
+
+struct Relay { inner: Pile }
+Relay implements Keeper {
+    func keep(mutate self, take o: any Other) -> i64 {
+        mut s: any Sink = Pile(items: [])
+        return s.put(o)
+    }
+}
+
+func relay(take o: any Other, d: i64) -> i64 {
+    if d > 0 {
+        return relay(o, d - 1)
+    }
+    mut s: any Sink = Pile(items: [])
+    return s.put(o)
+}
+
+interface Caller {
+    func call(self, take o: any Other, f: func(take any Other) -> i64) -> i64
+}
+
+struct Hop { n: i64 }
+Hop implements Caller {
+    func call(self, take o: any Other, f: func(take any Other) -> i64) -> i64 {
+        return f(o) + self.n
+    }
+}
+
+test "through a second vtable" {
+    mut k: any Keeper = Relay(inner: Pile(items: []))
+    let b: any Other = Sq(tag: "relayed-box-tag-padded-long-enough-heap")
+    assert k.keep(b) == 1
+}
+
+test "from a named function through a vtable" {
+    let b: any Other = Sq(tag: "named-relay-tag-padded-long-enough-heap")
+    assert relay(b, 2) == 1
+}
+
+test "to a closure parameter" {
+    mut store: Vec<any Other> = Vec.new()
+    let k: any Caller = Hop(n: 1)
+    let b: any Other = Sq(tag: "closure-kept-tag-padded-long-enough-heap")
+    let n = k.call(b, |take x: any Other| -> i64 {
+        store.push(x)
+        return store.len().to<i64>()!
+    })
+    assert n == 2
+    assert store[0].label() == "closure-kept-tag-padded-long-enough-heap"
+}

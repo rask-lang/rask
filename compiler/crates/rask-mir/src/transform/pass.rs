@@ -242,8 +242,8 @@ pub struct ClosureDropInsertionPass;
 
 impl MirPass for ClosureDropInsertionPass {
     fn name(&self) -> &str { "closure_drop_insertion" }
-    fn run(&self, fns: &mut Vec<MirFunction>, _ctx: &mut PassContext) {
-        crate::insert_all_closure_drops(fns);
+    fn run(&self, fns: &mut Vec<MirFunction>, ctx: &mut PassContext) {
+        crate::insert_all_closure_drops(fns, &ctx.vtable_bodies);
     }
 }
 

@@ -152,7 +152,15 @@ pub fn lower(input: &BackEnd, entry: &Entry) -> Result<Lowered, Vec<String>> {
     // A captured scalar has to live in memory before SSA runs, or SSA builds
     // phis over a variable whose real home is a stack slot (#1038).
     let target = ctx.target();
-    rask_mir::transform::addr_taken::run_all(&mut functions, target);
+    // Which body each vtable slot can land in: who keeps an argument handed
+    // through one is that body's answer.
+    let mut vtable_bodies = rask_mir::vtable_layout::VtableBodies::default();
+    for ((_, interface), vtable) in &input.mono.vtables {
+        for slot in &vtable.slots {
+            vtable_bodies.insert(interface, &slot.method, slot.symbol.clone());
+        }
+    }
+    rask_mir::transform::addr_taken::run_all(&mut functions, target, &vtable_bodies);
     for func in &mut functions {
         rask_mir::transform::ssa::construct(func);
     }
@@ -170,12 +178,6 @@ pub fn lower(input: &BackEnd, entry: &Entry) -> Result<Lowered, Vec<String>> {
         .keys()
         .map(|name| rask_mir::lower::const_init_fn_name(name))
         .collect();
-    let mut vtable_bodies = rask_mir::vtable_layout::VtableBodies::default();
-    for ((_, interface), vtable) in &input.mono.vtables {
-        for slot in &vtable.slots {
-            vtable_bodies.insert(interface, &slot.method, slot.symbol.clone());
-        }
-    }
     let pipeline = rask_mir::PassManager::default_pipeline().run_with(
         &mut functions,
         rask_mir::transform::pass::PassContext {

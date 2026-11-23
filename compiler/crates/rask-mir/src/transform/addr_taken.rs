@@ -227,9 +227,9 @@ fn is_scalar(func: &MirFunction, id: LocalId) -> bool {
 /// Step 1 used to be the pipeline's first pass, which ran after this. Nothing
 /// else sat between them, so moving it here changes only what step 2 gets to
 /// read.
-pub fn run_all(fns: &mut [MirFunction], target: rask_ast::Target) {
-    crate::optimize_all_closures(fns);
-    let by_value = crate::closures::closures_handed_on(fns);
+pub fn run_all(fns: &mut [MirFunction], target: rask_ast::Target, vtables: &crate::vtable_layout::VtableBodies) {
+    crate::optimize_all_closures(fns, vtables);
+    let by_value = crate::closures::closures_handed_on(fns, vtables);
     if !by_value.is_empty() {
         withdraw_borrows(fns, &by_value, target);
     }

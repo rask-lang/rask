@@ -19,6 +19,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::analysis::uses;
+use crate::vtable_layout::VtableBodies;
 use crate::{LocalId, MirFunction, MirOperand, MirStmt, MirStmtKind, MirTerminatorKind};
 
 /// Optimize closures across all functions with cross-function analysis.
@@ -29,8 +30,8 @@ use crate::{LocalId, MirFunction, MirOperand, MirStmt, MirStmtKind, MirTerminato
 /// returns/forwards → heap-allocate, suppress caller drop).
 ///
 /// Unknown callees (runtime functions, external) are assumed to take ownership.
-pub fn optimize_all_closures(fns: &mut [MirFunction]) {
-    let callee_escapes = build_callee_escape_map(fns, CaptureRule::EscapingClosure);
+pub fn optimize_all_closures(fns: &mut [MirFunction], vtables: &VtableBodies) {
+    let callee_escapes = build_callee_escape_map(fns, CaptureRule::EscapingClosure, vtables);
     let kept = KeptThroughCalls::build(fns);
     let heap_slots = captures_holding_heap_closures(fns);
     let lent = LentCells::build(fns, heap_slots);
@@ -277,8 +278,8 @@ impl KeptThroughCalls {
 /// copied. Ownership is the opposite kind of question: it is about the frame
 /// that ends up holding the thing, so it can only be asked once inlining has
 /// settled which frame that is.
-pub fn insert_all_closure_drops(fns: &mut [MirFunction]) {
-    let callee_escapes = build_callee_escape_map(fns, CaptureRule::HeapClosure);
+pub fn insert_all_closure_drops(fns: &mut [MirFunction], vtables: &VtableBodies) {
+    let callee_escapes = build_callee_escape_map(fns, CaptureRule::HeapClosure, vtables);
 
     // A function that hands a closure back makes its caller the owner —
     // `let tick = counter()` is the caller receiving a block nobody else will
@@ -390,8 +391,8 @@ fn decide_allocation(
 /// on the create and the access on each `LoadCapture` — live in two separate
 /// `MirFunction`s that share nothing but the name. So a closure handed on in one
 /// frame captures by value in all of them.
-pub(crate) fn closures_handed_on(fns: &[MirFunction]) -> HashSet<String> {
-    let callee_escapes = build_callee_escape_map(fns, CaptureRule::HeapClosure);
+pub(crate) fn closures_handed_on(fns: &[MirFunction], vtables: &VtableBodies) -> HashSet<String> {
+    let callee_escapes = build_callee_escape_map(fns, CaptureRule::HeapClosure, vtables);
     let kept = KeptThroughCalls::build(fns);
     let routes = &kept.routes;
     let mut names = HashSet::new();
@@ -1207,6 +1208,7 @@ pub(crate) enum CaptureRule {
 pub(crate) fn build_callee_escape_map(
     fns: &[MirFunction],
     rule: CaptureRule,
+    vtables: &VtableBodies,
 ) -> HashMap<String, Vec<bool>> {
     let kept = (rule == CaptureRule::EscapingClosure).then(|| KeptThroughCalls::build(fns));
     // Start from "nothing escapes" and keep adding until nothing new appears.
@@ -1248,7 +1250,7 @@ pub(crate) fn build_callee_escape_map(
                 if map.get(&func.name).is_some_and(|e| e[i]) {
                     continue;
                 }
-                if param_escapes_from(func, p.id, rule, &leaving, &map, &lent.slots, &targets) {
+                if param_escapes_from(func, p.id, rule, &leaving, &map, &lent.slots, &targets, vtables) {
                     if let Some(e) = map.get_mut(&func.name) {
                         e[i] = true;
                         changed = true;
@@ -1275,6 +1277,7 @@ fn param_escapes_from(
     known: &HashMap<String, Vec<bool>>,
     heap_slots: &HashSet<(String, u32)>,
     targets: &crate::closure_targets::ClosureTargets,
+    vtables: &VtableBodies,
 ) -> bool {
     // A task block captures a lent closure parameter as a view, so for who
     // frees what the caller's closure stays the caller's. It still has to be
@@ -1353,14 +1356,51 @@ fn param_escapes_from(
                 // s(mutate g, h)` keeps `h` as `set_to(mutate g, h)` does; read
                 // as a borrow, the caller built `h` on its stack and the frame
                 // that took it freed it. A call nobody can place stays a
-                // borrow, as before.
+                // borrow for the closure rules, which ask where an environment
+                // lives. Asked who frees a box (`AnyClosure`), it is kept: the
+                // body behind it may push it somewhere, and read as lent the
+                // caller freed what that body stored.
                 MirStmtKind::ClosureCall { closure, args, .. } => {
-                    let Some(bodies) = targets.known(&func.name, *closure) else { continue };
+                    let bodies = targets.known(&func.name, *closure);
+                    if bodies.is_none() && rule != CaptureRule::AnyClosure {
+                        continue;
+                    }
                     for (i, arg) in args.iter().enumerate() {
                         if !names.iter().any(|n| uses::operand_reads(arg, *n)) {
                             continue;
                         }
-                        if bodies.iter().any(|b| known.get(b).and_then(|e| e.get(i + 1)).copied().unwrap_or(true)) {
+                        let keeps = bodies.is_none_or(|bodies| {
+                            bodies.iter().any(|b| known.get(b).and_then(|e| e.get(i + 1)).copied().unwrap_or(true))
+                        });
+                        if keeps {
+                            return true;
+                        }
+                    }
+                }
+                // Through a vtable, every body the slot can land in answers,
+                // with `self` as each body's parameter 0. With no vtable to
+                // ask, the same split as an unplaceable closure call.
+                // `Relay.keep(take o)` doing `s.put(o)` on an `any Sink` read
+                // as keeping nothing, so its caller freed the box `put` had
+                // pushed into a vector.
+                MirStmtKind::InterfaceCall { interface_object, method_name, args, takes_receiver, .. } => {
+                    let bodies = match func.local_ty(*interface_object) {
+                        Some(crate::MirType::InterfaceObject { interface_name }) => {
+                            vtables.bodies(interface_name, method_name)
+                        }
+                        _ => None,
+                    };
+                    let keeps = |slot: usize| match bodies {
+                        Some(bodies) => bodies
+                            .iter()
+                            .any(|b| known.get(b).and_then(|e| e.get(slot)).copied().unwrap_or(true)),
+                        None => rule == CaptureRule::AnyClosure,
+                    };
+                    if *takes_receiver && is_it(interface_object) && keeps(0) {
+                        return true;
+                    }
+                    for (i, arg) in args.iter().enumerate() {
+                        if names.iter().any(|n| uses::operand_reads(arg, *n)) && keeps(i + 1) {
                             return true;
                         }
                     }
@@ -1693,8 +1733,8 @@ mod tests {
     /// first pass never saw (#1045). A test that called only the first half
     /// would assert on drops that nothing had inserted yet.
     fn run_closure_passes(fns: &mut Vec<MirFunction>) {
-        optimize_all_closures(fns);
-        insert_all_closure_drops(fns);
+        optimize_all_closures(fns, &VtableBodies::default());
+        insert_all_closure_drops(fns, &VtableBodies::default());
     }
 
     fn temp(id: u32, ty: MirType) -> MirLocal { MirLocal { id: LocalId(id), name: None, ty, is_param: false } }
