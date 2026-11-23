@@ -862,6 +862,10 @@ struct Kills {
     edges: HashSet<(usize, usize, Value)>,
     /// Owned from entry and released before the first statement.
     entry: HashSet<Value>,
+    /// The releases in `at` and in `edges` that run under a drop flag. A
+    /// flagged release covers only the paths that set the flag.
+    guarded_at: HashSet<(usize, usize, Value)>,
+    guarded_edges: HashSet<(usize, usize, Value)>,
 }
 
 fn join(
@@ -994,8 +998,12 @@ fn join(
         out.own.insert(j, true);
     }
     // A name holding the flagged value on every path where it is ours, and
-    // something untracked on the rest, certainly holds it whenever the flag
-    // is set, which is the only time it is released.
+    // nothing ours on the rest, certainly holds it whenever the flag is set,
+    // which is the only time it is released. "Nothing ours" counts a value
+    // already released on that path: a `return` from inside a match arm
+    // jumps past the arm's end, where the other arm released the same name's
+    // value, and requiring an untracked name there left the value with no
+    // name to be released under at the return (#2038).
     for (v, ours) in &flagged {
         for (n, set) in out.bind.iter_mut() {
             if set.len() < 2 {
@@ -1005,7 +1013,7 @@ fn join(
             let fits = seen.iter().enumerate().all(|(k, st)| {
                 let s = st.binds(*n);
                 if !ours[k] {
-                    return s.iter().all(|b| *b == Bind::Other);
+                    return s.iter().all(|b| b.value().is_none_or(|w| !st.owned(w)));
                 }
                 let one = (s.len() == 1).then(|| *s.iter().next().unwrap());
                 match one {
@@ -1194,12 +1202,17 @@ impl NeededLater {
             }
         }
         let joins = (0..func.blocks.len()).filter(|b| sh.preds[*b].len() >= 2).collect();
+        // Only releases that run on every path through them. A flagged one
+        // runs only where its flag is set: a `return` from inside a match arm
+        // released the arm's struct at the function's end under a flag, and
+        // reading that as covering the arm's normal exit, where the flag is
+        // clear, left the struct unreleased there (#2038).
         let mut released_at: std::collections::BTreeMap<Value, Vec<(usize, usize)>> = Default::default();
-        for (b, si, v) in &kills.at {
+        for (b, si, v) in kills.at.iter().filter(|k| !kills.guarded_at.contains(k)) {
             released_at.entry(*v).or_default().push((*b, *si));
         }
         let mut released_on: std::collections::BTreeMap<Value, HashSet<(usize, usize)>> = Default::default();
-        for (from, to, v) in &kills.edges {
+        for (from, to, v) in kills.edges.iter().filter(|k| !kills.guarded_edges.contains(k)) {
             released_on.entry(*v).or_default().insert((*from, *to));
         }
         NeededLater { succs: sh.succs.clone(), needing, joins, released_at, released_on }
@@ -1355,6 +1368,9 @@ pub fn plan(func: &MirFunction, facts: &Facts, placement: Placement) -> Plan {
                         kills.entry.insert(v);
                     } else {
                         kills.at.insert((block, si, v));
+                        if g.is_some() {
+                            kills.guarded_at.insert((block, si, v));
+                        }
                     }
                 }
                 continue;
@@ -1377,6 +1393,9 @@ pub fn plan(func: &MirFunction, facts: &Facts, placement: Placement) -> Plan {
             }
             out.push(Release::OnEdge { from: ids[pi], to: ids[bi], name, made: v.made(), guard: flags.of(g) });
             kills.edges.insert((pi, bi, v));
+            if g.is_some() {
+                kills.guarded_edges.insert((pi, bi, v));
+            }
         }
     }
     out.sort();
