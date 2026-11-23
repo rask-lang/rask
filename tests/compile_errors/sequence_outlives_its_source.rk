@@ -53,6 +53,33 @@ func item_of_a_local() -> Sequence<i64> {
     return Vec.new().as_sequence()
 }
 
+func item_of_a_taken_param(take vs: Vec<Vec<i64>>) -> Sequence<i64> {
+    for v in vs {
+        // ERROR: E0862 — `v` is lent by `vs`, which this frame owns and frees
+        return v.filter(|x| x > 1)
+    }
+    return Vec.new().as_sequence()
+}
+
+func item_hidden_by_a_local(vs: Vec<Vec<i64>>) -> Sequence<i64> {
+    for v in vs {
+        let v: Vec<i64> = [5, 6, 7]
+        // ERROR: E0862 — this `v` is the local, not the item `vs` lends
+        return v.filter(|x| x > 1)
+    }
+    return Vec.new().as_sequence()
+}
+
+func view_hidden_by_an_item(b: Bag) -> Sequence<i64> {
+    let items = b.items
+    let local: Vec<Vec<i64>> = [[5, 6, 7]]
+    for items in local {
+        // ERROR: E0862 — this `items` is lent by `local`, not a view of `b`
+        return items.filter(|x| x > 1)
+    }
+    return items.filter(|x| x > 0)
+}
+
 func make_seq(v: Vec<i64>) -> Sequence<i64> {
     return v.filter(|x| x > 0)
 }
@@ -71,6 +98,18 @@ func first_of_param(vs: Vec<Vec<i64>>) -> Sequence<i64> {
     // A loop item and an index are views of the parameter, which the caller
     // still holds.
     for v in vs {
+        return v.filter(|x| x > 1)
+    }
+    return vs[0].filter(|x| x > 0)
+}
+
+func item_again_after_a_shadow(vs: Vec<Vec<i64>>) -> Sequence<i64> {
+    for v in vs {
+        if v.len() > 5 {
+            let v: Vec<i64> = [1]
+            println("{v.len()}")
+        }
+        // The inner `v` is gone; this is the item again.
         return v.filter(|x| x > 1)
     }
     return vs[0].filter(|x| x > 0)
@@ -113,6 +152,9 @@ func main() {
     }
     let vs: Vec<Vec<i64>> = [[1, 2, 3]]
     for x in first_of_param(vs) {
+        n += x
+    }
+    for x in item_again_after_a_shadow(vs) {
         n += x
     }
     for x in through_a_view(b) {
