@@ -1071,8 +1071,20 @@ impl<'a> OwnershipChecker<'a> {
         let cur = self.chain_source(expr);
         if let ExprKind::MethodCall { object, method, args, .. } = &cur.kind {
             // A `map` makes values for the chain, which are its own to give.
-            if matches!(method.as_str(), "map" | "filter_map" | "flat_map") {
+            if matches!(method.as_str(), "map" | "filter_map") {
                 return ChainHead::Owns;
+            }
+            // `flat_map(f)` is `map(f).flatten()`: it yields what each
+            // sequence `f` makes yields, so it owns its items only when every
+            // one of those does. Classed as owning,
+            // `h.as_sequence().flat_map(|r| r.as_sequence()).find(p)` kept a
+            // row `h` still held and natively freed it twice.
+            if method == "flat_map" {
+                if args.first().is_some_and(|f| self.closure_makes_owners(&f.expr)) {
+                    return ChainHead::Owns;
+                }
+                let head = Self::call_text(cur).unwrap_or_else(|| "the sequence".to_string());
+                return ChainHead::Lends { head, collection: false };
             }
             // `chain` yields each half's items as that half hands them over:
             // owned only when both halves own theirs. A lent item stays lent
@@ -1099,14 +1111,15 @@ impl<'a> OwnershipChecker<'a> {
                     return ChainHead::Lends { head, collection: false };
                 }
                 // `Sequence<Sequence<U>>.flatten` yields what each inner
-                // sequence yields. Out of `map(|r| e)` every inner sequence
-                // is `e`, so `e`'s head says who owns the items; any other
+                // sequence yields. Out of a `map(f)` (through any adapters
+                // that hand its sequences on) every inner sequence is one `f`
+                // made, so `f`'s results say who owns the items; any other
                 // inner sequence was handed to the chain and lends its items
                 // like every sequence does (SEQ34). Classed as unknowable,
                 // `g.map(|r| r.as_sequence()).flatten().find(p)` kept a row
                 // `g` still held and natively freed it twice.
-                if let Some(made) = Self::mapped_value(object) {
-                    if matches!(self.chain_head(made), ChainHead::Owns) {
+                if let ExprKind::MethodCall { method: m, args: margs, .. } = &self.chain_source(object).kind {
+                    if m == "map" && margs.first().is_some_and(|f| self.closure_makes_owners(&f.expr)) {
                         return ChainHead::Owns;
                     }
                 }
@@ -1147,23 +1160,59 @@ impl<'a> OwnershipChecker<'a> {
         ChainHead::Unknown
     }
 
-    /// `e` in `….map(|r| e)`: the value the closure makes for each item,
-    /// when its body is that one expression.
-    fn mapped_value(expr: &Expr) -> Option<&Expr> {
-        let ExprKind::MethodCall { method, args, .. } = &expr.kind else { return None };
-        if method != "map" {
-            return None;
+    /// Whether every value the closure `f` can answer, its tail and each
+    /// `return`, owns the items it yields.
+    fn closure_makes_owners(&self, f: &Expr) -> bool {
+        let ExprKind::Closure { body, .. } = &f.kind else { return false };
+        let mut results = Vec::new();
+        Self::tail_values(body, &mut results);
+        rask_ast::visit::walk_expr_pruned(body, &mut |e| {
+            if matches!(e.kind, ExprKind::Closure { .. }) {
+                return false;
+            }
+            for st in Self::own_stmts(e) {
+                if let StmtKind::Return(Some(v)) = &st.kind {
+                    results.push(v);
+                }
+            }
+            true
+        });
+        !results.is_empty() && results.iter().all(|e| self.result_owns_items(e))
+    }
+
+    /// Whether the items of `e`, a value a closure answers, are its
+    /// receiver's. A collection answered is handed over whole, with what it
+    /// holds (mem.borrowing/S3); a sequence owns its items when its head does.
+    fn result_owns_items(&self, e: &Expr) -> bool {
+        match self.node_ty(&e.id) {
+            Some(Type::Array { .. }) => true,
+            Some(t) if self.type_name_of(t).as_deref() == Some("Vec") => true,
+            _ => matches!(self.chain_head(e), ChainHead::Owns),
         }
-        let ExprKind::Closure { body, .. } = &args.first()?.expr.kind else { return None };
-        match &body.kind {
-            ExprKind::Block(stmts) => match stmts.as_slice() {
-                [only] => match &only.kind {
-                    rask_ast::stmt::StmtKind::Return(Some(e)) | rask_ast::stmt::StmtKind::Expr(e) => Some(e),
-                    _ => None,
-                },
-                _ => None,
-            },
-            _ => Some(body),
+    }
+
+    /// The values `e` can finish with, through blocks and the arms of an
+    /// `if` or `match`. A block ending in a statement adds nothing: its exits
+    /// are its `return`s.
+    fn tail_values<'e>(e: &'e Expr, out: &mut Vec<&'e Expr>) {
+        match &e.kind {
+            ExprKind::Block(stmts) => {
+                if let Some(Stmt { kind: StmtKind::Expr(v), .. }) = stmts.last() {
+                    Self::tail_values(v, out);
+                }
+            }
+            ExprKind::If { then_branch, else_branch, .. } | ExprKind::IfLet { then_branch, else_branch, .. } => {
+                Self::tail_values(then_branch, out);
+                if let Some(e) = else_branch {
+                    Self::tail_values(e, out);
+                }
+            }
+            ExprKind::Match { arms, .. } => {
+                for arm in arms {
+                    Self::tail_values(&arm.body, out);
+                }
+            }
+            _ => out.push(e),
         }
     }
 

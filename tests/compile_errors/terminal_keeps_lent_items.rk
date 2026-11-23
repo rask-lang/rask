@@ -86,6 +86,13 @@ func rows_of_rows(grid: Vec<Vec<Vec<i64>>>) -> u64 {
     return (f ?? Vec.new()).len()
 }
 
+func rows_of_rows_flat_map(grid: Vec<Vec<Vec<i64>>>) -> u64 {
+    // `flat_map(f)` is `map(f).flatten()`, and lends the same rows.
+    // ERROR: `find` has nothing it may keep — `Vec<i64>` is lent, not owned [E0905]
+    let f = grid.as_sequence().flat_map(|r| r.as_sequence()).find(|x| x.len() > 1)
+    return (f ?? Vec.new()).len()
+}
+
 // Picking over a vector reads the element where it sits; a `map` makes items
 // the chain owns; a Copy item copies.
 func legal(rows: Vec<Vec<i64>>) -> u64 {
@@ -98,8 +105,19 @@ func legal(rows: Vec<Vec<i64>>) -> u64 {
     let g = (rows.flatten().find(|x| x > 1) ?? 0).to<u64>()!
     let h = (vecs().map(|v| v.clone()).chain(vecs().map(|v| v.clone())).find(|v| v.len() == 1) ?? Vec.new()).len()
     // Inner sequences whose items `map` made: the chain owns them.
-    let i = (rows.map(|r| r.map(|x| [x, x])).flatten().find(|v| v[0] > 1) ?? Vec.new()).len()
-    return a + b + c + d + e + f + g + h + i
+    let i = (rows.map(|r| r.map(|x| [x, x])).flatten().find(|v| v[0] > 1) ?? [0, 0]).len()
+    // Adapters between the `map` and the `flatten` hand its sequences on,
+    // and a block body's every result counts.
+    let j = (rows.map(|r| r.map(|x| [x])).take(5).flatten().find(|v| v[0] > 1) ?? [0]).len()
+    let k = rows.map(|r| r.map(|x| [x])).filter(|s| true).flatten().to_vec().len()
+    let l = (rows.map(|r| {
+        if r.len() > 9 {
+            return r.map(|x| [x, x])
+        }
+        return r.map(|x| [x, 0])
+    }).flatten().find(|v| v[0] > 1) ?? [0, 0]).len()
+    let m = (rows.as_sequence().flat_map(|r| r.map(|x| [x])).find(|v| v[0] > 1) ?? [0]).len()
+    return a + b + c + d + e + f + g + h + i + j + k + l + m
 }
 
 func main() {}
