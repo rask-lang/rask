@@ -471,6 +471,23 @@ void rask_link_set(void **slot, void *target) {
     if (!rask_link_is_none(target)) edge_register(RACK_EDGE_SLOT, slot, target);
 }
 
+// `v[i].field = target`: the slot is inside an element of `v`. A record naming
+// the slot would outlive it, since the element moves when `v` regrows and dies
+// with `v`, and `delete` would then write through a freed address (#2069). The
+// record names the vector instead, as `push` records an element's links, and
+// moves and dies with it. The old target's record stays: `delete` rescans the
+// elements and drops a record that finds nothing.
+void rask_link_set_in_vec(RaskVec *v, void **slot, void *target) {
+    *slot = target;
+    rask_link_register_element(v, target);
+}
+
+// The same for a field inside a `Map` value.
+void rask_link_set_in_map(RaskMap *m, void **slot, void *target) {
+    *slot = target;
+    rask_link_register_entry(m, target);
+}
+
 // `payload.<field at offset> = target`, where `payload` is a node of some rack.
 // Codegen emits this instead of `rask_link_set` whenever it can see statically
 // that the holder is a node, which is the overwhelmingly common edge write.

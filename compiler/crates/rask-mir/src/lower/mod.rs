@@ -2273,8 +2273,10 @@ pub struct MirLowerer<'a> {
     pub(crate) addressed_locals: std::collections::HashSet<LocalId>,
     /// The `BindPlace` part of `addressed_locals`: storage a collection or a
     /// box owns. A closure written over one is given back there; a capture's
-    /// old closure is the creating frame's to drop.
-    pub(crate) placed_locals: std::collections::HashSet<LocalId>,
+    /// old closure is the creating frame's to drop. For an element of a vector
+    /// or map, the container too: a link stored into the element is recorded
+    /// against it (`emit_link_store`).
+    pub(crate) placed_locals: HashMap<LocalId, Option<stmt::ElementHolder>>,
     /// While a `for` body over a sequence is lowered: the names of the loop's
     /// variables a `return` in it moved (`MirContext::return_moves`).
     pub(crate) seq_moved_names: Option<std::collections::HashSet<String>>,
@@ -2916,8 +2918,9 @@ impl<'a> MirLowerer<'a> {
     /// leaving the body by any route, a panic included, leaves the collection
     /// whole.
     pub(crate) fn bind_element_in_place(&mut self, local: LocalId, collection: MirOperand, at: MirOperand, map: bool) -> LocalId {
-        let slot = self.emit_element_slot(collection, at, map);
+        let slot = self.emit_element_slot(collection.clone(), at, map);
         self.bind_place(local, slot);
+        self.placed_locals.insert(local, Some(stmt::ElementHolder { coll: collection, map }));
         slot
     }
 
@@ -2925,7 +2928,7 @@ impl<'a> MirLowerer<'a> {
     pub(crate) fn bind_place(&mut self, local: LocalId, addr: LocalId) {
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::BindPlace { dst: local, addr }));
         self.addressed_locals.insert(local);
-        self.placed_locals.insert(local);
+        self.placed_locals.insert(local, None);
     }
 
     /// Read `array[at]` into `dst` for a walk over the array. An element that
@@ -4805,7 +4808,7 @@ impl<'a> MirLowerer<'a> {
             spawn_result_boxed: false,
             c_callback: false,
             addressed_locals: std::collections::HashSet::new(),
-            placed_locals: std::collections::HashSet::new(),
+            placed_locals: HashMap::new(),
             seq_moved_names: None,
             parent_name: func_name,
             pointer_checks: PointerChecks::of(&fn_decl.attrs),

@@ -243,6 +243,7 @@ impl<'a> MirLowerer<'a> {
         val_ty: MirType,
         target: &Expr,
         reuses_old: bool,
+        holder: Option<&ElementHolder>,
     ) -> Result<(), LoweringError> {
         // An edge write is not a plain store: the rack
         // records who points at whom, so `delete` can find
@@ -260,10 +261,10 @@ impl<'a> MirLowerer<'a> {
             let val_op = self.wrap_sum_field_value(
                 Some(&fty), fty.niche_none(), &val_ty, val_op,
             );
-            self.emit_link_store(base, MirOperand::Constant(MirConst::Int(offset as i64)), val_op);
+            self.emit_link_store(base, MirOperand::Constant(MirConst::Int(offset as i64)), val_op, holder);
             return Ok(());
         }
-        self.emit_aggregate_edge_stores(base, MirOperand::Constant(MirConst::Int(offset as i64)), &fty, &val_op, true);
+        self.emit_aggregate_edge_stores(base, MirOperand::Constant(MirConst::Int(offset as i64)), &fty, &val_op, true, holder);
         // The store may switch a variant whose payload holds
         // links: the live one's go before, the new one's after.
         let guarded = match &val_op {
@@ -523,6 +524,7 @@ impl<'a> MirLowerer<'a> {
         ty: &MirType,
         value: &MirOperand,
         old_held: bool,
+        holder: Option<&ElementHolder>,
     ) {
         if !self.ctx.struct_carries_links(ty) {
             return;
@@ -535,7 +537,7 @@ impl<'a> MirLowerer<'a> {
             let at = self.emit_offset_plus(&offset, slot.offset);
             let (forget, register) = match slot.kind {
                 k if k == RASK_RACK_FIELD_LINK as i32 => {
-                    self.emit_link_store(base, at, incoming);
+                    self.emit_link_store(base, at, incoming, holder);
                     continue;
                 }
                 k if k == RASK_RACK_FIELD_VEC as i32 => ("rask_link_forget_vec", "rask_link_register_vec"),
@@ -602,7 +604,31 @@ impl<'a> MirLowerer<'a> {
     /// Write a link into a slot through the rack, so the target learns who
     /// points at it. `base + offset` is the slot's address; the runtime writes
     /// it, unregisters whatever edge it held, and registers the new one.
-    fn emit_link_store(&mut self, base: crate::LocalId, offset: MirOperand, value: MirOperand) {
+    ///
+    /// A slot inside a vector element or map value is recorded against the
+    /// container instead: the element moves when the vector regrows and dies
+    /// with it, and a record naming the slot would outlive both (#2069). That
+    /// covers a store through an index (`holder`) and one through a binding
+    /// placed in the element.
+    fn emit_link_store(
+        &mut self,
+        base: crate::LocalId,
+        offset: MirOperand,
+        value: MirOperand,
+        holder: Option<&ElementHolder>,
+    ) {
+        // A `with v[i] as e` or `for mutate e in v` binding sits in the element.
+        let bound = self.placed_locals.get(&base).cloned().flatten();
+        if let Some(holder) = holder.or(bound.as_ref()) {
+            let slot = self.emit_address_at(MirOperand::Local(base), offset);
+            let func = if holder.map { "Link_set_in_map" } else { "Link_set_in_vec" };
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                dst: None,
+                func: FunctionRef::borrowing(func),
+                args: vec![holder.coll.clone(), MirOperand::Local(slot), value],
+            }));
+            return;
+        }
         // A node's own link slots keep their edge records inline in the node
         // header, so the runtime reaches the record from the offset instead of
         // scanning the old target's incoming list. Only the base tells them
@@ -1041,7 +1067,7 @@ impl<'a> MirLowerer<'a> {
                             // A link is an edge write: through the rack, into
                             // the caller's slot.
                             if scalar_mutate.as_ref().is_some_and(MirType::is_link_slot) {
-                                self.emit_link_store(local_id, MirOperand::Constant(MirConst::Int(0)), val_op);
+                                self.emit_link_store(local_id, MirOperand::Constant(MirConst::Int(0)), val_op, None);
                                 return Ok(());
                             }
                             // The caller's slot keeps its address, so its edges
@@ -1062,6 +1088,7 @@ impl<'a> MirLowerer<'a> {
                                     &dst_ty,
                                     &val_op,
                                     !in_place,
+                                    None,
                                 );
                             }
                             if let Some(ty) = replaced {
@@ -1091,7 +1118,7 @@ impl<'a> MirLowerer<'a> {
                             // replaced (#1448), and a `lines()` loop body doing
                             // `block = Vec.new()` every block.
                             let replaced = if self.addressed_locals.contains(&local_id) {
-                                let closures = self.placed_locals.contains(&local_id);
+                                let closures = self.placed_locals.contains_key(&local_id);
                                 self.released_on_overwrite(target, reuses_old, &dst_ty, closures)
                             } else {
                                 None
@@ -1206,7 +1233,7 @@ impl<'a> MirLowerer<'a> {
                             let slot = self
                                 .lower_place_chain(object)
                                 .and_then(|(_, _, oty, _)| self.field_slot_of(&oty, field));
-                            return self.store_into_place(base, offset, fty, fsize, slot, val_op, val_ty, target, reuses_old);
+                            return self.store_into_place(base, offset, fty, fsize, slot, val_op, val_ty, target, reuses_old, None);
                         }
                         // A place rooted at an index, with any number of fields
                         // after it. #411 fixed the one-field forms; two dropped
@@ -1243,9 +1270,11 @@ impl<'a> MirLowerer<'a> {
                                         let slot = self.field_path_slot(&elem_ty, &path);
                                         let (coll_op, _) = self.lower_expr(coll)?;
                                         let (idx_op, _) = self.lower_expr(idx)?;
-                                        let base = self.emit_element_slot(coll_op, idx_op, map);
+                                        let base = self.emit_element_slot(coll_op.clone(), idx_op, map);
+                                        let holder = ElementHolder { coll: coll_op, map };
                                         return self.store_into_place(
                                             base, offset, fty, fsize, slot, val_op, val_ty, target, reuses_old,
+                                            Some(&holder),
                                         );
                                     }
                                 }
@@ -1329,11 +1358,11 @@ impl<'a> MirLowerer<'a> {
                                         MirOperand::Local(sum)
                                     };
                                     if elem.is_link_slot() {
-                                        self.emit_link_store(root, elem_at, val_op);
+                                        self.emit_link_store(root, elem_at, val_op, None);
                                         return Ok(());
                                     }
                                     let elem_ty = (**elem).clone();
-                                    self.emit_aggregate_edge_stores(root, elem_at, &elem_ty, &val_op, true);
+                                    self.emit_aggregate_edge_stores(root, elem_at, &elem_ty, &val_op, true, None);
                                 }
                                 // The element the slot is about to lose, as a
                                 // field store gives its old value back. Left
@@ -3822,4 +3851,13 @@ fn same_place(a: &Expr, b: &Expr) -> bool {
         }
         _ => false,
     }
+}
+
+/// The container an element being written into lives in: `v` in
+/// `v[i].at = b`. A link stored anywhere inside the element is recorded
+/// against it (`emit_link_store`).
+#[derive(Clone)]
+pub(crate) struct ElementHolder {
+    pub(crate) coll: MirOperand,
+    pub(crate) map: bool,
 }

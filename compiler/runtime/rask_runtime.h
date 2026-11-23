@@ -862,6 +862,10 @@ void      rask_link_set(void **slot, void *target);
 // link fields keep their edge record inline in the header, so this unlinks and
 // re-splices in O(1) — no scan of the old target's incoming list.
 void      rask_link_set_node(void *payload, int64_t offset, void *target);
+// A slot inside an element of a vector or a map value: recorded against the
+// container, which moves and frees the element (#2069).
+void      rask_link_set_in_vec(RaskVec *v, void **slot, void *target);
+void      rask_link_set_in_map(RaskMap *m, void **slot, void *target);
 void      rask_link_forget(void **slot);
 void      rask_link_forget_vec(RaskVec *v);
 void      rask_link_forget_map(RaskMap *m);
