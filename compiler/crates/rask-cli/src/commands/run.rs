@@ -264,7 +264,7 @@ pub fn build_package_test_binary(
     let bin_str = bin_path.to_string_lossy().to_string();
     let obj_path = format!("{}.o", bin_str);
 
-    let input = rask_compiler::emit::BackEnd::of(&compiled, None, None);
+    let input = rask_compiler::emit::BackEnd::of(&compiled);
     if let Err(errors) = super::compile::emit_object(
         &input, &rask_compiler::emit::Entry::Tests(&tests), None,
         rask_compiler::emit::BuildMode::Debug, &obj_path,
@@ -723,9 +723,7 @@ pub fn build_test_binary(
     let bin_str = bin_path.to_string_lossy().to_string();
     let obj_path = format!("{}.o", bin_str);
 
-    let input = rask_compiler::emit::BackEnd::of(
-        &result, Some(path), source_files.first().map(|(_, s)| s.as_str()),
-    );
+    let input = rask_compiler::emit::BackEnd::of(&result);
     if let Err(errors) = super::compile::emit_object(
         &input, &rask_compiler::emit::Entry::Tests(&tests), None,
         rask_compiler::emit::BuildMode::Debug, &obj_path,
@@ -1616,9 +1614,7 @@ fn run_benchmark_file(path: &str, filter: Option<&str>, format: Format) -> Bench
     let bin_str = bin_path.to_string_lossy().to_string();
     let obj_path = format!("{}.o", bin_str);
 
-    let input = rask_compiler::emit::BackEnd::of(
-        &result, Some(path), source_files.first().map(|(_, s)| s.as_str()),
-    );
+    let input = rask_compiler::emit::BackEnd::of(&result);
     if let Err(errors) = super::compile::emit_object(
         &input, &rask_compiler::emit::Entry::Benches(&benchmarks), None,
         rask_compiler::emit::BuildMode::Release, &obj_path,

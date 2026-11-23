@@ -889,7 +889,6 @@ mod tests {
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let Some((analysis, ops, results)) = analyze(&func) else {
@@ -974,7 +973,6 @@ mod tests {
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let Some((analysis, ops, results)) = analyze(&func) else {
@@ -1062,7 +1060,6 @@ mod tests {
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         }
     }
 
@@ -1109,7 +1106,6 @@ mod tests {
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
         assert!(analyze(&func).is_none(), "IV1: no analysis without indexing");
     }
@@ -1137,7 +1133,6 @@ mod tests {
                 inline_hint: false,
                 param_modes: Vec::new(),
                 item_mode_from_body: false,
-                source_file: None,
             };
             func
         }).unwrap();

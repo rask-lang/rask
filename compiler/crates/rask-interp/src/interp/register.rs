@@ -537,8 +537,9 @@ impl Interpreter {
                         }
                         break;
                     }
-                    Err(e) => {
-                        errors.push(format!("{}", e));
+                    // A panic says where, as native's does (#1971).
+                    Err(diag) => {
+                        errors.push(self.panic_message(&diag));
                         break;
                     }
                 }
@@ -601,8 +602,8 @@ impl Interpreter {
             Err(diag) if matches!(&diag.error, RuntimeError::TestExpectFail) => {
                 expect_fail = true;
             }
-            Err(e) => {
-                errors.push(format!("{}", e));
+            Err(diag) => {
+                errors.push(self.panic_message(&diag));
             }
         }
 

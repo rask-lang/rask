@@ -216,12 +216,11 @@ struct CodegenCtx<'a> {
     /// `rask_mir::transform::addr_taken`.
     addr_taken: &'a rask_mir::transform::addr_taken::AddrTaken,
     block_map: &'a HashMap<BlockId, Block>,
+    /// The file the statement being lowered came from, for panic locations.
     source_file: Option<&'a str>,
-    line_map: Option<&'a rask_ast::LineMap>,
+    sources: Option<&'a rask_ast::SourceMap>,
     current_line: u32,
     current_col: u32,
-    /// Byte offset of the current MIR statement being lowered
-    current_span_start: u32,
     ret_ty: &'a MirType,
     /// The caller's destination for an aggregate return, when the return goes
     /// through one. Block param zero of the entry block (#1109).
@@ -416,8 +415,8 @@ pub struct FunctionBuilder<'a> {
     current_line: u32,
     current_col: u32,
 
-    /// Line map for converting byte offsets → line:col
-    line_map: Option<&'a rask_ast::LineMap>,
+    /// The program's source files, for panic locations
+    sources: Option<&'a rask_ast::SourceMap>,
 
     /// Table-driven call adaptation (populated from dispatch::stdlib_entries)
     adapt_table: HashMap<String, (ArgAdapt, RetAdapt)>,
@@ -440,6 +439,24 @@ static NO_C_ABI_PLANS: std::sync::LazyLock<HashMap<String, rask_mir::c_call::Cal
     std::sync::LazyLock::new(HashMap::new);
 
 impl<'a> CodegenCtx<'a> {
+    /// Point panic locations at `span`, in whichever file it is from. A span
+    /// with no file (synthesized, or stdlib) clears the location rather than
+    /// reading its offset against some other file's lines.
+    fn locate(&mut self, span: rask_ast::Span) {
+        match self.sources.and_then(|s| s.locate(span)) {
+            Some((file, line, col)) => {
+                self.source_file = Some(file);
+                self.current_line = line;
+                self.current_col = col;
+            }
+            None => {
+                self.source_file = None;
+                self.current_line = 0;
+                self.current_col = 0;
+            }
+        }
+    }
+
     /// The machine the code is for: the one lowering laid the types out for.
     fn target(&self) -> rask_ast::Target {
         self.field_types.target
@@ -506,7 +523,7 @@ impl<'a> FunctionBuilder<'a> {
             stack_slot_map: HashMap::new(),
             current_line: 0,
             current_col: 0,
-            line_map: None,
+            sources: None,
             adapt_table: crate::dispatch::build_adapt_table(),
             c_abi_plans: &NO_C_ABI_PLANS,
             field_types: &NO_FIELD_TYPES,
@@ -553,9 +570,8 @@ impl<'a> FunctionBuilder<'a> {
         builder.seal_block(cont);
     }
 
-    /// Set the line map for converting byte offsets to line:col in assert messages.
-    pub fn set_line_map(&mut self, line_map: &'a rask_ast::LineMap) {
-        self.line_map = Some(line_map);
+    pub fn set_sources(&mut self, sources: &'a rask_ast::SourceMap) {
+        self.sources = Some(sources);
     }
 
     /// Build the Cranelift IR from MIR.
@@ -760,18 +776,6 @@ impl<'a> FunctionBuilder<'a> {
             builder.def_var(var, block_param);
         }
 
-        // For main(): emit rask_set_origin_file(source_file) so .origin() includes file name
-        if self.mir_fn.name == "main" {
-            if let Some(file_name) = self.mir_fn.source_file.as_deref() {
-                if let Some(gv) = self.string_globals.get(file_name) {
-                    let file_ptr = builder.ins().global_value(types::I64, *gv);
-                    if let Some(func_ref) = self.func_refs.get("rask_set_origin_file") {
-                        builder.ins().call(*func_ref, &[file_ptr]);
-                    }
-                }
-            }
-        }
-
         let mut ctx = CodegenCtx {
             var_map: &self.var_map,
             locals: &self.mir_fn.locals,
@@ -793,11 +797,10 @@ impl<'a> FunctionBuilder<'a> {
             stack_slot_map: &self.stack_slot_map,
             addr_taken: &addr_taken,
             block_map: &self.block_map,
-            source_file: self.mir_fn.source_file.as_deref(),
-            line_map: self.line_map,
+            source_file: None,
+            sources: self.sources,
             current_line: self.current_line,
             current_col: self.current_col,
-            current_span_start: 0,
             ret_ty: &self.mir_fn.ret_ty,
             dst_param,
             is_main: self.mir_fn.name == "main",
@@ -850,13 +853,7 @@ impl<'a> FunctionBuilder<'a> {
             // Lower statements
             for stmt in &mir_block.statements {
                 Self::apply_srcloc(&mut builder, stmt.span);
-                ctx.current_span_start = stmt.span.start as u32;
-                // Update line:col from span if we have a line map
-                if let Some(lm) = ctx.line_map {
-                    let (line, col) = lm.offset_to_line_col(stmt.span.start);
-                    ctx.current_line = line as u32;
-                    ctx.current_col = col as u32;
-                }
+                ctx.locate(stmt.span);
                 Self::lower_stmt(&mut builder, stmt, &ctx)?;
             }
 
@@ -937,14 +934,13 @@ impl<'a> FunctionBuilder<'a> {
             // so a `switch` in an inlined `match` is a switch here too.
             let mut cleanup_targets = self.block_map.clone();
             cleanup_targets.extend(cleanup_block_map.iter().map(|(k, v)| (*k, *v)));
-            // The file and line map stay: a panic in a function an `ensure`
+            // The sources stay: a panic in a function an `ensure`
             // calls is reported where it happens, whichever path ran the
             // body (#1950). Dropping them here printed `panic: not yet
             // implemented` with no location for every panic in a cleanup.
             let mut cleanup_ctx = CodegenCtx {
                 current_line: 0,
                 current_col: 0,
-                current_span_start: 0,
                 block_map: &cleanup_targets,
                 ..ctx
             };
@@ -1015,12 +1011,7 @@ impl<'a> FunctionBuilder<'a> {
                 builder.switch_to_block(cl_block);
                 for stmt in &mir_block.statements {
                     Self::apply_srcloc(&mut builder, stmt.span);
-                    cleanup_ctx.current_span_start = stmt.span.start as u32;
-                    if let Some(lm) = cleanup_ctx.line_map {
-                        let (line, col) = lm.offset_to_line_col(stmt.span.start);
-                        cleanup_ctx.current_line = line as u32;
-                        cleanup_ctx.current_col = col as u32;
-                    }
+                    cleanup_ctx.locate(stmt.span);
                     Self::lower_stmt(&mut builder, stmt, &cleanup_ctx)?;
                 }
 

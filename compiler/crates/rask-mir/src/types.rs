@@ -4,7 +4,7 @@
 
 /// Result layout offsets — single source of truth in `rask_types::abi`.
 pub use rask_types::abi::{
-    RESULT_ORIGIN_FILE_OFFSET, RESULT_ORIGIN_LINE_BYTES,
+    RESULT_ORIGIN_FILE_BYTES, RESULT_ORIGIN_FILE_OFFSET, RESULT_ORIGIN_LINE_BYTES,
     RESULT_ORIGIN_LINE_OFFSET, TAG_BYTES, TAG_OFFSET,
 };
 

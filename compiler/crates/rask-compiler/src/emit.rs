@@ -24,16 +24,14 @@ pub struct BackEnd<'a> {
     pub decls: &'a [Decl],
     pub folded: &'a Folded,
     pub package_modules: &'a HashSet<String>,
-    /// For panic locations, try origins and DWARF.
-    pub source_file: Option<&'a str>,
-    pub source_text: Option<&'a str>,
+    /// Every source file, by `Span::file_id`: panic locations, try origins,
+    /// DWARF and where a C import's header is looked for.
+    pub sources: &'a rask_ast::SourceMap,
 }
 
 impl<'a> BackEnd<'a> {
     pub fn of(
         result: &'a crate::CompileResult,
-        source_file: Option<&'a str>,
-        source_text: Option<&'a str>,
     ) -> Self {
         BackEnd {
             mono: &result.mono,
@@ -41,8 +39,7 @@ impl<'a> BackEnd<'a> {
             decls: &result.decls,
             folded: &result.folded,
             package_modules: &result.package_modules,
-            source_file,
-            source_text,
+            sources: &result.sources,
         }
     }
 }
@@ -80,7 +77,6 @@ pub struct Lowered {
 /// Lower to MIR and run the pass pipeline.
 pub fn lower(input: &BackEnd, entry: &Entry) -> Result<Lowered, Vec<String>> {
     let all_mono_decls = mono_decls(input.mono, input.decls);
-    let line_map = input.source_text.map(rask_ast::LineMap::new);
     let type_names = input.typed.types.type_name_map();
     let interface_methods = rask_check::interface_vtable_methods(&input.typed.types);
     let interface_take_self = rask_check::interface_take_self_methods(&input.typed.types);
@@ -102,9 +98,8 @@ pub fn lower(input: &BackEnd, entry: &Entry) -> Result<Lowered, Vec<String>> {
     .with_interface_methods(interface_methods)
     .with_interface_take_self(interface_take_self)
     .with_mono_calls(input.mono)
-    .with_nominal_underlying(&nominal_underlying);
-    ctx.line_map = line_map.as_ref();
-    ctx.source_file = input.source_file;
+    .with_nominal_underlying(&nominal_underlying)
+    .with_sources(input.sources);
 
     let mut errors = Vec::new();
     let mut functions = Vec::new();
@@ -450,11 +445,9 @@ fn emit_inner(
     codegen.register_comptime_globals(&input.folded.data).map_err(fail)?;
     codegen.register_const_slots(&functions).map_err(fail)?;
 
-    // Panic locations and try origins read the line map in every build; the
+    // Panic locations and try origins read the sources in every build; the
     // DWARF tables are codegen's call, by build mode.
-    if let (Some(file), Some(text)) = (input.source_file, input.source_text) {
-        codegen.set_debug_context(file, rask_ast::LineMap::new(text));
-    }
+    codegen.set_sources(input.sources.clone()).map_err(fail)?;
     codegen.set_inline_regions(pipeline.inline_regions);
     codegen.set_field_types(field_types).map_err(fail)?;
 
@@ -509,10 +502,9 @@ fn write_inline_wrappers(
         None => (std::env::consts::ARCH.to_string(), std::env::consts::OS.to_string()),
     };
     let dirs: HashMap<u16, std::path::PathBuf> = input
-        .source_file
-        .and_then(|f| std::path::Path::new(f).parent())
-        .map(|d| (0u16, d.to_path_buf()))
-        .into_iter()
+        .sources
+        .files()
+        .filter_map(|(id, f)| Some((id, std::path::Path::new(&f.name).parent()?.to_path_buf())))
         .collect();
     let cx = crate::c_import::Context { source_dirs: &dirs, arch: &arch, os: &os };
     let src = crate::c_import::inline_wrappers(input.decls, &cx)?.unwrap_or_default();

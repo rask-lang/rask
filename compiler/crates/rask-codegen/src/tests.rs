@@ -81,7 +81,6 @@ mod tests {
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let mut gen = CodeGenerator::new(crate::BuildMode::Debug).unwrap();
@@ -106,7 +105,6 @@ mod tests {
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let mut gen = CodeGenerator::new(crate::BuildMode::Debug).unwrap();
@@ -144,7 +142,6 @@ mod tests {
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let mut gen = CodeGenerator::new(crate::BuildMode::Debug).unwrap();
@@ -187,7 +184,6 @@ mod tests {
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let main_fn = MirFunction {
@@ -207,7 +203,6 @@ mod tests {
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let mut gen = CodeGenerator::new(crate::BuildMode::Debug).unwrap();
@@ -232,7 +227,6 @@ mod tests {
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let main_fn = MirFunction {
@@ -250,7 +244,6 @@ mod tests {
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let mut gen = CodeGenerator::new(crate::BuildMode::Debug).unwrap();
@@ -302,7 +295,6 @@ mod tests {
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let mut gen = CodeGenerator::new(crate::BuildMode::Debug).unwrap();
@@ -372,7 +364,6 @@ mod tests {
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let mut gen = CodeGenerator::new(crate::BuildMode::Debug).unwrap();
@@ -417,7 +408,6 @@ mod tests {
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let run_fn = MirFunction {
@@ -461,7 +451,6 @@ mod tests {
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let mut gen = CodeGenerator::new(crate::BuildMode::Debug).unwrap();
@@ -491,7 +480,6 @@ mod tests {
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let mut gen = CodeGenerator::new(crate::BuildMode::Debug).unwrap();
@@ -536,7 +524,6 @@ mod tests {
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let mut gen = CodeGenerator::new(crate::BuildMode::Debug).unwrap();
@@ -567,7 +554,6 @@ mod tests {
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let mut gen = CodeGenerator::new(crate::BuildMode::Debug).unwrap();
@@ -598,7 +584,6 @@ mod tests {
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let mut gen = CodeGenerator::new(crate::BuildMode::Debug).unwrap();
@@ -624,7 +609,6 @@ mod tests {
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let mut gen = CodeGenerator::new(crate::BuildMode::Debug).unwrap();
@@ -667,7 +651,6 @@ mod tests {
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let mono = mono_with_point_struct();
@@ -708,7 +691,6 @@ mod tests {
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let mono = mono_with_point_struct();
@@ -748,7 +730,6 @@ mod tests {
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let mono = mono_with_result_enum();
@@ -802,7 +783,6 @@ mod tests {
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let mono = mono_with_result_enum();
@@ -842,7 +822,6 @@ mod tests {
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let mono = mono_with_point_struct();
@@ -877,7 +856,6 @@ mod tests {
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let mut gen = CodeGenerator::new(crate::BuildMode::Debug).unwrap();
@@ -914,7 +892,6 @@ mod tests {
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let mut gen = CodeGenerator::new(crate::BuildMode::Debug).unwrap();
@@ -947,7 +924,6 @@ mod tests {
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let mut gen = CodeGenerator::new(crate::BuildMode::Debug).unwrap();
@@ -981,7 +957,6 @@ mod tests {
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let mut gen = CodeGenerator::new(crate::BuildMode::Debug).unwrap();
@@ -1015,7 +990,6 @@ mod tests {
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let mut gen = CodeGenerator::new(crate::BuildMode::Debug).unwrap();
@@ -1057,7 +1031,6 @@ mod tests {
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let mono = mono_with_point_struct();
@@ -1097,7 +1070,6 @@ mod tests {
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let mono = mono_with_result_enum();
@@ -1146,7 +1118,6 @@ mod tests {
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let mut gen = CodeGenerator::new(crate::BuildMode::Debug).unwrap();
@@ -1181,7 +1152,6 @@ mod tests {
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let mut gen = CodeGenerator::new(crate::BuildMode::Debug).unwrap();
@@ -1213,7 +1183,6 @@ mod tests {
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let mut gen = CodeGenerator::new(crate::BuildMode::Debug).unwrap();
@@ -1247,7 +1216,6 @@ mod tests {
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let mut gen = CodeGenerator::new(crate::BuildMode::Debug).unwrap();
@@ -1283,7 +1251,6 @@ mod tests {
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let mut gen = gen_with_stdlib();
@@ -1315,7 +1282,6 @@ mod tests {
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let mut gen = gen_with_stdlib();
@@ -1337,7 +1303,6 @@ mod tests {
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let caller_fn = MirFunction {
@@ -1355,7 +1320,6 @@ mod tests {
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let mut gen = gen_with_stdlib();
@@ -1426,7 +1390,6 @@ mod tests {
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let main_fn = MirFunction {
@@ -1459,7 +1422,6 @@ mod tests {
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let mut gen = CodeGenerator::new(crate::BuildMode::Debug).unwrap();
@@ -1510,7 +1472,6 @@ mod tests {
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let main_fn = MirFunction {
@@ -1555,7 +1516,6 @@ mod tests {
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let mut gen = CodeGenerator::new(crate::BuildMode::Debug).unwrap();
@@ -1609,7 +1569,6 @@ mod tests {
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let make_fn = MirFunction {
@@ -1639,7 +1598,6 @@ mod tests {
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let main_fn = MirFunction {
@@ -1666,7 +1624,6 @@ mod tests {
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let mut gen = CodeGenerator::new(crate::BuildMode::Debug).unwrap();
@@ -1710,7 +1667,6 @@ mod tests {
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let main_fn = MirFunction {
@@ -1744,7 +1700,6 @@ mod tests {
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let mut gen = CodeGenerator::new(crate::BuildMode::Debug).unwrap();
@@ -1798,7 +1753,6 @@ mod tests {
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let outer_fn = MirFunction {
@@ -1836,7 +1790,6 @@ mod tests {
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let main_fn = MirFunction {
@@ -1873,7 +1826,6 @@ mod tests {
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let all_fns = [inner_fn.clone(), outer_fn.clone(), main_fn.clone()];
@@ -1920,7 +1872,6 @@ mod tests {
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let main_fn = MirFunction {
@@ -1975,7 +1926,6 @@ mod tests {
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let all_fns = [closure_fn.clone(), main_fn.clone()];
@@ -2025,7 +1975,6 @@ mod tests {
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let sub_fn = MirFunction {
@@ -2054,7 +2003,6 @@ mod tests {
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let main_fn = MirFunction {
@@ -2104,7 +2052,6 @@ mod tests {
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let all_fns = [add_fn.clone(), sub_fn.clone(), main_fn.clone()];

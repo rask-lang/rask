@@ -115,7 +115,6 @@ pub fn collect_function_debug(
     struct_layouts: &[StructLayout],
     enum_layouts: &[EnumLayout],
     target: rask_ast::Target,
-    line_map: Option<&LineMap>,
 ) -> Option<FunctionDebugInfo> {
     let all_srclocs = compiled.buffer.get_srclocs_sorted();
     let mut srclocs = Vec::new();
@@ -148,7 +147,7 @@ pub fn collect_function_debug(
         ))
         .collect();
 
-    let inlined_callees = compute_inline_ranges(&srclocs, inline_regions, line_map);
+    let inlined_callees = compute_inline_ranges(&srclocs, inline_regions);
 
     Some(FunctionDebugInfo {
         func_id,
@@ -240,7 +239,6 @@ fn mir_type_to_var_info(
 fn compute_inline_ranges(
     srclocs: &[SrcLocEntry],
     inline_regions: &[rask_mir::InlineRegion],
-    _line_map: Option<&LineMap>,
 ) -> Vec<InlinedCalleeInfo> {
     let mut result = Vec::new();
     for region in inline_regions {

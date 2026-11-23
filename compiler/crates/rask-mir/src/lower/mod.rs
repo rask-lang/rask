@@ -24,7 +24,7 @@ use crate::types::{StructLayoutId, EnumLayoutId};
 use rask_ast::{
     decl::{ConstDecl, Decl, DeclKind, FnDecl},
     expr::{BinOp, Expr, ExprKind, UnaryOp},
-    LineMap, NodeId, Span,
+    NodeId, Span,
 };
 use rask_layout::{StructLayout, EnumLayout};
 use rask_types::Type;
@@ -574,8 +574,7 @@ impl<'a> MirContext<'a> {
             folded: empty::folded(),
             extern_funcs: empty::strings(),
             package_modules: empty::strings(),
-            line_map: None,
-            source_file: None,
+            sources: None,
             interface_methods: HashMap::new(),
             interface_take_self: HashMap::new(),
             map_key_fns: CallMap::of(empty::map_key_fns()),
@@ -609,9 +608,8 @@ impl<'a> MirContext<'a> {
         self
     }
 
-    pub fn with_source(mut self, path: &'a str, line_map: Option<&'a LineMap>) -> Self {
-        self.source_file = Some(path);
-        self.line_map = line_map;
+    pub fn with_sources(mut self, sources: &'a rask_ast::SourceMap) -> Self {
+        self.sources = Some(sources);
         self
     }
 
@@ -717,10 +715,8 @@ pub struct MirContext<'a> {
     /// Names of imported external packages — used to recognize cross-package
     /// qualified calls like `pkg.func()` and `pkg.Type` field access.
     pub package_modules: &'a std::collections::HashSet<String>,
-    /// Line map for converting byte offsets to line:col (None in tests)
-    pub line_map: Option<&'a LineMap>,
-    /// Source file path for runtime error messages (None in tests)
-    pub source_file: Option<&'a str>,
+    /// The program's files, for a try site's origin (None in tests).
+    pub sources: Option<&'a rask_ast::SourceMap>,
     /// Interface method lists for interface object dispatch.
     /// Key: interface name, Value: method names in declaration order.
     pub interface_methods: HashMap<String, Vec<String>>,
@@ -1119,8 +1115,7 @@ impl<'a> MirContext<'a> {
             folded: &EMPTY_FOLDED,
             extern_funcs: &EMPTY_EXTERNS,
             package_modules: &EMPTY_PACKAGES,
-            line_map: None,
-            source_file: None,
+            sources: None,
             interface_methods: HashMap::new(),
             interface_take_self: HashMap::new(),
             interface_coercions: &EMPTY_COERCIONS,
@@ -5047,11 +5042,7 @@ impl<'a> MirLowerer<'a> {
         let mut main_fn = lowerer.builder.finish();
         main_fn.is_extern_c = fn_decl.abi.is_some();
         main_fn.inline_hint = fn_decl.attrs.iter().any(|a| a.is("inline"));
-        main_fn.source_file = ctx.source_file.map(|s| s.to_string());
         let mut result = vec![main_fn];
-        for f in &mut lowerer.synthesized_functions {
-            f.source_file = ctx.source_file.map(|s| s.to_string());
-        }
         result.extend(lowerer.synthesized_functions);
         for c in &const_init_thunks {
             result.extend(Self::lower_const_init(c, all_decls, ctx)?);
@@ -7993,8 +7984,7 @@ mod tests {
             folded: &folded,
             extern_funcs: &extern_funcs,
             package_modules: &std::collections::HashSet::new(),
-            line_map: None,
-            source_file: None,
+            sources: None,
             interface_methods: HashMap::new(),
             interface_take_self: HashMap::new(),
             interface_coercions: &empty_coercions,
@@ -8101,8 +8091,7 @@ mod tests {
             folded: &folded,
             extern_funcs: &extern_funcs,
             package_modules: &std::collections::HashSet::new(),
-            line_map: None,
-            source_file: None,
+            sources: None,
             interface_methods: HashMap::new(),
             interface_take_self: HashMap::new(),
             interface_coercions: &empty_coercions,
@@ -8216,8 +8205,7 @@ mod tests {
             folded: &folded,
             extern_funcs: &extern_funcs,
             package_modules: &std::collections::HashSet::new(),
-            line_map: None,
-            source_file: None,
+            sources: None,
             interface_methods: HashMap::new(),
             interface_take_self: HashMap::new(),
             interface_coercions: &empty_coercions,

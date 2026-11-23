@@ -384,10 +384,23 @@ impl<'a> MirLowerer<'a> {
                 access: FieldAccess::Sized(crate::types::RESULT_ORIGIN_LINE_BYTES),
             },
         }));
-        // Compute this try site's line number
-        let try_line = self.ctx.line_map
-            .map(|lm| lm.offset_to_line_col(self.builder.current_span().start).0 as i64)
-            .unwrap_or(0);
+        let src_origin_file = self.builder.alloc_temp(MirType::U64);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: src_origin_file,
+            rvalue: MirRValue::Field {
+                base: result.clone(),
+                field_index: 2,
+                byte_offset: Some(crate::types::RESULT_ORIGIN_FILE_OFFSET),
+                access: FieldAccess::Sized(crate::types::RESULT_ORIGIN_FILE_BYTES),
+            },
+        }));
+        // This try site: its line, and its file as an index into the table
+        // the entry point hands the runtime (`rask_add_origin_file`), plus one.
+        let here = self.builder.current_span();
+        let (try_line, try_file) = match self.ctx.sources.and_then(|s| s.locate(here)) {
+            Some((_, line, _)) => (line as i64, here.file_id as i64 + 1),
+            None => (0, 0),
+        };
 
         // If source origin_line is 0 (unset), use this try site; otherwise preserve source.
         // MIR doesn't have select/cmov, so use branch.
@@ -395,6 +408,7 @@ impl<'a> MirLowerer<'a> {
         let origin_unset_block = self.builder.create_block();
         let origin_merge_block = self.builder.create_block();
         let origin_line_local = self.builder.alloc_temp(MirType::U32);
+        let origin_file_local = self.builder.alloc_temp(MirType::U64);
 
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
             cond: MirOperand::Local(src_origin_line),
@@ -408,6 +422,10 @@ impl<'a> MirLowerer<'a> {
             dst: origin_line_local,
             rvalue: MirRValue::Use(MirOperand::Local(src_origin_line)),
         }));
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: origin_file_local,
+            rvalue: MirRValue::Use(MirOperand::Local(src_origin_file)),
+        }));
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
             target: origin_merge_block,
         }));
@@ -418,6 +436,10 @@ impl<'a> MirLowerer<'a> {
             dst: origin_line_local,
             rvalue: MirRValue::Use(MirOperand::Constant(MirConst::Int(try_line))),
         }));
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: origin_file_local,
+            rvalue: MirRValue::Use(MirOperand::Constant(MirConst::Int(try_file))),
+        }));
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
             target: origin_merge_block,
         }));
@@ -426,8 +448,8 @@ impl<'a> MirLowerer<'a> {
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
             addr: ret_result,
             offset: crate::types::RESULT_ORIGIN_FILE_OFFSET,
-            value: MirOperand::Constant(MirConst::Int(0)),
-            store_size: 8,
+            value: MirOperand::Local(origin_file_local),
+            store_size: crate::types::RESULT_ORIGIN_FILE_BYTES,
             field: None,
         }));
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {

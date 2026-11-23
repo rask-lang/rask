@@ -173,6 +173,5 @@ fn build(owned: &[(String, &'static str, MirType)]) -> MirFunction {
         inline_hint: false,
         param_modes: Vec::new(),
         item_mode_from_body: false,
-        source_file: None,
     }
 }

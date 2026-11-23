@@ -161,6 +161,9 @@ pub struct CompileResult {
     /// Every value computed at compile time (ctrl.comptime/CT2).
     pub folded: Folded,
     pub package_modules: HashSet<String>,
+    /// Every source file, by `Span::file_id`: where a panic or an error's
+    /// origin says it happened.
+    pub sources: rask_ast::SourceMap,
 }
 
 /// Output of any pipeline operation.
@@ -204,6 +207,16 @@ impl<T> PipelineOutput<T> {
     }
 }
 
+/// The files a program was checked from, by the `file_id` each was parsed
+/// with: its position in `source_files`.
+pub fn source_map(source_files: &[(PathBuf, String)]) -> rask_ast::SourceMap {
+    let mut map = rask_ast::SourceMap::new();
+    for (path, text) in source_files {
+        map.push(path.to_string_lossy(), text.as_str());
+    }
+    map
+}
+
 /// Ready an interpreter to run what `result` checked: the same `cfg`, the
 /// checker's tables, the source for diagnostics, and the packages.
 ///
@@ -214,9 +227,7 @@ impl<T> PipelineOutput<T> {
 pub fn prepare_interpreter(interp: &mut rask_interp::Interpreter, result: &CheckResult) {
     interp.inject_cfg(&result.cfg);
     interp.adopt_checker_tables(&result.typed);
-    if let Some((path, source)) = result.source_files.first() {
-        interp.set_source_info(&path.to_string_lossy(), source);
-    }
+    interp.set_sources(source_map(&result.source_files));
     if !result.package_names.is_empty() {
         interp.register_packages(&result.package_names);
     }
@@ -1477,6 +1488,7 @@ fn finalize_compile_inner(
             decls: check.decls,
             folded,
             package_modules,
+            sources: source_map(&pkg_source_files),
         },
         diags,
         pkg_source_files,

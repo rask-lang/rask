@@ -30,9 +30,6 @@ pub struct MirProgram {
 
     /// Interface name → method names, for vtable construction.
     pub interface_methods: HashMap<String, Vec<String>>,
-
-    /// Source file path (for error messages in generated code).
-    pub source_file: Option<String>,
 }
 
 impl MirProgram {
@@ -69,7 +66,6 @@ mod tests {
             enum_layouts: vec![],
             comptime_globals: HashMap::new(),
             interface_methods: HashMap::new(),
-            source_file: None,
         }
     }
 
@@ -102,7 +98,6 @@ mod tests {
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         });
         assert_eq!(prog.functions().len(), 1);
         assert_eq!(prog.functions()[0].name, "main");
@@ -142,7 +137,6 @@ mod tests {
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         });
         prog.functions_mut()[0].name = "bar".to_string();
         assert_eq!(prog.functions()[0].name, "bar");

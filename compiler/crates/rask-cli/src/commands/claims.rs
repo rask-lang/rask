@@ -109,7 +109,7 @@ fn package_claims_into(path: &str, format: Format, mode: ClaimsMode, results: &m
         return ClaimsOutcome::Held;
     }
     let runs = claim_runs(&plan);
-    let input = rask_compiler::emit::BackEnd::of(&compiled.result, None, None);
+    let input = rask_compiler::emit::BackEnd::of(&compiled.result);
     let entry = rask_compiler::emit::Entry::Claims(&runs);
     let lowered = match rask_compiler::emit::lower(&input, &entry) {
         Ok(lowered) => lowered,
@@ -1493,7 +1493,7 @@ pub(super) fn reach(path: &str) -> Option<(PathBuf, Vec<ReachedClaim>)> {
     };
     let compiled = compile_claims(path, &sources, &mut plan, Variant::default())?;
     let runs = claim_runs(&plan);
-    let input = rask_compiler::emit::BackEnd::of(&compiled.result, None, None);
+    let input = rask_compiler::emit::BackEnd::of(&compiled.result);
     let entry = rask_compiler::emit::Entry::Claims(&runs);
     let lowered = match rask_compiler::emit::lower(&input, &entry) {
         Ok(l) => l,
@@ -1558,7 +1558,7 @@ pub(super) fn verdicts(path: &str, variant: Variant) -> Option<Vec<(String, bool
         return Some(Vec::new());
     }
     let runs = claim_runs(&plan);
-    let input = rask_compiler::emit::BackEnd::of(&compiled.result, None, None);
+    let input = rask_compiler::emit::BackEnd::of(&compiled.result);
     let entry = rask_compiler::emit::Entry::Claims(&runs);
     let lowered = rask_compiler::emit::lower(&input, &entry).ok()?;
     let bin = link_claims(&input, &entry, lowered, &compiled.link_opts)?;

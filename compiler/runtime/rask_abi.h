@@ -16,6 +16,10 @@
 // `uint32_t`, zero for none (`rask_types::abi`).
 #define RASK_RESULT_ORIGIN_LINE_OFFSET 4
 
+// Where it keeps the file: a `uint64_t`, the file's index in
+// `rask_origin_files` plus one, zero for none.
+#define RASK_RESULT_ORIGIN_FILE_OFFSET 8
+
 // How the runtime reads one element of a vector it formats or sorts. The
 // vector only records a width, and a four-byte element could be an i32,
 // a u32 or an f32 — which print and order differently — so the caller

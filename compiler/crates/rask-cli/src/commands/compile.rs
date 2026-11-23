@@ -16,8 +16,7 @@ pub fn emit_object(
 ) -> Result<(), Vec<String>> {
     let emitted = rask_compiler::emit::emit(input, entry, target, build_mode, obj_path);
     if !emitted.diagnostics.is_empty() {
-        let fmt = DiagnosticFormatter::new(input.source_text.unwrap_or(""))
-            .with_file_name(input.source_file.unwrap_or("<unknown>"));
+        let fmt = DiagnosticFormatter::new("").with_sources(input.sources);
         for d in &emitted.diagnostics {
             eprintln!("{}", fmt.format(d));
         }

@@ -29,8 +29,8 @@ pub(crate) enum Format {
 /// program. Without it a diagnostic raised inside one carried a stdlib byte
 /// offset and got resolved against the user's file — `examples/19_unsafe.rk:152`
 /// on a 151-line program, quoting a blank line.
-fn sources_for(files: &[(String, &str)]) -> rask_diagnostics::source_map::SourceMap {
-    let mut map = rask_diagnostics::source_map::SourceMap::new();
+fn sources_for(files: &[(String, &str)]) -> rask_ast::SourceMap {
+    let mut map = rask_ast::SourceMap::new();
     for (i, (name, text)) in files.iter().enumerate() {
         map.insert_at(i as u16, name.clone(), *text);
     }

@@ -1191,7 +1191,6 @@ mod tests {
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
 
         }
     }
@@ -1221,7 +1220,6 @@ mod tests {
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
 
         }
     }
@@ -1290,7 +1288,6 @@ mod tests {
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
         let caller = MirFunction {
             name: "main".to_string(),
@@ -1311,7 +1308,6 @@ mod tests {
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let mut fns = vec![caller, callee];
@@ -1382,7 +1378,6 @@ mod tests {
                 inline_hint: false,
                 param_modes: Vec::new(),
                 item_mode_from_body: false,
-                source_file: None,
     
             },
         ];
@@ -1418,7 +1413,6 @@ mod tests {
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         }
     }
 
@@ -1470,7 +1464,6 @@ mod tests {
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
 
         }];
         let blocks_before = fns[0].blocks.len();

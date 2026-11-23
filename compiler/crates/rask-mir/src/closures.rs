@@ -1930,7 +1930,6 @@ mod tests {
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let mut fns = vec![func];
@@ -1964,7 +1963,6 @@ mod tests {
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         }];
 
         run_closure_passes(&mut fns);
@@ -2002,7 +2000,6 @@ mod tests {
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         }];
 
         run_closure_passes(&mut fns);
@@ -2035,7 +2032,6 @@ mod tests {
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let caller_fn = MirFunction {
@@ -2064,7 +2060,6 @@ mod tests {
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let mut fns = vec![apply_fn, caller_fn];
@@ -2099,7 +2094,6 @@ mod tests {
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let caller_fn = MirFunction {
@@ -2128,7 +2122,6 @@ mod tests {
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let mut fns = vec![store_fn, caller_fn];
@@ -2190,7 +2183,6 @@ mod tests {
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let f_fn = MirFunction {
@@ -2220,7 +2212,6 @@ mod tests {
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let mut fns = vec![outer_closure, f_fn];
@@ -2279,7 +2270,6 @@ mod tests {
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let f_fn = MirFunction {
@@ -2319,7 +2309,6 @@ mod tests {
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let mut fns = vec![outer_closure, f_fn];
@@ -2396,7 +2385,6 @@ mod tests {
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         }];
 
         run_closure_passes(&mut fns);
@@ -2455,7 +2443,6 @@ mod tests {
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         }];
 
         run_closure_passes(&mut fns);
@@ -2541,7 +2528,6 @@ mod tests {
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         }];
 
         run_closure_passes(&mut fns);
@@ -2598,7 +2584,6 @@ mod tests {
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         }];
 
         run_closure_passes(&mut fns);
@@ -2674,7 +2659,6 @@ mod tests {
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         }];
 
         run_closure_passes(&mut fns);
@@ -2729,7 +2713,6 @@ mod tests {
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
         let mut fns = vec![func];
         let escapes = HashMap::from([("keep_nothing".to_string(), vec![false])]);

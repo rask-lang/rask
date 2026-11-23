@@ -8,7 +8,7 @@ use cranelift_module::{DataDescription, Linkage, Module};
 use cranelift_object::{ObjectBuilder, ObjectModule};
 use std::collections::{HashMap, HashSet};
 
-use rask_ast::LineMap;
+use rask_ast::SourceMap;
 use rask_mir::{MirConst, MirFunction, MirOperand, MirStmtKind};
 use rask_layout::{EnumLayout, StructLayout};
 use rask_mono::{MonoProgram};
@@ -79,10 +79,9 @@ pub struct CodeGenerator {
     owned_release_fns: HashMap<String, cranelift_module::FuncId>,
     /// Collected debug info per function (debug builds only)
     debug_srclocs: Vec<crate::debug_info::FunctionDebugInfo>,
-    /// Line map for converting byte offsets to line:col (debug builds)
-    line_map: Option<LineMap>,
-    /// Source file name for DWARF emission
-    source_file_name: Option<String>,
+    /// Every source file of the program, by `Span::file_id`: panic
+    /// locations, error origins and DWARF read from it.
+    sources: SourceMap,
     /// DI5: inline region metadata from the inlining pass (caller name → regions)
     inline_regions: HashMap<String, Vec<rask_mir::InlineRegion>>,
     /// Each layout's field types as MIR types, from lowering.
@@ -148,8 +147,7 @@ impl CodeGenerator {
             vtable_data: HashMap::new(),
             owned_release_fns: HashMap::new(),
             debug_srclocs: Vec::new(),
-            line_map: None,
-            source_file_name: None,
+            sources: SourceMap::default(),
             inline_regions: HashMap::new(),
             field_types: rask_mir::FieldTypes::default(),
         })
@@ -226,20 +224,62 @@ impl CodeGenerator {
             vtable_data: HashMap::new(),
             owned_release_fns: HashMap::new(),
             debug_srclocs: Vec::new(),
-            line_map: None,
-            source_file_name: None,
+            sources: SourceMap::default(),
             inline_regions: HashMap::new(),
             field_types: rask_mir::FieldTypes::default(),
         })
     }
 
-    /// Set debug info context for DWARF emission.
-    /// Call before gen_function() if you want debug line tables.
-    pub fn set_debug_context(&mut self, source_file: &str, line_map: LineMap) {
-        self.source_file_name = Some(source_file.to_string());
-        self.line_map = Some(line_map);
-        // Register source file name in data section for error origin (ER15)
-        let _ = self.register_string(source_file);
+    /// Hand over the program's source files. Call before gen_function():
+    /// panic locations and error origins name the file a statement came from.
+    pub fn set_sources(&mut self, sources: SourceMap) -> CodegenResult<()> {
+        for (_, file) in sources.files() {
+            self.register_string(&file.name)?;
+        }
+        self.sources = sources;
+        Ok(())
+    }
+
+    /// `rask_origin_files`: each file's name at its `file_id`, null in the
+    /// gaps, and `rask_origin_file_count` entries long. A `T or E` records
+    /// the file it was raised in as `file_id + 1`; the runtime names it from
+    /// here. Always defined, empty when there are no sources, so the runtime
+    /// links against it unconditionally, as it does `rask_const_free`.
+    fn define_origin_files(&mut self) -> CodegenResult<()> {
+        let files: Vec<(u16, String)> = self
+            .sources
+            .files()
+            .map(|(id, f)| (id, f.name.clone()))
+            .collect();
+        let count = files.iter().map(|(id, _)| *id as usize + 1).max().unwrap_or(0);
+
+        let table_id = self.module
+            .declare_data("rask_origin_files", Linkage::Export, false, false)
+            .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+        let mut desc = DataDescription::new();
+        // One word even when empty: a zero-sized symbol is not one every
+        // object format can say.
+        desc.define(vec![0u8; count.max(1) * 8].into_boxed_slice());
+        desc.set_align(8);
+        for (id, name) in &files {
+            let data_id = self.string_data[name.as_str()];
+            let gv = self.module.declare_data_in_data(data_id, &mut desc);
+            desc.write_data_addr(*id as u32 * 8, gv, 0);
+        }
+        self.module
+            .define_data(table_id, &desc)
+            .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+
+        let count_id = self.module
+            .declare_data("rask_origin_file_count", Linkage::Export, false, false)
+            .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+        let mut desc = DataDescription::new();
+        desc.define((count as u64).to_le_bytes().to_vec().into_boxed_slice());
+        desc.set_align(8);
+        self.module
+            .define_data(count_id, &desc)
+            .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+        Ok(())
     }
 
     /// Set DI5 inline region metadata from the inlining pass.
@@ -811,17 +851,6 @@ impl CodeGenerator {
                 .declare_function("rask_set_panic_location", Linkage::Import, &sig)
                 .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
             self.func_ids.insert("set_panic_location".to_string(), id);
-        }
-
-        // rask_set_origin_file(file: *const char) -> void
-        // Sets the source file name for error origin formatting (ER15).
-        {
-            let mut sig = self.module.make_signature();
-            sig.params.push(AbiParam::new(types::I64)); // file name C string
-            let id = self.module
-                .declare_function("rask_set_origin_file", Linkage::Import, &sig)
-                .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
-            self.func_ids.insert("rask_set_origin_file".to_string(), id);
         }
 
         // ─── I/O functions ──────────────────────────────────────
@@ -1924,11 +1953,6 @@ impl CodeGenerator {
             return Ok(());
         }
 
-        // Pre-register source file string for runtime panic locations
-        if let Some(ref src_file) = mir_fn.source_file {
-            self.register_string(src_file)?;
-        }
-
         // Every offset list this function's container frees will ask for. Has
         // to happen before the borrow below, and before any body references one.
         //
@@ -1969,7 +1993,7 @@ impl CodeGenerator {
         }
 
         // Import only the string data globals that this function actually uses
-        let (needed_strings, needed_buffers) = collect_used_strings(mir_fn);
+        let (needed_strings, needed_buffers) = collect_used_strings(mir_fn, &self.sources);
         let mut element_offset_globals: HashMap<Vec<i32>, GlobalValue> = HashMap::new();
         for (offsets, data_id) in &self.element_offset_data {
             let gv = self.module.declare_data_in_func(*data_id, &mut self.ctx.func);
@@ -2001,17 +2025,6 @@ impl CodeGenerator {
                 if let Some(data_id) = self.string_data.get(msg) {
                     let gv = self.module.declare_data_in_func(*data_id, &mut self.ctx.func);
                     string_globals.insert(msg.to_string(), gv);
-                }
-            }
-        }
-        // For main: import source file name global for rask_set_origin_file (ER15)
-        if mir_fn.name == "main" {
-            if let Some(file_name) = &self.source_file_name {
-                if let Some(data_id) = self.string_data.get(file_name) {
-                    if !string_globals.contains_key(file_name) {
-                        let gv = self.module.declare_data_in_func(*data_id, &mut self.ctx.func);
-                        string_globals.insert(file_name.clone(), gv);
-                    }
                 }
             }
         }
@@ -2057,9 +2070,7 @@ impl CodeGenerator {
             &self.fn_param_types,
             &self.fn_ret_types,
         )?;
-        if let Some(lm) = &self.line_map {
-            builder.set_line_map(lm);
-        }
+        builder.set_sources(&self.sources);
         builder.set_c_abi_plans(&self.c_abi_plans);
         builder.set_debug_checks(self.build_mode == BuildMode::Debug);
         builder.set_field_types(&self.field_types);
@@ -2085,7 +2096,7 @@ impl CodeGenerator {
                     .map(|v| v.as_slice()).unwrap_or(&[]);
                 if let Some(info) = crate::debug_info::collect_function_debug(
                     compiled, func_id, mir_fn, inline_regions,
-                    &self.struct_layouts, &self.enum_layouts, self.target(), self.line_map.as_ref(),
+                    &self.struct_layouts, &self.enum_layouts, self.target(),
                 ) {
                     self.debug_srclocs.push(info);
                 }
@@ -2112,7 +2123,7 @@ fn is_empty_stub(mir_fn: &MirFunction) -> bool {
 
 /// The string constants a single MIR function names, and the contents of
 /// every string or bytes literal in it (whose static headers it needs).
-fn collect_used_strings(mir_fn: &MirFunction) -> (HashSet<String>, HashSet<Vec<u8>>) {
+fn collect_used_strings(mir_fn: &MirFunction, sources: &SourceMap) -> (HashSet<String>, HashSet<Vec<u8>>) {
     let mut used = UsedConstants::default();
     for block in &mir_fn.blocks {
         for stmt in &block.statements {
@@ -2120,9 +2131,14 @@ fn collect_used_strings(mir_fn: &MirFunction) -> (HashSet<String>, HashSet<Vec<u
         }
         rask_mir::analysis::uses::visit_terminator_operands(&block.terminator, &mut |op| used.add(op));
     }
-    // Source file is used for panic locations
-    if let Some(ref src) = mir_fn.source_file {
-        used.strings.insert(src.clone());
+    // Panic locations name the file each statement came from.
+    for block in &mir_fn.blocks {
+        let spans = block.statements.iter().map(|s| s.span).chain([block.terminator.span]);
+        for span in spans {
+            if let Some(file) = sources.get(span.file_id) {
+                used.strings.insert(file.name.clone());
+            }
+        }
     }
     (used.strings, used.buffers)
 }
@@ -2461,7 +2477,8 @@ impl CodeGenerator {
     }
 
     /// Emit the final object file. Consumes self because finish() takes ownership.
-    pub fn emit_object(self, path: &str) -> CodegenResult<()> {
+    pub fn emit_object(mut self, path: &str) -> CodegenResult<()> {
+        self.define_origin_files()?;
         let mut product = self.module.finish();
 
         // Mach-O objects say which platform they were built for, in an
@@ -2488,7 +2505,11 @@ impl CodeGenerator {
 
         // Emit DWARF debug info in debug builds
         if self.build_mode == BuildMode::Debug {
-            if let (Some(line_map), Some(source_file)) = (&self.line_map, &self.source_file_name) {
+            // One file only: a srcloc keeps a byte offset and not which file
+            // it is in, so a package's line table would mix files up (#2076).
+            let mut files = self.sources.files();
+            if let (Some((_, file)), None) = (files.next(), files.next()) {
+                let (line_map, source_file) = (&file.line_map, file.name.as_str());
                 let resolved = crate::debug_info::resolve_debug_info(
                     &self.debug_srclocs, &product,
                 );

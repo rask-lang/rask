@@ -27,7 +27,6 @@ mod transmute;
 pub(crate) mod union_bits;
 
 use rask_ast::decl::{BenchmarkDecl, Decl, EnumDecl, FnDecl, StructDecl, TestDecl};
-use rask_ast::span::LineMap;
 use rask_ast::Span;
 use rask_ast::ty::TypeExpr;
 
@@ -202,8 +201,9 @@ pub struct Interpreter {
     pub(crate) cli_args: Vec<String>,
     /// Build script state (set when running via `run_build`).
     pub(crate) build_state: Option<crate::build_context::BuildState>,
-    /// Source info for error origin tracking (ER15): file name + line map.
-    pub(crate) source_info: Option<SourceInfo>,
+    /// The program's files by `Span::file_id`, for error origins (ER15) and
+    /// panic locations.
+    pub(crate) sources: Arc<rask_ast::SourceMap>,
     /// Static expression types from the checker, keyed by NodeId. Used to
     /// recover integer widths for overflow checking (type.overflow). Empty
     /// when types weren't supplied (e.g. comptime pre-check paths).
@@ -366,13 +366,6 @@ pub(crate) struct YieldFrame {
     pub(crate) scope: std::collections::HashMap<String, crate::env::Slot>,
     /// Which of `scope` are borrowed storage (`Environment::define_lent`).
     pub(crate) lent: std::collections::HashSet<String>,
-}
-
-/// Source location info for computing error origins (ER15).
-#[derive(Clone)]
-pub struct SourceInfo {
-    pub file_name: String,
-    pub line_map: LineMap,
 }
 
 /// What every spawn form says when the task would hold a link or a `Local`
@@ -572,7 +565,7 @@ impl Interpreter {
             output_buffer: None,
             cli_args: vec![],
             build_state: None,
-            source_info: None,
+            sources: Arc::default(),
             node_types: HashMap::new(),
             escaping_closures: std::collections::HashSet::new(),
             ensure_cancels: Arc::new(HashMap::new()),
@@ -661,7 +654,7 @@ impl Interpreter {
             err_returns: std::collections::HashSet::new(),
             c_macro_calls: HashMap::new(),
             build_state: None,
-            source_info: None,
+            sources: Arc::default(),
             lent_args: None,
             yield_stack: Vec::new(),
         }
@@ -692,7 +685,7 @@ impl Interpreter {
             output_buffer: Some(buffer.clone()),
             cli_args: vec![],
             build_state: None,
-            source_info: None,
+            sources: Arc::default(),
             node_types: HashMap::new(),
             escaping_closures: std::collections::HashSet::new(),
             ensure_cancels: Arc::new(HashMap::new()),
@@ -734,13 +727,14 @@ impl Interpreter {
         self.runtime_checks = on;
     }
 
-    /// Inject `cfg` build configuration into the interpreter environment (CT11-CT16).
-    /// Set source info for error origin tracking (ER15).
-    pub fn set_source_info(&mut self, file_name: &str, source: &str) {
-        self.source_info = Some(SourceInfo {
-            file_name: file_name.to_string(),
-            line_map: LineMap::new(source),
-        });
+    /// The program's files, for error origins (ER15) and panic locations.
+    pub fn set_sources(&mut self, sources: rask_ast::SourceMap) {
+        self.sources = Arc::new(sources);
+    }
+
+    /// `file:line` for where `span` starts, when its file is the program's.
+    fn location(&self, span: Span) -> Option<String> {
+        self.sources.locate(span).map(|(file, line, _)| format!("{}:{}", file, line))
     }
 
     /// Compute an error origin string like `"file.rk:42"` from a span.
@@ -761,24 +755,20 @@ impl Interpreter {
     }
 
     pub(crate) fn origin_string(&self, span: Span) -> Arc<str> {
-        if let Some(info) = &self.source_info {
-            let (line, _) = info.line_map.offset_to_line_col(span.start);
-            Arc::from(format!("{}:{}", info.file_name, line))
-        } else {
-            Arc::from("<unknown>")
-        }
+        Arc::from(self.location(span).unwrap_or_else(|| "<unknown>".to_string()))
     }
 
-    /// What a failed task's message should say when *user code* reads it back
-    /// out of `JoinError.Panicked(msg)`.
+    /// What a panic says where native's `rask_panic_at` would say it: the
+    /// text user code reads out of `JoinError.Panicked(msg)`, and the line a
+    /// failed test reports.
     ///
     /// Not `Display`: that renders a panic as `panic: boom`, and
     /// `JoinError.message()` wraps it again as `task panicked: panic: boom`.
     /// The reporter's own wording belongs at print time, not baked into a
     /// string a program is going to print itself (#748). The location is what
-    /// you want when a background task dies, so that's what it carries —
-    /// `file:line:col: boom`, matching native.
-    pub(crate) fn task_failure_message(&self, diag: &RuntimeDiagnostic) -> String {
+    /// you want when a task or a test dies, so that's what it carries —
+    /// `file:line: boom`, matching native.
+    pub(crate) fn panic_message(&self, diag: &RuntimeDiagnostic) -> String {
         // Every way the program can panic, not the `Panic` variant alone.
         // `is_panic` is the same question the exit code asks — OV1–OV4 and
         // OPT13 say an overflow and a forced `x!` panic, whatever enum variant
@@ -792,14 +782,11 @@ impl Interpreter {
         if !diag.error.is_panic() {
             return msg;
         }
-        match &self.source_info {
-            Some(info) => {
-                // file:line, no column — see the note in the runtime's
-                // rask_panic_at: the two backends point their columns at
-                // different sub-expressions, and the line is the useful half.
-                let (line, _) = info.line_map.offset_to_line_col(diag.span.start);
-                format!("{}:{}: {}", info.file_name, line, msg)
-            }
+        // file:line, no column — see the note in the runtime's rask_panic_at:
+        // the two backends point their columns at different sub-expressions,
+        // and the line is the useful half.
+        match self.location(diag.span) {
+            Some(at) => format!("{}: {}", at, msg),
             None => msg,
         }
     }
@@ -1207,7 +1194,7 @@ impl Interpreter {
         // A task that panics reports `file:line:col`, so the child needs the
         // source it's running (#748). Without this a spawned task's message
         // came back as bare text while the main thread's carried a location.
-        child.source_info = self.source_info.clone();
+        child.sources = Arc::clone(&self.sources);
         child.runtime_checks = self.runtime_checks;
         // The same capture buffer, not a fresh one. A `test` block's runner
         // captures the main thread's output and prints it under the test's
@@ -2076,9 +2063,9 @@ fn run_task_body(mut interp: Interpreter, body: rask_ast::expr::Expr, ret: crate
     let ended = match interp.eval_expr(&body) {
         Ok(val) => Ok(val),
         Err(diag) if matches!(diag.error, RuntimeError::Return(_) | RuntimeError::TryError(_)) => Err(diag.error),
-        Err(diag) => return Err(interp.task_failure_message(&diag)),
+        Err(diag) => return Err(interp.panic_message(&diag)),
     };
     interp
         .closure_outcome(&body, ended, ret)
-        .map_err(|e| interp.task_failure_message(&RuntimeDiagnostic::new(e, body.span)))
+        .map_err(|e| interp.panic_message(&RuntimeDiagnostic::new(e, body.span)))
 }

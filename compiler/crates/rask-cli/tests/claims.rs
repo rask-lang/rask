@@ -66,6 +66,9 @@ fn every_verdict_and_the_shrunk_counterexamples() {
     assert_eq!(run.stdout, expected, "stderr:\n{}", run.stderr);
 
     // Shrinking finds the smallest input that still fails, not the first.
+    // The notes wrap at the terminal width, so whitespace runs are compared
+    // as one space.
+    let stderr = run.stderr.split_whitespace().collect::<Vec<_>>().join(" ");
     for want in [
         "claim `never_overdrawn` is false",
         "counterexample: ops = [Op.Withdraw(1)]",
@@ -75,7 +78,7 @@ fn every_verdict_and_the_shrunk_counterexamples() {
         "index out of bounds",
         "E0950",
     ] {
-        assert!(run.stderr.contains(want), "missing `{want}` in:\n{}", run.stderr);
+        assert!(stderr.contains(want), "missing `{want}` in:\n{}", run.stderr);
     }
 }
 
