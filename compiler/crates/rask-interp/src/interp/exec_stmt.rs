@@ -45,7 +45,7 @@ impl Interpreter {
                 if let Some(id) = self.get_resource_id(&value) {
                     self.resource_tracker.set_var_name(id, name.clone(), stmt.span);
                 }
-                crate::rack::register_vec_links(&value);
+                crate::rack::register_nested(&value);
                 self.env.define(name.clone(), value);
                 Ok(Value::Unit)
             }
@@ -69,7 +69,7 @@ impl Interpreter {
                 if let Some(id) = self.get_resource_id(&value) {
                     self.resource_tracker.set_var_name(id, name.clone(), stmt.span);
                 }
-                crate::rack::register_vec_links(&value);
+                crate::rack::register_nested(&value);
                 self.env.define(name.clone(), value);
                 Ok(Value::Unit)
             }
@@ -123,7 +123,7 @@ impl Interpreter {
                 };
                 // Same as a binding: a vector of links that arrives whole is
                 // an edge holder from here on.
-                crate::rack::register_vec_links(&val);
+                crate::rack::register_nested(&val);
                 self.assign_target(target, val)
                     .map_err(|e| RuntimeDiagnostic::new(e, stmt.span))?;
                 Ok(Value::Unit)
@@ -643,7 +643,10 @@ impl Interpreter {
             rask_ast::expr::ExprKind::Field { .. } | rask_ast::expr::ExprKind::Ident(_)
         );
         if !matches!(iter.kind, rask_ast::expr::ExprKind::Field { .. }) {
-            crate::rack::register_vec_links(&Value::Vec(std::sync::Arc::clone(v)));
+            let items: Vec<Value> = v.lock().unwrap().items.clone();
+            for item in &items {
+                crate::rack::register_element(v, item);
+            }
         }
         // The loop walks the live vector through a cursor, not a snapshot: a
         // call in the body can pop, clear, swap or replace entries, and the

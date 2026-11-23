@@ -9,7 +9,9 @@
 // with the rack too, or a delete leaves the clone's deeper links dangling.
 // Each cloned container records itself, so a link one container down is
 // found however the levels are spelled, and a `Vec<i64>` beside a link is
-// never read as one.
+// never read as one. The interpreter recorded only a whole vector's own
+// elements, so the rows of a cloned `Vec<Vec<Link<T>>>`, or a row pushed in
+// fresh from a clone, kept a deleted node.
 import memory.Link
 import memory.Rack
 
@@ -162,4 +164,21 @@ test "a clone of a recursive enum loses its deep link" {
     leaves.delete(a)
     assert first_tip_none(t.clone())
     assert first_tip_none(t2.clone())
+}
+
+test "a bare grid of links and its clone both lose a deleted node" {
+    mut leaves: Rack<Leaf> = Rack.new()
+    let a = leaves.insert(Leaf(id: 1))
+    let b = leaves.insert(Leaf(id: 2))
+    mut row: Vec<Link<Leaf>> = Vec.new()
+    row.push(a)
+    row.push(b)
+    mut rows: Vec<Vec<Link<Leaf>>> = Vec.new()
+    rows.push(row.clone())
+    let rows2 = rows.clone()
+    leaves.delete(a)
+    assert row.len() == 1
+    assert rows[0].len() == 1
+    assert rows2[0].len() == 1
+    assert rows2[0][0].id == 2
 }
