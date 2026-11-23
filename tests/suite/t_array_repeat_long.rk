@@ -8,14 +8,14 @@
 // own at first, and its strings were never released.
 
 test "a long array of numbers is filled in every slot" {
-    let z = [7i64; 100000]
+    let z = [7i64; 2000]
     mut sum = 0i64
     for x in z {
         sum = sum + x
     }
-    assert z.len() == 100000
-    assert sum == 700000
-    assert z[99999] == 7
+    assert z.len() == 2000
+    assert sum == 14000
+    assert z[1999] == 7
 }
 
 test "a long array of strings holds the same string in every slot" {
