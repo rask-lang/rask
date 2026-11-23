@@ -1,0 +1,36 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A detached task reading a Copy `for` item or `with` binding.
+//
+// A task that outlives its block may not read what the block only borrows,
+// but a Copy value is copied into the task, so it crosses. Whether a name
+// was Copy was asked of its recorded type, and a `for` item or a `with`
+// binding has none, so `for n in nums` over a `Vec<i64>` was refused. The
+// task's own read of the name carries the checker's type, and that decides.
+
+import sync.Shared
+import sync.Mutex
+
+struct Pt { x: i64, y: i64 }
+
+func run(nums: Vec<i64>, pts: Vec<Pt>, sum: Shared<i64, Mutex>) {
+    for n in nums {
+        let s = sum.clone()
+        spawn { with s.write() as t { t += n } }.detach()
+    }
+    for p in pts {
+        let s = sum.clone()
+        spawn { with s.write() as t { t += p.x } }.detach()
+    }
+    with nums[0] as first {
+        let s = sum.clone()
+        spawn { with s.write() as t { t += first } }.detach()
+    }
+}
+
+test "Copy items cross into detached tasks" {
+    using Multitasking {
+        let sum: Shared<i64, Mutex> = Shared.mutex(0)
+        run(Vec.from([1, 2]), Vec.from([Pt(x: 10, y: 0)]), sum)
+    }
+}

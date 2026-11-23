@@ -4716,11 +4716,19 @@ impl<'a> OwnershipChecker<'a> {
                 // value is copied in, so it crosses.
                 if is_task && !borrows_frame && self.instance.is_none() {
                     for name in &captures {
-                        if self.capture_is_copy(name) {
+                        // The checker's type where the task reads the name is
+                        // the type of what it copies. A `for` item or a `with`
+                        // binding has no recorded type of its own, so asking
+                        // by name called `for n in nums` over a `Vec<i64>`
+                        // not Copy.
+                        let first = Self::first_use(body, name);
+                        let read_ty = first.and_then(|e| self.program.node_types.get(&e.id));
+                        if self.capture_is_copy(name)
+                            || read_ty.is_some_and(|t| self.is_copy(t) || self.is_link_type(t))
+                        {
                             continue;
                         }
                         if let Some(lender) = self.lender_of(name) {
-                            let first = Self::first_use(body, name);
                             let at = first.map_or(expr.span, |e| e.span);
                             // `x: T` is Copy for some `T` and not others, so
                             // each call that fixes `T` decides.
