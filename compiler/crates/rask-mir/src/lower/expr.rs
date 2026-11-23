@@ -1123,7 +1123,17 @@ impl<'a> MirLowerer<'a> {
     /// `None` when this isn't a Vec element, or the element type isn't known;
     /// the caller then lowers it the ordinary way.
     fn lower_elem_for_mutate(&mut self, place: &Expr) -> Option<TypedOperand> {
-        self.lower_elem_for_mutate_inner(place, true)
+        self.lower_elem_for_mutate_inner(place, ElemBorrow::Aggregate)
+    }
+
+    /// The same borrow for a method's `mutate self`, except that a container
+    /// element is handed over as itself. A container's `self` is its handle,
+    /// never the address of a slot holding one (`mutate_param_needs_own_pointer`),
+    /// and the handle already reaches the vector the buffer holds. Given the
+    /// slot's address, `vv[0].remove_unordered(0)` read the slot as the vector
+    /// and its `len` as garbage (#1991).
+    fn lower_elem_receiver_for_mutate(&mut self, place: &Expr) -> Option<TypedOperand> {
+        self.lower_elem_for_mutate_inner(place, ElemBorrow::Receiver)
     }
 
     /// The same borrow for a *scalar* element. The aggregate rule doesn't apply
@@ -1135,13 +1145,13 @@ impl<'a> MirLowerer<'a> {
     /// interpreter wrote it back — the same call on a struct field wrote back on
     /// both (#879).
     fn lower_elem_for_mutate_scalar(&mut self, place: &Expr) -> Option<TypedOperand> {
-        self.lower_elem_for_mutate_inner(place, false)
+        self.lower_elem_for_mutate_inner(place, ElemBorrow::Scalar)
     }
 
     fn lower_elem_for_mutate_inner(
         &mut self,
         place: &Expr,
-        require_aggregate: bool,
+        mode: ElemBorrow,
     ) -> Option<TypedOperand> {
         // `v[i].f.g` borrows the element and points `.f.g`'s offset into it:
         // the field lives in the buffer too, and a copy of it is what the
@@ -1177,7 +1187,10 @@ impl<'a> MirLowerer<'a> {
         // On the aggregate path, only aggregates: a scalar element is passed by
         // value there, and handing over its address would have the callee read
         // the pointer as the value.
-        if require_aggregate && !crate::lower::stmt::mutate_param_by_pointer(&place_ty) {
+        if mode != ElemBorrow::Scalar && !crate::lower::stmt::mutate_param_by_pointer(&place_ty) {
+            return None;
+        }
+        if mode == ElemBorrow::Receiver && crate::lower::stmt::is_runtime_handle(&place_ty) {
             return None;
         }
         let (coll_op, _) = self.lower_expr(object).ok()?;
@@ -5375,7 +5388,7 @@ impl<'a> MirLowerer<'a> {
         // `place_address` below can't help — a Vec element has no base+offset to
         // point at — so take the copy and write it back after the call.
         let elem_receiver = if self.call_mutates_receiver(expr, object, method) {
-            self.lower_elem_for_mutate(object)
+            self.lower_elem_receiver_for_mutate(object)
         } else {
             None
         };
@@ -11303,4 +11316,15 @@ mod target_tests {
         assert_eq!(constant("usize", "MAX", x86), Some((u64::MAX as i64, MirType::U64)));
         assert_eq!(constant("isize", "MIN", x86), Some((i64::MIN, MirType::I64)));
     }
+}
+
+/// What a borrowed collection element is handed to.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ElemBorrow {
+    /// A `mutate` argument of aggregate type: the callee writes through it.
+    Aggregate,
+    /// A `mutate` argument of scalar type, itself passed as a pointer.
+    Scalar,
+    /// A `mutate self` receiver: as `Aggregate`, but a container is its handle.
+    Receiver,
 }
