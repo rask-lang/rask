@@ -42,6 +42,10 @@
 // when a running fiber is cut off — come from the seed. Everything else, the
 // queues and the parking and the pinning, is what ships (#1381).
 
+#if defined(__linux__) && !defined(_GNU_SOURCE)
+#define _GNU_SOURCE  // pthread_getattr_np
+#endif
+
 #include "fiber.h"
 #include "rask_runtime.h"
 #include "sim.h"
@@ -49,6 +53,7 @@
 #include <poll.h>
 #include <sys/epoll.h>
 #include <sys/eventfd.h>
+#include <sys/mman.h>
 
 #include <stdlib.h>
 #include <stdio.h>
@@ -689,28 +694,82 @@ void rask_preempt_point(void) {
 
 // ─── Stack overflow ─────────────────────────────────────────
 //
-// A fiber that runs into its guard page faults on a stack it can't push
-// another frame on, so the handler runs on a stack of its own (sigaltstack,
-// one per worker) and says what happened before the process dies. Any other
-// fault goes to whatever handler was there before.
+// S5: running into a stack's guard is a panic. A fiber's guard is the page
+// below its stack (fiber.c); a thread's is whatever stops its stack growing,
+// the glibc guard page or the kernel's gap below the main stack. Codegen probes
+// every page of a large frame from the top down, so an overflow faults in the
+// guard rather than stepping over it into another mapping: an 80 MB local
+// array wrote below the main stack and died with a bare SIGSEGV (#2066).
+//
+// The fault leaves no stack to push a frame on, so the handler runs on one of
+// its own (sigaltstack, per thread) and panics from there; the unwind's
+// ensures run on that stack too. An overflow inside the runtime's own C code
+// can leave a lock held (malloc's) that the unwind then waits on, the same
+// risk a panic from a signal handler always carries. A second overflow while
+// the first unwinds aborts (A1). Any other fault goes to whatever handler was
+// there before.
+
+#define OVERFLOW_ALT_STACK (256 * 1024)
+// Below a thread's lowest stack byte, how far a fault still counts as running
+// into its guard: the kernel's gap below the main stack is 256 pages.
+#define THREAD_GUARD_REACH (1024 * 1024)
 
 static struct sigaction prev_segv;
 static struct sigaction prev_bus;
+static __thread const char *tl_stack_lo;
+static __thread const char *tl_stack_hi;
+// The handler's stack, a guard page at its low end: the unwind runs ensures
+// on it, and an ensure that ran off its end would otherwise write into the
+// heap below.
+static __thread char *tl_alt_map;
+
+// The bounds of the calling thread's stack, or 0 when the platform won't say.
+static int thread_stack_bounds(const char **lo, const char **hi) {
+#if defined(__APPLE__)
+    pthread_t self = pthread_self();
+    *hi = (const char *)pthread_get_stackaddr_np(self);
+    *lo = *hi - pthread_get_stacksize_np(self);
+    return 1;
+#else
+    pthread_attr_t attr;
+    void *addr;
+    size_t size;
+    if (pthread_getattr_np(pthread_self(), &attr) != 0) return 0;
+    int ok = pthread_attr_getstack(&attr, &addr, &size) == 0;
+    pthread_attr_destroy(&attr);
+    if (!ok) return 0;
+    *lo = (const char *)addr;
+    *hi = *lo + size;
+    return 1;
+#endif
+}
+
+static int in_thread_guard(const void *addr) {
+    const char *p = (const char *)addr;
+    if (!tl_stack_lo) return 0;
+    long page = sysconf(_SC_PAGESIZE);
+    return p < tl_stack_lo + page && p >= tl_stack_lo - THREAD_GUARD_REACH;
+}
 
 static void overflow_handler(int sig, siginfo_t *info, void *uctx) {
     GreenTask *t = tl_current_task;
-    if (t && info && rask_fiber_in_guard(&t->fiber, info->si_addr)) {
-        char msg[160];
-        int n = snprintf(msg, sizeof(msg),
-                         "task %lld overflowed its stack (1 MiB) — "
-                         "unbounded recursion?\n",
-                         (long long)rask_task_id(t->task));
-        if (n > 0) {
-            ssize_t ignored = write(2, msg, (size_t)n);
+    const void *addr = info ? info->si_addr : NULL;
+    int fiber = t && addr && rask_fiber_in_guard(&t->fiber, addr);
+    int thread = !fiber && addr && in_thread_guard(addr);
+    long page = sysconf(_SC_PAGESIZE);
+    int alt = addr && tl_alt_map && (const char *)addr >= tl_alt_map && (const char *)addr < tl_alt_map + page;
+    if (fiber || thread || alt) {
+        if (alt || rask_panic_unwinding()) {
+            static const char again[] = "stack overflow while a panic unwinds\n";
+            ssize_t ignored = write(2, again, sizeof(again) - 1);
             (void)ignored;
+            signal(SIGABRT, SIG_DFL);
+            abort();
         }
-        signal(SIGABRT, SIG_DFL);
-        abort();
+        long long kib = fiber ? 1024 : (long long)((tl_stack_hi - tl_stack_lo) / 1024);
+        rask_panic_fmt("stack overflow: all %lld KiB of the %s's stack is in use "
+                       "(unbounded recursion, or a local too large for the stack?)",
+                       kib, fiber ? "task" : "thread");
     }
     struct sigaction *prev = sig == SIGSEGV ? &prev_segv : &prev_bus;
     if (prev->sa_flags & SA_SIGINFO) {
@@ -732,10 +791,44 @@ static void install_overflow_handler(void) {
     struct sigaction sa;
     memset(&sa, 0, sizeof(sa));
     sa.sa_sigaction = overflow_handler;
-    sa.sa_flags = SA_SIGINFO | SA_ONSTACK;
+    // SA_NODEFER: the panic leaves the handler by longjmp, which doesn't
+    // restore the signal mask. A blocked SIGSEGV kills the next fault outright.
+    sa.sa_flags = SA_SIGINFO | SA_ONSTACK | SA_NODEFER;
     sigemptyset(&sa.sa_mask);
     sigaction(SIGSEGV, &sa, &prev_segv);
     sigaction(SIGBUS, &sa, &prev_bus);
+}
+
+// Every thread that runs Rask code calls this first, and the exit on its way
+// out.
+void rask_stack_guard_thread_init(void) {
+    pthread_once(&overflow_once, install_overflow_handler);
+    if (!thread_stack_bounds(&tl_stack_lo, &tl_stack_hi)) {
+        tl_stack_lo = tl_stack_hi = NULL;
+    }
+    long page = sysconf(_SC_PAGESIZE);
+    char *map = mmap(NULL, OVERFLOW_ALT_STACK + page, PROT_READ | PROT_WRITE,
+                     MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (map == MAP_FAILED) return;
+    stack_t alt;
+    alt.ss_sp = map + page;
+    alt.ss_size = OVERFLOW_ALT_STACK;
+    alt.ss_flags = 0;
+    if (mprotect(map, page, PROT_NONE) != 0 || sigaltstack(&alt, NULL) != 0) {
+        munmap(map, OVERFLOW_ALT_STACK + page);
+        return;
+    }
+    tl_alt_map = map;
+}
+
+void rask_stack_guard_thread_exit(void) {
+    if (tl_alt_map) {
+        stack_t off = { .ss_flags = SS_DISABLE };
+        sigaltstack(&off, NULL);
+        munmap(tl_alt_map, OVERFLOW_ALT_STACK + sysconf(_SC_PAGESIZE));
+        tl_alt_map = NULL;
+    }
+    tl_stack_lo = tl_stack_hi = NULL;
 }
 
 // ─── Deadlock ───────────────────────────────────────────────
@@ -897,11 +990,7 @@ static void *worker_entry(void *arg) {
     rask_poison_stack();
     rask_fiber_init_thread(&w->fiber);
 
-    stack_t alt;
-    alt.ss_size = 64 * 1024;
-    alt.ss_sp = malloc(alt.ss_size);
-    alt.ss_flags = 0;
-    if (alt.ss_sp) sigaltstack(&alt, NULL);
+    rask_stack_guard_thread_init();
 
     int idle_spins = 0;
 
@@ -977,11 +1066,7 @@ static void *worker_entry(void *arg) {
         idle_spins = 0;
     }
 
-    if (alt.ss_sp) {
-        stack_t off = { .ss_flags = SS_DISABLE };
-        sigaltstack(&off, NULL);
-        free(alt.ss_sp);
-    }
+    rask_stack_guard_thread_exit();
     tl_worker = NULL;
     return NULL;
 }
@@ -1096,8 +1181,6 @@ void rask_runtime_init(int64_t worker_count) {
         close(s->epfd);
         s->epfd = -1;
     }
-
-    pthread_once(&overflow_once, install_overflow_handler);
 
     g_sched = s;
 #ifdef RASK_SIM

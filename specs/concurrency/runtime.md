@@ -79,7 +79,7 @@ struct SavedContext {
 
 **Memory model:** The 1 MiB stack is virtual address space, not physical memory. Physical pages are allocated on first touch (demand paging). A fiber whose deepest call uses 4 KiB consumes 4 KiB of RSS. 100 k fibers average 4 KiB deep = ~400 MiB RSS, ~100 GiB virtual — fine on 64-bit (256 TiB address space).
 
-**Guard page:** A `PROT_NONE` page at the top of each stack catches stack overflow as a SIGSEGV, converted to a Rask panic with a clear message.
+**Guard page:** A `PROT_NONE` page at the top of each stack catches stack overflow as a SIGSEGV, converted to a Rask panic with a clear message. The same holds for the main thread and OS threads, whose guard is the one the platform puts below their stacks. Codegen probes every page of a frame larger than one, top down, so a large frame faults in the guard instead of stepping past it into other memory.
 
 **Spawn cost:** Stack regions are pooled. First spawn mmaps a fresh region (~1 µs); subsequent spawns reuse freed regions (~100 ns).
 

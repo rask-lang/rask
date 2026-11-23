@@ -94,6 +94,9 @@ extern int rask_runtime_checks_enabled;
 // RASK_POISON_STACK is set, so reads of never-written stack slots are
 // deterministic instead of accidentally reading zeros.
 void rask_poison_stack(void);
+// S5: catch this thread's stack overflow as a panic (green.c).
+void rask_stack_guard_thread_init(void);
+void rask_stack_guard_thread_exit(void);
 
 static inline int64_t rask_safe_mul(int64_t a, int64_t b) {
     if (a > 0 && b > 0 && a > INT64_MAX / b) rask_panic("allocation size overflow");
@@ -1617,6 +1620,7 @@ void   rask_task_tls_swap(void *blob);
 extern int32_t rask_preempt_requested;
 void rask_preempt_point(void);
 int  rask_preempt_unsafe(void);
+int  rask_panic_unwinding(void);
 int  rask_print_lock_held(void);
 // The parts of it thread.c and random.c keep, swapped by the call above.
 size_t rask_thread_tls_size(void);

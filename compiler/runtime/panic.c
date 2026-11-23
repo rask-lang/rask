@@ -357,6 +357,11 @@ static __thread const char *panic_loc_file;
 static __thread int32_t     panic_loc_line;
 static __thread int32_t     panic_loc_col;
 
+// Whether this thread, or the fiber on it, is running a panic's unwind.
+int rask_panic_unwinding(void) {
+    return tl_in_unwind;
+}
+
 // Whether a preemption safe point should leave the fiber alone: it is
 // unwinding, running under a C caller's frames (ctrl.panic/A1), or half way
 // through a line of output (conc.runtime/P2.4).

@@ -100,6 +100,12 @@ impl CodeGenerator {
         // LLVM's own convention — a register pair on SysV — which is what a C
         // compiler already does with `__int128`, so the two agree (#762).
         let _ = flag_builder.set("enable_llvm_abi_extensions", "true");
+        // A frame over a page touches each page from the top down before it's
+        // used, so an overflow faults in the stack's guard, which the runtime
+        // turns into a panic (ctrl.panics/S5). Without probes an 80 MB local
+        // array stepped over the guard into whatever was mapped below (#2066).
+        let _ = flag_builder.set("enable_probestack", "true");
+        let _ = flag_builder.set("probestack_strategy", "inline");
         // Darwin has no non-PIE option. Without this Cranelift reaches a string
         // constant by writing its absolute address into the instruction stream,
         // which is a relocation in __text — and ld64 refuses those outright
@@ -168,6 +174,9 @@ impl CodeGenerator {
         let _ = flag_builder.set("opt_level", "speed");
         // See `new` — 128-bit values in signatures need this (#762).
         let _ = flag_builder.set("enable_llvm_abi_extensions", "true");
+        // See `new`: stack probes, so an overflow lands in the guard (#2066).
+        let _ = flag_builder.set("enable_probestack", "true");
+        let _ = flag_builder.set("probestack_strategy", "inline");
         // Position-independent code. Linux wants it; Darwin *requires* it —
         // see `new` above: a non-PIC build puts an absolute address in __text
         // and ld64 rejects the object.

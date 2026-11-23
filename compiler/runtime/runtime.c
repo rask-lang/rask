@@ -2055,6 +2055,7 @@ int main(int argc, char **argv) {
     // Before the first allocation, or the table starts with holes in it.
     rask_leak_trace_init();
     rask_args_init(argc, argv);
+    rask_stack_guard_thread_init();
     rask_poison_stack();
     rask_main();
     // O4: a detached task's panic report can't be lost to process exit.
