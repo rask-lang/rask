@@ -13,7 +13,9 @@ func keep_i(x: i64) -> func() -> i64 {
 
 func run_on_a_task(f: func() -> i64) -> i64 {
     using Multitasking {
-        return spawn { f() }.join()!
+        // Joined in this block, so the task borrows `f` (conc.async/B1).
+        let h = spawn { f() }
+        return h.join()!
     }
 }
 

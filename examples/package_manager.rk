@@ -398,6 +398,9 @@ func parse_dep_line(line: string, line_num: i32) -> Dependency or ManifestError 
 interface Registry {
     func available(self, name: string) -> Vec<PackageMeta> or RegistryError
     func fetch_package(self, name: string, version: Version) -> string or RegistryError
+    // Each concurrent fetch task owns its own registry (TR11: `any` values
+    // clone only through an interface method).
+    func clone(self) -> any Registry
 }
 
 // ─── Local Registry ─────────────────────────────────────────────────
@@ -417,6 +420,10 @@ LocalRegistry implements Registry {
 
     func fetch_package(self, name: string, version: Version) -> string or RegistryError {
         return local_fetch(self.root, name, version)
+    }
+
+    func clone(self) -> any Registry {
+        return LocalRegistry(root: self.root)
     }
 }
 
@@ -550,6 +557,10 @@ HttpRegistry implements Registry {
 
     func fetch_package(self, name: string, version: Version) -> string or RegistryError {
         return http_fetch(self.base_url, name, version)
+    }
+
+    func clone(self) -> any Registry {
+        return HttpRegistry(base_url: self.base_url)
     }
 }
 
@@ -786,8 +797,9 @@ func fetch_packages(graph: DepGraph, registry: any Registry, cache_dir: string) 
         for item in items {
             let item_tx = tx.clone()
             let item_counter = counter.clone()
+            let item_registry = registry.clone()
             spawn {
-                if fetch_one(item, registry) is string as path {
+                if fetch_one(item, item_registry) is string as path {
                     with item_counter.write() as c {
                         c += 1
                     }

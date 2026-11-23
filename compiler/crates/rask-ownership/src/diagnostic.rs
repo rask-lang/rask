@@ -67,6 +67,14 @@ impl ToDiagnostic for crate::OwnershipError {
             .with_help(format!("put `{captured}` in a `Shared` and capture that; a `Shared` clones as a second reference"))
             .with_why("every closure can be cloned, and cloning one clones what it carries, so a closure may only carry Cloneable values [mem.closures/CV4]"),
 
+            TaskCapturesLentParam { name } => Diagnostic::error(format!(
+                "a task that outlives this call reads `{name}`, which the caller only lent"
+            ))
+            .with_code("E0862")
+            .with_primary(self.span, format!("`{name}` is the caller's, and the task may run after they free it"))
+            .with_help(format!("take it: `take {name}: …` in the signature moves it into the task; or clone what the task needs before the spawn; or join the task in this block so it borrows"))
+            .with_why("a task whose handle leaves the block that spawned it carries what it names, and a borrowed or `mutate` parameter isn't this function's to carry [conc.async/S5]"),
+
             RepeatNotCopy { ty, reason } => {
                 use crate::MoveReason;
                 let because = match reason {

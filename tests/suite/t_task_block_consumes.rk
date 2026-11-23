@@ -175,13 +175,15 @@ test "the responder an HTTP server hands out" {
     }
 }
 
-// A closure the caller lent is the caller's: each task that calls it takes a
-// reference of its own, so the caller's closure outlives both (http.serve's
+// A closure the caller lent stays the caller's. A task whose handle may leave
+// the block can't borrow it, so each gets a clone of its own (http.serve's
 // handler, one task per request).
 func run_twice(f: func() -> i64) -> i64 {
-    let a = spawn { f() }
+    let fa = f.clone()
+    let a = spawn { fa() }
     ensure a.detach()
-    let b = spawn { f() }
+    let fb = f.clone()
+    let b = spawn { fb() }
     ensure b.detach()
     return a.join()! + b.join()!
 }

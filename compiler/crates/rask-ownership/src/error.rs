@@ -70,6 +70,13 @@ pub enum OwnershipErrorKind {
         captured: String,
     },
 
+    /// conc.async/S5: a task that leaves its block names a parameter the
+    /// caller only lent.
+    #[error("a task that outlives this call reads `{name}`, which the caller only lent")]
+    TaskCapturesLentParam {
+        name: String,
+    },
+
     /// mem.value/VS11: `[x; n]` copies `x` into every slot, and `x` moves.
     #[error("`[x; n]` repeats a `{ty}`, which isn't Copy")]
     RepeatNotCopy {

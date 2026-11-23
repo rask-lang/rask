@@ -4633,6 +4633,22 @@ impl<'a> OwnershipChecker<'a> {
                 // A task block is the exception: it runs once, so a resource it
                 // captures is its to consume, and it has to (`L1`), the same
                 // as a resource a function body acquires.
+                // conc.async/S5: a task that leaves its block carries what it
+                // names, and a lent parameter isn't the frame's to carry. The
+                // task would read it after the caller freed it (#2033). A Copy
+                // value is copied in, so it crosses.
+                if is_task && !borrows_frame && self.instance.is_none() {
+                    for name in &captures {
+                        if self.outlives_this_call(name) && !self.capture_is_copy(name) {
+                            let at = Self::first_use(body, name).map_or(expr.span, |e| e.span);
+                            self.errors.push(OwnershipError {
+                                kind: OwnershipErrorKind::TaskCapturesLentParam { name: name.clone() },
+                                span: at,
+                            });
+                        }
+                    }
+                }
+
                 let mut stranded: Vec<(String, Option<String>)> = Vec::new();
                 if carries {
                     for name in &captures {
