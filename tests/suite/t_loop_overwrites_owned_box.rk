@@ -1,0 +1,58 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A loop that writes over a variable holding a box or a vector.
+//
+// The value the variable held before the loop was released only at the end of
+// the function, and by then the name held the last turn's value, so the first
+// one leaked. Releasing it on the loop's edge instead came round the back edge
+// a second time unless the release waited on the flag that says it is still
+// held. The strings are long enough to live on the heap.
+
+interface Label {
+    func text(self) -> string
+}
+
+struct Refused { why: string }
+extend Refused {
+    func message(self) -> string { return self.why }
+}
+
+struct Tag { name: string }
+Tag implements Label {
+    func text(self) -> string { return self.name }
+}
+
+func direct(n: i64) -> any Label or Refused {
+    if n < 0 { return Refused(why: "negative-and-long-enough-to-be-on-the-heap") }
+    return Tag(name: "direct-{n}-padded-past-the-inline-length")
+}
+
+func last_label(n: i64) -> any Label or Refused {
+    mut last: any Label = Tag(name: "initial-label-padded-long-enough-heap")
+    for i in 0..n {
+        let l = try direct(i)
+        last = l
+    }
+    return last
+}
+
+func last_vec(n: i64) -> Vec<string> {
+    mut last: Vec<string> = ["initial-vector-entry-long-enough-heap"]
+    for i in 0..n {
+        let v: Vec<string> = ["entry-{i}-padded-long-enough-for-the-heap"]
+        last = v
+    }
+    return last
+}
+
+test "a box written over in a loop" {
+    let d = last_label(3) catch e => Tag(name: "fallback-label-long-enough-for-heap")
+    assert d.text() == "direct-2-padded-past-the-inline-length"
+    let z = last_label(0) catch e => Tag(name: "fallback-label-long-enough-for-heap")
+    assert z.text() == "initial-label-padded-long-enough-heap"
+}
+
+test "a vector written over in a loop" {
+    assert last_vec(3)[0] == "entry-2-padded-long-enough-for-the-heap"
+    assert last_vec(0)[0] == "initial-vector-entry-long-enough-heap"
+}

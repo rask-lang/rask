@@ -1398,9 +1398,27 @@ pub fn plan(func: &MirFunction, facts: &Facts, placement: Placement) -> Plan {
             }
         }
     }
+    let (entries, exits, defs) = solve(func, facts, &sh, &live, &kills, &mut HashSet::new());
+    // A release on an edge reads its flag off the round that placed it, and a
+    // later round can find the value flagged there: one released on a loop's
+    // back edge comes round again already released, so the second turn's
+    // state at the same edge has it ours only under a flag. Unwrapped, the
+    // release ran every turn and freed the value again (`last = l` in a loop).
+    for &(pi, bi, v) in &kills.edges {
+        if kills.guarded_edges.contains(&(pi, bi, v)) {
+            continue;
+        }
+        let Some(g) = exits[pi].as_ref().and_then(|x| x.guard.get(&v)).copied() else { continue };
+        for r in out.iter_mut() {
+            if let Release::OnEdge { from, to, made, guard: guard @ None, .. } = r {
+                if *from == ids[pi] && *to == ids[bi] && *made == v.made() {
+                    *guard = flags.of(Some(g));
+                }
+            }
+        }
+    }
     out.sort();
     out.dedup();
-    let (entries, exits, defs) = solve(func, facts, &sh, &live, &kills, &mut HashSet::new());
     if std::env::var("RASK_OWNERSHIP_TRACE").is_ok_and(|v| v == func.name) {
         for bi in 0..func.blocks.len() {
             eprintln!("bb{} entry {:?}", ids[bi].0, entries[bi]);
@@ -1586,9 +1604,18 @@ fn on_edges(
                     // Anywhere else it is still ours further on, and waits.
                     // A join value made at `bi` is a new one on every way
                     // in, so the one arriving here is always the last turn's.
+                    //
+                    // And a name live past the join that holds it only as
+                    // another way in brings it was written over on this one:
+                    // `last = l` in a loop. Its scope ended at the write. Left
+                    // for the function's end, the name there held this value
+                    // or a later turn's, and neither was released.
                     Placement::ScopeEnd => {
                         let remade = v.block as usize == bi && v.at == u32::MAX;
-                        remade || !entries[bi].as_ref().is_some_and(|e| e.owned(v))
+                        let written_over = entries[bi]
+                            .as_ref()
+                            .is_some_and(|e| e.needed(v, &live.at[bi][first]));
+                        remade || written_over || !entries[bi].as_ref().is_some_and(|e| e.owned(v))
                     }
                 };
                 if !site {
