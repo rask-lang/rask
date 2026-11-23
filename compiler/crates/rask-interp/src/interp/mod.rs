@@ -939,6 +939,12 @@ impl Interpreter {
     /// only the type says whether the slot wants `some(none)` (#2044).
     pub(crate) fn static_option_depth(&self, expr: &rask_ast::expr::Expr) -> Option<usize> {
         let ty = self.node_types.get(&expr.id)?;
+        self.option_layers(ty)
+    }
+
+    /// How many optional layers `ty` has, with this frame's type parameters
+    /// filled in; `None` while the innermost type is open.
+    fn option_layers(&self, ty: &rask_types::Type) -> Option<usize> {
         let frame = self.generic_frames.last().and_then(|f| f.as_deref());
         let ty = match frame {
             Some(frame) => rask_check::substitute_type(ty, frame),
@@ -953,6 +959,39 @@ impl Interpreter {
         match cur {
             rask_types::Type::Var(_) | rask_types::Type::UnresolvedNamed(_) | rask_types::Type::Error => None,
             _ => Some(depth),
+        }
+    }
+
+    /// One branch of an `if` or `match`, widened to the whole expression's
+    /// type. `if c { none } else { k }` typed `i64?` hands back a bare `k`
+    /// from its else branch, and whoever reads the `if` counts on the layers
+    /// its type has (#2044).
+    pub(crate) fn eval_branch(
+        &mut self,
+        whole: &rask_ast::expr::Expr,
+        branch: &rask_ast::expr::Expr,
+    ) -> Result<Value, RuntimeDiagnostic> {
+        let value = self.eval_expr(branch)?;
+        Ok(match (self.static_option_depth(whole), self.static_option_depth(branch)) {
+            (Some(want), Some(have)) => (have..want).fold(value, |v, _| Value::some(v)),
+            _ => value,
+        })
+    }
+
+    /// What the closure expression `id` is typed to return, read where it is
+    /// built so a generic frame's parameters are filled in.
+    pub(crate) fn closure_ret(&self, id: rask_ast::NodeId) -> crate::value::ClosureRet {
+        use rask_types::Type;
+        let Some(Type::Fn { ret, .. }) = self.node_types.get(&id) else {
+            return crate::value::ClosureRet { wraps_ok: false, layers: None };
+        };
+        match &**ret {
+            // A real error side: `T?` is a `Result` whose error is `none` to
+            // the checker, and its `none` is no success.
+            Type::Result { ok, err } if !matches!(**err, Type::None) => {
+                crate::value::ClosureRet { wraps_ok: true, layers: self.option_layers(ok) }
+            }
+            other => crate::value::ClosureRet { wraps_ok: false, layers: self.option_layers(other) },
         }
     }
 
@@ -1174,8 +1213,8 @@ impl Interpreter {
         form: &str,
         closure: Value,
         block: &rask_ast::expr::Expr,
-    ) -> Result<(Interpreter, rask_ast::expr::Expr, bool), RuntimeError> {
-        let Value::Closure { body, captured_env, task_bound, generics, wraps_ok, .. } = closure else {
+    ) -> Result<(Interpreter, rask_ast::expr::Expr, crate::value::ClosureRet), RuntimeError> {
+        let Value::Closure { body, captured_env, task_bound, generics, ret, .. } = closure else {
             return Err(RuntimeError::TypeError(format!(
                 "{form}: a task block evaluated to {}",
                 closure.type_name()
@@ -1200,15 +1239,15 @@ impl Interpreter {
             return Err(RuntimeError::Panic(TASK_BOUND_SPAWN.to_string()));
         }
         let child = self.spawn_child(captured_env, &generics, &named);
-        Ok((child, body, wraps_ok))
+        Ok((child, body, ret))
     }
 
     /// Run a task's body on this thread, now, and hand back a handle whose
     /// join gives what it ended with: a `requires_pool: false` spawn with no
     /// pool.
     pub(crate) fn run_task_in_place(&mut self, closure: Value) -> Result<Value, RuntimeError> {
-        let (child, body, wraps_ok) = self.borrowing_task(closure)?;
-        let ended = run_task_body(child, body, wraps_ok);
+        let (child, body, ret) = self.borrowing_task(closure)?;
+        let ended = run_task_body(child, body, ret);
         let cancel = Arc::new(crate::value::CancelToken::default());
         let join_handle = crate::spawn_interp_thread(move || ended)?;
         Ok(self.hand_out_handle(join_handle, cancel))
@@ -1219,19 +1258,19 @@ impl Interpreter {
     /// writer of until the join, and it may capture task-bound closures: it
     /// ends before the frame does.
     pub(crate) fn spawn_borrowing_task(&mut self, closure: Value) -> Result<Value, RuntimeError> {
-        let (child, body, wraps_ok) = self.borrowing_task(closure)?;
+        let (child, body, ret) = self.borrowing_task(closure)?;
         let cancel = Arc::new(crate::value::CancelToken::default());
         let flag = cancel.clone();
         let join_handle = crate::spawn_interp_thread(move || {
             crate::with_task_slot(move || {
-                crate::value::with_cancel_flag(flag, move || run_task_body(child, body, wraps_ok))
+                crate::value::with_cancel_flag(flag, move || run_task_body(child, body, ret))
             })
         })?;
         Ok(self.hand_out_handle(join_handle, cancel))
     }
 
-    fn borrowing_task(&mut self, closure: Value) -> Result<(Interpreter, rask_ast::expr::Expr, bool), RuntimeError> {
-        let Value::Closure { body, captured_env, generics, wraps_ok, .. } = closure else {
+    fn borrowing_task(&mut self, closure: Value) -> Result<(Interpreter, rask_ast::expr::Expr, crate::value::ClosureRet), RuntimeError> {
+        let Value::Closure { body, captured_env, generics, ret, .. } = closure else {
             return Err(RuntimeError::TypeError(format!(
                 "a task block evaluated to {}",
                 closure.type_name()
@@ -1244,7 +1283,7 @@ impl Interpreter {
             }
         });
         let child = self.spawn_child(captured_env, &generics, &named);
-        Ok((child, body, wraps_ok))
+        Ok((child, body, ret))
     }
 
     /// Inside a `using ThreadPool` block.
@@ -1254,11 +1293,11 @@ impl Interpreter {
 
     /// Start an OS thread (`Thread.spawn { … }`).
     pub(crate) fn spawn_os_thread(&mut self, closure: Value, block: &rask_ast::expr::Expr) -> Result<Value, RuntimeError> {
-        let (child, body, wraps_ok) = self.task_from_closure("Thread.spawn", closure, block)?;
+        let (child, body, ret) = self.task_from_closure("Thread.spawn", closure, block)?;
         let cancel = Arc::new(crate::value::CancelToken::default());
         let flag = cancel.clone();
         let join_handle = crate::spawn_interp_thread(move || {
-            crate::value::with_cancel_flag(flag, move || run_task_body(child, body, wraps_ok))
+            crate::value::with_cancel_flag(flag, move || run_task_body(child, body, ret))
         })?;
         Ok(self.hand_out_handle(join_handle, cancel))
     }
@@ -1279,7 +1318,7 @@ impl Interpreter {
                  Install a `using Multitasking { ... }` block that encloses the call.".to_string(),
             ));
         }
-        let (child, body, wraps_ok) = self.task_from_closure("spawn", closure, block)?;
+        let (child, body, ret) = self.task_from_closure("spawn", closure, block)?;
 
         // The thread starts now; the body waits for one of the scope's
         // task slots before running, so `workers: n` bounds how many
@@ -1288,7 +1327,7 @@ impl Interpreter {
         let flag = cancel.clone();
         let join_handle = crate::spawn_interp_thread(move || {
             crate::with_task_slot(move || {
-                crate::value::with_cancel_flag(flag, move || run_task_body(child, body, wraps_ok))
+                crate::value::with_cancel_flag(flag, move || run_task_body(child, body, ret))
             })
         })?;
         Ok(self.hand_out_handle(join_handle, cancel))
@@ -1307,7 +1346,7 @@ impl Interpreter {
                 ))
             }
         };
-        let (child, body, wraps_ok) = self.task_from_closure("ThreadPool.spawn", closure, block)?;
+        let (child, body, ret) = self.task_from_closure("ThreadPool.spawn", closure, block)?;
 
         let (result_tx, result_rx) = mpsc::sync_channel::<Result<Value, String>>(1);
         let cancel = Arc::new(crate::value::CancelToken::default());
@@ -1315,7 +1354,7 @@ impl Interpreter {
 
         let task = PoolTask {
             work: Box::new(move || {
-                let ended = crate::value::with_cancel_flag(flag, move || run_task_body(child, body, wraps_ok));
+                let ended = crate::value::with_cancel_flag(flag, move || run_task_body(child, body, ret));
                 let _ = result_tx.send(ended);
             }),
         };
@@ -1990,12 +2029,13 @@ impl std::error::Error for RuntimeDiagnostic {}
 /// The task's result, the way a closure call produces one: `return v` and a
 /// `try` that leaves both end the block with their value (conc.async/S7), and
 /// a value of type `T` filling a `T or E` result is its success side.
-fn run_task_body(mut interp: Interpreter, body: rask_ast::expr::Expr, wraps_ok: bool) -> Result<Value, String> {
-    match interp.eval_expr(&body) {
-        Ok(val) => Ok(dispatch::closure_result(val, wraps_ok)),
-        Err(diag) => match diag.error {
-            RuntimeError::Return(val) | RuntimeError::TryError(val) => Ok(dispatch::closure_result(val, wraps_ok)),
-            _ => Err(interp.task_failure_message(&diag)),
-        },
-    }
+fn run_task_body(mut interp: Interpreter, body: rask_ast::expr::Expr, ret: crate::value::ClosureRet) -> Result<Value, String> {
+    let ended = match interp.eval_expr(&body) {
+        Ok(val) => Ok(val),
+        Err(diag) if matches!(diag.error, RuntimeError::Return(_) | RuntimeError::TryError(_)) => Err(diag.error),
+        Err(diag) => return Err(interp.task_failure_message(&diag)),
+    };
+    interp
+        .closure_outcome(&body, ended, ret)
+        .map_err(|e| interp.task_failure_message(&RuntimeDiagnostic::new(e, body.span)))
 }

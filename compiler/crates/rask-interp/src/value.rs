@@ -1190,6 +1190,16 @@ impl std::ops::DerefMut for VecData {
     }
 }
 
+/// What a closure's type says it returns.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ClosureRet {
+    /// Returns a `T or E`: a bare value (a `void` body, a bare `return`) is
+    /// the success side, as for a function declared that way.
+    pub wraps_ok: bool,
+    /// Optional layers on the success side; `None` while the type is open.
+    pub layers: Option<usize>,
+}
+
 /// A runtime value in the interpreter.
 #[derive(Debug, Clone)]
 pub enum Value {
@@ -1289,10 +1299,9 @@ pub enum Value {
         /// The type arguments of the generic body it was built in, for
         /// whatever generic calls and closures its own body makes.
         generics: GenericFrame,
-        /// Its type returns a `T or E`, so a body that hands back a bare
-        /// value (a `void` body, a bare `return`) is the success side, as for
-        /// a function declared that way.
-        wraps_ok: bool,
+        /// What its type says it returns, so the value its body hands back
+        /// is shaped the way a function's declared return shapes it.
+        ret: ClosureRet,
     },
     /// Duration (time span in nanoseconds)
     Duration(u64),
@@ -1712,7 +1721,7 @@ impl Value {
                 let inner = c.lock().unwrap().deep_clone();
                 Value::Cell(Arc::new(Mutex::new(inner)))
             }
-            Value::Closure { params, body, captured_env, lent, carried, task_bound, generics, wraps_ok } => {
+            Value::Closure { params, body, captured_env, lent, carried, task_bound, generics, ret } => {
                 // CV2: a carried capture is copied, so writes one closure
                 // makes to its state don't show in the other. A pointed-at
                 // capture is the definer's storage, and the clone points at
@@ -1736,7 +1745,7 @@ impl Value {
                     carried: carried.clone(),
                     task_bound: *task_bound,
                     generics: generics.clone(),
-                    wraps_ok: *wraps_ok,
+                    ret: *ret,
                 }
             }
             Value::Map(m) => {

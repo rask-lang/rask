@@ -9,6 +9,11 @@
 // came out as nothing at all. A generic `T?` with `T = i64?` lost its layer
 // the same way, and native typed `return none` from `-> i64??` as the inner
 // layer, then wrapped it (#2044). The types say which one is meant.
+//
+// Reading the types means every place a value is handed over has to add the
+// layers its type is short of: a branch of an `if` holding a bare value, a
+// closure returning one, a `push` into a vector. And a `try` that leaves hands
+// back the outer `none`, never an absent inner value.
 
 func outer_none() -> i64?? {
     return none
@@ -28,6 +33,24 @@ func wrap<T>(x: T) -> T? {
 }
 
 struct Slot<T> { v: T? }
+
+func pick(k: i64) -> i64? {
+    let r = if k > 0 { k } else { none }
+    return r
+}
+
+func pick_match(k: i64) -> i64? {
+    let r = match k {
+        0 => none,
+        _ => k,
+    }
+    return r
+}
+
+func through_try(b: i64?) -> i64?? {
+    let v = try b
+    return v
+}
 
 func first_item(xs: Vec<i64?>) -> i64?? {
     for x in xs {
@@ -90,4 +113,38 @@ test "the first item of a list of optionals" {
     assert first_item(xs)! is none
     let empty: Vec<i64?> = []
     assert first_item(empty) is none
+}
+
+test "a branch holding a bare value widens to the if" {
+    assert pick(4)! == 4
+    assert pick(0) is none
+    assert pick_match(7)! == 7
+    assert pick_match(0) is none
+}
+
+test "a closure returning a bare value widens to its type" {
+    let f = |k: i64| -> i64? {
+        if k > 0 { return k }
+        return none
+    }
+    assert f(3)! == 3
+    assert f(0) is none
+    let g = |k: i64| -> i64? { k * 2 }
+    assert g(2)! == 4
+}
+
+test "a try that leaves is the outer none" {
+    assert through_try(none) is none
+    assert through_try(3)!! == 3
+}
+
+test "pushing none into a list of nested optionals" {
+    let a: i64? = none
+    mut v: Vec<i64??> = Vec.new()
+    v.push(a)
+    v.push(none)
+    v.push(4)
+    assert !(v[0] is none)
+    assert v[1] is none
+    assert v[2]!! == 4
 }

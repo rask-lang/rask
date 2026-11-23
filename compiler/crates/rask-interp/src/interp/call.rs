@@ -260,6 +260,10 @@ impl Interpreter {
         self.generic_frames.pop();
         self.env.pop_scope();
 
+        // A `try` that left hands back the failure already shaped as the
+        // whole return: `none` from `try b` in a `-> i64??` is the outer
+        // `none`, not an absent inner value to wrap.
+        let propagated = matches!(&result, Err(diag) if matches!(diag.error, RuntimeError::TryError(_)));
         let value = match result {
             Ok(_) => Value::Unit,
             Err(diag) if matches!(&diag.error, RuntimeError::Return(_)) => {
@@ -288,7 +292,9 @@ impl Interpreter {
         // `stdlib/collections.rk` is written that way, so every `get_clone` on
         // the interpreter was broken (#1211).
         let returns_option = ret_ty.as_ref().is_some_and(|t| optional_depth(t) > 0);
-        if returns_result {
+        if propagated && !returns_result {
+            Ok(value)
+        } else if returns_result {
             // Already a Result: pass through. That includes every return
             // the checker put on the error side — `return` wrapped those.
             if matches!(&value, Value::Enum { name, .. } if name == "Result") {

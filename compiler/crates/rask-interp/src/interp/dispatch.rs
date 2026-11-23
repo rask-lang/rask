@@ -32,7 +32,7 @@ impl Interpreter {
         func: Value,
         args: Vec<Value>,
     ) -> (Result<Value, RuntimeError>, Option<Value>) {
-        if let Value::Closure { params, body, captured_env, lent, generics, wraps_ok, .. } = func {
+        if let Value::Closure { params, body, captured_env, lent, generics, ret, .. } = func {
             self.enter_closure(&captured_env, &lent, &generics);
             let first = params.first().cloned();
             for (param, arg) in params.iter().zip(args.into_iter()) {
@@ -43,13 +43,10 @@ impl Interpreter {
                 diag.error
             });
             let final_arg = first.and_then(|name| self.env.get(&name));
+            // A `try` in the body leaves the closure, as a `return` does,
+            // with the error as its result (#1781).
+            let value = self.closure_outcome(&body, result, ret);
             self.leave_closure();
-            let value = match result {
-                // A `try` in the body leaves the closure, as a `return` does,
-                // with the error as its result (#1781).
-                Ok(v) | Err(RuntimeError::Return(v)) | Err(RuntimeError::TryError(v)) => Ok(closure_result(v, wraps_ok)),
-                Err(e) => Err(e),
-            };
             return (value, final_arg);
         }
         // A named function does declare `mutate`: lend it storage for the
@@ -116,7 +113,7 @@ impl Interpreter {
         args: Vec<Value>,
         places: Vec<Option<crate::env::Slot>>,
     ) -> Result<Value, RuntimeError> {
-        let Value::Closure { params, body, captured_env, lent, generics, wraps_ok, .. } = closure else {
+        let Value::Closure { params, body, captured_env, lent, generics, ret, .. } = closure else {
             return self.call_value(closure, args);
         };
         self.enter_closure(&captured_env, &lent, &generics);
@@ -134,14 +131,12 @@ impl Interpreter {
             self.failed_call_span = Some(diag.span);
             diag.error
         });
+        // A `try` in the body leaves the closure, as a `return` does, with
+        // the error as its result. Escaping it left the function that
+        // called the closure instead (#1781).
+        let value = self.closure_outcome(&body, result, ret);
         self.leave_closure();
-        match result {
-            // A `try` in the body leaves the closure, as a `return` does, with
-            // the error as its result. Escaping it left the function that
-            // called the closure instead (#1781).
-            Ok(v) | Err(RuntimeError::Return(v)) | Err(RuntimeError::TryError(v)) => Ok(closure_result(v, wraps_ok)),
-            Err(e) => Err(e),
-        }
+        value
     }
 
     pub(crate) fn call_value(&mut self, func: Value, args: Vec<Value>) -> Result<Value, RuntimeError> {
@@ -969,12 +964,38 @@ impl Interpreter {
 }
 
 
-/// What a closure call hands back. One whose type returns a `T or E` treats a
-/// bare value as the success side, the way a function declared that way does.
-pub(crate) fn closure_result(value: Value, wraps_ok: bool) -> Value {
-    if wraps_ok && !matches!(&value, Value::Enum { name, .. } if name == "Result") {
-        Value::ok(value)
-    } else {
-        value
+impl Interpreter {
+    /// What a closure call hands back, given how its body ended. Call it
+    /// before leaving the closure: the body's type is read in its frame.
+    ///
+    /// A `try` that left hands back the error, already the result's shape.
+    /// Otherwise the value takes the optional layers the closure's type
+    /// declares beyond what the returned expression's type has (`|k| -> i64?
+    /// { return k }` hands back `some(k)`, #2044), and in a `T or E` closure a
+    /// bare value is the success side. The same rules a function's declared
+    /// return applies.
+    pub(crate) fn closure_outcome(
+        &mut self,
+        body: &rask_ast::expr::Expr,
+        ended: Result<Value, RuntimeError>,
+        ret: crate::value::ClosureRet,
+    ) -> Result<Value, RuntimeError> {
+        let (value, have) = match ended {
+            Ok(v) => (v, self.static_option_depth(body)),
+            Err(RuntimeError::Return(v)) => (v, self.returned_depth.take()),
+            Err(RuntimeError::TryError(v)) => return Ok(v),
+            Err(e) => return Err(e),
+        };
+        if ret.wraps_ok && matches!(&value, Value::Enum { name, .. } if name == "Result") {
+            return Ok(value);
+        }
+        let value = match ret.layers {
+            Some(want) => {
+                let have = have.unwrap_or_else(|| super::call::option_depth(&value));
+                (have..want).fold(value, |v, _| Value::some(v))
+            }
+            None => value,
+        };
+        Ok(if ret.wraps_ok { Value::ok(value) } else { value })
     }
 }

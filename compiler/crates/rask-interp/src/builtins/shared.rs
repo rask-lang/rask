@@ -158,7 +158,7 @@ impl Interpreter {
                 captured_env,
                 lent,
                 generics,
-                wraps_ok,
+                ret,
                 ..
             } => {
                 self.enter_closure(captured_env, lent, generics);
@@ -166,13 +166,9 @@ impl Interpreter {
                     self.env.define(param_name.clone(), arg);
                 }
                 let result = self.eval_expr(body).map_err(|diag| diag.error);
+                let value = self.closure_outcome(body, result, *ret);
                 self.leave_closure();
-                match result {
-                    Ok(v) | Err(RuntimeError::Return(v)) => {
-                        Ok(crate::interp::dispatch::closure_result(v, *wraps_ok))
-                    }
-                    Err(e) => Err(e),
-                }
+                value
             }
             _ => Err(RuntimeError::TypeError(format!(
                 "expected closure, found {}",
@@ -193,7 +189,7 @@ impl Interpreter {
                 captured_env,
                 lent,
                 generics,
-                wraps_ok,
+                ret,
                 ..
             } => {
                 if !params.is_empty() {
@@ -205,13 +201,9 @@ impl Interpreter {
 
                 self.enter_closure(captured_env, lent, generics);
                 let result = self.eval_expr(body).map_err(|diag| diag.error);
+                let value = self.closure_outcome(body, result, *ret);
                 self.leave_closure();
-                match result {
-                    Ok(v) | Err(RuntimeError::Return(v)) => {
-                        Ok(crate::interp::dispatch::closure_result(v, *wraps_ok))
-                    }
-                    Err(e) => Err(e),
-                }
+                value
             }
             _ => Err(RuntimeError::TypeError(format!(
                 "expected closure, found {}",

@@ -1500,7 +1500,16 @@ impl Interpreter {
                     for (i, p) in meta.slot_params() {
                         let Some(slot) = arg_vals.get_mut(i) else { continue };
                         if let Some(want) = self.container_elem_option_depth(typed_at, p) {
-                            for _ in super::call::option_depth(slot)..want {
+                            // The argument's type says how many layers it
+                            // brings: `push(none)` into a `Vec<i64??>` is the
+                            // outer `none`, not an absent inner value (#2044).
+                            let have = arg_places
+                                .depths
+                                .get(i)
+                                .copied()
+                                .flatten()
+                                .unwrap_or_else(|| super::call::option_depth(slot));
+                            for _ in have..want {
                                 *slot = Value::some(slot.clone());
                             }
                         }
@@ -1891,7 +1900,7 @@ impl Interpreter {
                             if let Some(name) = then_name {
                                 self.env.define(name, payload);
                             }
-                            let result = self.eval_expr(then_branch);
+                            let result = self.eval_branch(expr, then_branch);
                             self.env.pop_scope();
                             return result;
                         } else if let Some(else_br) = else_branch {
@@ -1903,11 +1912,11 @@ impl Interpreter {
                                 // Result Err branch binds E; Option None has no payload.
                                 self.env.push_scope();
                                 self.env.define(name, p);
-                                let result = self.eval_expr(else_br);
+                                let result = self.eval_branch(expr, else_br);
                                 self.env.pop_scope();
                                 return result;
                             }
-                            return self.eval_expr(else_br);
+                            return self.eval_branch(expr, else_br);
                         } else {
                             return Ok(Value::Unit);
                         }
@@ -1926,22 +1935,22 @@ impl Interpreter {
                         }
                     };
                     if taken {
-                        let result = self.eval_expr(then_branch);
+                        let result = self.eval_branch(expr, then_branch);
                         self.env.pop_scope();
                         return result;
                     }
                     self.env.pop_scope();
                     return match else_branch {
-                        Some(else_br) => self.eval_expr(else_br),
+                        Some(else_br) => self.eval_branch(expr, else_br),
                         None => Ok(Value::Unit),
                     };
                 }
 
                 let cond_val = self.eval_expr(cond)?;
                 if self.is_truthy(&cond_val) {
-                    self.eval_expr(then_branch)
+                    self.eval_branch(expr, then_branch)
                 } else if let Some(else_br) = else_branch {
-                    self.eval_expr(else_br)
+                    self.eval_branch(expr, else_br)
                 } else {
                     Ok(Value::Unit)
                 }
@@ -2317,7 +2326,7 @@ impl Interpreter {
                         for (name, val) in bindings {
                             self.env.define(name, val);
                         }
-                        let result = self.eval_expr(&arm.body);
+                        let result = self.eval_branch(expr, &arm.body);
                         self.env.pop_scope();
                         return result;
                     }
@@ -2340,7 +2349,7 @@ impl Interpreter {
                     for (name, val) in bindings {
                         self.env.define(name, val);
                     }
-                    let result = self.eval_expr(then_branch);
+                    let result = self.eval_branch(expr, then_branch);
                     self.env.pop_scope();
                     result
                 } else if let Some(else_br) = else_branch {
@@ -2352,7 +2361,7 @@ impl Interpreter {
                         let rest = Self::else_binding_value(scrutinee_ty, value, rest_ty);
                         self.env.define(name.clone(), rest);
                     }
-                    let result = self.eval_expr(else_br);
+                    let result = self.eval_branch(expr, else_br);
                     self.env.pop_scope();
                     result
                 } else {
@@ -2616,13 +2625,7 @@ impl Interpreter {
                     carried,
                     task_bound: self.closure_is_task_bound(expr.id),
                     generics: self.generic_frames.last().cloned().flatten(),
-                    // A real error side: `T?` is a `Result` whose error is
-                    // `none` to the checker, and its `none` is no success.
-                    wraps_ok: matches!(
-                        self.node_types.get(&expr.id),
-                        Some(rask_types::Type::Fn { ret, .. })
-                            if matches!(&**ret, rask_types::Type::Result { err, .. } if !matches!(**err, rask_types::Type::None))
-                    ),
+                    ret: self.closure_ret(expr.id),
                 })
             }
 
