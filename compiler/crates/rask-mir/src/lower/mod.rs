@@ -1007,6 +1007,18 @@ impl<'a> MirContext<'a> {
         Some(calls.into_iter().map(|c| c.symbol).collect())
     }
 
+    /// The whole `if`/`match` type an arm widens to (`TypedProgram::arm_widenings`),
+    /// at this instance. In `if c { x } else { none }` with `T = i64?` the
+    /// whole is `i64??`; read raw it was `T?`, one layer, and `x` went in
+    /// unwrapped.
+    pub fn arm_widening(&self, arm: NodeId) -> Option<Type> {
+        let whole = self.arm_widenings.get(&arm)?;
+        match &self.node_types.instance {
+            Some((inst, _)) => inst.ty(whole),
+            None => Some(whole.clone()),
+        }
+    }
+
     /// The error a `try` boxes into the function's `any I`, at this instance,
     /// and the interface's symbol (`TypedProgram::erased_try_errors`).
     pub fn erased_try_error(&self, try_id: NodeId) -> Option<(Type, String)> {

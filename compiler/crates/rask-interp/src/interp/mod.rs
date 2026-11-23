@@ -1056,12 +1056,6 @@ impl Interpreter {
         index: usize,
     ) -> Option<usize> {
         use rask_types::{GenericArg, Type};
-        fn depth(ty: &Type) -> usize {
-            match ty {
-                Type::Result { ok, err } if **err == Type::None => 1 + depth(ok),
-                _ => 0,
-            }
-        }
         let args = match self.node_types.get(&node_id)? {
             Type::Generic { args, .. } | Type::UnresolvedGeneric { args, .. } => args,
             _ => return None,
@@ -1069,7 +1063,31 @@ impl Interpreter {
         let GenericArg::Type(inner) = args.get(index)? else {
             return None;
         };
-        Some(depth(inner))
+        // With the frame's type parameters filled in: a `Vec<T?>` in a body
+        // where `T` is `i64?` holds two layers, and counting one left
+        // `v.push(x)` of an absent `x` as the outer `none`.
+        self.option_layers(inner).or_else(|| {
+            let mut depth = 0;
+            let mut cur: &rask_types::Type = inner;
+            while let Some(next) = cur.as_option() {
+                depth += 1;
+                cur = next;
+            }
+            Some(depth)
+        })
+    }
+
+    /// How many optional layers a collection literal's element type has.
+    pub(crate) fn literal_elem_option_depth(&self, id: rask_ast::NodeId) -> Option<usize> {
+        use rask_types::{GenericArg, Type};
+        match self.node_types.get(&id)? {
+            Type::Array { elem, .. } => self.option_layers(elem),
+            Type::Generic { args, .. } | Type::UnresolvedGeneric { args, .. } => match args.first()? {
+                GenericArg::Type(inner) => self.option_layers(inner),
+                _ => None,
+            },
+            _ => None,
+        }
     }
 
     /// ER31a: supply the `try` sites whose error gets wrapped in the enclosing

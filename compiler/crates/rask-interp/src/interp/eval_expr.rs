@@ -2290,11 +2290,20 @@ impl Interpreter {
             // A literal's elements are new owners, like a struct literal's
             // fields: `(v[0], v[1])` copies the elements out, so a later
             // write to `v[0]` doesn't show through the tuple.
+            //
+            // Each element is widened to the literal's element type: in
+            // `let v: Vec<i64??> = [none, a]` the `none` is the outer layer and
+            // `a` (an `i64?`) needs one more, which only the types say (#2044).
             ExprKind::Array(elements) => {
-                let values: Vec<Value> = elements
-                    .iter()
-                    .map(|e| self.eval_owned(e))
-                    .collect::<Result<_, _>>()?;
+                let want = self.literal_elem_option_depth(expr.id);
+                let mut values: Vec<Value> = Vec::with_capacity(elements.len());
+                for e in elements {
+                    let v = self.eval_owned(e)?;
+                    values.push(match (want, self.static_option_depth(e)) {
+                        (Some(want), Some(have)) => (have..want).fold(v, |v, _| Value::some(v)),
+                        _ => v,
+                    });
+                }
                 Ok(self.collection_literal(expr.id, values))
             }
 

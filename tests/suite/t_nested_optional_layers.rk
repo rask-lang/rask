@@ -162,3 +162,54 @@ test "a closure argument widens to its parameter" {
     assert !g(a)
     assert !g(3)
 }
+
+func gen_if<T: Copy>(c: bool, x: T) -> T? {
+    let r = if c { x } else { none }
+    return r
+}
+
+func gen_match<T: Copy>(k: i64, x: T) -> T? {
+    return match k {
+        0 => none,
+        _ => x,
+    }
+}
+
+func push_gen<T: Copy>(x: T) -> Vec<T?> {
+    mut v: Vec<T?> = Vec.new()
+    v.push(x)
+    v.push(none)
+    return v
+}
+
+test "a generic branch widens to the type its parameter took" {
+    // With `T = i64?` the whole `if` is an `i64??`. Native read the arm's
+    // target as `T?` without filling in `T`, so `x` went in bare and the
+    // `none` arm came back as an absent inner value (#2044).
+    let a: i64? = none
+    assert gen_if(false, a) is none
+    assert !(gen_if(true, a) is none)
+    assert gen_match(0, a) is none
+    assert !(gen_match(1, a) is none)
+    let b: i64? = 5
+    assert gen_if(true, b)!! == 5
+}
+
+test "a generic push widens to the type its parameter took" {
+    // The interpreter counted `Vec<T?>` as one layer and stored an absent
+    // `x` as the outer `none`.
+    let a: i64? = none
+    let v = push_gen(a)
+    assert !(v[0] is none)
+    assert v[1] is none
+}
+
+test "a list literal's none is the element type's outer none" {
+    // The interpreter re-counted the layers each element value carried
+    // after the fact, so the literal `none` and an absent `a` looked alike.
+    let a: i64? = none
+    let v: Vec<i64??> = [none, a, 3]
+    assert v[0] is none
+    assert !(v[1] is none)
+    assert v[2]!! == 3
+}
