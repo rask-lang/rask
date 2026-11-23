@@ -1,0 +1,59 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// Reassigning an `any Shape` variable frees the box it held.
+//
+// `c = a.twin()` typed its right side while the method's result was still an
+// open inference variable, so the checker noted "box this as `any Shape`" in
+// case it turned out concrete. It turned out to be `any Shape` already, the
+// note stayed, and mono built a vtable for `any Shape` as a Shape with no
+// method bodies. The drop pass saw a `twin` slot nothing answered, could no
+// longer say the call hands back a box, and left both replaced boxes to leak.
+// The tags are long enough to live on the heap.
+
+interface Shape {
+    func area(self) -> i64
+    func twin(self) -> any Shape
+}
+
+struct Sq { s: i64, tag: string }
+Sq implements Shape {
+    func area(self) -> i64 {
+        return self.s * self.s
+    }
+    func twin(self) -> any Shape {
+        return Sq(s: self.s + 1, tag: "{self.tag}-twin-padded-long")
+    }
+}
+
+struct Ci { r: i64 }
+Ci implements Shape {
+    func area(self) -> i64 {
+        return self.r * 3
+    }
+    func twin(self) -> any Shape {
+        return Sq(s: self.r, tag: "from-circle-padded-long-enough")
+    }
+}
+
+test "a box replaced by another method result" {
+    let a: any Shape = Sq(s: 2, tag: "root-tag-padded-long-enough")
+    mut c = a.twin()
+    c = a.twin()
+    assert c.area() == 9
+}
+
+test "a box replaced by its own twin in a loop" {
+    let a: any Shape = Ci(r: 4)
+    mut c = a.twin()
+    for i in 0..3 {
+        c = c.twin()
+    }
+    assert c.area() == 49
+}
+
+test "a plain box replaced by a method result" {
+    let a: any Shape = Sq(s: 1, tag: "root-tag-padded-long-enough")
+    mut c: any Shape = Ci(r: 4)
+    c = a.twin()
+    assert c.area() == 4
+}

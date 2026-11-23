@@ -1238,7 +1238,18 @@ impl TypeChecker {
             .filter(|(_, params)| !params.iter().any(|(_, t)| Self::contains_type_var(t)))
             .collect();
 
-        let interface_coercions = self.interface_coercions.clone();
+        // A coercion noted while the value's type was still open (see
+        // `note_interface_coercion_node`) is settled here. One that resolved to
+        // an interface object is already boxed: boxing it again gave mono a
+        // vtable for `any Shape` as a Shape with no bodies, and the interface
+        // drop pass, seeing a slot nothing answers, stopped freeing the boxes
+        // `c = a.twin()` replaced.
+        let interface_coercions: HashMap<NodeId, String> = self
+            .interface_coercions
+            .iter()
+            .filter(|(node, _)| !matches!(node_types.get(node), Some(Type::InterfaceObject { .. })))
+            .map(|(node, name)| (*node, name.clone()))
+            .collect();
         let arm_widenings: HashMap<NodeId, Type> = self
             .arm_widenings
             .iter()
