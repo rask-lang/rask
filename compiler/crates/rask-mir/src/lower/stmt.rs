@@ -621,10 +621,10 @@ impl<'a> MirLowerer<'a> {
         let bound = self.placed_locals.get(&base).cloned().flatten();
         if let Some(holder) = holder.or(bound.as_ref()) {
             let slot = self.emit_address_at(MirOperand::Local(base), offset);
-            let func = if holder.map { "Link_set_in_map" } else { "Link_set_in_vec" };
+            let func = if holder.map { "rask_link_set_in_map" } else { "rask_link_set_in_vec" };
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: None,
-                func: FunctionRef::borrowing(func),
+                func: FunctionRef::runtime(func.to_string()),
                 args: vec![holder.coll.clone(), MirOperand::Local(slot), value],
             }));
             return;
@@ -637,7 +637,7 @@ impl<'a> MirLowerer<'a> {
         if matches!(self.builder.local_type(base), Some(MirType::Link(_))) {
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: None,
-                func: FunctionRef::borrowing("Link_set_node"),
+                func: FunctionRef::runtime("rask_link_set_node".to_string()),
                 args: vec![MirOperand::Local(base), offset, value],
             }));
             return;
@@ -645,7 +645,7 @@ impl<'a> MirLowerer<'a> {
         let slot = self.emit_address_at(MirOperand::Local(base), offset);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: None,
-            func: FunctionRef::borrowing("Link_set"),
+            func: FunctionRef::runtime("rask_link_set".to_string()),
             args: vec![MirOperand::Local(slot), value],
         }));
     }

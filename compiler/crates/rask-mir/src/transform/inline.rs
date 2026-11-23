@@ -133,7 +133,7 @@ fn builds_borrowing_closure(func: &MirFunction) -> bool {
 /// func attach(mutate h: Holder, n: Link<Node>) { h.root = n }
 ///
 ///     _5 = _0 + 0            // the parameter, plus the field's offset
-///     Link_set(_5, _1)       // the argument is _5, never _0
+///     rask_link_set(_5, _1)  // the argument is _5, never _0
 /// ```
 ///
 /// Matching arguments against parameter ids alone misses that, so `attach`

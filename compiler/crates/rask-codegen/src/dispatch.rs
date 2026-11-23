@@ -632,14 +632,6 @@ pub(crate) fn internal_entries() -> Vec<StdlibEntry> {
 
         // ── Rack + Link operations (mem.racks) ─────────────────
         StdlibEntry::simple("Rack_free", "rask_rack_free", &[types::I64], None, false),
-        // Edge maintenance, emitted by lowering rather than written by anyone.
-        StdlibEntry::simple("Link_set", "rask_link_set", &[types::I64, types::I64], None, false),
-        StdlibEntry::simple("Link_set_node", "rask_link_set_node",
-                            &[types::I64, types::I64, types::I64], None, false),
-        StdlibEntry::simple("Link_set_in_vec", "rask_link_set_in_vec",
-                            &[types::I64, types::I64, types::I64], None, false),
-        StdlibEntry::simple("Link_set_in_map", "rask_link_set_in_map",
-                            &[types::I64, types::I64, types::I64], None, false),
         StdlibEntry {
             mir_name: "rask_link_register_struct", c_name: "rask_link_register_struct",
             params: &[types::I64, types::I64, types::I64], ret_ty: None, can_panic: false,
