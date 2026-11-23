@@ -68,6 +68,7 @@ test "a link clones as the same edge" {
     let o: Link<Leaf>? = a
     let c = o.clone()
     assert b.id == 4
+    assert b == a
     assert c!.id == 4
 }
 
