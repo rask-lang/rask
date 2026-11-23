@@ -2508,7 +2508,13 @@ impl Interpreter {
                         "Ok" | "Some" => Ok(fields.first().cloned().unwrap_or(Value::Unit)),
                         "Err" | "None" => {
                             let bound = fields.first().cloned().unwrap_or(Value::Unit);
-                            self.run_catch_body(clause, bound)
+                            let value = self.run_catch_body(clause, bound)?;
+                            // The handler's value stands in for a `T?` success
+                            // and widens into it (ER14, OPT31).
+                            Ok(match (self.static_option_depth(expr), self.static_option_depth(&clause.body)) {
+                                (Some(want), Some(have)) if !keeps_shape => (have..want).fold(value, |v, _| Value::some(v)),
+                                _ => value,
+                            })
                         }
                         _ => Err(RuntimeDiagnostic::new(
                             RuntimeError::TypeError(format!(

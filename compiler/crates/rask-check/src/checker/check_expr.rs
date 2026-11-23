@@ -1928,8 +1928,19 @@ impl TypeChecker {
                 }
                 // Still wrapped with the same success type — the shape carries
                 // on, and so does the chain.
+                // On an optional success type, a body is only a step of the
+                // chain when its own success side is that type. A `T?` body on
+                // `T?? or E` is the `T` itself, which widens below: comparing
+                // its `i64` with `i64?` reported `expected i64, found i64??`.
+                let ok_now = self.ctx.apply(&ok_ty);
+                let is_the_success_value = |body_ok: &Type| {
+                    ok_now.is_option() && !matches!(body_ok, Type::Var(_)) && *body_ok != ok_now
+                };
                 if let Type::Result { ok: body_ok, .. } = &resolved_body {
-                    let body_ok = (**body_ok).clone();
+                    let body_ok = self.ctx.apply(body_ok);
+                    if is_the_success_value(&body_ok) {
+                        return self.catch_widens_into(&clause.body, body_ty, ok_ty, expr.span);
+                    }
                     if let Err(e) = self.unify(&body_ok, &ok_ty, expr.span) {
                         self.errors.push(e);
                     }
@@ -1958,6 +1969,10 @@ impl TypeChecker {
                 // e => Tag(…)` was never boxed.
                 if !Self::is_any_cast(&clause.body) {
                     self.pending_interface_coercions.push((clause.body.id, ok_ty.clone(), body_ty.clone()));
+                }
+                // `one(1) catch _ => 7` on an `i64? or E` was a mismatch.
+                if ok_now.is_option() && !resolved_body.is_option() {
+                    return self.catch_widens_into(&clause.body, body_ty, ok_ty, expr.span);
                 }
                 self.ctx.add_constraint(TypeConstraint::Equal(
                     ok_ty.clone(),
@@ -5078,6 +5093,19 @@ impl TypeChecker {
     /// Format a type with resolved names (Named(id) → "TypeName").
     pub(super) fn fmt_ty(&self, ty: &Type) -> String {
         format!("{}", self.types.resolve_type_names(ty))
+    }
+
+    /// ER14 puts the handler's value where the `T` was, and a `T?` takes a
+    /// value by widening (OPT31), the same as an `if` arm next to a `T?` one.
+    fn catch_widens_into(&mut self, body: &Expr, body_ty: Type, ok_ty: Type, span: Span) -> Type {
+        self.coerce_into_node(
+            rask_ast::coercion::CoercionSite::Branch,
+            body_ty,
+            ok_ty.clone(),
+            Some(body.id),
+            span,
+        );
+        ok_ty
     }
 
     /// Hand a plain `try`'s error to the enclosing function: the same type, a
@@ -8221,9 +8249,13 @@ impl TypeChecker {
         if arms.is_empty() {
             return self.ctx.fresh_var();
         }
-        let optional_arm = arms
-            .iter()
-            .position(|(ty, _)| self.ctx.apply(ty).as_option().is_some());
+        // The arm with the most optional layers is what the others widen
+        // into: `if c { y } else { inner }` with `y: i64??` and `inner: i64?`
+        // is an `i64??`, and `inner` is its present branch (OPT31). Taking the
+        // first optional arm made `inner` the target and `y` a mismatch.
+        let depths: Vec<usize> = arms.iter().map(|(ty, _)| self.option_depth(ty)).collect();
+        let deepest = depths.iter().copied().max().unwrap_or(0);
+        let optional_arm = (deepest > 0).then(|| depths.iter().position(|d| *d == deepest)).flatten();
         let Some(target_at) = optional_arm else {
             // An arm that already is an `any Interface` is what the others
             // join into, and each of them is boxed once its type settles.
@@ -8250,7 +8282,13 @@ impl TypeChecker {
             if i == target_at {
                 continue;
             }
-            if self.ctx.apply(&ty).as_option().is_some() {
+            // A bare `none` has an open payload and is the target's own
+            // absent branch; any other arm with as many layers is the same type.
+            let shallower = depths[i] < deepest && !matches!(
+                self.ctx.apply(&ty).as_option().map(|inner| self.ctx.apply(inner)),
+                Some(Type::Var(_))
+            );
+            if depths[i] > 0 && !shallower {
                 self.ctx.add_constraint(TypeConstraint::Equal(target.clone(), ty, span));
             } else {
                 self.coerce_into_node(
@@ -8263,6 +8301,17 @@ impl TypeChecker {
             }
         }
         target
+    }
+
+    /// How many optional layers a type has as far as it is known: 2 for `i64??`.
+    fn option_depth(&self, ty: &Type) -> usize {
+        let mut depth = 0;
+        let mut at = self.ctx.apply(ty);
+        while let Some(inner) = at.as_option() {
+            depth += 1;
+            at = self.ctx.apply(inner);
+        }
+        depth
     }
 }
 

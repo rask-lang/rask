@@ -240,3 +240,38 @@ test "a return widens through both layers of an optional success side" {
     let failed = two_layers_or_bad(3) catch _ => none
     assert failed is none
 }
+
+func one_layer_or_bad(k: i64) -> i64? or Bad {
+    if k == 0 { return none }
+    if k == 1 { return 5 }
+    return Bad(code: 1)
+}
+
+test "a catch handler widens into an optional success side" {
+    // The handler stands where the success value was, so it widens like an
+    // `if` arm: `7` into `i64?`, and an `i64?` into `i64??` as its present
+    // branch. Both were refused with E0308 (#2065).
+    let a = one_layer_or_bad(2) catch _ => 7
+    assert a! == 7
+    let b = one_layer_or_bad(1) catch _ => 7
+    assert b! == 5
+    let c = one_layer_or_bad(0) catch _ => 7
+    assert c is none
+    let inner: i64? = none
+    let d = two_layers_or_bad(3) catch _ => inner
+    assert !(d is none)
+    assert d! is none
+    let e = two_layers_or_bad(3) catch _ => 3
+    assert e!! == 3
+}
+
+test "an if arm one layer short is the other arm's present branch" {
+    let inner: i64? = none
+    let deep: i64?? = none
+    let z = if inner? { deep } else { inner }
+    assert !(z is none)
+    assert z! is none
+    let other: i64?? = none
+    let w = if inner? { inner } else { other }
+    assert w is none
+}
