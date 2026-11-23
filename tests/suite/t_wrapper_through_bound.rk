@@ -4,7 +4,9 @@
 // `a == b` and `a.clone()` in a generic body reach the function the checker
 // wrote for the type `K` turns out to be. Natively the call had nothing to
 // dispatch to, and `==` on a tuple holding a `Vec` compared the vectors'
-// addresses (#1976).
+// addresses (#1976). The interpreter compared two results through a bound
+// as never equal and hashed into a signed integer, so a hash printed as a
+// `u64` disagreed with native.
 
 func code<K: Hashable>(k: K) -> u64 {
     return k.hash()
@@ -57,4 +59,38 @@ test "a tuple clones through a bound" {
     assert p.1 == 2
     let s: string? = "kept"
     assert dup(s)! == "kept"
+}
+
+struct Miss {
+    code: i64
+}
+
+extend Miss {
+    public func message(self) -> string {
+        return "miss"
+    }
+}
+
+func pick(n: i64) -> i64 or Miss {
+    if n < 0 {
+        return Miss(code: n)
+    }
+    return n
+}
+
+test "a result compares through a bound" {
+    let a = pick(4)
+    let b = pick(4)
+    let c = pick(-1)
+    assert same(a, b)
+    assert !same(a, c)
+    assert differ(a, c)
+}
+
+test "a wrapper's hash reads as unsigned" {
+    let h = code((1, 2))
+    let s = h.to_string()
+    assert !s.starts_with("-")
+    let n: string? = none
+    assert code(n) == 0
 }
