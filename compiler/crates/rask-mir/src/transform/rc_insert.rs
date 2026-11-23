@@ -592,10 +592,17 @@ fn retain_views_handed_over(
         | MirTerminatorKind::CleanupReturn { value: Some(MirOperand::Local(id)), .. } =
             &block.terminator.kind
         {
+            // Where it is read out, before anything that follows frees the
+            // storage it views: container drops run before this pass and put
+            // the source's free ahead of the return, so a retain at the end
+            // cloned freed strings (`let v = make(); return v[0]`). Read in
+            // an earlier block, the start of this one comes before the frees.
             if views.contains(id) {
-                insertions.push((block.statements.len(), *id));
+                let at = block.statements.iter().position(|s| uses::stmt_def(s) == Some(*id)).map_or(0, |i| i + 1);
+                insertions.push((at, *id));
             }
         }
+        insertions.sort_by_key(|(idx, _)| *idx);
         for (idx, local) in insertions.into_iter().rev() {
             let span = block.statements.get(idx).map(|s| s.span).unwrap_or(block.terminator.span);
             block.statements.insert(idx, MirStmt::new(MirStmtKind::RcIncContents { local, for_hand_off: true }, span));

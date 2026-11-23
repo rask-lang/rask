@@ -1,0 +1,41 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+// `return v[0]` out of a local vector: the caller keeps a copy of the element,
+// so it takes references of its own before the vector is freed. The retain
+// went in at the end of the block, after the vector's free that an earlier
+// pass had put ahead of the return, and it cloned strings already freed.
+
+struct One {
+    s: string
+}
+
+func make(n: i64) -> Vec<One> {
+    return Vec.from([One(s: "a string long enough to live on the heap {n}")])
+}
+
+func pick(n: i64) -> One {
+    // Recursive, so it stays a call of its own.
+    if n > 100 {
+        return pick(n - 1)
+    }
+    let v = make(n)
+    return v[0]
+}
+
+func pick_either(n: i64, first: bool) -> One {
+    if n > 100 {
+        return pick_either(n - 1, first)
+    }
+    let v = [One(s: "first, long enough to live on the heap {n}"), One(s: "second, long enough to live on the heap {n}")]
+    return if first { v[0] } else { v[1] }
+}
+
+test "an element returned out of a local vector outlives it" {
+    let one = pick(3)
+    assert one.s == "a string long enough to live on the heap 3"
+}
+
+test "an element picked by a branch outlives its vector" {
+    assert pick_either(4, true).s == "first, long enough to live on the heap 4"
+    assert pick_either(5, false).s == "second, long enough to live on the heap 5"
+}
