@@ -155,3 +155,33 @@ test "a body keeps the last item an adapter passes on" {
     }
     assert k3 == long("c")
 }
+
+// A struct item carrying a `Vec`, handed over whole (#2031). From a sequence
+// that only lends it is E0902; from an owning chain the struct and its
+// fields become the body's.
+struct Bag {
+    public name: string
+    public items: Vec<string>
+}
+
+test "a body keeps struct items an owning chain hands it" {
+    mut src: Vec<Bag> = Vec.new()
+    src.push(Bag(name: long("1"), items: [long("2")]))
+    src.push(Bag(name: long("3"), items: [long("4")]))
+    mut out: Vec<Bag> = Vec.new()
+    for b in src.take_all() {
+        out.push(b)
+    }
+    assert out[1].items[0] == long("4")
+
+    mut keep = Bag(name: long("0"), items: [])
+    mut src2: Vec<Bag> = Vec.new()
+    src2.push(Bag(name: long("7"), items: [long("8")]))
+    src2.push(Bag(name: long("9"), items: []))
+    for b in src2.take_all().filter(|b| b.name.len() > 0) {
+        if b.items.len() > 0 {
+            keep = b
+        }
+    }
+    assert keep.items[0] == long("8")
+}
