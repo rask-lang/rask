@@ -36,11 +36,10 @@
 //! `InterfaceBox`, and whatever a chain of moves/phis carries forward from it, is
 //! a fresh allocation this pass may decide to free.
 //!
-//! Unlike the closure pass, this doesn't refine call-argument escapes with
-//! per-callee borrow info — any appearance as a call/method argument counts
-//! as escaping. That undercounts what could safely be dropped (a value
-//! borrowed by a callee and not stored still "escapes" here), but never
-//! drops something a callee kept, which is the risk worth avoiding.
+//! A box passed as an argument stays the frame's when the callee's body is
+//! known to keep nothing of it: the named callee, or for a vtable call every
+//! body the slot can land in. Without an answer it counts as handed over,
+//! which may leak but never frees something a callee kept.
 //!
 //! Function parameters are excluded — a `InterfaceDrop` needs the block where its
 //! value was defined (for the loop back-edge check below), and a param's
@@ -462,7 +461,7 @@ fn insert_for_function(
     made.extend(boxes_handed_over(func, hands_back, targets, vtables));
     made.extend(boxes_parked_in_a_wrapper(func, &interface_locals));
 
-    let facts = box_facts(func, &interface_locals, &made, callee_escapes);
+    let facts = box_facts(func, &interface_locals, &made, callee_escapes, vtables);
     let plan = crate::analysis::ownership::plan(
         func,
         &facts,
@@ -638,18 +637,21 @@ fn drops_that_own(
 
 /// What each statement does to the boxes this frame may hold.
 ///
-/// Handed over: returned, stored, passed to a closure or through a vtable, or
-/// to a named callee whose body keeps it. A callee that demonstrably keeps
-/// nothing of the argument leaves the box to this frame; no answer means it
-/// might keep it. An interface call's receiver is a borrow.
+/// Handed over: returned, stored, passed to a closure, or to a callee whose
+/// body keeps it. A callee that demonstrably keeps nothing of the argument
+/// leaves the box to this frame; no answer means it might keep it. Through a
+/// vtable the callee is every body the slot can land in, and all of them must
+/// answer. An interface call's receiver is a borrow.
 fn box_facts(
     func: &MirFunction,
     tracked: &HashSet<LocalId>,
     made: &HashSet<LocalId>,
     callee_escapes: &HashMap<String, Vec<bool>>,
+    vtables: &VtableBodies,
 ) -> crate::analysis::ownership::Facts {
     use crate::analysis::ownership::Event;
     use crate::analysis::uses;
+    let ty_of = local_types(func);
     let names: std::collections::BTreeSet<LocalId> = tracked.iter().copied().collect();
     let mut facts = crate::analysis::ownership::Facts {
         moved_parts: Default::default(),
@@ -691,12 +693,30 @@ fn box_facts(
                 // method is declared `take self`: then the box is the call's.
                 // The method releases what is inside, and the frame frees the
                 // block right after (`insert_for_function`).
-                MirStmtKind::InterfaceCall { interface_object, args, takes_receiver, .. } => {
+                //
+                // An argument is lent when no body behind the slot keeps it.
+                // Each body's parameter 0 is `self`, so argument `i` is its
+                // parameter `i + 1`. `a.bigger(b)` with an `any Other` gave
+                // `b`'s box to the call, and nobody freed it (#2059).
+                MirStmtKind::InterfaceCall { interface_object, method_name, args, takes_receiver, .. } => {
                     if *takes_receiver {
                         give(&mut ev, &MirOperand::Local(*interface_object));
                     }
-                    for arg in args {
-                        give(&mut ev, arg);
+                    let bodies = match ty_of.get(interface_object) {
+                        Some(MirType::InterfaceObject { interface_name }) => {
+                            vtables.bodies(interface_name, method_name)
+                        }
+                        _ => None,
+                    };
+                    for (i, arg) in args.iter().enumerate() {
+                        let lent = bodies.is_some_and(|bodies| {
+                            bodies.iter().all(|b| {
+                                callee_escapes.get(b).and_then(|e| e.get(i + 1)).is_some_and(|keeps| !keeps)
+                            })
+                        });
+                        if !lent {
+                            give(&mut ev, arg);
+                        }
                     }
                 }
                 MirStmtKind::Store { value, .. } | MirStmtKind::ArrayStore { value, .. } => {
