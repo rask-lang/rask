@@ -337,10 +337,15 @@ impl TypeChecker {
                 }
                 let ret_ty = if let Some(expr) = value {
                     if let Some(expected) = &self.current_return_type.clone() {
-                        // If expecting Result<T, E>, propagate T as the expected type
-                        // so literals like `return 42` infer the correct inner type
-                        let effective = match &self.ctx.apply(expected) {
-                            Type::Result { ok, .. } => (**ok).clone(),
+                        // Expecting `T or E`, the value is asked for as the `T`, so
+                        // `return 42` infers the ok side's type. An optional is a
+                        // `Result` whose error is `none` and isn't peeled: `none`
+                        // takes its type from the slot, and `return none` from an
+                        // `-> i64??` was typed an `i64?` and then wrapped into a
+                        // present outer layer (#2044).
+                        let applied = self.ctx.apply(expected);
+                        let effective = match &applied {
+                            Type::Result { ok, .. } if !applied.is_option() => (**ok).clone(),
                             _ => expected.clone(),
                         };
                         self.infer_expr_expecting(expr, &effective)

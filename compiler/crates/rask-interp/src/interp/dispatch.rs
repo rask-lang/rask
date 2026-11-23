@@ -64,6 +64,7 @@ impl Interpreter {
                 depth: self.call_depth,
                 callee: d.name.clone(),
                 slots: vec![Some(cell.clone())],
+                depths: Vec::new(),
             });
             cell
         });

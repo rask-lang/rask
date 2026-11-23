@@ -85,32 +85,36 @@ impl<'a> MirLowerer<'a> {
         pair.unwrap_or_else(|| vec![MirType::I64, MirType::I64])
     }
 
-    /// OPT6/#380: wrap a bare `T` operand into `Some(T)` when it's stored into an
-    /// `Option<T>` place. Returns the value unchanged when no wrap applies.
+    /// OPT6/#380: wrap a value stored into an optional place in the layers the
+    /// place has and the value doesn't. Returns the value unchanged when no
+    /// wrap applies.
+    ///
+    /// Layers are counted, as everywhere else (`coerce_into_wrapper`). This
+    /// used to wrap whenever the value wasn't an option at all, which is one
+    /// layer and only from zero: in a generic body instantiated with an
+    /// optional `T`, `best = x` into a `T?` stored an `i64?` into an `i64??`
+    /// unwrapped, and `max_by_key` over optional items answered `none` inside
+    /// the `some` (#2044).
     pub(super) fn wrap_for_option_place(
         &mut self,
         val_op: MirOperand,
         val_ty: MirType,
         place_ty: &MirType,
     ) -> (MirOperand, MirType) {
-        // The checker already accepted this assignment, so an `Option<T>` place
-        // with a non-`Option` value is a widen. Don't require the inner MIR type
-        // to match `val_ty` — handles carry an inconsistent repr (`handle` vs the
-        // raw `i64` an insert returns), which would spuriously skip the wrap.
-        if let MirType::Option(inner) = place_ty {
-            // A niche option is niche-optimized in the layout: the value *is*
-            // `Some`, the reserved word is `None`. So a bare handle or link
-            // stored straight in is already the `Some` repr — a tag + payload
-            // wrap would be both wrong and 8 bytes too big for the slot.
-            let niche = inner.is_niche_payload();
-            if !niche && !matches!(val_ty, MirType::Option(_)) {
-                let wrap_local = self.builder.alloc_temp(place_ty.clone());
-                self.store_wrapper_tag(wrap_local, place_ty, rask_mono::runtime_abi::RASK_TAG_PRESENT);
-                self.store_wrapper_payload(wrap_local, place_ty, val_op, inner);
-                return (MirOperand::Local(wrap_local), place_ty.clone());
-            }
+        if !matches!(place_ty, MirType::Option(_)) {
+            return (val_op, val_ty);
         }
-        (val_op, val_ty)
+        let wraps = Self::wrapper_layers(place_ty).0.len() > Self::wrapper_layers(&val_ty).0.len();
+        if !wraps {
+            return (val_op, val_ty);
+        }
+        let op = self.coerce_into_wrapper(
+            rask_ast::coercion::CoercionSite::Assignment,
+            val_op,
+            &val_ty,
+            place_ty,
+        );
+        (op, place_ty.clone())
     }
 
     /// Project a nested place (`base.f.g`, tuples included) to a base local plus

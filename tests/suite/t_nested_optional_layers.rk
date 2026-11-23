@@ -1,0 +1,93 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A `none` widened into a slot with more optional layers than it has.
+//
+// `i64??` holds three things: nothing, a present-but-empty inner `i64?`, and a
+// number. An absent `i64?` stored there is the second, `some(none)`; a bare
+// `none` written for the slot itself is the first. Both backends decided by
+// looking at the value, and the two are the same value, so an inner `none`
+// came out as nothing at all. A generic `T?` with `T = i64?` lost its layer
+// the same way, and native typed `return none` from `-> i64??` as the inner
+// layer, then wrapped it (#2044). The types say which one is meant.
+
+func outer_none() -> i64?? {
+    return none
+}
+
+func inner_none() -> i64?? {
+    let a: i64? = none
+    return a
+}
+
+func is_absent(x: i64??) -> bool {
+    return x is none
+}
+
+func wrap<T>(x: T) -> T? {
+    return x
+}
+
+struct Slot<T> { v: T? }
+
+func first_item(xs: Vec<i64?>) -> i64?? {
+    for x in xs {
+        return x
+    }
+    return none
+}
+
+test "a returned none fills the outer layer" {
+    assert outer_none() is none
+}
+
+test "a returned absent inner value is present" {
+    assert !(inner_none() is none)
+    assert inner_none()! is none
+}
+
+test "a none argument fills the outer layer" {
+    assert is_absent(none)
+}
+
+test "an absent inner argument is present" {
+    let a: i64? = none
+    assert !is_absent(a)
+}
+
+test "a binding and an assignment keep the inner none" {
+    let a: i64? = none
+    let x: i64?? = a
+    assert !(x is none)
+    mut m: i64?? = 3
+    m = a
+    assert !(m is none)
+    m = none
+    assert m is none
+    let n: i64?? = none
+    assert n is none
+}
+
+test "a generic optional of an optional adds its layer" {
+    let a: i64? = none
+    let w = wrap(a)
+    assert !(w is none)
+    assert w! is none
+    let three: i64? = 3
+    assert wrap(three)!! == 3
+}
+
+test "a generic struct field adds its layer" {
+    let a: i64? = none
+    let s = Slot<i64?>(v: a)
+    assert !(s.v is none)
+    let t = Slot<i64?>(v: none)
+    assert t.v is none
+}
+
+test "the first item of a list of optionals" {
+    let xs: Vec<i64?> = [none, 2]
+    assert !(first_item(xs) is none)
+    assert first_item(xs)! is none
+    let empty: Vec<i64?> = []
+    assert first_item(empty) is none
+}

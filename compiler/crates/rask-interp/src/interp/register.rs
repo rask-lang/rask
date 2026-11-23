@@ -441,7 +441,7 @@ impl Interpreter {
             // does for `let`: `const F: f64 = 7` is 7.0.
             if let Some(ty) = &c.ty {
                 value = super::exec_stmt::auto_wrap_for_annotation(
-                    value, ty, super::exec_stmt::is_none_literal(&c.init),
+                    value, ty, self.static_option_depth(&c.init),
                 );
             }
             self.env.define(c.name.clone(), value);

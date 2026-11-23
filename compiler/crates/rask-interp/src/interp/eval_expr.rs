@@ -119,6 +119,14 @@ fn present_value(payload: Value) -> Value {
 }
 
 /// ER31a: build the boundary-enum variant around a propagated error.
+/// What a call site knows about its arguments beyond their values: the
+/// place behind each `mutate` one, and the optional layers the checker gave
+/// each expression.
+struct CallArgPlaces {
+    slots: Vec<Option<Slot>>,
+    depths: Vec<Option<usize>>,
+}
+
 impl Interpreter {
     /// Run a `catch` handler with the error bound. `catch _ =>` binds nothing —
     /// the discard is visible in the source, so there's no name to introduce.
@@ -594,9 +602,10 @@ impl Interpreter {
     fn eval_call_args(
         &mut self,
         args: &[rask_ast::expr::CallArg],
-    ) -> Result<(Vec<Value>, Vec<Option<Slot>>), RuntimeDiagnostic> {
+    ) -> Result<(Vec<Value>, CallArgPlaces), RuntimeDiagnostic> {
         let mut values = Vec::with_capacity(args.len());
         let mut places = Vec::with_capacity(args.len());
+        let depths = args.iter().map(|a| self.static_option_depth(&a.expr)).collect();
         for arg in args {
             if matches!(arg.mode, ArgMode::Mutate | ArgMode::Deleting) {
                 match self.locate(&arg.expr)? {
@@ -614,16 +623,20 @@ impl Interpreter {
                 places.push(None);
             }
         }
-        Ok((values, places))
+        Ok((values, CallArgPlaces { slots: places, depths }))
     }
 
     /// Hand the next call to `callee` the places behind its `mutate`
-    /// parameters, indexed by parameter (see `LentArgs`).
-    fn lend_places(&mut self, callee: &str, places: Vec<Option<Slot>>) {
-        self.lent_args = places.iter().any(Option::is_some).then(|| super::LentArgs {
+    /// parameters and the arguments' optional layers, indexed by parameter
+    /// (see `LentArgs`).
+    fn lend_places(&mut self, callee: &str, args: CallArgPlaces) {
+        let CallArgPlaces { slots, depths } = args;
+        let worth_it = slots.iter().any(Option::is_some) || depths.iter().any(Option::is_some);
+        self.lent_args = worth_it.then(|| super::LentArgs {
             depth: self.call_depth,
             callee: callee.to_string(),
-            slots: places,
+            slots,
+            depths,
         });
     }
 
@@ -1251,7 +1264,7 @@ impl Interpreter {
                 let generics = self.call_generics(expr.id);
                 if let Value::Closure { .. } = &func_val {
                     return self
-                        .call_closure(func_val, arg_vals, places)
+                        .call_closure(func_val, arg_vals, places.slots)
                         .map_err(|e| RuntimeDiagnostic::new(e, expr.span));
                 }
                 if let Value::Function { name, .. } = &func_val {
@@ -1707,9 +1720,11 @@ impl Interpreter {
                 // can't leave a stale span for something later (#1110).
                 let outer = self.failed_call_span.take();
                 let generics = self.method_call_generics(expr.id, object.id, &method);
-                let mut places = vec![receiver_place];
-                places.extend(arg_places);
-                self.lend_places(&method, places);
+                let mut slots = vec![receiver_place];
+                slots.extend(arg_places.slots);
+                let mut depths = vec![None];
+                depths.extend(arg_places.depths);
+                self.lend_places(&method, CallArgPlaces { slots, depths });
                 let result = self.call_method(receiver, &method, arg_vals, generics);
                 self.lent_args = None;
                 let inner = self.failed_call_span.take();
@@ -2075,8 +2090,12 @@ impl Interpreter {
                     .get(&decl_name)
                     .or_else(|| self.struct_decls.get(&concrete_name))
                     .map(|d| {
+                        // A generic struct's fields are written in its own
+                        // parameters, which this literal's type binds:
+                        // `Slot<i64?> { v: none }` fills a `T?` that is `i64??`.
+                        let frame = self.literal_type_args(expr.id, &d.type_params);
                         d.fields.iter()
-                            .map(|f| (f.name.clone(), f.ty.clone()))
+                            .map(|f| (f.name.clone(), self.fill_type_params(&f.ty, frame.as_ref())))
                             .collect::<Vec<_>>()
                     });
                 for field in fields {
@@ -2085,7 +2104,7 @@ impl Interpreter {
                         .and_then(|ts| ts.iter().find(|(n, _)| *n == field.name))
                     {
                         Some((_, ty)) => super::exec_stmt::auto_wrap_for_annotation(
-                            value, ty, super::exec_stmt::is_none_literal(&field.value),
+                            value, ty, self.static_option_depth(&field.value),
                         ),
                         None => value,
                     };

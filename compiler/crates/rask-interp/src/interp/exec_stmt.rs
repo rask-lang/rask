@@ -28,7 +28,8 @@ impl Interpreter {
             StmtKind::Let { name, init, ty, .. } => {
                 let mut value = self.eval_owned(init)?;
                 if let Some(ty_str) = ty {
-                    value = auto_wrap_for_annotation(value, ty_str, is_none_literal(init));
+                    let ty_str = self.resolve_type_param(ty_str);
+                    value = auto_wrap_for_annotation(value, &ty_str, self.static_option_depth(init));
                 }
                 if let Some(id) = self.get_resource_id(&value) {
                     self.resource_tracker.set_var_name(id, name.clone(), stmt.span);
@@ -49,8 +50,8 @@ impl Interpreter {
                 };
                 // OPT6: auto-wrap bare T into T? / T or E when annotated.
                 let value = if let Some(ty_str) = ty {
-                    let value = auto_wrap_for_annotation(value, ty_str, is_none_literal(init));
-                    value
+                    let ty_str = self.resolve_type_param(ty_str);
+                    auto_wrap_for_annotation(value, &ty_str, self.static_option_depth(init))
                 } else {
                     value
                 };
@@ -96,6 +97,13 @@ impl Interpreter {
 
             StmtKind::Assign { target, value, .. } => {
                 let val = self.eval_owned(value)?;
+                // The place's type says how many layers it holds, and the
+                // value's type how many it brings: `m = a` with `m: i64??` and
+                // `a: i64?` stores `some(a)` even when `a` is `none` (#2044).
+                let val = match (self.static_option_depth(target), self.static_option_depth(value)) {
+                    (Some(want), Some(have)) => (have..want).fold(val, |v, _| Value::some(v)),
+                    _ => val,
+                };
                 // Same as a binding: a vector of links that arrives whole is
                 // an edge holder from here on.
                 crate::rack::register_vec_links(&val);
@@ -111,6 +119,7 @@ impl Interpreter {
                     Some(e) => self.eval_expr(e)?,
                     None => Value::Unit,
                 };
+                self.returned_depth = expr.as_ref().and_then(|e| self.static_option_depth(e));
                 Err(RuntimeDiagnostic::new(RuntimeError::Return(value), stmt.span))
             }
 
@@ -699,11 +708,12 @@ impl Interpreter {
 /// already has as many optional layers as the annotation asks for. For Result,
 /// picks Ok vs Err by the value's type.
 ///
-/// `rhs_is_none_literal` marks a bare `none` on the right-hand side. It names
-/// the *outermost* absent, so it never gains a layer no matter how deep the
-/// annotation is — `const x: T?? = none` means "nothing at all", not "an empty
-/// inner slot" (OPT29).
-pub(crate) fn auto_wrap_for_annotation(value: Value, ty: &TypeExpr, rhs_is_none_literal: bool) -> Value {
+/// `have` is how many optional layers the checker gave the value's
+/// expression; the annotation's extra layers are added on top. Counting the
+/// value's own layers instead can't tell a `none` meant for the outer layer
+/// (`let x: i64?? = none`, nothing at all) from an inner `i64?` that is absent
+/// (`some(none)`), so it is only the fallback when the type is still open.
+pub(crate) fn auto_wrap_for_annotation(value: Value, ty: &TypeExpr, have: Option<usize>) -> Value {
     // `i128`/`u128` are 16-byte types (type.primitives), and the interpreter has
     // a value variant for each with full 128-bit arithmetic behind it. What was
     // missing was ever *producing* one: `IntKind` is a tag on an i64 payload and
@@ -738,11 +748,9 @@ pub(crate) fn auto_wrap_for_annotation(value: Value, ty: &TypeExpr, rhs_is_none_
     // was never recognised here at all (#1238).
     let want = super::call::optional_depth(ty);
     if want > 0 {
-        if rhs_is_none_literal {
-            return value;
-        }
+        let have = have.unwrap_or_else(|| value_option_depth(&value));
         let mut out = value;
-        for _ in value_option_depth(&out)..want {
+        for _ in have..want {
             out = Value::some(out);
         }
         return out;
@@ -756,11 +764,10 @@ pub(crate) fn auto_wrap_for_annotation(value: Value, ty: &TypeExpr, rhs_is_none_
         if let Value::Vec(items) = &value {
             let mut guard = items.lock().unwrap();
             for item in guard.items.iter_mut() {
-                // `false` for the none-literal flag: an element that already is
-                // `none` carries its layer, and `value_option_depth` counts it,
-                // so nothing double-wraps.
+                // The element expressions are gone by now, so each counts the
+                // layers it carries.
                 let taken = std::mem::replace(item, Value::Unit);
-                *item = auto_wrap_for_annotation(taken, elem_ty, false);
+                *item = auto_wrap_for_annotation(taken, elem_ty, None);
             }
         }
         return value;
@@ -793,10 +800,6 @@ fn container_element_type(ty: &TypeExpr) -> Option<&TypeExpr> {
     }
 }
 
-/// OPT29: is this expression a bare `none` literal?
-pub(crate) fn is_none_literal(expr: &rask_ast::expr::Expr) -> bool {
-    matches!(expr.kind, rask_ast::expr::ExprKind::None)
-}
 
 /// How many optional layers a value already carries at its head.
 /// `none` is one layer; `Some(none)` is two; a bare payload is zero.

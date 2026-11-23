@@ -240,6 +240,10 @@ pub struct Interpreter {
     /// called, because it can run after the generic call that built it has
     /// returned, or on another task.
     pub(crate) generic_frames: Vec<GenericFrame>,
+    /// Optional layers the checker gave the expression the last `return`
+    /// handed back, for the call to widen it to the declared return type.
+    /// Every `return` sets it, so the call that catches one reads its own.
+    pub(crate) returned_depth: Option<usize>,
     /// `(type, method)` → its `extend` header's target arguments as written
     /// (`["(K, V)"]` for `extend Pairs<(K, V)>`), for a header that has any. A
     /// method call matches them against the receiver's type.
@@ -320,6 +324,9 @@ pub(crate) struct LentArgs {
     pub(crate) depth: usize,
     pub(crate) callee: String,
     pub(crate) slots: Vec<Option<crate::env::Slot>>,
+    /// Optional layers the checker gave each argument's expression, so the
+    /// callee widens by type rather than by what the value carries (#2044).
+    pub(crate) depths: Vec<Option<usize>>,
 }
 
 /// A `for` loop driving a `Sequence<T>`.
@@ -564,6 +571,7 @@ impl Interpreter {
             types: Arc::new(rask_check::TypeTable::default()),
             call_type_args: Arc::new(HashMap::new()),
             generic_frames: Vec::new(),
+            returned_depth: None,
             extend_header_patterns: HashMap::new(),
             file_packages: HashMap::new(),
             conformance_disambiguation: HashMap::new(),
@@ -617,6 +625,7 @@ impl Interpreter {
             types: Arc::new(rask_check::TypeTable::default()),
             call_type_args: Arc::new(HashMap::new()),
             generic_frames: Vec::new(),
+            returned_depth: None,
             extend_header_patterns: HashMap::new(),
             file_packages: HashMap::new(),
             conformance_disambiguation: HashMap::new(),
@@ -676,6 +685,7 @@ impl Interpreter {
             types: Arc::new(rask_check::TypeTable::default()),
             call_type_args: Arc::new(HashMap::new()),
             generic_frames: Vec::new(),
+            returned_depth: None,
             extend_header_patterns: HashMap::new(),
             file_packages: HashMap::new(),
             conformance_disambiguation: HashMap::new(),
@@ -919,8 +929,72 @@ impl Interpreter {
         Some(rask_ast::expr::Expr { id: object.id, span: object.span, kind })
     }
 
+    /// How many optional layers the checker gave `expr`'s type, with this
+    /// frame's type parameters filled in. `None` when the innermost type is
+    /// still open (an inference variable or a parameter the frame doesn't
+    /// bind), and the caller falls back to what the value carries.
+    ///
+    /// Widening has to read this, not the value: `none` from an `i64?` and
+    /// `none` meant for the outer layer of an `i64??` are the same value, and
+    /// only the type says whether the slot wants `some(none)` (#2044).
+    pub(crate) fn static_option_depth(&self, expr: &rask_ast::expr::Expr) -> Option<usize> {
+        let ty = self.node_types.get(&expr.id)?;
+        let frame = self.generic_frames.last().and_then(|f| f.as_deref());
+        let ty = match frame {
+            Some(frame) => rask_check::substitute_type(ty, frame),
+            None => ty.clone(),
+        };
+        let mut depth = 0;
+        let mut cur = &ty;
+        while let Some(inner) = cur.as_option() {
+            depth += 1;
+            cur = inner;
+        }
+        match cur {
+            rask_types::Type::Var(_) | rask_types::Type::UnresolvedNamed(_) | rask_types::Type::Error => None,
+            _ => Some(depth),
+        }
+    }
+
     pub(crate) fn resolve_type_param(&self, ty: &TypeExpr) -> TypeExpr {
         let frame = self.generic_frames.last().and_then(|f| f.as_deref());
+        self.fill_type_params(ty, frame)
+    }
+
+    /// What a generic struct literal's type binds each of the struct's
+    /// parameters to, read from the checker's type for the literal.
+    pub(crate) fn literal_type_args(
+        &self,
+        literal: rask_ast::NodeId,
+        params: &[rask_ast::decl::TypeParam],
+    ) -> Option<HashMap<String, rask_types::Type>> {
+        if params.is_empty() {
+            return None;
+        }
+        let ty = self.node_types.get(&literal)?;
+        let outer = self.generic_frames.last().and_then(|f| f.as_deref());
+        let ty = match outer {
+            Some(outer) => rask_check::substitute_type(ty, outer),
+            None => ty.clone(),
+        };
+        let args = match &ty {
+            rask_types::Type::Generic { args, .. } | rask_types::Type::UnresolvedGeneric { args, .. } => args,
+            _ => return None,
+        };
+        Some(
+            params
+                .iter()
+                .zip(args)
+                .filter_map(|(p, a)| match a {
+                    rask_types::GenericArg::Type(t) => Some((p.name.clone(), (**t).clone())),
+                    _ => None,
+                })
+                .collect(),
+        )
+    }
+
+    /// `ty` with the parameters `frame` binds written in.
+    pub(crate) fn fill_type_params(&self, ty: &TypeExpr, frame: Option<&HashMap<String, rask_types::Type>>) -> TypeExpr {
         ty.substitute(&|name| {
             let bound = frame?.get(name)?;
             // A type `nameable_type` doesn't cover (an array, anywhere

@@ -358,9 +358,16 @@ impl Interpreter {
                     }
                     // The absent branch carries no payload, so it's the
                     // variant itself that answers, not an inner value.
+                    // An optional answers at its own layer. Looking further
+                    // into a present one found the `none` inside a
+                    // `some(none)`, so `x is none` on an `i64??` holding an
+                    // absent `i64?` said yes (#2044).
                     if *ty == TypeExpr::NoneType {
                         if variant == "None" {
                             return Some(HashMap::new());
+                        }
+                        if sc_name == "Option" {
+                            return None;
                         }
                     }
                     let Some(inner) = fields.first() else { return None };

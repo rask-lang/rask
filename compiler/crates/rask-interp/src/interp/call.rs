@@ -139,11 +139,11 @@ impl Interpreter {
     ) -> Result<Value, RuntimeDiagnostic> {
         // Taken before anything else runs, so a default argument's own calls
         // can't see it. Only the call it was made for may use it.
-        let lent: Vec<Option<crate::env::Slot>> = self
+        let (lent, arg_depths): (Vec<Option<crate::env::Slot>>, Vec<Option<usize>>) = self
             .lent_args
             .take()
             .filter(|l| l.depth + 1 == self.call_depth && l.callee == func.name)
-            .map(|l| l.slots)
+            .map(|l| (l.slots, l.depths))
             .unwrap_or_default();
         // Fill in default values for missing trailing arguments
         if args.len() < func.params.len() {
@@ -190,7 +190,7 @@ impl Interpreter {
             // call. Without it `present_bare(3)` bound a raw 3 and `x?` had no
             // tag to read (#393).
             let arg = match &param.ty {
-                Some(ty) => wrap_optional_layers(arg, ty),
+                Some(ty) => wrap_optional_layers(arg, &self.resolve_type_param(ty), arg_depths.get(i).copied().flatten()),
                 None => arg,
             };
             // PM2: a `mutate` parameter is the caller's place, bound as such.
@@ -206,6 +206,12 @@ impl Interpreter {
         }
 
         let result = self.exec_stmts(&func.body);
+        // Read while this call's frame still binds its type parameters.
+        let ret_ty = func.ret_ty.as_ref().map(|t| self.resolve_type_param(t));
+        let returned_depth = match &result {
+            Err(diag) if matches!(&diag.error, RuntimeError::Return(_)) => self.returned_depth.take(),
+            _ => None,
+        };
 
         let scope_depth = self.env.scope_depth();
         let caller_depth = scope_depth.saturating_sub(1);
@@ -273,7 +279,7 @@ impl Interpreter {
             Err(e) => return Err(e),
         };
 
-        let result_sides = func.ret_ty.as_ref().and_then(result_sides);
+        let result_sides = ret_ty.as_ref().and_then(result_sides);
         let returns_result = result_sides.is_some();
         // Both spellings. `wrap_optional_layers` has always understood
         // `Option<T>` as well as `T?` — this gate didn't, so a function
@@ -281,7 +287,7 @@ impl Interpreter {
         // said "requires Option or Result, got i64". `get_clone` in
         // `stdlib/collections.rk` is written that way, so every `get_clone` on
         // the interpreter was broken (#1211).
-        let returns_option = func.ret_ty.as_ref().is_some_and(|t| optional_depth(t) > 0);
+        let returns_option = ret_ty.as_ref().is_some_and(|t| optional_depth(t) > 0);
         if returns_result {
             // Already a Result: pass through. That includes every return
             // the checker put on the error side — `return` wrapped those.
@@ -293,7 +299,7 @@ impl Interpreter {
             // `try f()` handed back a KV where the caller expected a KV? and
             // read it as absent (#383).
             let payload = match result_sides {
-                Some((ok, _)) => wrap_optional_layers(value, ok),
+                Some((ok, _)) => wrap_optional_layers(value, ok, returned_depth),
                 None => value,
             };
             return Ok(Value::ok(payload));
@@ -302,8 +308,8 @@ impl Interpreter {
             // returning a bare `T` got a single Some, and the caller's second
             // peel found a `T` where it expected an Option and read it as
             // absent. Same helper the ok side and the arguments use.
-            match func.ret_ty.as_ref() {
-                Some(ret) => Ok(wrap_optional_layers(value, ret)),
+            match ret_ty.as_ref() {
+                Some(ret) => Ok(wrap_optional_layers(value, ret, returned_depth)),
                 None => Ok(value),
             }
         } else {
@@ -567,12 +573,15 @@ pub(super) fn optional_depth(ty: &TypeExpr) -> usize {
     }
 }
 
-/// Add whatever optional layers `ty` asks for that `value` doesn't already
-/// carry.
-fn wrap_optional_layers(value: Value, ty: &TypeExpr) -> Value {
+/// Add the optional layers `ty` asks for beyond the `have` the checker gave
+/// the value's expression, or, when that isn't known, beyond what the value
+/// carries (see `Interpreter::static_option_depth` for why the count alone
+/// is ambiguous).
+fn wrap_optional_layers(value: Value, ty: &TypeExpr, have: Option<usize>) -> Value {
     let want = optional_depth(ty);
+    let have = have.unwrap_or_else(|| option_depth(&value));
     let mut out = value;
-    for _ in option_depth(&out)..want {
+    for _ in have..want {
         out = Value::some(out);
     }
     out
