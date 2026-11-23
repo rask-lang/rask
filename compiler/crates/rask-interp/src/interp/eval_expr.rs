@@ -158,6 +158,69 @@ impl Interpreter {
             origin: None,
         }
     }
+
+    /// `val!`: the payload of a `Some` or `Ok`, or the panic for `none` and
+    /// `Err`, reported at the `!` rather than where the operand starts
+    /// (ctrl.panic/S6, #1372).
+    pub(super) fn force(
+        &mut self,
+        val: &Value,
+        message: Option<&str>,
+        bang: rask_ast::Span,
+    ) -> Result<Value, RuntimeDiagnostic> {
+        match val {
+            Value::Enum {
+                variant, fields, ..
+            } => match variant.as_str() {
+                "Some" => Ok(fields.first().cloned().unwrap_or(Value::Unit)),
+                "None" => {
+                    if let Some(msg) = message {
+                        Err(RuntimeDiagnostic::new(
+                            RuntimeError::Panic(msg.to_string()),
+                            bang
+                        ))
+                    } else {
+                        Err(RuntimeDiagnostic::new(RuntimeError::ForcedAbsent, bang))
+                    }
+                }
+                "Ok" => Ok(fields.first().cloned().unwrap_or(Value::Unit)),
+                "Err" => {
+                    if let Some(msg) = message {
+                        Err(RuntimeDiagnostic::new(
+                            RuntimeError::Panic(msg.to_string()),
+                            bang
+                        ))
+                    } else {
+                        // ER15: `!` panics *using* the error's message.
+                        // The payload is right here, and every error
+                        // type has a `message()` — E0344 is what makes
+                        // that true — so there is always something to
+                        // say beyond "it was an error" (#1009).
+                        let payload = fields.first().cloned().unwrap_or(Value::Unit);
+                        let text = self.describe_error_value(&payload);
+                        Err(RuntimeDiagnostic::new(
+                            RuntimeError::ForcedError(text),
+                            bang,
+                        ))
+                    }
+                }
+                _ => Err(RuntimeDiagnostic::new(
+                    RuntimeError::TypeError(format!(
+                        "! operator requires Option or Result, got {}",
+                        variant
+                    )),
+                    bang
+                )),
+            },
+            _ => Err(RuntimeDiagnostic::new(
+                RuntimeError::TypeError(format!(
+                    "! operator requires Option or Result, got {}",
+                    val.type_name()
+                )),
+                bang
+            )),
+        }
+    }
 }
 
 /// Set origin on a Result.Err or Option.None wrapper and its inner error value.
@@ -2645,61 +2708,8 @@ impl Interpreter {
             }
 
             ExprKind::Unwrap { expr: inner, message, bang } => {
-                // Reported at the `!`, not where the operand starts (ctrl.panic/S6, #1372).
-                let bang = *bang;
                 let val = self.eval_expr(inner)?;
-                match &val {
-                    Value::Enum {
-                        variant, fields, ..
-                    } => match variant.as_str() {
-                        "Some" => Ok(fields.first().cloned().unwrap_or(Value::Unit)),
-                        "None" => {
-                            if let Some(msg) = message {
-                                Err(RuntimeDiagnostic::new(
-                                    RuntimeError::Panic(msg.clone()),
-                                    bang
-                                ))
-                            } else {
-                                Err(RuntimeDiagnostic::new(RuntimeError::ForcedAbsent, bang))
-                            }
-                        }
-                        "Ok" => Ok(fields.first().cloned().unwrap_or(Value::Unit)),
-                        "Err" => {
-                            if let Some(msg) = message {
-                                Err(RuntimeDiagnostic::new(
-                                    RuntimeError::Panic(msg.clone()),
-                                    bang
-                                ))
-                            } else {
-                                // ER15: `!` panics *using* the error's message.
-                                // The payload is right here, and every error
-                                // type has a `message()` — E0344 is what makes
-                                // that true — so there is always something to
-                                // say beyond "it was an error" (#1009).
-                                let payload = fields.first().cloned().unwrap_or(Value::Unit);
-                                let text = self.describe_error_value(&payload);
-                                Err(RuntimeDiagnostic::new(
-                                    RuntimeError::ForcedError(text),
-                                    bang,
-                                ))
-                            }
-                        }
-                        _ => Err(RuntimeDiagnostic::new(
-                            RuntimeError::TypeError(format!(
-                                "! operator requires Option or Result, got {}",
-                                variant
-                            )),
-                            bang
-                        )),
-                    },
-                    _ => Err(RuntimeDiagnostic::new(
-                        RuntimeError::TypeError(format!(
-                            "! operator requires Option or Result, got {}",
-                            val.type_name()
-                        )),
-                        bang
-                    )),
-                }
+                self.force(&val, message.as_deref(), *bang)
             }
 
             ExprKind::Closure { params, body, .. } => {

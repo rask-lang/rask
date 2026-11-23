@@ -447,6 +447,12 @@ pub enum TypeError {
         from: crate::checker::BoundFrom,
         span: Span,
     },
+    /// `x!.f = v` where the payload is a value: `x!` reads it out, so the
+    /// write lands on the copy (OPT19).
+    #[error("cannot write into a payload `!` read out")]
+    WriteThroughForce {
+        span: Span,
+    },
     #[error("`string` has no `{method}` — strings are immutable")]
     StringIsImmutable {
         method: String,
@@ -2127,6 +2133,7 @@ impl TypeError {
             | TakeSelfThroughLink { .. }
             | MutateWithBinding { .. }
             | MutateBoundName { .. }
+            | WriteThroughForce { .. }
             | StringIsImmutable { .. }
             | StringNewRemoved { .. }
             | TemporaryKept { .. }

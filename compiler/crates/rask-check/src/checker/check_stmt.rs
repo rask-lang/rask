@@ -846,6 +846,9 @@ impl TypeChecker {
             self.errors.push(TypeError::NotAPlace { what, span: target.span });
             return;
         }
+        if matches!(target.kind, ExprKind::Field { .. }) {
+            self.check_write_through_force(target);
+        }
         let what = match &target.kind {
             ExprKind::Ident(_)
             | ExprKind::Field { .. }
@@ -873,6 +876,25 @@ impl TypeChecker {
             _ => "this expression",
         };
         self.errors.push(TypeError::NotAPlace { what, span: target.span });
+    }
+
+    /// `x!.f = v` writes into the payload `!` read out, which is a copy unless
+    /// a link sits between the `!` and the write: a link's field is the node's
+    /// (OPT19, #2075). An index ends the walk, since a container's elements
+    /// live in the container, not in the copy.
+    fn check_write_through_force(&mut self, target: &Expr) {
+        let mut current = target;
+        while let ExprKind::Field { object, .. } = &current.kind {
+            let object_ty = self.node_types.get(&object.id).map(|t| self.ctx.apply(t));
+            if object_ty.is_some_and(|t| self.link_node_type(&t).is_some()) {
+                return;
+            }
+            if let ExprKind::Unwrap { .. } = &object.kind {
+                self.errors.push(TypeError::WriteThroughForce { span: object.span });
+                return;
+            }
+            current = object;
+        }
     }
 
     /// Validate E5 for let/const bindings: `const x = shared.read()` is an error.

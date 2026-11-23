@@ -376,6 +376,16 @@ impl Interpreter {
                             )))?;
                         self.assign_nested_field(&obj, &field_chain, value)
                     }
+                    // `x!.f = v` through a link writes the node, and a
+                    // `none` panics the way reading `x!` does. Any other
+                    // payload is a copy, which the checker rejects (#2075).
+                    ExprKind::Unwrap { expr: inner, message, bang } => {
+                        let whole = self.eval_expr(inner).map_err(|diag| diag.error)?;
+                        let payload = self
+                            .force(&whole, message.as_deref(), *bang)
+                            .map_err(|diag| diag.error)?;
+                        self.assign_nested_field(&payload, &field_chain, value)
+                    }
                     _ => Err(RuntimeError::TypeError("invalid assignment target; assign to a variable, field, or index".to_string())),
                 }
             }

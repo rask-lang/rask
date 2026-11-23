@@ -1,0 +1,52 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// `x!` reads the payload out, the same as `if x? as v` (type.optionals/OPT19),
+// so writing a field of it lands on the copy. Native dropped the write and the
+// interpreter refused the target at run time (#2075). Through a link the write
+// is legal: a link's field is the node's.
+
+import memory.Link
+import memory.Rack
+
+struct Leaf {
+    id: i32
+}
+
+struct Holder {
+    at: Link<Leaf>?
+    pos: (i32, i32)?
+    leaf: Leaf?
+}
+
+func struct_payload() {
+    mut leaf: Leaf? = Leaf(id: 1)
+    // ERROR: `leaf!` is a copy, the write would be lost [E0985]
+    leaf!.id = 9
+}
+
+func tuple_payload() {
+    mut h = Holder(at: none, pos: (1, 2), leaf: none)
+    // ERROR: `h.pos!` is a copy [E0985]
+    h.pos!.1 = 8
+}
+
+func field_payload() {
+    mut h = Holder(at: none, pos: none, leaf: Leaf(id: 1))
+    // ERROR: `h.leaf!` is a copy [E0985]
+    h.leaf!.id = 3
+}
+
+// Fine: the write goes through a link to the node.
+func through_link() -> i32 {
+    mut rack: Rack<Leaf> = Rack.new()
+    let n = rack.insert(Leaf(id: 1))
+    let h = Holder(at: n, pos: none, leaf: none)
+    h.at!.id = 7
+    return n.id
+}
+
+func main() {
+    struct_payload()
+    tuple_payload()
+    field_payload()
+    println("{through_link()}")
+}

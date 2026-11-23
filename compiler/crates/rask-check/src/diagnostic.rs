@@ -1409,6 +1409,14 @@ impl ToDiagnostic for crate::TypeError {
                 }
             }
 
+            WriteThroughForce { span } => {
+                Diagnostic::error("cannot write into a payload `!` read out")
+                    .with_code("E0985")
+                    .with_primary(*span, "`!` hands back a copy of what the optional holds")
+                    .with_help("copy the payload out, change the copy, and assign it back")
+                    .with_fix("mut next = opt!\nnext.n = 5\nopt = next")
+                    .with_why("`x!` reads the payload out, the same as `if x? as v` does, so a write into it would land on the copy and be lost [type.optionals/OPT19]. A link is different: its fields are the node's, so `x!.f = v` on a `Link<T>?` writes the node")
+            }
             MutateWithBinding { name, span } => {
                 Diagnostic::error(format!("cannot mutate `{}` — bound from a shared read lock", name))
                     .with_code("E0360")
