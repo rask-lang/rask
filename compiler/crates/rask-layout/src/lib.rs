@@ -1273,6 +1273,12 @@ fn type_arg_key(
             type_arg_key(ok, type_names)?,
             type_arg_key(err, type_names)?,
         ),
+        // `any Shape`: keyed by the interface's declaration, since a program's
+        // interface and the stdlib's can share a name (#1426). Without a key
+        // `Wrap<any Shape>` got no instance and its 16-byte object went into
+        // the shared layout's one-word slot (#1993).
+        Type::InterfaceObject { decl: Some(id), .. } => format!("any_{}", type_names.get(id)?),
+        Type::InterfaceObject { decl: None, interface_name } => format!("any_{}", interface_name),
         _ => return None,
     })
 }

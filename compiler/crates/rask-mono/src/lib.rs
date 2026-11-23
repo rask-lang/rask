@@ -701,9 +701,13 @@ fn inline_arg_size(ty: &Type, types: &rask_check::TypeTable, cache: &LayoutCache
         // one. Without this `Wrap { value: opt(3) }` was refused outright:
         // nothing emitted an instance layout, so the shared 8-byte slot was all
         // there was (#872).
-        Type::Tuple(_) | Type::Array { .. } | Type::String | Type::Bytes | Type::Result { .. } => {
-            Some(type_size_align(ty, cache).0)
-        }
+        // An interface object is a data pointer and a vtable: two words.
+        Type::Tuple(_)
+        | Type::Array { .. }
+        | Type::String
+        | Type::Bytes
+        | Type::Result { .. }
+        | Type::InterfaceObject { .. } => Some(type_size_align(ty, cache).0),
         _ => None,
     }
 }
