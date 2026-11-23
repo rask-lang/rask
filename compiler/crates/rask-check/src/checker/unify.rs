@@ -1294,7 +1294,16 @@ impl TypeChecker {
                     ((**def_ok).clone(), def.clone())
                 }
             }
-            other => (other.clone(), other.clone()),
+            // An erased payload is what the expression produces, and the
+            // default is boxed into it. Typed as the default's own struct,
+            // `f.maybe(1) ?? Tag(…)` read the present branch's box as a `Tag`.
+            other => match self.ctx.apply(&value) {
+                Type::Result { ok, .. } if matches!(self.ctx.apply(&ok), Type::InterfaceObject { .. }) => {
+                    let payload = self.ctx.apply(&ok);
+                    (payload.clone(), payload)
+                }
+                _ => (other.clone(), other.clone()),
+            },
         };
 
         // OPT3/OPT11: `??` supplies the branch a `T?` has and nothing else
@@ -1390,7 +1399,7 @@ impl TypeChecker {
             let applied = self.ctx.apply(param_ty);
             let peeled = applied.as_option().cloned().unwrap_or_else(|| applied.clone());
             if matches!(peeled, Type::InterfaceObject { .. }) {
-                self.pending_interface_arg_coercions.push((node, applied, arg_ty.clone()));
+                self.pending_interface_coercions.push((node, applied, arg_ty.clone()));
             }
         }
         self.resolve_coercion(

@@ -412,14 +412,15 @@ impl TypeChecker {
     /// after the call was walked. Runs after solving, from the same list of
     /// deferred checks as the rest.
     pub(super) fn validate_pending_interface_elem_coercions(&mut self) {
-        // A method's own `any Interface` parameter. Free function calls record
-        // this as they're walked; a method only knows its parameters once the
-        // receiver resolves, inside the solver, so `coerce_arg` queues it.
-        // Without it `io.copy(src, dst)` and `c.scaled(Sq(…))` passed the bare
-        // struct where the fat pointer goes, and the first call through it
-        // read a vtable out of the struct.
-        for (node, param, arg) in std::mem::take(&mut self.pending_interface_arg_coercions) {
-            self.note_interface_coercion_node(node, false, &param, &arg);
+        // A value whose slot's type is known only after solving: a method's
+        // own `any Interface` parameter (a method only knows its parameters
+        // once the receiver resolves, inside the solver, so `coerce_arg`
+        // queues it), a `catch` handler's value and a `??` default. Without
+        // it `io.copy(src, dst)` and `c.scaled(Sq(…))` passed the bare struct
+        // where the fat pointer goes, and the first call through it read a
+        // vtable out of the struct.
+        for (node, slot, value) in std::mem::take(&mut self.pending_interface_coercions) {
+            self.note_interface_coercion_node(node, false, &slot, &value);
         }
         let pending = std::mem::take(&mut self.pending_interface_elem_coercions);
         for (node, is_any_cast, recv_ty, arg_ty) in pending {
@@ -1952,8 +1953,12 @@ impl TypeChecker {
                 // The handler's value stands in for the success value, so an
                 // erased success type boxes it. Without this `catch e => Tag(…)`
                 // on an `any Label or E` handed the bare struct on as the box.
-                let expected = self.ctx.apply(&ok_ty);
-                self.note_interface_coercion(&clause.body, &expected, &resolved_body);
+                // Asked once solving has settled both: after a method call
+                // the success type is still open here, and `f.make(-1) catch
+                // e => Tag(…)` was never boxed.
+                if !Self::is_any_cast(&clause.body) {
+                    self.pending_interface_coercions.push((clause.body.id, ok_ty.clone(), body_ty.clone()));
+                }
                 self.ctx.add_constraint(TypeConstraint::Equal(
                     ok_ty.clone(),
                     body_ty,
@@ -2743,6 +2748,11 @@ impl TypeChecker {
                 if let (Some(inner), Type::Never) = (resolved_val.as_option(), self.ctx.apply(&def_ty)) {
                     let inner = inner.clone();
                     let _ = self.unify(&result, &inner, expr.span);
+                }
+                // The default stands in for the payload, so an erased payload
+                // type boxes it, the way a `catch` handler's value is boxed.
+                if !Self::is_any_cast(default) {
+                    self.pending_interface_coercions.push((default.id, result.clone(), def_ty.clone()));
                 }
                 self.ctx.add_constraint(TypeConstraint::Coalesce {
                     node: expr.id,

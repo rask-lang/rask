@@ -318,9 +318,10 @@ pub struct TypeChecker {
     /// — `(argument node, was it an `as any Interface`, receiver, argument)`.
     pub(super) pending_interface_elem_coercions:
         Vec<(NodeId, bool, Type, Type)>,
-    /// TR5 for a method argument: `(argument node, declared parameter,
-    /// argument)`, read once the argument's type has settled.
-    pub(super) pending_interface_arg_coercions: Vec<(NodeId, Type, Type)>,
+    /// TR5 for a value whose slot settles during solving (a method argument,
+    /// a `catch` handler's value, a `??` default): `(value node, slot type,
+    /// value type)`, read once both have settled.
+    pub(super) pending_interface_coercions: Vec<(NodeId, Type, Type)>,
     /// ER18: the error a `try { … } catch e =>` handler is waiting for. Inner
     /// `try`s propagate to the innermost of these instead of to the enclosing
     /// function, which is what makes the handler cover the block.
@@ -740,7 +741,7 @@ impl TypeChecker {
             callee_ident: None,
             written_method_type_args: HashMap::new(),
             pending_interface_elem_coercions: Vec::new(),
-            pending_interface_arg_coercions: Vec::new(),
+            pending_interface_coercions: Vec::new(),
             try_block_errors: Vec::new(),
             debug_fmt_calls: std::collections::HashSet::new(),
             call_targets: HashMap::new(),
