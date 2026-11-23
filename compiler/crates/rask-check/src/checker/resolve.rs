@@ -3010,8 +3010,22 @@ impl TypeChecker {
     /// `Atomic<Slot>` over `{ index: i32, generation: i32 }` was rejected as two
     /// words, and that struct is the example mem.atomics' own text uses. Fields
     /// hold their declared widths now (#1083), so the rule reads the width.
+    /// `ty` with every newtype layer taken off: the type its bytes are.
+    fn under_newtypes(&self, ty: &Type) -> Type {
+        let ty = self.resolve_named(ty);
+        if let Type::Named(id) = ty {
+            if let Some(TypeDef::NominalAlias { underlying, .. }) = self.types.get(id) {
+                let underlying = underlying.clone();
+                return self.under_newtypes(&underlying);
+            }
+        }
+        ty
+    }
+
+    /// A newtype has its underlying value's bytes, so it is a payload exactly
+    /// when that is.
     fn atomic_payload_problem(&self, ty: &Type) -> Option<String> {
-        match self.resolve_named(ty) {
+        match self.under_newtypes(ty) {
             // Still open — the value that settles it decides, and rejecting on
             // "don't know" would refuse code the checker later accepts.
             Type::Var(_) | Type::Error | Type::UnresolvedNamed(_) => None,
@@ -3032,7 +3046,7 @@ impl TypeChecker {
                     }
                     let widths: Option<Vec<u32>> = fields
                         .iter()
-                        .map(|f| self.resolve_named(f).scalar_bytes())
+                        .map(|f| self.under_newtypes(f).scalar_bytes())
                         .collect();
                     let Some(widths) = widths else {
                         return Some(

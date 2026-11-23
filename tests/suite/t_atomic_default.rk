@@ -5,6 +5,14 @@
 // failed to compare with a char (#2001).
 import sync.Atomic
 
+type Ticks = u32 implements Numeric
+type Flag = bool
+
+struct Slot {
+    a: Ticks
+    b: u32
+}
+
 func make<T>() -> Atomic<T> {
     return Atomic<T>.default()
 }
@@ -29,4 +37,24 @@ test "a default made in a generic body" {
     let u: Atomic<u64> = make()
     assert u.fetch_add(3) == 0
     assert u.load() == 3
+}
+
+// A newtype is its underlying value's bytes, so it is a payload exactly when
+// that is, alone or as a struct's field. The checker turned `Atomic<Ticks>`
+// away as "only a struct", and a struct with a `Ticks` field as not scalar.
+test "a newtype payload" {
+    let t = Atomic<Ticks>.default()
+    assert t.load().value == 0
+    t.store(Ticks(7))
+    assert t.swap(Ticks(9)).value == 7
+    assert t.load().value == 9
+    let f = Atomic<Flag>.new(Flag(true))
+    assert f.load().value
+}
+
+test "a struct with a newtype field" {
+    let s = Atomic<Slot>.new(Slot(a: Ticks(3), b: 4))
+    let v = s.load()
+    assert v.a.value == 3
+    assert v.b == 4
 }
