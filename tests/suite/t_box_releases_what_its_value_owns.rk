@@ -1,0 +1,115 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A box whose value holds another box, an optional box, an enum or a `Heap`.
+//
+// A box that owns its value releases what the value owns when it dies. That
+// release was a flat list of the value's strings and containers, so a box
+// inside the value, an optional, an enum's payload and a `Heap` block were
+// left out and leaked. It now walks the same description a container element
+// of that type gets. The strings are long enough to live on the heap.
+
+import memory.Heap
+
+interface Keeper {
+    func size(self) -> i64
+}
+
+struct Pile { items: Vec<string> }
+Pile implements Keeper {
+    func size(self) -> i64 { return self.items.len().to<i64>()! }
+}
+
+struct Relay { inner: any Keeper }
+Relay implements Keeper {
+    func size(self) -> i64 { return self.inner.size() }
+}
+
+struct Slot { held: any Keeper? }
+Slot implements Keeper {
+    func size(self) -> i64 {
+        if self.held? as h { return h.size() }
+        return 0
+    }
+}
+
+enum Shape {
+    Named(string),
+    Empty,
+}
+
+struct Tagged { shape: Shape }
+Tagged implements Keeper {
+    func size(self) -> i64 {
+        match self.shape {
+            Named(s) => return s.len().to<i64>()!,
+            Empty => return 0,
+        }
+    }
+}
+
+struct Node { label: string }
+struct Boxed { node: Heap<Node> }
+Boxed implements Keeper {
+    func size(self) -> i64 { return self.node.label.len().to<i64>()! }
+}
+
+func pile() -> Pile {
+    return Pile(items: ["pile-entry-padded-long-enough-for-heap"])
+}
+
+test "a box holding a box" {
+    let k: any Keeper = Relay(inner: pile())
+    assert k.size() == 1
+    let deeper: any Keeper = Relay(inner: Relay(inner: pile()))
+    assert deeper.size() == 1
+}
+
+test "a box holding an optional box" {
+    let k: any Keeper = Slot(held: pile())
+    assert k.size() == 1
+    let none_held: any Keeper = Slot(held: none)
+    assert none_held.size() == 0
+}
+
+test "a box holding an enum" {
+    let k: any Keeper = Tagged(shape: Shape.Named("named-shape-padded-long-enough-heap"))
+    assert k.size() == 35
+    let e: any Keeper = Tagged(shape: Shape.Empty)
+    assert e.size() == 0
+}
+
+test "a box holding a heap block" {
+    let k: any Keeper = Boxed(node: Heap(Node(label: "node-label-padded-long-enough-heap")))
+    assert k.size() == 34
+}
+
+test "boxes in a vector" {
+    mut keep: Vec<any Keeper> = Vec.new()
+    for i in 0..3 {
+        keep.push(Relay(inner: pile()))
+        keep.push(Slot(held: pile()))
+    }
+    assert keep.len() == 6
+    assert keep[5].size() == 1
+}
+
+enum List {
+    Cons(string, Heap<List>),
+    Nil,
+}
+
+struct Chain { head: List }
+Chain implements Keeper {
+    func size(self) -> i64 {
+        match self.head {
+            Cons(s, _) => return s.len().to<i64>()!,
+            Nil => return 0,
+        }
+    }
+}
+
+test "a box holding a list that reaches itself" {
+    let tail = List.Cons("second-cell-padded-long-enough-heap", Heap(List.Nil))
+    let k: any Keeper = Chain(head: List.Cons("first-cell-padded-long-enough-heap", Heap(tail)))
+    assert k.size() == 34
+}

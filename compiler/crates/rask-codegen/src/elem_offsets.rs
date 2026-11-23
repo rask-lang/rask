@@ -126,6 +126,24 @@ pub fn owned_offsets(ty: &MirType, shapes: Shapes<'_>) -> Option<Vec<i32>> {
     (!out.is_empty()).then_some(out)
 }
 
+/// What a value a box owns has to give back when the box dies, or `None`
+/// when it owns nothing.
+///
+/// An element's list, plus its `Heap` fields. An element leaves those out
+/// because a copy of the element would have to copy the block, and a block
+/// carries no size to copy; a box's value is only ever released through this
+/// list, so the block is the box's to free.
+pub fn box_owned_offsets(ty: &MirType, shapes: Shapes<'_>) -> Option<Vec<i32>> {
+    let layout = match ty {
+        MirType::Struct(id) => Layout::Struct(id.id as usize),
+        MirType::Enum(id) => Layout::Enum(id.id as usize),
+        _ => return owned_offsets(ty, shapes),
+    };
+    let mut out = Vec::new();
+    describe_layout(layout, 0, shapes, 0, Some(layout), &mut out)?;
+    (!out.is_empty()).then_some(out)
+}
+
 /// What a closure environment owns, and where: each capture the environment
 /// owns (`ClosureCapture::owns`) described at its slot. Offsets are from the
 /// environment's start, which is what `rask_closure_free` walks from.

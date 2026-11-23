@@ -1805,8 +1805,15 @@ impl CodeGenerator {
             // Only a moved-in box reads it — a container element, a struct
             // field, a return. `InterfaceDrop` is the borrowed case and frees the
             // block alone.
-            if !vt.owned.is_empty() {
-                let func_id = self.get_or_create_owned_release(&vt.concrete_type, &vt.owned)?;
+            let owned = vt.concrete_mir.as_ref().and_then(|ty| {
+                crate::elem_offsets::box_owned_offsets(ty, crate::elem_offsets::Shapes {
+                    layouts: &self.struct_layouts,
+                    enums: &self.enum_layouts,
+                    fields: &self.field_types,
+                })
+            });
+            if let Some(owned) = owned {
+                let func_id = self.get_or_create_owned_release(&vt.concrete_type, &owned)?;
                 let func_ref = self.module.declare_func_in_data(func_id, &mut desc);
                 desc.write_function_addr(crate::vtable::VTABLE_OWNED_RELEASE_OFFSET, func_ref);
             }
@@ -1834,20 +1841,28 @@ impl CodeGenerator {
     }
 
     /// Build (or reuse) the release for a concrete type behind a box that owns
-    /// it: `fn(data_ptr: i64)` that frees each container and each string the
-    /// value holds, at the offsets `owned_fields` found.
+    /// it: `fn(data_ptr: i64)` that walks what the value owns, described the
+    /// way a container element of that type is, `Heap` fields included
+    /// (`box_owned_offsets`).
     ///
-    /// One per concrete type, shared across every vtable that boxes it behind a
-    /// different interface, because the answer depends on the value and not on the
-    /// interface.
+    /// One walk for both: a box inside the value, an optional or an enum field
+    /// and a `Heap` block are released the same way an element's are. A flat
+    /// list of strings and containers of its own left those out, so a box
+    /// holding another box leaked the inner one.
+    ///
+    /// One per concrete type, shared across every vtable that boxes it behind
+    /// a different interface, because the answer depends on the value and not
+    /// on the interface.
     fn get_or_create_owned_release(
         &mut self,
         concrete_type: &str,
-        fields: &[crate::drop_fields::DropField],
+        owned: &[i32],
     ) -> CodegenResult<cranelift_module::FuncId> {
         if let Some(&func_id) = self.owned_release_fns.get(concrete_type) {
             return Ok(func_id);
         }
+        self.register_element_offsets(owned)?;
+        let entries_id = self.element_offset_data[owned];
 
         let mut sig = self.module.make_signature();
         sig.params.push(AbiParam::new(types::I64));
@@ -1861,21 +1876,12 @@ impl CodeGenerator {
         self.ctx.clear();
         self.ctx.func.signature = sig;
 
-        // One reference per distinct free, declared up front — a container and
-        // a string field don't share one.
-        let mut free_refs: std::collections::HashMap<&str, cranelift_codegen::ir::FuncRef> =
-            std::collections::HashMap::new();
-        for f in fields {
-            if free_refs.contains_key(f.free_fn.as_str()) {
-                continue;
-            }
-            let id = *self
-                .func_ids
-                .get(&f.free_fn)
-                .ok_or_else(|| CodegenError::FunctionNotFound(f.free_fn.clone()))?;
-            let r = self.module.declare_func_in_func(id, &mut self.ctx.func);
-            free_refs.insert(f.free_fn.as_str(), r);
-        }
+        let release_id = *self
+            .func_ids
+            .get("rask_owned_release_all")
+            .ok_or_else(|| CodegenError::FunctionNotFound("rask_owned_release_all".to_string()))?;
+        let release = self.module.declare_func_in_func(release_id, &mut self.ctx.func);
+        let entries_gv = self.module.declare_data_in_func(entries_id, &mut self.ctx.func);
 
         let mut fn_builder_ctx = cranelift::prelude::FunctionBuilderContext::new();
         let mut fb =
@@ -1887,30 +1893,9 @@ impl CodeGenerator {
         fb.seal_block(entry);
 
         let data_ptr = fb.block_params(entry)[0];
-        for f in fields {
-            let free_ref = free_refs[f.free_fn.as_str()];
-            match f.shape {
-                // The slot is the header: pass its address.
-                crate::drop_fields::ReleaseShape::ByAddress => {
-                    let field_ptr = if f.offset == 0 {
-                        data_ptr
-                    } else {
-                        fb.ins().iadd_imm(data_ptr, f.offset as i64)
-                    };
-                    fb.ins().call(free_ref, &[field_ptr]);
-                }
-                // The slot holds a handle: load it and pass the pointer.
-                crate::drop_fields::ReleaseShape::ByHandle => {
-                    let handle = fb.ins().load(
-                        types::I64,
-                        cranelift::prelude::MemFlags::new(),
-                        data_ptr,
-                        f.offset as i32,
-                    );
-                    fb.ins().call(free_ref, &[handle]);
-                }
-            }
-        }
+        let entries = fb.ins().global_value(types::I64, entries_gv);
+        let count = fb.ins().iconst(types::I64, owned.len() as i64);
+        fb.ins().call(release, &[data_ptr, entries, count]);
         fb.ins().return_(&[]);
         fb.finalize();
 

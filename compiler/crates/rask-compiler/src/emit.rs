@@ -626,24 +626,22 @@ pub(crate) fn checked_extern_type(ty: &rask_ast::ty::TypeExpr, types: &rask_chec
 
 /// One vtable per (concrete type, interface) pair some `InterfaceBox` builds.
 fn collect_vtables(functions: &[MirFunction], mono: &MonoProgram) -> Vec<rask_codegen::vtable::VTableInfo> {
-    // Each table with the concrete type it was built for: what the box's
-    // value owns is read off that type's layout.
-    let by_name: HashMap<&str, (&rask_types::Type, &rask_mono::VTable)> =
-        mono.vtables.iter().map(|((ty, _), vt)| (vt.name.as_str(), (ty, vt))).collect();
+    let by_name: HashMap<&str, &rask_mono::VTable> =
+        mono.vtables.values().map(|vt| (vt.name.as_str(), vt)).collect();
     let mut seen = HashSet::new();
     let mut vtables = Vec::new();
     for mir_fn in functions {
         for block in &mir_fn.blocks {
             for stmt in &block.statements {
                 let rask_mir::MirStmtKind::InterfaceBox {
-                    concrete_type, interface_name, concrete_size, concrete_align, vtable_name, ..
+                    value, concrete_type, interface_name, concrete_size, concrete_align, vtable_name, ..
                 } = &stmt.kind else {
                     continue;
                 };
                 if !seen.insert(vtable_name.clone()) {
                     continue;
                 }
-                let Some(&(concrete, table)) = by_name.get(vtable_name.as_str()) else { continue };
+                let Some(&table) = by_name.get(vtable_name.as_str()) else { continue };
                 let vt_methods = table.slots.iter().enumerate()
                     .map(|(i, slot)| rask_codegen::vtable::VTableMethod {
                         name: slot.method.clone(),
@@ -651,13 +649,15 @@ fn collect_vtables(functions: &[MirFunction], mono: &MonoProgram) -> Vec<rask_co
                         vtable_offset: rask_codegen::vtable::method_offset(i),
                     })
                     .collect();
-                // What the concrete value owns, for a box that owns it.
-                // Containers and strings both: a moved-in box has no second
-                // holder for either.
-                let mut visited = HashSet::new();
-                let owned = rask_codegen::drop_fields::owned_fields(
-                    concrete, 0, &mono.struct_layouts, &mono.type_names, &mono.handle_releases, &mut visited,
-                );
+                let concrete_mir = match value {
+                    rask_mir::MirOperand::Local(id) => mir_fn
+                        .locals
+                        .iter()
+                        .chain(mir_fn.params.iter())
+                        .find(|l| l.id == *id)
+                        .map(|l| l.ty.clone()),
+                    _ => None,
+                };
                 vtables.push(rask_codegen::vtable::VTableInfo {
                     data_name: vtable_name.clone(),
                     concrete_type: concrete_type.clone(),
@@ -665,7 +665,7 @@ fn collect_vtables(functions: &[MirFunction], mono: &MonoProgram) -> Vec<rask_co
                     concrete_size: *concrete_size,
                     concrete_align: *concrete_align,
                     methods: vt_methods,
-                    owned,
+                    concrete_mir,
                 });
             }
         }
