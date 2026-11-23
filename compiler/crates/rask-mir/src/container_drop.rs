@@ -368,6 +368,36 @@ pub(crate) fn task_captures_given_away(
         .collect()
 }
 
+/// The containers a task block captured and gives away on some path, loaded
+/// out of its environment, with the free for each.
+///
+/// The environment leaves those alone when the task ends
+/// (`task_captures_given_away`), so the block frees each one on the paths
+/// that don't give it away, the way a function frees a `take` parameter it
+/// keeps on only one branch. `if flag { out.push(v) }` in a task block leaked
+/// `v` whenever `flag` was false (#2043).
+fn task_captures_the_body_frees(func: &MirFunction, keeps: &Keeps) -> Vec<(LocalId, &'static str)> {
+    let given = task_captures_given_away(func, keeps.by_name, keeps.targets, keeps.reach);
+    if given.is_empty() {
+        return Vec::new();
+    }
+    func.blocks
+        .iter()
+        .flat_map(|b| b.statements.iter())
+        .filter_map(|st| match &st.kind {
+            MirStmtKind::LoadCapture { dst, offset, access: crate::CaptureAccess::Taken, .. }
+                if given.contains(offset) =>
+            {
+                match func.local_ty(*dst) {
+                    Some(MirType::Container(kind)) => Some((*dst, container_free(*kind))),
+                    _ => None,
+                }
+            }
+            _ => None,
+        })
+        .collect()
+}
+
 /// Give each `for` body over a sequence the item mode its body calls for:
 /// Take where it keeps the item, so the sequence hands the item over instead of
 /// releasing it after the call (type.sequence/SEQ47).
@@ -906,7 +936,7 @@ fn what_comes_back(
     // parameters it keeps (`params_this_frame_owns`) — but to *this*
     // function's caller it is still the argument it passed, which it may not
     // have owned.
-    let param_of = owned_like_params(func, &edges, &fresh);
+    let param_of = owned_like_params(func, fns, &edges, &fresh);
 
     let mut paths: Vec<Path> = Vec::new();
     let mut wrapped = false;
@@ -1109,14 +1139,40 @@ fn pass_edges(func: &MirFunction, handing: &HashMap<String, HandBack>, targets: 
 /// A container this frame made (`fresh`) counts too, owned like no parameter:
 /// it is the caller's once handed back, whatever the caller owned.
 ///
+/// So does a load out of a parameter a closure borrows. The closure makes the
+/// parameter memory-resident (`transform::addr_taken`), and `return v` reads
+/// it back out of its cell. That read looked like nobody's, so
+/// `func f(take v: Vec<T>) -> Vec<T> { let n = || v.len() … return v }` handed
+/// back nothing as far as its callers knew, and they never freed the result
+/// (#2043). Only while the cell can hold nothing else: this frame never stores
+/// into it, and every closure that captured it leaves it the frame's.
+///
 /// Every definition of the name has to be one of those — lowering assigns a
 /// loop variable in more than one place. Not a copy that took references of
 /// its own — that is a new value (#1447).
 fn owned_like_params(
     func: &MirFunction,
+    all: &[MirFunction],
     edges: &Passes,
     fresh: &HashMap<LocalId, &'static str>,
 ) -> HashMap<LocalId, BTreeSet<usize>> {
+    let in_memory = crate::transform::addr_taken::analyze(func).owned;
+    let stored: HashSet<LocalId> = func
+        .blocks
+        .iter()
+        .flat_map(|b| b.statements.iter())
+        .filter_map(|st| match &st.kind {
+            MirStmtKind::Store { addr, .. } => Some(*addr),
+            _ => None,
+        })
+        .collect();
+    let param_cells: HashSet<LocalId> = func
+        .params
+        .iter()
+        .map(|p| p.id)
+        .filter(|id| in_memory.contains(id) && !stored.contains(id))
+        .filter(|id| cell_stays_owned_through_closures(func, all, *id))
+        .collect();
     let owns_copy: HashSet<LocalId> = func
         .blocks
         .iter()
@@ -1147,6 +1203,11 @@ fn owned_like_params(
                     return None;
                 }
                 from.get(src).cloned()
+            }
+            MirStmtKind::Assign { rvalue: MirRValue::Deref(MirOperand::Local(cell)), .. }
+                if param_cells.contains(cell) =>
+            {
+                from.get(cell).cloned()
             }
             MirStmtKind::Phi { args, .. } if !args.is_empty() => union(&mut args.iter().map(|(_, op)| match op {
                 MirOperand::Local(s) => Some(*s),
@@ -1399,8 +1460,12 @@ fn insert_for_function(
     // is the ownership analysis's question, not a property of the name:
     // `index.get(word) ?? Vec.new()` holds the map's vector on one path and a
     // fresh one on the other, and only the second is this frame's.
-    let (mut tracked, made_here) =
+    let (mut tracked, mut made_here) =
         containers_and_makers(func, all, handing_over, interface_handing, targets);
+    for (id, free) in task_captures_the_body_frees(func, keeps) {
+        tracked.insert(id, free);
+        made_here.insert(id);
+    }
     let owned = params_this_frame_owns(func, kept);
     if made_here.is_empty() && owned.is_empty() {
         // A string cell needs no container of the frame's own: a function
