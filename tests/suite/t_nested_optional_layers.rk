@@ -148,3 +148,17 @@ test "pushing none into a list of nested optionals" {
     assert v[1] is none
     assert v[2]!! == 4
 }
+
+test "a closure argument widens to its parameter" {
+    // Native passed the bare number where the body reads an optional, and
+    // the interpreter passed an absent inner `i64?` as the outer `none`
+    // (#2063).
+    let f = |x: i64?| -> bool { return x is none }
+    assert f(none)
+    assert !f(3)
+    let a: i64? = none
+    let g = |x: i64??| -> bool { return x is none }
+    assert g(none)
+    assert !g(a)
+    assert !g(3)
+}

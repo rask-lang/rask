@@ -1263,6 +1263,24 @@ impl Interpreter {
                 // both under this call.
                 let generics = self.call_generics(expr.id);
                 if let Value::Closure { .. } = &func_val {
+                    // Each argument takes the layers its parameter's type
+                    // has beyond its own: `f(a)` with `a: i64? = none` hands a
+                    // `func(i64??)` a present inner `none`, not the outer one
+                    // (type.optionals/OPT31, #2063).
+                    let arg_vals = match self.node_types.get(&func.id).cloned() {
+                        Some(rask_types::Type::Fn { params, .. }) => arg_vals
+                            .into_iter()
+                            .enumerate()
+                            .map(|(i, v)| {
+                                let want = params.get(i).and_then(|p| self.option_layers(&p.ty));
+                                match (want, places.depths.get(i).copied().flatten()) {
+                                    (Some(want), Some(have)) => (have..want).fold(v, |v, _| Value::some(v)),
+                                    _ => v,
+                                }
+                            })
+                            .collect(),
+                        _ => arg_vals,
+                    };
                     return self
                         .call_closure(func_val, arg_vals, places.slots)
                         .map_err(|e| RuntimeDiagnostic::new(e, expr.span));

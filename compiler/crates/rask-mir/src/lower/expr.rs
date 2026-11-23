@@ -1198,6 +1198,10 @@ impl<'a> MirLowerer<'a> {
             scalar_mutate_params,
             aggregate_mutate_params,
             takes: params.iter().enumerate().filter(|(_, p)| p.mode == rask_ast::ty::ParamMode::Take).map(|(i, _)| i).collect(),
+            // What each argument is coerced into: a bare `3` handed to a
+            // `func(i64?)` is wrapped like one handed to a declared
+            // function, or the body reads the number as an optional (#2063).
+            param_tys: params.iter().map(|p| Some(p.ty.clone())).collect(),
             ..super::FuncSig::returning(self.ctx.type_to_mir(ret))
         })
     }

@@ -944,7 +944,7 @@ impl Interpreter {
 
     /// How many optional layers `ty` has, with this frame's type parameters
     /// filled in; `None` while the innermost type is open.
-    fn option_layers(&self, ty: &rask_types::Type) -> Option<usize> {
+    pub(crate) fn option_layers(&self, ty: &rask_types::Type) -> Option<usize> {
         let frame = self.generic_frames.last().and_then(|f| f.as_deref());
         let ty = match frame {
             Some(frame) => rask_check::substitute_type(ty, frame),
