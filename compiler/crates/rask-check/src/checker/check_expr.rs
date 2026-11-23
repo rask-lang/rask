@@ -2660,7 +2660,8 @@ impl TypeChecker {
                 }
                 // A literal, or a module const naming one (`[0; N]`); anything
                 // else keeps the 0 placeholder. A local of the same name is
-                // not the const. A literal that doesn't fit a `usize` (`-1`)
+                // not the const; the const itself sits in the outermost scope
+                // as a `ModuleConst`. A literal that doesn't fit a `usize` (`-1`)
                 // was just reported, and an array of that length has no
                 // layout, so the expression has no type to hand on (#2051).
                 let len = match &count.kind {
@@ -2668,11 +2669,12 @@ impl TypeChecker {
                         Ok(n) => n,
                         Err(_) => return Type::Error,
                     },
-                    ExprKind::Ident(name) if self.lookup_local(name).is_none() => {
+                    ExprKind::Ident(name) if self.names_module_const(name) => {
                         self.types.const_length(name).unwrap_or(0)
                     }
                     _ => 0,
                 };
+                self.pending_array_sizes.push((elem_ty.clone(), len, expr.span));
                 Type::Array {
                     elem: Box::new(elem_ty),
                     len,
@@ -6933,6 +6935,21 @@ impl TypeChecker {
     /// A range counts: its bounds are numbers or chars. `"a".."z"` was a
     /// `Range<string>` that native walked as nothing and the interpreter
     /// refused at run time.
+    /// VS12: an array repeat over the 4 GiB a value can take. Sized here
+    /// rather than where it's checked: the element is usually a literal whose
+    /// type the defaults only just settled (`[0; N]`).
+    pub(super) fn validate_pending_array_sizes(&mut self) {
+        for (elem, len, span) in std::mem::take(&mut self.pending_array_sizes) {
+            let elem = self.ctx.apply(&elem);
+            if let Some(bytes) = self.types.array_bytes(&elem, len) {
+                if bytes > u64::from(u32::MAX) {
+                    let ty = Type::Array { elem: Box::new(elem), len };
+                    self.errors.push(TypeError::ArrayTooLarge { ty, bytes, span });
+                }
+            }
+        }
+    }
+
     pub(super) fn validate_pending_range_bounds(&mut self) {
         for (elem, span) in std::mem::take(&mut self.pending_range_bounds) {
             let ty = self.resolve_named(&self.ctx.apply(&elem));

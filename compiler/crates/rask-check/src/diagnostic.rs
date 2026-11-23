@@ -3310,6 +3310,13 @@ impl ToDiagnostic for crate::TypeError {
                     .with_primary(*span, "invalid conversion form")
                     .with_why("each conversion form names its data-loss behavior; the source and target kinds must match it [type.primitives/CV11–CV16]")
             }
+            ArrayTooLarge { ty, bytes, span } => {
+                Diagnostic::error(format!("`{}` is too large for a value", ty))
+                    .with_code("E0980")
+                    .with_primary(*span, format!("{} bytes", bytes))
+                    .with_why("a value's size is a 32-bit count, so one value holds at most 4 GiB")
+                    .with_help("keep this many elements in a `Vec`, which holds them on the heap")
+            }
             IntLiteralOutOfRange { literal, ty, min, max, span } => {
                 let label = format!("`{}` doesn't fit in `{}`", literal, ty);
                 Diagnostic::error(format!("integer literal `{}` is out of range for `{}`", literal, ty))

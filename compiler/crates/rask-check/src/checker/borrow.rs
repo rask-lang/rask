@@ -128,6 +128,14 @@ impl TypeChecker {
         None
     }
 
+    /// Does `name` here mean a module const: no local shadows it?
+    pub(super) fn names_module_const(&self, name: &str) -> bool {
+        match self.local_types.iter().rev().find_map(|scope| scope.get(name)) {
+            Some((_, kind)) => matches!(kind, super::BindingKind::ModuleConst),
+            None => true,
+        }
+    }
+
     /// Depth of the innermost scope defining `name` — 1 is the outermost.
     pub(super) fn local_depth(&self, name: &str) -> Option<usize> {
         self.local_types

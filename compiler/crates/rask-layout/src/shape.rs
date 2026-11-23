@@ -81,15 +81,13 @@ pub fn tuple_layout(parts: impl IntoIterator<Item = (u32, u32)>) -> (Vec<u32>, u
 
 /// `[T; len]`: the elements back to back, so the stride is the element's size.
 ///
-/// Sizes are `u32`, so a value tops out at 4 GiB. The checker only builds
-/// array types from lengths that fit a `usize`; one whose bytes don't fit a
-/// `u32` reaches here as a compiler bug, and says so in every build profile
-/// rather than wrapping in release and panicking in debug.
+/// Sizes are `u32`, so a value tops out at 4 GiB. An array over that comes
+/// back as `u32::MAX`: the checker reports it (E0980), and the passes that
+/// still run on a program with errors, to find more of them, ask its layout
+/// too. `[0; 3000000000]` panicked the compiler in the ownership check's copy
+/// verdict when this panicked instead.
 pub fn array_layout(elem: (u32, u32), len: usize) -> (u32, u32) {
-    let size = u32::try_from(len)
-        .ok()
-        .and_then(|len| elem.0.checked_mul(len))
-        .unwrap_or_else(|| panic!("[T; {len}] with {}-byte elements is over the 4 GiB a value can take", elem.0));
+    let size = u32::try_from(len).ok().and_then(|len| elem.0.checked_mul(len)).unwrap_or(u32::MAX);
     (size, elem.1)
 }
 

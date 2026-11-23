@@ -83,7 +83,13 @@ pub fn resolve_type_expr(ty: &TypeExpr, types: &TypeTable) -> Result<Type, TypeE
             // 0 placeholder so element checking can proceed — the length then
             // resolves at comptime.
             let len: usize = len.parse().ok().or_else(|| types.const_length(len)).unwrap_or(0);
-            Ok(Type::Array { elem: Box::new(elem), len })
+            let ty = Type::Array { elem: Box::new(elem), len };
+            if let Type::Array { elem, .. } = &ty {
+                if let Some(bytes) = types.array_bytes(elem, len).filter(|b| *b > u64::from(u32::MAX)) {
+                    return Err(TypeError::ArrayTooLarge { ty, bytes, span: Span::new(0, 0) });
+                }
+            }
+            Ok(ty)
         }
         // `[N]T` is a layout spelling for `@binary` fields, not a value type.
         TypeExpr::FixedCount { .. } => Err(TypeError::GenericError(

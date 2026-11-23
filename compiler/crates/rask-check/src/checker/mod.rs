@@ -228,6 +228,8 @@ pub struct TypeChecker {
     pub(super) ensure_floor: Option<usize>,
     /// Each range expression's bound type, checked once literals settle.
     pub(super) pending_range_bounds: Vec<(Type, rask_ast::Span)>,
+    /// `[x; n]` sites, sized once literal defaults settle the element type.
+    pub(super) pending_array_sizes: Vec<(Type, usize, rask_ast::Span)>,
     /// Current Self type (inside extend blocks).
     pub(super) current_self_type: Option<Type>,
     /// Interface bounds on the current function's type params (name → interface names).
@@ -709,6 +711,7 @@ impl TypeChecker {
             loop_forms: Vec::new(),
             ensure_floor: None,
             pending_range_bounds: Vec::new(),
+            pending_array_sizes: Vec::new(),
             current_self_type: None,
             current_type_param_bounds: HashMap::new(),
             current_impl_type_param_bounds: HashMap::new(),
@@ -1040,6 +1043,7 @@ impl TypeChecker {
         // are concrete (e.g. `1 as bool` sees `i32`).
         self.validate_pending_casts();
         self.validate_pending_range_bounds();
+        self.validate_pending_array_sizes();
         self.settle_transmutes();
 
         // SEQ45: after literal defaults, so the message names `Sequence<i32>`

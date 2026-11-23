@@ -40,6 +40,13 @@ impl crate::TypeTable {
         known_size_align(&ty, &cache)
     }
 
+    /// Bytes in `[elem; len]`, uncapped, or `None` while the element has no
+    /// layout (a type parameter, an open variable).
+    pub fn array_bytes(&self, elem: &Type, len: usize) -> Option<u64> {
+        let (size, _) = self.size_align(elem, &rask_layout::no_params)?;
+        Some(u64::from(size).saturating_mul(len as u64))
+    }
+
     /// `size_align` for the copy rule, which has to answer inside a generic
     /// body too: a type parameter counts as a word there.
     ///

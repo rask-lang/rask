@@ -117,6 +117,7 @@ Use it where staying small is API: math primitives, IDs, anything callers pass a
 | **VS9: Copy is special** | Compiler-known interface that affects codegen and assignment semantics |
 | **VS10: Unique overrides** | `@unique` overrides structural satisfaction |
 | **VS11: Array repeat copies** | `[x; n]` puts a copy of `x` in every slot, so `x`'s type must be Copy. A value that moves would have n owners; build such elements one at a time (a loop pushing into a `Vec`) |
+| **VS12: A value is at most 4 GiB** | A size is a 32-bit count. An array type or an `[x; n]` over that is a compile error; that many elements belong in a `Vec` |
 
 <!-- test: skip -->
 ```rask
@@ -219,6 +220,7 @@ FIX: shrink the type (id: u32 fits in 16), or remove @small and let Point
 | `@small` on generic type, one bad instantiation | SM3 | Error at that instantiation, naming the type arguments |
 | `[row; 3]` where `Row` holds a `Vec` | VS11 | Error: the three slots would share one buffer |
 | `[t; n]` with an unbounded type parameter `T` | VS11 | Error in the generic body; `T: Copy` makes it legal |
+| `[0i64; 600000000]` | VS12 | Error: 4.8 GB is over the 4 GiB a value can take |
 
 ---
 

@@ -1,0 +1,18 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Rejects: an array over the 4 GiB a value can take
+//
+// `[0; 3000000000]` panicked the compiler: layout multiplied the element size
+// by the length, overflowed its 32-bit size, and nothing had said no first.
+// The checker reports it now, and the passes that run on after an error get a
+// capped size instead of a panic.
+
+const M = 600000000
+
+func main() {
+    // ERROR: 24000000000 bytes [E0980]
+    let a = [0; 3000000000]
+    // ERROR: 4800000000 bytes [E0980]
+    let b = [0i64; M]
+    let fits = [0u8; 4096]
+    println("{a.len()} {b.len()} {fits.len()}")
+}

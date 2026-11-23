@@ -1595,6 +1595,13 @@ pub enum TypeError {
     /// An integer literal whose value doesn't fit the type it ended up with.
     /// Codegen would keep the low bits, so `let b: u8 = 300` printed 300 in
     /// the interpreter and 44 natively.
+    #[error("`{ty}` is {bytes} bytes, over the 4 GiB a value can take")]
+    ArrayTooLarge {
+        ty: Type,
+        bytes: u64,
+        span: Span,
+    },
+
     #[error("integer literal {literal} is out of range for `{ty}`")]
     IntLiteralOutOfRange {
         /// The literal as written (already signed, with `-` folded in).
@@ -1935,6 +1942,7 @@ impl TypeError {
             | ErrorInterfaceMissing { ty, .. }
             | InfiniteType { ty, .. }
             | IntLiteralOutOfRange { ty, .. }
+            | ArrayTooLarge { ty, .. }
             | NoSuchField { ty, .. }
             | NoSuchMethod { ty, .. }
             | NotCallable { ty, .. }
