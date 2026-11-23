@@ -1113,6 +1113,8 @@ mod tests {
 
     fn dummy_typed_program() -> TypedProgram {
         TypedProgram {
+            moving_reads: std::collections::HashSet::new(),
+            moved_captures: std::collections::HashMap::new(),
             symbols: rask_resolve::SymbolTable::new(),
             mutate_self_fns: std::collections::HashSet::new(),
             fn_sigs: HashMap::new(),
