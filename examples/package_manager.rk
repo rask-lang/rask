@@ -780,7 +780,7 @@ func fetch_packages(graph: DepGraph, registry: any Registry, cache_dir: string) 
         return FetchError.Io(IoErrorMsg.Msg("cannot create {cache_dir}: {e.message()}"))
     }
 
-    let items = collect_fetch_items(graph, cache_dir)
+    mut items = collect_fetch_items(graph, cache_dir)
     if items.is_empty() {
         println("All packages cached")
         return ()
@@ -791,10 +791,13 @@ func fetch_packages(graph: DepGraph, registry: any Registry, cache_dir: string) 
     // Concurrent fetch: spawn a task per package, collect results via channel.
     // Shared<i32, Mutex> tracks fetch count across tasks (conc.sync/MX1).
     using Multitasking {
-        mut (tx, rx) = Channel.buffered(items.len())
+        let count = items.len()
+        mut (tx, rx) = Channel.buffered(count)
         let counter = Shared.mutex(0)
 
-        for item in items {
+        // Each task outlives the loop, so it takes its item rather than
+        // reading it out of `items`.
+        for item in items.take_all() {
             let item_tx = tx.clone()
             let item_counter = counter.clone()
             let item_registry = registry.clone()
@@ -813,7 +816,7 @@ func fetch_packages(graph: DepGraph, registry: any Registry, cache_dir: string) 
         // Collect results — first error is fatal
         mut first_error: FetchError? = none
         mut received = 0
-        while received < items.len() {
+        while received < count {
             if rx.receive()? as result {
                 if result is FetchResult.Done(msg) {
                     println("  {msg}")
