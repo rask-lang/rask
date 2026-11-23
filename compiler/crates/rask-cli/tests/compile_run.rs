@@ -1344,6 +1344,9 @@ fn a_type_that_contains_itself_is_rejected() {
         out.contains("Vertex -> Edge"),
         "should spell the chain for an indirect cycle: {}", out,
     );
+    // Layout and the copy rule leave a rejected type alone: `Grow<T>` drew a
+    // stream of "unresolved generic type in layout" warnings first (#1973).
+    assert!(!out.contains("warning"), "only the rejection, no layout warnings: {}", out);
 }
 
 #[test]

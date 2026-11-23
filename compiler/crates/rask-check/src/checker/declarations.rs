@@ -301,12 +301,19 @@ impl TypeChecker {
         // A field that would store its own type inline stays a name: the type
         // has no size, `reject_recursive_type` says so when the declaration is
         // checked, and until then every walk over the table has to end.
+        // Layout answers that type a placeholder instead of walking the name
+        // (#1973).
         let mut seen = Vec::new();
         let mut chain = Vec::new();
+        let mut sizeless = None;
         let mut cycles = |types: &Self, new: &Type, owner| {
             seen.clear();
             chain.clear();
-            types.reaches_inline(new, owner, &mut seen, &mut chain)
+            let hit = types.reaches_inline(new, owner, &mut seen, &mut chain);
+            if hit {
+                sizeless = Some(owner);
+            }
+            hit
         };
         match &decl.kind {
             // An interface's methods were read before the interface itself was
@@ -363,6 +370,9 @@ impl TypeChecker {
                 }
             }
             _ => {}
+        }
+        if let Some(id) = sizeless {
+            self.types.sizeless.insert(id);
         }
     }
 
@@ -3208,6 +3218,7 @@ impl TypeChecker {
             Some(TypeDef::Struct { name, .. }) | Some(TypeDef::Enum { name, .. }) => name.clone(),
             _ => return,
         };
+        self.types.sizeless.insert(owner);
         let through = if chain.is_empty() {
             String::new()
         } else {

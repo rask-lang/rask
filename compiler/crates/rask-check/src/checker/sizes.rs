@@ -178,7 +178,8 @@ impl crate::TypeTable {
         if cache.note_declared_size(id, def) {
             return;
         }
-        if self.layout_stand_ins.contains(&id) {
+        // A recursive type was already reported; its fields never settle.
+        if self.layout_stand_ins.contains(&id) || self.sizeless.contains(&id) {
             let w = cache.word();
             cache.insert(key, (w, w));
             return;

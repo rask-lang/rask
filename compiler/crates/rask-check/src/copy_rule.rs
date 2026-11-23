@@ -151,6 +151,14 @@ impl TypeTable {
         if self.shared_args(ty).is_some() {
             return Move;
         }
+        // A type that contains itself was rejected for having no size, so
+        // its fields hold a name that never settles; there is nothing to
+        // measure (#1973).
+        if let Type::Named(id) | Type::Generic { base: id, .. } = ty {
+            if self.sizeless.contains(id) {
+                return Move;
+            }
+        }
         let verdict = |t: &Type| self.copy_verdict_for(t, is_param, param_is_copy, params_move);
         let size = || self.copy_size(ty, is_param);
         match ty {
