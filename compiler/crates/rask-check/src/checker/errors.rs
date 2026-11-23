@@ -1433,6 +1433,17 @@ pub enum TypeError {
         span: Span,
     },
 
+    /// The method is declared only in `extend` blocks whose header this
+    /// receiver doesn't fit: `flatten` is on `Sequence<Sequence<U>>`, so a
+    /// `Sequence<Vec<i64>>` doesn't have it.
+    #[error("no method `{method}` on `{ty}`")]
+    MethodNotForReceiver {
+        ty: String,
+        method: String,
+        headers: Vec<String>,
+        span: Span,
+    },
+
     /// type.generics/GT7: more than one conformance's method takes the call.
     #[error("this `{method}` call fits more than one of `{ty}`'s conformances")]
     AmbiguousConformanceCall {
@@ -2204,6 +2215,7 @@ impl TypeError {
             | LiteralConversionNotComptime { .. }
             | NoConformanceTakes { .. }
             | AmbiguousConformanceCall { .. }
+            | MethodNotForReceiver { .. }
             | LiteralPatternOnBuiltType { .. }
             | EntrySignature { .. }
             | ExitInEnsure { .. }

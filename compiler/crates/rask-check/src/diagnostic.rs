@@ -3050,6 +3050,18 @@ impl ToDiagnostic for crate::TypeError {
                     .with_fix("compare in a guard: `_ if x == 0 => …`")
                     .with_why(format!("a `{ty}` written as a literal is built by its `from_literal` while compiling (type.primitives/L9), so its bits aren't the literal's, and a pattern only compares bits. `==` compares the built values"))
             }
+            MethodNotForReceiver { ty, method, headers, span } => {
+                let mut d = Diagnostic::error(format!("no method `{}` on `{}`", method, ty))
+                    .with_code("E0313")
+                    .with_primary(*span, "this receiver doesn't fit the block that declares it");
+                for h in headers {
+                    d = d.with_note(format!("`{}` is declared in `extend {}`", method, h));
+                }
+                d.with_why(format!(
+                    "a method declared in an `extend` block whose header names a shape belongs \
+                     only to receivers of that shape; `{ty}` isn't one (std.reflect/R5)"
+                ))
+            }
             AmbiguousConformanceCall { ty, method, candidates, span } => {
                 let mut d = Diagnostic::error(format!("this `{}` call fits more than one of `{}`'s conformances", method, ty))
                     .with_code("E0973")

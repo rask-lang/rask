@@ -1048,13 +1048,38 @@ impl<'a> OwnershipChecker<'a> {
     /// what's left.
     fn chain_head(&self, expr: &Expr) -> ChainHead {
         let cur = self.chain_source(expr);
-        if let ExprKind::MethodCall { method, .. } = &cur.kind {
+        if let ExprKind::MethodCall { object, method, args, .. } = &cur.kind {
             // A `map` makes values for the chain, which are its own to give.
             if matches!(method.as_str(), "map" | "filter_map" | "flat_map") {
                 return ChainHead::Owns;
             }
-            // Joins two chains; what each half owns is not this walk's to say.
-            if matches!(method.as_str(), "chain" | "flatten") {
+            // `chain` yields each half's items as that half hands them over:
+            // owned only when both halves own theirs. A lent item stays lent
+            // through the second yield, and nothing holds it where a pick
+            // could read it in place, so it isn't a collection's any more.
+            // Classed as unknowable, `a.as_sequence().chain(b.as_sequence())
+            // .find(p)` over vectors of vectors kept a lent row as the
+            // answer and natively freed it twice.
+            if method == "chain" {
+                let other = args.first().map(|a| self.chain_head(&a.expr));
+                return match (self.chain_head(object), other) {
+                    (ChainHead::Owns, Some(ChainHead::Owns)) => ChainHead::Owns,
+                    (ChainHead::Lends { head, .. }, _) | (_, Some(ChainHead::Lends { head, .. })) => {
+                        ChainHead::Lends { head, collection: false }
+                    }
+                    _ => ChainHead::Unknown,
+                };
+            }
+            if method == "flatten" {
+                // `Vec<Vec<T>>.flatten` yields `self[i][j]`: an element of a
+                // vector it walks, lent for one call (SEQ34).
+                if self.node_ty(&object.id).and_then(|t| self.type_name_of(t)).as_deref() == Some("Vec") {
+                    let head = Self::call_text(cur).unwrap_or_else(|| "the sequence".to_string());
+                    return ChainHead::Lends { head, collection: false };
+                }
+                // `Sequence<Sequence<U>>.flatten`: who owns an item is up to
+                // the inner sequence that made it, which the chain's shape
+                // doesn't show.
                 return ChainHead::Unknown;
             }
         }

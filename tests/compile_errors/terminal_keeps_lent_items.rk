@@ -63,6 +63,21 @@ func pairs(s: Set<(string, string)>) -> u64 {
     return s.to_vec().len()
 }
 
+func longest_cell(grid: Vec<Vec<Vec<i64>>>) -> u64 {
+    // `flatten` hands on each inner element for one call; it isn't where a
+    // pick could read it. This compiled and natively freed the row twice.
+    // ERROR: `find` has nothing it may keep — `Vec<i64>` is lent, not owned [E0905]
+    let f = grid.flatten().find(|r| r.len() > 2)
+    return (f ?? Vec.new()).len()
+}
+
+func either(a: Vec<Vec<i64>>, b: Vec<Vec<i64>>) -> u64 {
+    // `chain` lends what its halves lend.
+    // ERROR: `find` has nothing it may keep — `Vec<i64>` is lent, not owned [E0905]
+    let f = a.as_sequence().chain(b.as_sequence()).find(|r| r.len() == 1)
+    return (f ?? Vec.new()).len()
+}
+
 // Picking over a vector reads the element where it sits; a `map` makes items
 // the chain owns; a Copy item copies.
 func legal(rows: Vec<Vec<i64>>) -> u64 {
@@ -72,7 +87,9 @@ func legal(rows: Vec<Vec<i64>>) -> u64 {
     let d = vecs().map(|v| v.clone()).to_vec().len()
     let e = rows.map(|r| r.len()).to_vec().len()
     let f = (rows.map(|r| r.clone()).reduce(|a, b| if b.len() > a.len() { b.clone() } else { a.clone() }) ?? Vec.new()).len()
-    return a + b + c + d + e + f
+    let g = (rows.flatten().find(|x| x > 1) ?? 0).to<u64>()!
+    let h = (vecs().map(|v| v.clone()).chain(vecs().map(|v| v.clone())).find(|v| v.len() == 1) ?? Vec.new()).len()
+    return a + b + c + d + e + f + g + h
 }
 
 func main() {}
