@@ -604,11 +604,13 @@ fn retain_views_handed_over(
     built
 }
 
-/// Aggregates a literal builds in place (field stores, after a
-/// `ZeroAggregate` or not) and nothing else writes, with the values stored into each. A tuple or
-/// option wrapped around an element (`enumerate`'s pair, a pick's answer) is
-/// one. Anything that could put a value there some other way leaves it out:
-/// a definition, an address taken, an array store, a call that may write
+/// Aggregates lowering fills in place with field stores and nothing else
+/// writes, with the values stored into each. A tuple or option wrapped around
+/// an element (`enumerate`'s pair, a pick's answer) is one. A literal the
+/// program wrote is not: lowering starts it with a `ZeroAggregate`, a value of
+/// its own, and `let (a, b) = (v[0], v[1])` copies the elements out (#1442).
+/// Anything that could put a value there some other way leaves it out too: a
+/// definition, an address taken, an array store, a call that may write
 /// through it.
 fn filled_in_place(
     func: &MirFunction,
@@ -619,7 +621,7 @@ fn filled_in_place(
 ) -> HashMap<LocalId, Vec<MirOperand>> {
     let mut fills: HashMap<LocalId, Vec<MirOperand>> = HashMap::new();
     for stmt in func.blocks.iter().flat_map(|b| b.statements.iter()) {
-        if let MirStmtKind::ZeroAggregate { local } | MirStmtKind::Store { addr: local, .. } = &stmt.kind {
+        if let MirStmtKind::Store { addr: local, .. } = &stmt.kind {
             fills.entry(*local).or_default();
         }
     }
@@ -637,6 +639,9 @@ fn filled_in_place(
                 if let Some(list) = fills.get_mut(addr) {
                     list.push(value.clone());
                 }
+            }
+            MirStmtKind::ZeroAggregate { local } => {
+                out.insert(*local);
             }
             MirStmtKind::ArrayStore { base, .. } | MirStmtKind::ReleaseSlot { addr: base, .. } => {
                 out.insert(*base);
@@ -1686,9 +1691,6 @@ fn insert_aggregate_release(
                 // A loop body's `return` took it.
                 MirStmtKind::MovedOut { local } => hand_over(&mut ev, *local),
                 // A literal starts here, empty, and its field stores fill it.
-                MirStmtKind::ZeroAggregate { local } if built_from_views.contains(local) => {
-                    ev.push(ownership::Event::Other(*local))
-                }
                 MirStmtKind::ZeroAggregate { local } if aggregates.contains(local) => {
                     ev.push(ownership::Event::Make(*local))
                 }
