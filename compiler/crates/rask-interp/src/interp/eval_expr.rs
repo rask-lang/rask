@@ -606,6 +606,7 @@ impl Interpreter {
         let mut values = Vec::with_capacity(args.len());
         let mut places = Vec::with_capacity(args.len());
         let depths = args.iter().map(|a| self.static_option_depth(&a.expr)).collect();
+        let moves_from = self.pending_moves.len();
         for arg in args {
             if matches!(arg.mode, ArgMode::Mutate | ArgMode::Deleting) {
                 match self.locate(&arg.expr)? {
@@ -623,7 +624,15 @@ impl Interpreter {
                 places.push(None);
             }
         }
+        self.complete_moves(moves_from);
         Ok((values, CallArgPlaces { slots: places, depths }))
+    }
+
+    /// Empty the slots queued since `from`: their hand-over happened.
+    pub(super) fn complete_moves(&mut self, from: usize) {
+        for slot in self.pending_moves.drain(from..) {
+            slot.set(Value::Unit);
+        }
     }
 
     /// Hand the next call to `callee` the places behind its `mutate`
@@ -1125,7 +1134,15 @@ impl Interpreter {
                     });
                 }
                 if let Some(val) = self.env.get(name) {
-                    return Ok(val.clone());
+                    // Handed to a new owner: the old name holds nothing once
+                    // the hand-over happens, so only the new owner keeps it
+                    // alive (#2037).
+                    if self.moving_reads.contains(&expr.id) {
+                        if let Some(slot) = self.env.slot_of(name) {
+                            self.pending_moves.push(slot.clone());
+                        }
+                    }
+                    return Ok(val);
                 }
                 if self.functions.contains_key(name) {
                     // Named as a value, a generic function carries the types
@@ -2650,6 +2667,12 @@ impl Interpreter {
                 } else {
                     self.env.capture_snapshot(&carried)
                 };
+                // What the closure carries off, its frame no longer holds: a
+                // task that took a `Sender` closes the channel when it ends,
+                // not when the frame that built it does (#2037).
+                for name in self.moved_captures.get(&expr.id).into_iter().flatten() {
+                    self.env.assign(name, Value::Unit);
+                }
                 Ok(Value::Closure {
                     params: params.iter().map(|p| p.name.clone()).collect(),
                     body: (**body).clone(),

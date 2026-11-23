@@ -640,6 +640,12 @@ pub struct TypedProgram {
     /// What each closure literal captures, by name. Worked out by the
     /// ownership pass; the interpreter's carrying closure holds these.
     pub closure_captures: HashMap<NodeId, Vec<String>>,
+    /// Reads that hand a binding to a new owner, and the captures each
+    /// carrying closure takes. Worked out by the ownership pass; the
+    /// interpreter empties those slots so a moved channel end closes when its
+    /// new owner is done with it (#2037).
+    pub moving_reads: std::collections::HashSet<NodeId>,
+    pub moved_captures: HashMap<NodeId, Vec<String>>,
     /// Assignments whose new value is built out of the old one, so the slot's
     /// old value isn't released before the write (`rask_ownership`). Worked out
     /// by the ownership pass and written back here, like `escaping_closures`.

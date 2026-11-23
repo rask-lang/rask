@@ -1348,6 +1348,8 @@ impl TypeChecker {
             // Ownership fills this in; the checker has no say in it.
             escaping_closures: std::collections::HashSet::new(),
             closure_captures: HashMap::new(),
+            moving_reads: std::collections::HashSet::new(),
+            moved_captures: HashMap::new(),
             field_reuses: std::collections::HashSet::new(),
             quiet_loops: std::collections::HashSet::new(),
             return_moves: std::collections::HashMap::new(),

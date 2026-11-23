@@ -219,6 +219,18 @@ pub struct Interpreter {
     pub(crate) cancelled_ensures: std::collections::HashSet<rask_ast::NodeId>,
     /// What each closure literal captures (ownership's answer).
     pub(crate) closure_captures: Arc<HashMap<rask_ast::NodeId, Vec<String>>>,
+    /// Reads that hand a binding to a new owner, and the captures each
+    /// carrying closure takes (ownership's `moving_reads`/`moved_captures`).
+    /// The slot is emptied there, so the old name stops holding what moved:
+    /// a channel end closes when its last owner is done with it (#2037).
+    pub(crate) moving_reads: Arc<std::collections::HashSet<rask_ast::NodeId>>,
+    pub(crate) moved_captures: Arc<HashMap<rask_ast::NodeId, Vec<String>>>,
+    /// Slots read by a moving read whose hand-over hasn't happened yet. A
+    /// call empties the ones its arguments queued once they all evaluated; a
+    /// statement empties the rest when it completes and drops them when it
+    /// leaves early, so `eat(c, try fails())` leaves `c` in place for its
+    /// ensure.
+    pub(crate) pending_moves: Vec<crate::env::Slot>,
     /// Closures that captured a link or a `Local` box (#1356).
     pub(crate) task_bound_closures: std::collections::HashSet<rask_ast::NodeId>,
     /// Closures in a generic body, with each capture whose type mentions a
@@ -566,6 +578,9 @@ impl Interpreter {
             ensure_cancels: Arc::new(HashMap::new()),
             cancelled_ensures: std::collections::HashSet::new(),
             closure_captures: Default::default(),
+            moving_reads: Default::default(),
+            moved_captures: Default::default(),
+            pending_moves: Vec::new(),
             task_bound_closures: std::collections::HashSet::new(),
             generic_closure_captures: Arc::new(HashMap::new()),
             types: Arc::new(rask_check::TypeTable::default()),
@@ -620,6 +635,9 @@ impl Interpreter {
             ensure_cancels: Arc::new(HashMap::new()),
             cancelled_ensures: std::collections::HashSet::new(),
             closure_captures: Default::default(),
+            moving_reads: Default::default(),
+            moved_captures: Default::default(),
+            pending_moves: Vec::new(),
             task_bound_closures: std::collections::HashSet::new(),
             generic_closure_captures: Arc::new(HashMap::new()),
             types: Arc::new(rask_check::TypeTable::default()),
@@ -680,6 +698,9 @@ impl Interpreter {
             ensure_cancels: Arc::new(HashMap::new()),
             cancelled_ensures: std::collections::HashSet::new(),
             closure_captures: Default::default(),
+            moving_reads: Default::default(),
+            moved_captures: Default::default(),
+            pending_moves: Vec::new(),
             task_bound_closures: std::collections::HashSet::new(),
             generic_closure_captures: Arc::new(HashMap::new()),
             types: Arc::new(rask_check::TypeTable::default()),
@@ -817,6 +838,8 @@ impl Interpreter {
         self.escaping_closures = typed.escaping_closures.clone();
         self.ensure_cancels = Arc::new(typed.ensure_cancels.clone());
         self.closure_captures = Arc::new(typed.closure_captures.clone());
+        self.moving_reads = Arc::new(typed.moving_reads.clone());
+        self.moved_captures = Arc::new(typed.moved_captures.clone());
         self.task_bound_closures = typed.task_bound_closures.clone();
         self.generic_closure_captures = Arc::new(typed.generic_closure_captures.clone());
         self.types = Arc::new(typed.types.clone());
@@ -1165,6 +1188,8 @@ impl Interpreter {
         child.escaping_closures = self.escaping_closures.clone();
         child.ensure_cancels = self.ensure_cancels.clone();
         child.closure_captures = Arc::clone(&self.closure_captures);
+        child.moving_reads = Arc::clone(&self.moving_reads);
+        child.moved_captures = Arc::clone(&self.moved_captures);
         child.task_bound_closures = self.task_bound_closures.clone();
         child.generic_closure_captures = self.generic_closure_captures.clone();
         child.types = self.types.clone();

@@ -1,0 +1,61 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+// A `Sender` handed to a new owner is no longer the old name's to hold. The
+// interpreter kept every moved-from binding alive until its frame ended, so a
+// receive loop in that frame waited on a channel its own dead name kept open:
+// a task that captured the sender (#2037), a `take` parameter, a `let`.
+// An explicit `close()` with a joined worker receiving is the other half (#2040).
+
+import async.{Channel, Receiver, Sender}
+
+func produce(take tx: Sender<i64>) {
+    tx.send(4) catch _ => panic("send")
+}
+
+func drain(rx: Receiver<i64>) -> i64 {
+    mut total = 0
+    while rx.receive() is i64 as m {
+        total += m
+    }
+    return total
+}
+
+test "a detached task that carried the sender closes the channel" {
+    using Multitasking {
+        let (tx, rx) = Channel<i64>.buffered(16)
+        spawn {
+            tx.send(1) catch _ => panic("send")
+        }.detach()
+        assert drain(rx) == 1
+    }
+}
+
+test "a sender given to a take parameter closes when the callee ends" {
+    let (tx, rx) = Channel<i64>.buffered(16)
+    produce(tx)
+    assert drain(rx) == 4
+}
+
+test "a sender moved to another name closes when that name goes" {
+    let (tx, rx) = Channel<i64>.buffered(16)
+    let other = tx
+    produce(other)
+    assert drain(rx) == 4
+}
+
+test "a joined worker sees an explicit close" {
+    using Multitasking {
+        let (tx, rx) = Channel<i64>.buffered(16)
+        let worker = spawn {
+            mut total = 0
+            while true {
+                let v = rx.receive() catch _ => break
+                total = total + v
+            }
+            return total
+        }
+        tx.send(3)!
+        tx.close()!
+        assert worker.join()! == 3
+    }
+}

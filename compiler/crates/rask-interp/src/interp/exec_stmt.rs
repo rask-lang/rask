@@ -22,6 +22,17 @@ fn continues_here(err: &RuntimeError, label: Option<&str>) -> bool {
 
 impl Interpreter {
     pub(super) fn exec_stmt(&mut self, stmt: &Stmt) -> Result<Value, RuntimeDiagnostic> {
+        let moves_from = self.pending_moves.len();
+        let result = self.exec_stmt_kind(stmt);
+        match result {
+            Ok(_) => self.complete_moves(moves_from),
+            // Left before the hand-over: the names still own what they hold.
+            Err(_) => self.pending_moves.truncate(moves_from),
+        }
+        result
+    }
+
+    fn exec_stmt_kind(&mut self, stmt: &Stmt) -> Result<Value, RuntimeDiagnostic> {
         match &stmt.kind {
             StmtKind::Expr(expr) => self.eval_expr(expr),
 

@@ -84,6 +84,16 @@ pub struct OwnershipResult {
     /// the slot is left empty. Otherwise a panic after the hand-over finds
     /// the value in both places.
     pub mutate_param_moves: HashSet<rask_ast::NodeId>,
+    /// Names read whole and handed to a new owner (`let b = a`, `consume(a)`
+    /// with a `take` parameter), by the `Ident` expression. The interpreter
+    /// empties the slot there, so the last owner of a channel end is the one
+    /// that drops it: a `Sender` given away and still held by its old name
+    /// kept the channel open (#2037).
+    pub moving_reads: HashSet<rask_ast::NodeId>,
+    /// The captures each carrying closure takes out of its frame, by closure
+    /// node. The non-Copy subset of `closure_captures` that the frame no
+    /// longer owns afterwards; the interpreter empties those slots (#2037).
+    pub moved_captures: HashMap<rask_ast::NodeId, Vec<String>>,
     /// conc.async/B1: tasks joined where they were spawned whose block turned
     /// out to consume something it names, by `Spawn` node. Such a task takes
     /// its captures the way any task does; `check_ownership` runs again with
@@ -546,6 +556,10 @@ pub struct OwnershipChecker<'a> {
     refills_after_move: HashSet<rask_ast::NodeId>,
     /// See `OwnershipResult::mutate_param_moves`.
     mutate_param_moves: HashSet<rask_ast::NodeId>,
+    /// See `OwnershipResult::moving_reads`.
+    moving_reads: HashSet<rask_ast::NodeId>,
+    /// See `OwnershipResult::moved_captures`.
+    moved_captures: HashMap<rask_ast::NodeId, Vec<String>>,
     /// See `OwnershipResult::consuming_tasks`.
     consuming_tasks: HashSet<rask_ast::NodeId>,
     /// Spawns made to take their captures because an earlier run found them
@@ -901,6 +915,8 @@ impl<'a> OwnershipChecker<'a> {
             lent_captures: HashMap::new(),
             refills_after_move: HashSet::new(),
             mutate_param_moves: HashSet::new(),
+            moving_reads: HashSet::new(),
+            moved_captures: HashMap::new(),
             consuming_tasks: HashSet::new(),
             carrying_tasks: HashSet::new(),
             generic_closure_captures: HashMap::new(),
@@ -1427,6 +1443,8 @@ impl<'a> OwnershipChecker<'a> {
             lent_captures: self.lent_captures,
             refills_after_move: self.refills_after_move,
             mutate_param_moves: self.mutate_param_moves,
+            moving_reads: self.moving_reads,
+            moved_captures: self.moved_captures,
             consuming_tasks: self.consuming_tasks,
             quiet_loops: self.quiet_loops,
             ensure_cancels: self.ensure_cancels,
@@ -4911,6 +4929,7 @@ impl<'a> OwnershipChecker<'a> {
                             let ty = self.binding_types.get(name).map(|t| self.program.types.resolve_type_names(t).to_string());
                             stranded.push((name.clone(), ty));
                         }
+                        self.moved_captures.entry(expr.id).or_default().push(name.clone());
                         self.mark_moved(name.clone(), expr.span);
                     }
                 }
@@ -4974,6 +4993,7 @@ impl<'a> OwnershipChecker<'a> {
                                 // `Vec.filter(self, pred) -> Sequence<T>`
                                 // answers a closure over a borrowed receiver.
                                 if !self.capture_is_copy(name) && !self.outlives_this_call(name) {
+                                    self.moved_captures.entry(expr.id).or_default().push(name.clone());
                                     // A part is its holder's (`parts`): carrying
                                     // it off is giving it away, and the closure
                                     // would outlive the box.
@@ -6601,6 +6621,9 @@ impl<'a> OwnershipChecker<'a> {
                         }
                     }
                     self.report_part_owner_changed(&source_name, &[], source_name.clone(), "move", span, None);
+                    if matches!(expr.kind, ExprKind::Ident(_)) {
+                        self.moving_reads.insert(expr.id);
+                    }
                     self.mark_moved(source_name, span);
                 }
             }
@@ -9788,6 +9811,7 @@ impl<'a> OwnershipChecker<'a> {
                 if self.mutate_params.contains_key(name) {
                     self.mutate_param_moves.insert(arg_expr.id);
                 }
+                self.moving_reads.insert(arg_expr.id);
                 self.consume_binding(name, arg_expr.span, sink);
             }
         }
