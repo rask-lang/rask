@@ -469,8 +469,9 @@ fn retain_views_handed_over(
         }
     }
 
-    for block in &mut func.blocks {
-        let mut insertions: Vec<(usize, LocalId)> = Vec::new();
+    let mut returned = returned_retains(func, &views, &built, &fills);
+    for (bi, block) in func.blocks.iter_mut().enumerate() {
+        let mut insertions: Vec<(usize, LocalId)> = returned.remove(&bi).unwrap_or_default();
         // A value the frame owns, handed to a keeper while the frame still
         // reads it afterwards, is a Copy value copied there: the checker
         // rejects any use of a non-Copy value after it moves. The keeper
@@ -586,22 +587,6 @@ fn retain_views_handed_over(
                 _ => {}
             }
         }
-        // Returned: the caller is the keeper. Unless this function is itself
-        // one that hands out a view, whose callers release nothing.
-        if let MirTerminatorKind::Return { value: Some(MirOperand::Local(id)) }
-        | MirTerminatorKind::CleanupReturn { value: Some(MirOperand::Local(id)), .. } =
-            &block.terminator.kind
-        {
-            // Where it is read out, before anything that follows frees the
-            // storage it views: container drops run before this pass and put
-            // the source's free ahead of the return, so a retain at the end
-            // cloned freed strings (`let v = make(); return v[0]`). Read in
-            // an earlier block, the start of this one comes before the frees.
-            if views.contains(id) {
-                let at = block.statements.iter().position(|s| uses::stmt_def(s) == Some(*id)).map_or(0, |i| i + 1);
-                insertions.push((at, *id));
-            }
-        }
         insertions.sort_by_key(|(idx, _)| *idx);
         for (idx, local) in insertions.into_iter().rev() {
             let span = block.statements.get(idx).map(|s| s.span).unwrap_or(block.terminator.span);
@@ -609,6 +594,158 @@ fn retain_views_handed_over(
         }
     }
     built
+}
+
+/// Where to retain each returned view, by block index: the caller is the
+/// keeper. A function that hands out a view itself returns nothing in `views`,
+/// since its callers release nothing.
+///
+/// The retain has to come before anything frees the storage the view reads,
+/// and container drops run before this pass, so a free can sit anywhere
+/// between the read and the return: ahead of the return in its block (`let v =
+/// make(); return v[0]`), in a branch before the join (`if c { let v = …;
+/// v[0] } else { … }`), or after a wrapper is filled (`return v[1]` from a
+/// `-> One?`). So the view is followed back through copies, joins and
+/// wrappers built around it to the reads it came from, and each read is
+/// retained where it happens. That holds only when every path from the read
+/// goes to this return without the name being written again: a read in a
+/// loop that may not return (`for x in v { if p(x) { return x } }`) would be
+/// retained once per pass. Then the retain goes in the return's block after
+/// the value's last write, which is right while the free sits in that block.
+fn returned_retains(
+    func: &MirFunction,
+    views: &HashSet<LocalId>,
+    built: &HashSet<LocalId>,
+    fills: &HashMap<LocalId, Vec<MirOperand>>,
+) -> HashMap<usize, Vec<(usize, LocalId)>> {
+    let index_of: HashMap<BlockId, usize> = func.blocks.iter().enumerate().map(|(i, b)| (b.id, i)).collect();
+    let mut defs: HashMap<LocalId, Vec<(usize, usize)>> = HashMap::new();
+    for (bi, block) in func.blocks.iter().enumerate() {
+        for (si, stmt) in block.statements.iter().enumerate() {
+            if let Some(d) = uses::stmt_def(stmt) {
+                defs.entry(d).or_default().push((bi, si));
+            }
+        }
+    }
+    let defines = |stmt: &MirStmt, l: LocalId| uses::stmt_def(stmt) == Some(l);
+    // Every path from the statement at (bi, si) reaches the end of `ret`, and
+    // none writes `l` again or passes the statement a second time.
+    let reaches_return = |bi: usize, si: usize, l: LocalId, ret: usize| -> bool {
+        if func.blocks[bi].statements[si + 1..].iter().any(|s| defines(s, l)) {
+            return false;
+        }
+        if bi == ret {
+            return true;
+        }
+        let mut seen: HashSet<usize> = HashSet::new();
+        let mut todo: Vec<usize> = Vec::new();
+        let push_succ = |b: usize, todo: &mut Vec<usize>| -> bool {
+            let term = &func.blocks[b].terminator;
+            if matches!(term.kind, MirTerminatorKind::Return { .. } | MirTerminatorKind::CleanupReturn { .. } | MirTerminatorKind::Unreachable) {
+                return false;
+            }
+            for t in cfg::successors(term) {
+                let Some(&i) = index_of.get(&t) else { return false };
+                todo.push(i);
+            }
+            true
+        };
+        if !push_succ(bi, &mut todo) {
+            return false;
+        }
+        while let Some(b) = todo.pop() {
+            if b == bi {
+                return false;
+            }
+            if !seen.insert(b) {
+                continue;
+            }
+            if func.blocks[b].statements.iter().any(|s| defines(s, l)) {
+                return false;
+            }
+            if b == ret {
+                continue;
+            }
+            if !push_succ(b, &mut todo) {
+                return false;
+            }
+        }
+        true
+    };
+
+    let mut out: HashMap<usize, Vec<(usize, LocalId)>> = HashMap::new();
+    for (ret, block) in func.blocks.iter().enumerate() {
+        let (MirTerminatorKind::Return { value: Some(MirOperand::Local(id)) }
+        | MirTerminatorKind::CleanupReturn { value: Some(MirOperand::Local(id)), .. }) = &block.terminator.kind
+        else {
+            continue;
+        };
+        if !views.contains(id) {
+            continue;
+        }
+        // The reads the returned value came from, or None when one can't be
+        // pinned to a single place on the way to this return.
+        let mut reads: Vec<(usize, usize, LocalId)> = Vec::new();
+        let mut seen: HashSet<LocalId> = HashSet::new();
+        let mut todo = vec![*id];
+        let mut pinned = true;
+        while let Some(l) = todo.pop() {
+            if !seen.insert(l) {
+                pinned = false;
+                break;
+            }
+            // A wrapper filled with views holds nothing of its own: its
+            // parts are what reach the caller.
+            if built.contains(&l) {
+                for v in fills.get(&l).into_iter().flatten() {
+                    if let MirOperand::Local(p) = v {
+                        if views.contains(p) {
+                            todo.push(*p);
+                        }
+                    }
+                }
+                continue;
+            }
+            let Some(at) = defs.get(&l).filter(|d| !d.is_empty()) else {
+                pinned = false;
+                break;
+            };
+            for &(bi, si) in at {
+                if !reaches_return(bi, si, l, ret) {
+                    pinned = false;
+                    break;
+                }
+                match &func.blocks[bi].statements[si].kind {
+                    MirStmtKind::Assign { rvalue: MirRValue::Use(MirOperand::Local(src)), .. } if views.contains(src) => {
+                        todo.push(*src)
+                    }
+                    MirStmtKind::Phi { args, .. } => {
+                        todo.extend(args.iter().filter_map(|(_, op)| uses::operand_local(op)));
+                    }
+                    _ => reads.push((bi, si + 1, l)),
+                }
+            }
+            if !pinned {
+                break;
+            }
+        }
+        if pinned {
+            for (bi, at, l) in reads {
+                out.entry(bi).or_default().push((at, l));
+            }
+        } else {
+            let at = block
+                .statements
+                .iter()
+                .rposition(|s| {
+                    defines(s, *id)
+                        || matches!(&s.kind, MirStmtKind::Store { addr, .. } | MirStmtKind::ArrayStore { base: addr, .. } if addr == id)
+                })
+                .map_or(0, |i| i + 1);
+            out.entry(ret).or_default().push((at, *id));
+        }
+    }
+    out
 }
 
 /// Aggregates lowering fills in place with field stores and nothing else

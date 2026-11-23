@@ -1,0 +1,170 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+// An element returned out of a local vector gets references of its own before
+// the vector is freed. The free can sit anywhere between the read and the
+// return: in a branch before the join, after a `T?` or `T or E` wrapper is
+// filled around the element, or in a loop body that returns. Each of these
+// cloned strings the vector had already freed, or retained an unfilled
+// wrapper.
+
+struct One {
+    s: string
+}
+
+struct Oops {
+    code: i64
+}
+
+extend Oops {
+    func message(self) -> string {
+        return "oops {self.code}"
+    }
+}
+
+func show(n: i64) -> string {
+    return "a string long enough to live on the heap {n}"
+}
+
+func make(n: i64) -> Vec<One> {
+    return Vec.from([One(s: show(n)), One(s: show(n + 1)), One(s: show(n + 2))])
+}
+
+// Each picker is recursive so it stays a call of its own.
+
+func opt_pick(n: i64) -> One? {
+    if n > 100 {
+        return opt_pick(n - 1)
+    }
+    let v = make(n)
+    return v[1]
+}
+
+func res_pick(n: i64) -> One or Oops {
+    if n > 100 {
+        return res_pick(n - 1)
+    }
+    let v = make(n)
+    if n == 0 {
+        return Oops(code: 0)
+    }
+    return v[2]
+}
+
+func branchy(n: i64, c: bool) -> One {
+    if n > 100 {
+        return branchy(n - 1, c)
+    }
+    let x = if c {
+        let v = make(n)
+        v[0]
+    } else {
+        let w = make(n + 10)
+        w[1]
+    }
+    return x
+}
+
+func scoped(n: i64) -> One {
+    if n > 100 {
+        return scoped(n - 1)
+    }
+    let x = {
+        let v = make(n)
+        v[1]
+    }
+    return x
+}
+
+func reassigned(n: i64) -> One {
+    if n > 100 {
+        return reassigned(n - 1)
+    }
+    let v = make(n)
+    mut x = v[0]
+    x = v[2]
+    return x
+}
+
+func item_loop(n: i64) -> One {
+    if n > 100 {
+        return item_loop(n - 1)
+    }
+    let v = make(n)
+    for x in v {
+        if x.s.ends_with("{n + 1}") {
+            return x
+        }
+    }
+    return One(s: show(0))
+}
+
+func opt_loop(n: i64) -> One? {
+    if n > 100 {
+        return opt_loop(n - 1)
+    }
+    let v = make(n)
+    for x in v {
+        if x.s.ends_with("{n + 1}") {
+            return x
+        }
+    }
+    return none
+}
+
+func index_loop(n: i64) -> One {
+    if n > 100 {
+        return index_loop(n - 1)
+    }
+    let v = make(n)
+    for i in 0..3 {
+        if i == 2 {
+            return v[i]
+        }
+    }
+    return v[0]
+}
+
+func match_pick(n: i64) -> One {
+    if n > 100 {
+        return match_pick(n - 1)
+    }
+    let v = make(n)
+    return match n % 3 {
+        0 => v[0],
+        1 => v[1],
+        _ => v[2],
+    }
+}
+
+test "an element wrapped in an option outlives its vector" {
+    assert opt_pick(10)!.s == show(11)
+}
+
+test "an element wrapped in a result outlives its vector" {
+    assert res_pick(20)!.s == show(22)
+}
+
+test "an element read in a branch outlives the branch's vector" {
+    assert branchy(2, true).s == show(2)
+    assert branchy(3, false).s == show(14)
+}
+
+test "an element read in a block outlives the block's vector" {
+    assert scoped(4).s == show(5)
+}
+
+test "a reassigned element is retained once" {
+    assert reassigned(5).s == show(7)
+}
+
+test "an element returned from a loop outlives its vector" {
+    assert item_loop(6).s == show(7)
+    assert opt_loop(7)!.s == show(8)
+    assert index_loop(8).s == show(10)
+}
+
+test "an element picked by a match outlives its vector" {
+    assert match_pick(9).s == show(9)
+    assert match_pick(10).s == show(11)
+    assert match_pick(11).s == show(13)
+}
