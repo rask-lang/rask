@@ -2678,21 +2678,29 @@ impl TypeChecker {
                 if let Err(e) = self.unify(&Type::Usize, &count_ty, count.span) {
                     self.errors.push(e);
                 }
-                // A literal, or a module const naming one (`[0; N]`); anything
-                // else keeps the 0 placeholder. A local of the same name is
-                // not the const; the const itself sits in the outermost scope
-                // as a `ModuleConst`. A literal that doesn't fit a `usize` (`-1`)
-                // was just reported, and an array of that length has no
-                // layout, so the expression has no type to hand on (#2051).
-                let len = match &count.kind {
+                // A literal, or a module const naming one (`[0; N]`). A local
+                // of the same name is not the const; the const itself sits in
+                // the outermost scope as a `ModuleConst`. Anything else has no
+                // length to put in the type: a placeholder 0 unified with any
+                // array, and natively there was nothing to lower it to (#2057).
+                // A literal that doesn't fit a `usize` (`-1`) was just
+                // reported, and an array of that length has no layout, so the
+                // expression has no type to hand on (#2051).
+                let known = match &count.kind {
                     ExprKind::Int(n, _) => match usize::try_from(*n) {
-                        Ok(n) => n,
+                        Ok(n) => Some(n),
                         Err(_) => return Type::Error,
                     },
-                    ExprKind::Ident(name) if self.names_module_const(name) => {
-                        self.types.const_length(name).unwrap_or(0)
-                    }
-                    _ => 0,
+                    ExprKind::Ident(name) if self.names_module_const(name) => self.types.const_length(name),
+                    _ => None,
+                };
+                let Some(len) = known else {
+                    let comptime_param = match &count.kind {
+                        ExprKind::Ident(name) if self.current_comptime_params.contains(name) => Some(name.clone()),
+                        _ => None,
+                    };
+                    self.errors.push(TypeError::ArrayRepeatCount { comptime_param, span: count.span });
+                    return Type::Error;
                 };
                 self.pending_array_sizes.push((elem_ty.clone(), len, expr.span));
                 Type::Array {

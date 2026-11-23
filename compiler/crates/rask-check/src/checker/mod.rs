@@ -243,6 +243,8 @@ pub struct TypeChecker {
     /// `current_type_param_bounds` from this before layering the method's own
     /// bounds on top (#838).
     pub(super) current_impl_type_param_bounds: HashMap<String, Vec<TypeExpr>>,
+    /// The current function's `comptime` parameters (`N` in `<comptime N: usize>`).
+    pub(super) current_comptime_params: Vec<String>,
     /// Derived bodies written and not yet checked (`derive.rs`), with the
     /// type whose methods they are.
     pub(super) pending_derived: Vec<(Decl, Option<rask_types::TypeId>)>,
@@ -721,6 +723,7 @@ impl TypeChecker {
             current_self_type: None,
             current_type_param_bounds: HashMap::new(),
             current_impl_type_param_bounds: HashMap::new(),
+            current_comptime_params: Vec::new(),
             pending_derived: Vec::new(),
             derived_decls: Vec::new(),
             derived_written: std::collections::HashSet::new(),

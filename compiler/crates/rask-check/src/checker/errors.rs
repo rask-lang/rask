@@ -1606,6 +1606,15 @@ pub enum TypeError {
     /// An integer literal whose value doesn't fit the type it ended up with.
     /// Codegen would keep the low bits, so `let b: u8 = 300` printed 300 in
     /// the interpreter and 44 natively.
+    /// `[x; n]` whose count isn't known at compile time. The length is part
+    /// of the array's type, so a run-time count has no type to give it.
+    #[error("the count of an array repeat isn't known at compile time")]
+    ArrayRepeatCount {
+        /// A `comptime` parameter named as the count, which can't size one yet.
+        comptime_param: Option<String>,
+        span: Span,
+    },
+
     #[error("`{ty}` is {bytes} bytes, over the 4 GiB a value can take")]
     ArrayTooLarge {
         ty: Type,
@@ -2211,6 +2220,7 @@ impl TypeError {
             | LegacyWrapperConstructor { .. }
             | LegacyWrapperPattern { .. }
             | InvalidConvert { .. }
+            | ArrayRepeatCount { .. }
             | AtomicOrderDoesNotFit { .. }
             | FieldGivenTwice { .. }
             | LiteralConversionNotComptime { .. }

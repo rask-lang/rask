@@ -2193,7 +2193,7 @@ impl<'a> MirLowerer<'a> {
     }
 
     fn lower_array_repeat(&mut self, value: &Expr, count: &Expr) -> Result<TypedOperand, LoweringError> {
-            // Constant count → expand to a fixed-size array (same as literal)
+            // Expand to a fixed-size array, the same as a literal.
             if let Some(len) = self.constant_array_length(count) {
                 let (val, elem_ty) = self.lower_expr(value)?;
                 let elem_size = rask_layout::size_of(&elem_ty, self.ctx.target());
@@ -2220,18 +2220,10 @@ impl<'a> MirLowerer<'a> {
                 return Ok((MirOperand::Local(result_local), array_ty));
             }
 
-            // Dynamic count: keep existing Ptr-based fallback
-            let (val, elem_ty) = self.lower_expr(value)?;
-            let (cnt, _) = self.lower_expr(count)?;
-            let result_ty = MirType::Ptr;
-            let result_local = self.builder.alloc_temp(result_ty.clone());
-            let elem_size = (rask_layout::size_of(&elem_ty, self.ctx.target()) as i64);
-            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                dst: Some(result_local),
-                func: FunctionRef::internal("array_repeat".to_string()),
-                args: vec![val, cnt, MirOperand::Constant(MirConst::Int(elem_size))],
-            }));
-            Ok((MirOperand::Local(result_local), result_ty))
+            // The checker refuses any other count (E0984).
+            Err(LoweringError::InvalidConstruct(
+                "an array repeat whose count isn't known at compile time reached lowering".to_string(),
+            ))
         }
 
     /// `cast` is the cast expression itself: the checker's type for it is the

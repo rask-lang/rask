@@ -116,7 +116,7 @@ Use it where staying small is API: math primitives, IDs, anything callers pass a
 | **VS8: Copy is structural** | Satisfied automatically if structure matches — no explicit `extend Copy` |
 | **VS9: Copy is special** | Compiler-known interface that affects codegen and assignment semantics |
 | **VS10: Unique overrides** | `@unique` overrides structural satisfaction |
-| **VS11: Array repeat copies** | `[x; n]` puts a copy of `x` in every slot, so `x`'s type must be Copy. A value that moves would have n owners; build such elements one at a time (a loop pushing into a `Vec`) |
+| **VS11: Array repeat copies** | `[x; n]` puts a copy of `x` in every slot, so `x`'s type must be Copy. A value that moves would have n owners; build such elements one at a time (a loop pushing into a `Vec`). The length is part of the array's type, so `n` is a literal or a module `const` (E0984) |
 | **VS12: A value is at most 4 GiB** | A size is a 32-bit count. An array type or an `[x; n]` over that is a compile error; that many elements belong in a `Vec` |
 
 <!-- test: skip -->
