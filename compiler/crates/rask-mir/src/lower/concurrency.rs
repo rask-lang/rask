@@ -393,15 +393,14 @@ impl<'a> MirLowerer<'a> {
         acquire: Mint,
     ) -> Result<(MirOperand, String, crate::LocalId, MirType), LoweringError> {
         let (box_op, _) = self.lower_expr(box_obj)?;
-        let guard_ty = match self.resolve_sync_payload_mir(box_obj) {
-            Some(ty @ MirType::Struct(_)) => ty,
-            _ => MirType::Ptr,
-        };
+        // The guard has the payload's own type: codegen reads it to decide
+        // whether to alias the payload where it sits (one passed by address)
+        // or load it (a word). Typing every non-struct payload `Ptr` loaded a
+        // string's first word and handed that to `string_len` (#1997).
+        let guard_ty = self.resolve_sync_payload_mir(box_obj).unwrap_or(MirType::Ptr);
         let guard_name = format!("__lock_guard_{}", self.closure_counter);
         self.closure_counter += 1;
         let guard_local = self.builder.alloc_local(guard_name.clone(), guard_ty.clone());
-        // Codegen loads through the acquire result for a non-struct payload, so
-        // the guard already holds the value here — no deref at this level.
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(guard_local),
             func: acquire.call(),

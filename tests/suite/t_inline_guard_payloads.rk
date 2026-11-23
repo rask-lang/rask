@@ -1,0 +1,41 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+// A method called straight on a lock guard (`ss.read().len()`) sees the
+// payload whatever its shape. Natively the guard was typed as a bare pointer
+// for anything but a struct, so codegen loaded the payload's first word: for a
+// string that word went to `string_len` as the string's address and crashed
+// (#1997). The `with` form already typed its binding by the payload.
+import sync.Shared
+import sync.Mutex
+
+struct Pt {
+    x: i64
+    y: i64
+}
+
+test "a string payload" {
+    let ss = Shared.mutex("abc")
+    assert ss.read().len() == 3
+    let tt = Shared.new("hello")
+    assert tt.read().len() == 5
+    assert tt.read().contains("ell")
+}
+
+test "word, vector and optional payloads" {
+    let n = Shared.new(41)
+    assert n.read().add(1) == 42
+    let v = Shared.mutex(Vec.from([1, 2, 3]))
+    v.write().push(4)
+    assert v.read().len() == 4
+    let pick: string? = "x"
+    let o = Shared.new(pick)
+    assert o.read()! == "x"
+}
+
+test "a tuple and a struct payload" {
+    let t = Shared.new((1, "two"))
+    assert t.read().1.len() == 3
+    let p = Shared.mutex(Pt(x: 1, y: 2))
+    p.write().y = 5
+    assert p.read().y == 5
+}
