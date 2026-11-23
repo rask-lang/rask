@@ -187,14 +187,15 @@ fn package_claims_into(path: &str, format: Format, mode: ClaimsMode, results: &m
 /// the MIR of every function it reaches, the runtime it links against, and
 /// the compiler that made the rest. A comment edit elsewhere in the package
 /// leaves it alone; a change to anything the claim calls doesn't.
-fn verdict_key(claim: &ClaimPlan, reached: &std::collections::BTreeMap<&str, &rask_mir::MirFunction>) -> u64 {
+fn verdict_key(claim: &ClaimPlan, reached: &std::collections::BTreeMap<String, Option<&rask_mir::MirFunction>>) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
     claim.name.hash(&mut h);
     claim.seed.hash(&mut h);
     claim.budget.hash(&mut h);
-    for f in reached.values() {
-        f.to_string().hash(&mut h);
+    for (name, f) in reached {
+        name.hash(&mut h);
+        f.map(|f| f.to_string()).hash(&mut h);
     }
     runtime_fingerprint().hash(&mut h);
     super::cache::compiler_fingerprint().hash(&mut h);

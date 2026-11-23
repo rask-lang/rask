@@ -321,24 +321,38 @@ fn outside_roots(
 /// the helpers lowering synthesized for it (named `<fn>__…`). A claim's
 /// verdict depends on these and on nothing else the program holds
 /// (type.claims/D4).
+///
+/// Each comes with its body as codegen sees it, or `None` for one inlining
+/// folded into its callers and the passes then dropped: its code is in a
+/// body that is here, and the name still says the claim reaches its source.
 pub fn reached_from<'f>(
     lowered: &'f Lowered,
     input: &BackEnd,
     root: &str,
-) -> std::collections::BTreeMap<&'f str, &'f MirFunction> {
+) -> std::collections::BTreeMap<String, Option<&'f MirFunction>> {
     let by_name: HashMap<&str, &MirFunction> =
         lowered.functions.iter().map(|f| (f.name.as_str(), f)).collect();
     let mut reached = std::collections::BTreeMap::new();
     let mut queue = vec![root.to_string()];
     while let Some(name) = queue.pop() {
-        let Some(f) = by_name.get(name.as_str()) else { continue };
-        if reached.insert(f.name.as_str(), *f).is_some() {
+        if reached.contains_key(&name) {
             continue;
         }
-        let helpers = format!("{}__", f.name);
-        queue.extend(lowered.functions.iter().filter(|g| g.name.starts_with(&helpers)).map(|g| g.name.clone()));
-        queue.extend(referred_to(f, input));
-        queue.extend(lowered.calls_as_lowered.get(&f.name).into_iter().flatten().cloned());
+        let f = by_name.get(name.as_str()).copied();
+        let Some(as_lowered) = lowered.calls_as_lowered.get(&name) else {
+            if let Some(f) = f {
+                queue.extend(referred_to(f, input));
+                reached.insert(name, Some(f));
+            }
+            continue;
+        };
+        queue.extend(as_lowered.iter().cloned());
+        if let Some(f) = f {
+            let helpers = format!("{}__", f.name);
+            queue.extend(lowered.functions.iter().filter(|g| g.name.starts_with(&helpers)).map(|g| g.name.clone()));
+            queue.extend(referred_to(f, input));
+        }
+        reached.insert(name, f);
     }
     reached
 }
