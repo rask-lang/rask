@@ -2770,7 +2770,7 @@ impl<'a> OwnershipChecker<'a> {
     /// Can a value of this type hold a closure: is it one, or does it hold one
     /// in a tuple element, an option, a container, or a struct or enum field?
     fn type_holds_callable(&self, ty: &Type, seen: &mut Vec<rask_types::TypeId>) -> bool {
-        self.type_holds(ty, &Self::type_is_callable, seen)
+        self.type_holds(ty, &|t| self.type_is_callable(t), seen)
     }
 
     /// Is `ty` a `leaf`, or does it hold one anywhere a value can sit: a tuple
@@ -4351,6 +4351,10 @@ impl<'a> OwnershipChecker<'a> {
                         }
                     }
                 }
+                // A clone is a value of its own: it carries what the receiver
+                // carries but doesn't borrow the receiver, same as a take.
+                let lends_receiver = method != "clone" && !self.is_take_self_method(object, method);
+                self.check_receiver_limit(expr.id, object, lends_receiver);
                 // `List.Cons(1, rest)` — a variant constructor takes its payload by
                 // value, so a box handed to one is consumed. After the args have
                 // been read, same reason as the struct literal above.
@@ -9939,27 +9943,7 @@ impl<'a> OwnershipChecker<'a> {
         // is a call whose argument the callee cannot store either: it is a
         // Rask body, so PM6 binds it.
         let is_take = param_is_take.unwrap_or(false);
-        let limit = match &arg.kind {
-            ExprKind::Ident(name) => self
-                .scope_limited_closures
-                .get(name)
-                .map(|&(b, _)| (b, name.clone()))
-                // SL3: a plain local lent to a call that answers a closure. The
-                // closure may be built over it — `make_filter(tags)` — so the
-                // result is limited to the local's block. A parameter needs no
-                // entry: it outlives the whole body already.
-                .or_else(|| {
-                    if self.capture_is_copy(name) {
-                        return None;
-                    }
-                    self.body_local_block(name).map(|b| (b, name.clone()))
-                }),
-            ExprKind::Closure { .. } if self.is_borrowing_closure(arg) => self
-                .closure_scope_limits
-                .get(&arg.id)
-                .map(|&b| (b, "<closure>".to_string())),
-            _ => None,
-        };
+        let limit = self.carried_limit(arg).or_else(|| self.lent_local_limit(arg));
         let Some((borrow_block, name)) = limit else { return };
         // A `take` argument was given away, so it lends the result nothing.
         // Anything else would be the rule contradicting itself: SL4 says a
@@ -9973,6 +9957,12 @@ impl<'a> OwnershipChecker<'a> {
         // over a closure that is itself scope-limited: the callee keeps it and
         // the caller can't see where it goes (SL2).
         if is_take {
+            // A limited result of another call handed straight on brings its
+            // limit: `wrap(v.filter(p))` is still limited to `v`.
+            if matches!(&arg.kind, ExprKind::Call { .. } | ExprKind::MethodCall { .. }) {
+                self.record_call_limit(call_id, borrow_block);
+                return;
+            }
             if matches!(&arg.kind, ExprKind::Ident(n) if self.scope_limited_closures.contains_key(n))
                 || self.is_borrowing_closure(arg)
             {
@@ -9992,31 +9982,95 @@ impl<'a> OwnershipChecker<'a> {
             }
             return;
         }
-        // Only if the call hands a closure back. `apply(f, 10) -> i64` borrows
-        // the closure and answers a number — the number carries no borrow, and
-        // marking the call limited made `return n` on an `i64` read as a
-        // closure escaping.
+        self.record_call_limit(call_id, borrow_block);
+    }
+
+    /// SL4 for the receiver of a method call, which is an argument like any
+    /// other. `v.filter(p)` lends `v` to a call that answers a closure, so the
+    /// result is limited to `v` the same as `make_filter(v)` would be. A
+    /// `take self` receiver was given away and lends nothing of its own, but a
+    /// limited one brings its limit: `v.filter(p).take(2)` is still limited to
+    /// `v`. A named limited sequence handed to an adapter is no escape — the
+    /// adapter answers a sequence holding it, and the limit goes with that.
+    fn check_receiver_limit(&mut self, call_id: rask_ast::NodeId, object: &Expr, lends: bool) {
+        let limit = if lends {
+            self.carried_limit(object).or_else(|| self.lent_local_limit(object))
+        } else {
+            self.carried_limit(object)
+        };
+        if let Some((block, _)) = limit {
+            self.record_call_limit(call_id, block);
+        }
+    }
+
+    /// The limit a value already has: a limited closure by name, a borrowing
+    /// closure built here, or the result of a call that answered one.
+    fn carried_limit(&self, expr: &Expr) -> Option<(u32, String)> {
+        match &expr.kind {
+            ExprKind::Ident(name) => self
+                .scope_limited_closures
+                .get(name)
+                .map(|&(b, _)| (b, name.clone())),
+            ExprKind::Closure { .. } if self.is_borrowing_closure(expr) => self
+                .closure_scope_limits
+                .get(&expr.id)
+                .map(|&b| (b, "<closure>".to_string())),
+            ExprKind::Call { .. } | ExprKind::MethodCall { .. } => self
+                .closure_scope_limits
+                .get(&expr.id)
+                .map(|&b| (b, "<closure>".to_string())),
+            _ => None,
+        }
+    }
+
+    /// SL3: a plain local, or a part of one, lent to a call. The call may
+    /// answer a closure built over it (`make_filter(tags)`,
+    /// `w.items.filter(p)`), so the result is limited to the local's block. A
+    /// parameter needs no entry: it outlives the whole body already.
+    fn lent_local_limit(&self, expr: &Expr) -> Option<(u32, String)> {
+        let name = match &expr.kind {
+            ExprKind::Ident(name) => name.as_str(),
+            _ => Self::projection_root(expr)?,
+        };
+        if self.capture_is_copy(name) {
+            return None;
+        }
+        self.body_local_block(name).map(|b| (b, name.to_string()))
+    }
+
+    /// Only if the call hands a closure back. `apply(f, 10) -> i64` borrows
+    /// the closure and answers a number — the number carries no borrow, and
+    /// marking the call limited made `return n` on an `i64` read as a
+    /// closure escaping.
+    fn record_call_limit(&mut self, call_id: rask_ast::NodeId, block: u32) {
         if !self.call_answers_a_closure(call_id) {
             return;
         }
         let existing = self.closure_scope_limits.get(&call_id).copied();
         self.closure_scope_limits
-            .insert(call_id, existing.map_or(borrow_block, |e| e.max(borrow_block)));
+            .insert(call_id, existing.map_or(block, |e| e.max(block)));
     }
 
     /// Does this call's result hold a closure, and so a borrow worth tracking?
+    /// A struct, tuple or optional around one does too (SL5).
     fn call_answers_a_closure(&self, call_id: rask_ast::NodeId) -> bool {
         let Some(ty) = self.node_ty(&call_id) else { return false };
-        return Self::type_is_callable(ty);
+        return self.type_holds_callable(ty, &mut Vec::new());
     }
 
-    fn type_is_callable(ty: &Type) -> bool {
+    /// A function value, or a sequence, which is one underneath. `Sequence`
+    /// is declared as an empty struct, so its fields say nothing: it has to
+    /// be known by name. Recognising only the unresolved spelling let every
+    /// call answering a resolved `Sequence<T>` drop its limit (#2036).
+    fn type_is_callable(&self, ty: &Type) -> bool {
         match ty {
             Type::Fn { .. } => true,
             Type::UnresolvedNamed(n) => {
                 n.starts_with("func(") || n.starts_with('|') || n.starts_with("Sequence<")
             }
-            Type::UnresolvedGeneric { name, .. } => name == "Sequence",
+            Type::UnresolvedGeneric { .. } | Type::Generic { .. } | Type::Named(_) => {
+                matches!(self.type_name_of(ty).as_deref(), Some("Sequence" | "SequenceMut"))
+            }
             _ => false,
         }
     }
