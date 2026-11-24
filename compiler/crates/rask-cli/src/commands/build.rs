@@ -855,10 +855,7 @@ pub fn cmd_build(path: &str, opts: BuildOptions) {
             } else {
                 rask_compiler::emit::BuildMode::Debug
             };
-            // A package is several files, and the back end takes one source
-            // for locations. Giving it the right one per function needs the
-            // source map #1568 plans, so a package build has none yet.
-            let input = rask_compiler::emit::BackEnd::of(&result, None, None);
+            let input = rask_compiler::emit::BackEnd::of(&result);
             match super::compile::emit_object(
                 &input, &rask_compiler::emit::Entry::Main, target, build_mode, &obj_str,
             ) {

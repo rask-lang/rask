@@ -1,0 +1,71 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// `catch` on an `any Label or Refused`: one box out, on either side.
+//
+// The success side: `Refused` holds a string, so the result is a tracked
+// aggregate whose release walks into the payload and frees the box through
+// its vtable. The interface drop pass only treated structs and enums as
+// releasing their own fields, so it freed the box at the `catch` as well: a
+// double free.
+//
+// The error side: the handler's `Tag(…)` was never noted as a value that
+// needs boxing, so `f` was the bare struct and `f.text()` went through a
+// vtable that wasn't there. The strings are long enough to live on the heap.
+
+interface Label {
+    func text(self) -> string
+}
+
+struct Refused { why: string }
+extend Refused {
+    func message(self) -> string {
+        return self.why
+    }
+}
+
+interface Maker {
+    func make(self, n: i64) -> any Label or Refused
+}
+
+struct Tag { name: string }
+Tag implements Label {
+    func text(self) -> string {
+        return self.name
+    }
+}
+
+struct Tagger { prefix: string }
+Tagger implements Maker {
+    func make(self, n: i64) -> any Label or Refused {
+        if n < 0 {
+            return Refused(why: "negative-and-long-enough-to-be-on-the-heap")
+        }
+        return Tag(name: "{self.prefix}-{n}-padded-past-the-inline-length")
+    }
+}
+
+func forward(m: any Maker, n: i64) -> any Label or Refused {
+    let l = try m.make(n)
+    return l
+}
+
+test "the success side kept" {
+    let m: any Maker = Tagger(prefix: "t")
+    let f = forward(m, 7) catch e => Tag(name: "fallback-label-long-enough-for-heap")
+    assert f.text() == "t-7-padded-past-the-inline-length"
+}
+
+test "the error side replaced" {
+    let m: any Maker = Tagger(prefix: "t")
+    let f = forward(m, -1) catch e => Tag(name: "fallback-label-long-enough-for-heap")
+    assert f.text() == "fallback-label-long-enough-for-heap"
+}
+
+test "the error side replaced from a block" {
+    let m: any Maker = Tagger(prefix: "t")
+    let f = forward(m, -1) catch e => {
+        assert e.message().len() > 0
+        Tag(name: "block-fallback-label-long-enough")
+    }
+    assert f.text() == "block-fallback-label-long-enough"
+}

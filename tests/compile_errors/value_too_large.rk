@@ -1,0 +1,53 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Rejects: a struct, tuple or enum whose parts add up past 4 GiB
+//
+// Each 3 GB array fits on its own, so only the whole value is over. Layout's
+// 32-bit size arithmetic wrapped: `Two` came out about 1.7 GB, nothing
+// reported it, and compiling a program that used it hung (#2061). Layout now
+// holds a size at the cap and the checker reports the whole value, once, and
+// not again for a value whose part is already over.
+
+// ERROR: its parts add up to over 4 GiB [E0980]
+struct Two {
+    a: [u8; 3_000_000_000]
+    b: [u8; 3_000_000_000]
+}
+
+struct Holder<T> {
+    x: T
+    y: T
+}
+
+// ERROR: its parts add up to over 4 GiB [E0980]
+enum Big {
+    One(a: [u8; 3_000_000_000], b: [u8; 3_000_000_000])
+    Empty
+}
+
+// ERROR: its parts add up to over 4 GiB [E0980]
+func pair(t: ([u8; 3_000_000_000], [u8; 3_000_000_000])) -> i64 {
+    return 1
+}
+
+// ERROR: its parts add up to over 4 GiB [E0980]
+func held(h: Holder<[u8; 3_000_000_000]>) -> i64 {
+    return 2
+}
+
+struct Outer {
+    inner: Two
+    more: [u8; 16]
+}
+
+func main() {
+    let a = [0u8; 2_500_000_000]
+    let b = [0u8; 2_500_000_000]
+    // ERROR: its parts add up to over 4 GiB [E0980]
+    let t = (a, b)
+    let c = [0u8; 2_200_000_000]
+    let d = [0u8; 2_200_000_000]
+    // ERROR: its parts add up to over 4 GiB [E0980]
+    let h = Holder(x: c, y: d)
+    let fits = (0u8, [0u8; 16])
+    println("{t.0.len()} {h.x.len()} {fits.1.len()}")
+}

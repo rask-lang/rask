@@ -1,0 +1,31 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+// A write through an unwrapped link reaches the node. The interpreter refused
+// `x!.f = v` as an assignment target (#2075). Through any other payload the
+// write is a compile error: tests/compile_errors/write_through_force.rk.
+
+import memory.Link
+import memory.Rack
+
+struct Leaf {
+    id: i32
+}
+
+struct Holder {
+    at: Link<Leaf>?
+}
+
+test "a write through an unwrapped link reaches the node" {
+    mut rack: Rack<Leaf> = Rack.new()
+    let a: Link<Leaf>? = rack.insert(Leaf(id: 1))
+    a!.id = 5
+    assert a!.id == 5
+}
+
+test "a write through an unwrapped field reaches the node" {
+    mut rack: Rack<Leaf> = Rack.new()
+    let n = rack.insert(Leaf(id: 1))
+    let h = Holder(at: n)
+    h.at!.id = 7
+    assert n.id == 7
+}

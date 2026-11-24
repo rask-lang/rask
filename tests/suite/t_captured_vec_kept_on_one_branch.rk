@@ -1,0 +1,61 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A vector a closure or a task captures, handed on in only one branch.
+//
+// A task block that pushed its captured vector on one branch left it to
+// nobody on the other: the environment skips what the block may give away,
+// and the block freed nothing itself. A `take` parameter a closure reads is
+// moved into a cell, and `return v` read it back out of there, which the
+// caller didn't count as the vector it handed in, so it never freed the
+// result (#2043). The strings are long enough to live on the heap.
+
+func long(n: i64) -> string {
+    return "long-heap-string-number-{n}-xxxxxxxxxxxxxxxxxxxx"
+}
+
+func kept_by_task(n: i64) -> i64 {
+    mut total = 0
+    using Multitasking {
+        let v: Vec<string> = [long(1), long(2)]
+        let flag = v.len().to<i64>()! > n
+        let h = spawn {
+            mut out: Vec<Vec<string>> = Vec.new()
+            if flag {
+                out.push(v)
+            }
+            return out.len()
+        }
+        total = h.join()!.to<i64>()!
+    }
+    return total
+}
+
+func twice(take v: Vec<string>, c: bool) -> Vec<string> {
+    let f = || v.len()
+    mut keep: Vec<string> = Vec.new()
+    if f() > 0 && c {
+        keep = v
+    }
+    return keep
+}
+
+func handed_back(take v: Vec<string>) -> Vec<string> {
+    let f = || v.len()
+    assert f() > 0
+    return v
+}
+
+test "a task keeps its vector on one branch" {
+    assert kept_by_task(1) == 1
+    assert kept_by_task(5) == 0
+}
+
+test "a closure reads a parameter kept on one branch" {
+    assert twice([long(8)], true).len() == 1
+    assert twice([long(9)], false).len() == 0
+}
+
+test "a parameter a closure reads is handed back" {
+    let v = handed_back([long(3), long(4)])
+    assert v[1] == long(4)
+}

@@ -31,6 +31,11 @@ use rask_ast::{
     Span,
 };
 
+/// The longest `[x; n]` written out as one store per element. Longer ones
+/// fill in a loop: straight-line stores beat a loop's branch for a handful of
+/// elements, and past that they only grow the function.
+const REPEAT_UNROLLED_UP_TO: u32 = 16;
+
 /// What `emit_is_test` found out: whether the value matched, and for a
 /// flat `T? or E` leaf, the inner `T?` the payload binds out of, with `T`.
 pub(super) struct PatternTest {
@@ -426,6 +431,22 @@ impl<'a> MirLowerer<'a> {
                     | Type::Char
             )
         )
+    }
+
+    /// Is this receiver a handle that owns nothing (`Link<T>`, or `Link<T>?`)?
+    /// Its clone is the same word: the rack owns the node. A handle that
+    /// releases what it holds has no structural `clone` to reach here, and one
+    /// that counts (`Sender`) declares its own.
+    fn receiver_is_unowned_handle(&self, object: &Expr) -> bool {
+        use rask_types::Type;
+        let Some(ty) = self.ctx.lookup_raw_type(object.id) else { return false };
+        let ty = ty.as_option().unwrap_or(&ty);
+        let (Type::Named(id) | Type::Generic { base: id, .. }) = ty else { return false };
+        self.ctx
+            .type_defs
+            .get(*id)
+            .and_then(|def| def.runtime_handle())
+            .is_some_and(|h| h.release.is_none())
     }
 
     /// Does this Vec receiver hold string elements? Drives the dispatch choice
@@ -1102,7 +1123,17 @@ impl<'a> MirLowerer<'a> {
     /// `None` when this isn't a Vec element, or the element type isn't known;
     /// the caller then lowers it the ordinary way.
     fn lower_elem_for_mutate(&mut self, place: &Expr) -> Option<TypedOperand> {
-        self.lower_elem_for_mutate_inner(place, true)
+        self.lower_elem_for_mutate_inner(place, ElemBorrow::Aggregate)
+    }
+
+    /// The same borrow for a method's `mutate self`, except that a container
+    /// element is handed over as itself. A container's `self` is its handle,
+    /// never the address of a slot holding one (`mutate_param_needs_own_pointer`),
+    /// and the handle already reaches the vector the buffer holds. Given the
+    /// slot's address, `vv[0].remove_unordered(0)` read the slot as the vector
+    /// and its `len` as garbage (#1991).
+    fn lower_elem_receiver_for_mutate(&mut self, place: &Expr) -> Option<TypedOperand> {
+        self.lower_elem_for_mutate_inner(place, ElemBorrow::Receiver)
     }
 
     /// The same borrow for a *scalar* element. The aggregate rule doesn't apply
@@ -1114,15 +1145,19 @@ impl<'a> MirLowerer<'a> {
     /// interpreter wrote it back — the same call on a struct field wrote back on
     /// both (#879).
     fn lower_elem_for_mutate_scalar(&mut self, place: &Expr) -> Option<TypedOperand> {
-        self.lower_elem_for_mutate_inner(place, false)
+        self.lower_elem_for_mutate_inner(place, ElemBorrow::Scalar)
     }
 
     fn lower_elem_for_mutate_inner(
         &mut self,
         place: &Expr,
-        require_aggregate: bool,
+        mode: ElemBorrow,
     ) -> Option<TypedOperand> {
-        let ExprKind::Index { object, index } = &place.kind else {
+        // `v[i].f.g` borrows the element and points `.f.g`'s offset into it:
+        // the field lives in the buffer too, and a copy of it is what the
+        // callee wrote to while the element kept its old value (#2020).
+        let (root, fields) = Self::peel_field_path(place);
+        let ExprKind::Index { object, index } = &root.kind else {
             return None;
         };
         let (borrow, release) = if self.is_vec_expr(object) {
@@ -1140,13 +1175,22 @@ impl<'a> MirLowerer<'a> {
         };
         let elem_ty = self
             .ctx
-            .lookup_raw_type(place.id)
+            .lookup_raw_type(root.id)
             .map(|t| self.ctx.type_to_mir(&t))
             .or_else(|| self.collection_elem_of_expr(object))?;
+        let (offset, place_ty) = if fields.is_empty() {
+            (0, elem_ty)
+        } else {
+            let (off, _, fty) = self.field_path_offset_ty(&elem_ty, &fields)?;
+            (off, fty)
+        };
         // On the aggregate path, only aggregates: a scalar element is passed by
         // value there, and handing over its address would have the callee read
         // the pointer as the value.
-        if require_aggregate && !crate::lower::stmt::mutate_param_by_pointer(&elem_ty) {
+        if mode != ElemBorrow::Scalar && !crate::lower::stmt::mutate_param_by_pointer(&place_ty) {
+            return None;
+        }
+        if mode == ElemBorrow::Receiver && crate::lower::stmt::is_runtime_handle(&place_ty) {
             return None;
         }
         let (coll_op, _) = self.lower_expr(object).ok()?;
@@ -1164,7 +1208,19 @@ impl<'a> MirLowerer<'a> {
             collection: coll_op,
             release,
         });
-        Some((MirOperand::Local(ptr), elem_ty))
+        if offset == 0 {
+            return Some((MirOperand::Local(ptr), place_ty));
+        }
+        let at = self.builder.alloc_temp(MirType::Ptr);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: at,
+            rvalue: MirRValue::BinaryOp {
+                op: crate::operand::BinOp::Add,
+                left: MirOperand::Local(ptr),
+                right: MirOperand::Constant(MirConst::Int(offset as i64)),
+            },
+        }));
+        Some((MirOperand::Local(at), place_ty))
     }
 
     /// Settle every `mutate` argument opened since `mark`. Called right after
@@ -1198,6 +1254,10 @@ impl<'a> MirLowerer<'a> {
             scalar_mutate_params,
             aggregate_mutate_params,
             takes: params.iter().enumerate().filter(|(_, p)| p.mode == rask_ast::ty::ParamMode::Take).map(|(i, _)| i).collect(),
+            // What each argument is coerced into: a bare `3` handed to a
+            // `func(i64?)` is wrapped like one handed to a declared
+            // function, or the body reads the number as an optional (#2063).
+            param_tys: params.iter().map(|p| Some(p.ty.clone())).collect(),
             ..super::FuncSig::returning(self.ctx.type_to_mir(ret))
         })
     }
@@ -1467,7 +1527,7 @@ impl<'a> MirLowerer<'a> {
         // OPT6: an `if`/`match` arm that's a bare `T` where another arm is a
         // `T?` gains the layer here, at the arm's own value, so every way an
         // arm is lowered gets it (#1692).
-        if let Some(whole) = self.ctx.arm_widenings.get(&expr.id).cloned() {
+        if let Some(whole) = self.ctx.arm_widening(expr.id) {
             let want = self.ctx.type_to_mir(&whole);
             let wrapped = self.coerce_into_wrapper(
                 rask_ast::coercion::CoercionSite::Branch,
@@ -2065,7 +2125,7 @@ impl<'a> MirLowerer<'a> {
     /// of the same name as the const is not the const.
     fn constant_array_length(&self, count: &Expr) -> Option<u32> {
         match &count.kind {
-            ExprKind::Int(n, _) => Some(*n as u32),
+            ExprKind::Int(n, _) => u32::try_from(*n).ok(),
             ExprKind::Ident(name) => {
                 let (own, fact) = self.const_facts.get(name)?;
                 let still_the_const = self.locals.get(name).is_none_or(|(l, _)| own.contains(l));
@@ -2078,37 +2138,92 @@ impl<'a> MirLowerer<'a> {
         }
     }
 
+    /// `array[i] = val` for every `i` below `len`, as a loop.
+    ///
+    /// One store per element made `[0u8; 1000000000]` a billion statements,
+    /// and the compiler ran out of memory before anything could refuse it
+    /// (#2055). Storing a value that is still needed afterwards is a copy to
+    /// the release pass, so each turn takes a reference of its own, the way
+    /// the unrolled stores do.
+    fn fill_in_a_loop(&mut self, array: crate::LocalId, val: MirOperand, elem_size: u32, len: u32) {
+        let i = self.builder.alloc_temp(MirType::I64);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: i,
+            rvalue: MirRValue::Use(MirOperand::Constant(MirConst::Int(0))),
+        }));
+        let check = self.builder.create_block();
+        let body = self.builder.create_block();
+        let done = self.builder.create_block();
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: check }));
+
+        self.builder.switch_to_block(check);
+        let more = self.builder.alloc_temp(MirType::Bool);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: more,
+            rvalue: MirRValue::BinaryOp {
+                op: crate::operand::BinOp::Lt,
+                left: MirOperand::Local(i),
+                right: MirOperand::Constant(MirConst::Int(i64::from(len))),
+            },
+        }));
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
+            cond: MirOperand::Local(more),
+            then_block: body,
+            else_block: done,
+        }));
+
+        self.builder.switch_to_block(body);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::ArrayStore {
+            base: array,
+            index: MirOperand::Local(i),
+            elem_size,
+            value: val,
+        }));
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: i,
+            rvalue: MirRValue::BinaryOp {
+                op: crate::operand::BinOp::Add,
+                left: MirOperand::Local(i),
+                right: MirOperand::Constant(MirConst::Int(1)),
+            },
+        }));
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: check }));
+
+        self.builder.switch_to_block(done);
+    }
+
     fn lower_array_repeat(&mut self, value: &Expr, count: &Expr) -> Result<TypedOperand, LoweringError> {
-            // Constant count → expand to a fixed-size array (same as literal)
+            // Expand to a fixed-size array, the same as a literal.
             if let Some(len) = self.constant_array_length(count) {
                 let (val, elem_ty) = self.lower_expr(value)?;
                 let elem_size = rask_layout::size_of(&elem_ty, self.ctx.target());
                 let array_ty = MirType::Array { elem: Box::new(elem_ty), len };
                 let result_local = self.builder.alloc_temp(array_ty.clone());
-                for i in 0..len {
-                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-                        addr: result_local,
-                        offset: i * elem_size,
-                        value: val.clone(),
-                        store_size: elem_size,
-                        field: None,
-                    }));
+                // The array starts here, as a literal does. The loop's stores
+                // index at run time, so they can't say so themselves, and the
+                // release pass never took the filled array for a value of its
+                // own: its strings were never released.
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::ZeroAggregate { local: result_local }));
+                if len <= REPEAT_UNROLLED_UP_TO {
+                    for i in 0..len {
+                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+                            addr: result_local,
+                            offset: i * elem_size,
+                            value: val.clone(),
+                            store_size: elem_size,
+                            field: None,
+                        }));
+                    }
+                } else {
+                    self.fill_in_a_loop(result_local, val, elem_size, len);
                 }
                 return Ok((MirOperand::Local(result_local), array_ty));
             }
 
-            // Dynamic count: keep existing Ptr-based fallback
-            let (val, elem_ty) = self.lower_expr(value)?;
-            let (cnt, _) = self.lower_expr(count)?;
-            let result_ty = MirType::Ptr;
-            let result_local = self.builder.alloc_temp(result_ty.clone());
-            let elem_size = (rask_layout::size_of(&elem_ty, self.ctx.target()) as i64);
-            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                dst: Some(result_local),
-                func: FunctionRef::internal("array_repeat".to_string()),
-                args: vec![val, cnt, MirOperand::Constant(MirConst::Int(elem_size))],
-            }));
-            Ok((MirOperand::Local(result_local), result_ty))
+            // The checker refuses any other count (E0984).
+            Err(LoweringError::InvalidConstruct(
+                "an array repeat whose count isn't known at compile time reached lowering".to_string(),
+            ))
         }
 
     /// `cast` is the cast expression itself: the checker's type for it is the
@@ -5265,7 +5380,7 @@ impl<'a> MirLowerer<'a> {
         // `place_address` below can't help — a Vec element has no base+offset to
         // point at — so take the copy and write it back after the call.
         let elem_receiver = if self.call_mutates_receiver(expr, object, method) {
-            self.lower_elem_for_mutate(object)
+            self.lower_elem_receiver_for_mutate(object)
         } else {
             None
         };
@@ -6144,6 +6259,14 @@ impl<'a> MirLowerer<'a> {
             }
         }
 
+        // A tuple, optional or result declares no methods. Through a bound
+        // (`k.hash()` with `K: Hashable`), an instance where `K` is one runs
+        // the function the checker wrote for its type, or is the value itself
+        // when copying it already clones it (#1976).
+        if let Some(handled) = self.lower_wrapper_method(expr, object, &method, &all_args)? {
+            return Ok(handled);
+        }
+
         // CALL6: what dispatch actually resolved to, when MIR can confirm the
         // type exists here. The confirmation matters — the record is written
         // before monomorphization, so a receiver typed as a bare type parameter
@@ -6415,7 +6538,7 @@ impl<'a> MirLowerer<'a> {
             // dropped, and `t57_spawn.rk` died on a signal 11.
             //
             // Unknown means not a scalar, which leaves today's behaviour.
-            if self.receiver_is_copy_scalar(object) {
+            if self.receiver_is_copy_scalar(object) || self.receiver_is_unowned_handle(object) {
                 return Ok((all_args[0].clone(), obj_ty));
             }
             // A buffer's clone shares it: one more count, whether the bytes
@@ -7708,6 +7831,12 @@ impl<'a> MirLowerer<'a> {
         // is written down — and a machine subtraction on two nanosecond counts
         // is what it means. There's no function to call, so the lowering below
         // is the answer.
+        // `a == b` on a wrapper at an instance runs the function the checker
+        // wrote for it (`lower_wrapper_method`): a `(Vec<i64>, i64)` compared
+        // as bytes compared the vectors' addresses.
+        if matches!(self.ctx.call_targets.get(&call).as_deref(), Some(rask_check::Callee::Free(_))) {
+            return Ok(None);
+        }
         if let Some(target) = self.ctx.operator_targets.get(&call) {
             // OR12: `@builtin` is the conformance saying the arithmetic is the
             // compiler's — `instant - instant` is a machine subtraction on two
@@ -7869,13 +7998,53 @@ impl<'a> MirLowerer<'a> {
 
     /// `value` converted to the wider integer type `to`. Lossless: the checker
     /// only lets an operand widen to a type that holds every value of it.
-    fn widen_operand(&mut self, value: MirOperand, to: &MirType) -> MirOperand {
+    pub(crate) fn widen_operand(&mut self, value: MirOperand, to: &MirType) -> MirOperand {
         let wide = self.builder.alloc_temp(to.clone());
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
             dst: wide,
             rvalue: MirRValue::Cast { value, target_ty: to.clone() },
         }));
         MirOperand::Local(wide)
+    }
+
+    /// A method on a wrapper value at an instance of a generic body. The
+    /// instance's call target names the checker's function for the wrapper
+    /// (`Instance::call_target`); a clone that is a copy has none to name.
+    fn lower_wrapper_method(
+        &mut self,
+        expr: &Expr,
+        object: &Expr,
+        method: &str,
+        all_args: &[MirOperand],
+    ) -> Result<Option<super::TypedOperand>, LoweringError> {
+        let Some(typed) = self.ctx.typed else { return Ok(None) };
+        let Some(recv) = self.ctx.lookup_raw_type(object.id) else { return Ok(None) };
+        match typed.wrapper_method(&recv, method) {
+            Some(rask_check::WrapperMethod::IsCopy) => {
+                let ty = self.ctx.lookup_node_type(object.id).ok_or_else(|| {
+                    LoweringError::InvalidConstruct(format!("`.clone()` on a `{recv}` with no MIR type"))
+                })?;
+                Ok(Some((all_args[0].clone(), ty)))
+            }
+            Some(rask_check::WrapperMethod::Runs(_)) => {
+                let symbol = self.ctx.call_symbol(expr.id).ok_or_else(|| {
+                    LoweringError::InvalidConstruct(format!(
+                        "`.{method}()` on a `{recv}` names no function at this instance"
+                    ))
+                })?;
+                let ret_ty = self.ctx.lookup_node_type(expr.id).ok_or_else(|| {
+                    LoweringError::InvalidConstruct(format!("`.{method}()` on a `{recv}` has no MIR type"))
+                })?;
+                let out = self.builder.alloc_temp(ret_ty.clone());
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                    dst: Some(out),
+                    func: FunctionRef::borrowing(&symbol),
+                    args: all_args.to_vec(),
+                }));
+                Ok(Some((MirOperand::Local(out), ret_ty)))
+            }
+            None => Ok(None),
+        }
     }
 
     /// `x.hash()` on an integer, a bool or a char — FNV-1a over the value's
@@ -8508,10 +8677,12 @@ impl<'a> MirLowerer<'a> {
     /// Every member satisfies the same obligation (ER4: an error type provides
     /// `message`), so there is one method per member and they agree on the return
     /// type. Which one to call is a runtime fact, so this is a switch on the
-    /// member index with one arm per member, each calling `{Member}_{method}` on
-    /// the member's own bytes.
+    /// member index with one arm per member, each calling that member's method
+    /// on the member's own bytes. Which function that is comes from the symbol
+    /// table, as for any method call: gluing `{Member}_{method}` together named
+    /// `GrowError$f64_message` for a generic member, a function nothing emits.
     ///
-    /// `None` when any member has no nominal name to mangle — better to fall
+    /// `None` when any member's method has no body in Rask — better to fall
     /// through to the ordinary dispatch error, which names the method, than to
     /// emit a call to a symbol that doesn't exist.
     fn lower_union_method(
@@ -8525,12 +8696,10 @@ impl<'a> MirLowerer<'a> {
         let MirType::Union(members) = obj_ty else {
             return Ok(None);
         };
-        let names: Option<Vec<String>> =
-            members.iter().map(|m| self.mir_type_name(m)).collect();
-        let Some(names) = names else {
+        let Some(names) = self.ctx.union_method_calls(expr.id) else {
             return Ok(None);
         };
-        if names.is_empty() {
+        if names.is_empty() || names.len() != members.len() {
             return Ok(None);
         }
 
@@ -8579,7 +8748,7 @@ impl<'a> MirLowerer<'a> {
             args.extend(all_args.iter().skip(1).cloned());
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: Some(result),
-                func: crate::operand::FunctionRef::internal(format!("{}_{}", name, method)),
+                func: crate::operand::FunctionRef::internal(name.clone()),
                 args,
             }));
             self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
@@ -11139,4 +11308,15 @@ mod target_tests {
         assert_eq!(constant("usize", "MAX", x86), Some((u64::MAX as i64, MirType::U64)));
         assert_eq!(constant("isize", "MIN", x86), Some((i64::MIN, MirType::I64)));
     }
+}
+
+/// What a borrowed collection element is handed to.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ElemBorrow {
+    /// A `mutate` argument of aggregate type: the callee writes through it.
+    Aggregate,
+    /// A `mutate` argument of scalar type, itself passed as a pointer.
+    Scalar,
+    /// A `mutate self` receiver: as `Aggregate`, but a container is its handle.
+    Receiver,
 }

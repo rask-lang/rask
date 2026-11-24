@@ -12,10 +12,14 @@
 //!
 //! Ids must be assigned the same way the parser assigns them — see
 //! `SourceMap::push`.
+//!
+//! The back half reads it too: a panic, an error's origin and the debug line
+//! table all say where a span is, and a package is several files.
 
-use rask_ast::LineMap;
+use crate::{LineMap, Span};
 
 /// One source file: its display name, its text, and the line index for it.
+#[derive(Clone)]
 pub struct SourceFile {
     pub name: String,
     pub text: String,
@@ -23,7 +27,7 @@ pub struct SourceFile {
 }
 
 /// `file_id` → source, indexed positionally.
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct SourceMap {
     files: Vec<SourceFile>,
 }
@@ -73,6 +77,19 @@ impl SourceMap {
         self.files
             .get(file_id as usize)
             .filter(|f| !f.name.is_empty())
+    }
+
+    /// Where a span starts: its file's name, line and column (1-based).
+    /// `None` for a file this map doesn't hold, such as the stdlib's.
+    pub fn locate(&self, span: Span) -> Option<(&str, u32, u32)> {
+        let file = self.get(span.file_id)?;
+        let (line, col) = file.line_map.offset_to_line_col(span.start);
+        Some((file.name.as_str(), line, col))
+    }
+
+    /// The registered files with their ids, in id order.
+    pub fn files(&self) -> impl Iterator<Item = (u16, &SourceFile)> {
+        self.files.iter().enumerate().filter(|(_, f)| !f.name.is_empty()).map(|(i, f)| (i as u16, f))
     }
 
     pub fn is_empty(&self) -> bool {

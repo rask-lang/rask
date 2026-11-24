@@ -105,6 +105,10 @@ fn always_reaches<'s>(e: &'s Expr, handle: &str) -> Option<&'s Expr> {
         ExprKind::Catch { value, .. } => always_reaches(value, handle),
         ExprKind::Assert { condition, .. } | ExprKind::Check { condition, .. } => always_reaches(condition, handle),
         ExprKind::NullCoalesce { value, .. } => always_reaches(value, handle),
+        // What a branch decides on runs whichever way it goes.
+        ExprKind::Match { scrutinee, .. } => always_reaches(scrutinee, handle),
+        ExprKind::If { cond, .. } => always_reaches(cond, handle),
+        ExprKind::IfLet { expr, .. } => always_reaches(expr, handle),
         ExprKind::Unary { operand, .. } => always_reaches(operand, handle),
         ExprKind::Binary { op, left, right } if !matches!(op, BinOp::And | BinOp::Or) => first(&[left, right]),
         ExprKind::Binary { left, .. } => always_reaches(left, handle),

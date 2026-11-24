@@ -168,6 +168,10 @@ impl TypeChecker {
         // own bounds, if any — a bound declared there covers every method in
         // the block, not just one with its own `where` clause (#838).
         self.current_type_param_bounds = self.current_impl_type_param_bounds.clone();
+        let saved_comptime_params = std::mem::replace(
+            &mut self.current_comptime_params,
+            f.type_params.iter().filter(|tp| tp.is_comptime).map(|tp| tp.name.clone()).collect(),
+        );
         for tp in &f.type_params {
             if !tp.bounds.is_empty() {
                 self.current_type_param_bounds
@@ -422,6 +426,7 @@ impl TypeChecker {
         self.current_return_type = None;
         self.allowed_warnings = old_allowed;
         self.current_type_param_bounds = saved_type_param_bounds;
+        self.current_comptime_params = saved_comptime_params;
         self.in_unsafe = was_unsafe;
 
         // ER20: Restore outer accumulation state

@@ -11,7 +11,8 @@ use serde::Serialize;
 
 use rask_ast::Span;
 
-use crate::{codes::ErrorCodeRegistry, source_map::{SourceFile, SourceMap}, Diagnostic, LabelStyle};
+use crate::{codes::ErrorCodeRegistry, Diagnostic, LabelStyle};
+use rask_ast::{SourceFile, SourceMap};
 
 /// A complete JSON diagnostic report for a compilation run.
 #[derive(Debug, Serialize)]

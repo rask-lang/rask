@@ -161,7 +161,7 @@ impl Playground {
     /// Same frontend as `run`, rendered as JSON diagnostics for the editor.
     pub fn check(&self, source: &str) -> String {
         let output = rask_compiler::check_source(PLAYGROUND, source, &config());
-        let mut sources = rask_diagnostics::source_map::SourceMap::new();
+        let mut sources = rask_ast::SourceMap::new();
         sources.insert_at(0, PLAYGROUND, source);
         let report = json::to_json_report(&output.diagnostics, &sources, PLAYGROUND, "check");
         serde_json::to_string(&report).unwrap()

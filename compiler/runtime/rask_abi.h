@@ -16,6 +16,10 @@
 // `uint32_t`, zero for none (`rask_types::abi`).
 #define RASK_RESULT_ORIGIN_LINE_OFFSET 4
 
+// Where it keeps the file: a `uint64_t`, the file's index in
+// `rask_origin_files` plus one, zero for none.
+#define RASK_RESULT_ORIGIN_FILE_OFFSET 8
+
 // How the runtime reads one element of a vector it formats or sorts. The
 // vector only records a width, and a four-byte element could be an i32,
 // a u32 or an f32 — which print and order differently — so the caller
@@ -100,6 +104,11 @@
 #define RASK_OWNED_HANDLE 9
 #define RASK_OWNED_HANDLE_INDEX_SHIFT 20
 #define RASK_OWNED_HANDLE_OFFSET_MASK 1048575
+
+// The element *is* a link (`Vec<Link<T>>`, a `Map` of them): the whole
+// list, alone. Owns nothing; it lets a container that arrives whole, a
+// clone above all, record its own edges (#1972).
+#define RASK_OWNED_ELEM_LINK 10
 
 // Word indexes into a vtable (`rask_mir::vtable_layout`): the concrete
 // value's size and alignment, which size an interface box's block, and

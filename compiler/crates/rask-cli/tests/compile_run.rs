@@ -1344,6 +1344,9 @@ fn a_type_that_contains_itself_is_rejected() {
         out.contains("Vertex -> Edge"),
         "should spell the chain for an indirect cycle: {}", out,
     );
+    // Layout and the copy rule leave a rejected type alone: `Grow<T>` drew a
+    // stream of "unresolved generic type in layout" warnings first (#1973).
+    assert!(!out.contains("warning"), "only the rejection, no layout warnings: {}", out);
 }
 
 #[test]
@@ -5845,6 +5848,17 @@ func main() {
 }
 "#;
 
+const PANIC_IN_A_CLOSURE_SRC: &str = r#"
+func main() {
+    let f = |x: i64| -> i64 {
+        assert x > 100
+        return x
+    }
+    println("{f(3)}")
+    return
+}
+"#;
+
 /// A panic several frames down names the line it happened on.
 ///
 /// Every `call_*` helper below `call_function` hands back a bare
@@ -5853,14 +5867,17 @@ func main() {
 /// A `v!` on line 4 was reported at the `println` on line 12, two frames away,
 /// while native named line 4 (#1110).
 ///
-/// Both spellings: a plain call and a method call, which reach `call_function`
-/// through different helpers and lost the span in different places.
+/// Three spellings: a plain call, a method call and a closure call, which go
+/// through different helpers and lost the span in different places. The
+/// closure call kept the line inside the body and then dropped it at the call
+/// site.
 #[test]
 fn panic_reports_the_line_it_happened_on() {
     // The line each source panics on, and the line its `main` calls from.
     for (src, want, not_want) in [
         (PANIC_IN_A_CALLEE_SRC, 4, 12),
         (PANIC_IN_A_METHOD_SRC, 9, 14),
+        (PANIC_IN_A_CLOSURE_SRC, 4, 7),
     ] {
         for interp in [false, true] {
             let backend = if interp { "interp" } else { "native" };
@@ -7602,7 +7619,8 @@ sum=500500
 fn runaway_recursion_is_reported_not_aborted() {
     let (stdout, stderr, code) = run_capture("--interp", "runaway_recursion.rk");
     let out = format!("{}{}", stdout, stderr);
-    assert_eq!(code, 1, "should exit 1, not abort: {}", out);
+    // Running out of stack is a panic (ctrl.panics/S5), so 101 like native.
+    assert_eq!(code, 101, "should exit 101, not abort: {}", out);
     assert!(out.contains("R0023"), "should be the recursion diagnostic: {}", out);
     assert!(out.contains("recursion too deep"), "{}", out);
     assert!(
@@ -10690,4 +10708,84 @@ fn csv_reads_a_generic_structs_custom_field_as_its_wire_type() {
         stdout,
         "2 true false\nCSV row 2, column \"x\": \"maybe\" is not true or false\n",
     );
+}
+
+// A stack overflow inside an ensure that runs while a panic unwinds is a
+// secondary panic: reported, contained, and the first panic is the task's.
+// The interpreter used to treat its overflow as an interpreter failure rather
+// than a panic, so it swallowed it with no report while native printed one.
+// The two backends word the overflow differently, so this checks what both
+// report instead of comparing their output byte for byte.
+#[test]
+fn an_overflow_in_an_unwinding_ensure_is_a_reported_secondary_panic() {
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "overflow_in_ensure.rk");
+        assert_eq!(code, 0, "{}: {}", mode, stderr);
+        let lines: Vec<&str> = stdout.lines().collect();
+        assert_eq!(lines.len(), 2, "{}: {}{}", mode, stdout, stderr);
+        assert!(
+            lines[0].starts_with("panicked: ") && lines[0].ends_with("overflow_in_ensure.rk:13: plain"),
+            "{}: the first panic should be the task's: {}", mode, stdout,
+        );
+        assert_eq!(lines[1], "after: 10", "{}", mode);
+        let reports: Vec<&str> = stderr
+            .lines()
+            .filter(|l| l.contains("secondary panic during unwind") && l.contains("overflow_in_ensure.rk:4"))
+            .collect();
+        assert_eq!(reports.len(), 2, "{}: both ensures should report: {}", mode, stderr);
+    }
+}
+
+// Dropping a deep value frees what it owns level by level, in the C runtime,
+// which has no stack limit check of its own. Done by plain recursion, an
+// 8000-link chain dropped in a task ran past its 1 MiB stack and aborted in
+// the stack guard. The runtime now queues a nested free near the limit
+// instead of recursing. Native only: the interpreter's own drop of a value
+// this deep overflows the Rust stack (#2077), and at depths it
+// survives it takes minutes.
+#[test]
+fn a_value_too_deep_to_free_recursively_is_freed() {
+    let (stdout, stderr, code) = run_capture("--native", "deep_drop.rk");
+    assert_eq!(code, 0, "{}", stderr);
+    assert_eq!(
+        stdout,
+        "chain 199999\ntree 199999\ntask chain 49999\ntask tree 49999\n",
+        "{}", stderr,
+    );
+}
+
+// A stack overflow is reported at the function whose entry caught it. A
+// closure's compiled function carried no source position, so an overflow
+// caught at a closure's entry panicked with no file or line (ctrl.panics/S6).
+#[test]
+fn an_overflow_caught_in_a_closure_says_where() {
+    let (_, stderr, code) = run_capture("--native", "overflow_in_closure.rk");
+    assert_eq!(code, 101, "{}", stderr);
+    assert!(
+        stderr.contains("overflow_in_closure.rk:2:") || stderr.contains("overflow_in_closure.rk:3:"),
+        "should name `go` or its closure: {}", stderr,
+    );
+}
+
+// A function whose frame is too big to check in place must keep its own
+// frame. Inlined into `main` (it's called once), its 16 MB array made `main`'s
+// frame that big, and the stack check fired at `main`'s entry, before the
+// first line printed (#2079).
+#[test]
+fn a_huge_frame_is_not_inlined_into_its_caller() {
+    let (stdout, stderr, code) = run_capture("--native", "huge_local_inlined.rk");
+    assert_eq!(code, 101, "{}", stderr);
+    assert_eq!(stdout, "5050\n", "{}", stderr);
+    assert!(stderr.contains("huge_local_inlined.rk:11:"), "should name `huge`: {}", stderr);
+}
+
+// A recursive function's frame is paid at every level. Inlining a helper's
+// 4.8K array into it, though the helper only runs at the bottom, made each
+// level that much bigger and `rec(3000)` overflowed natively; the interpreter
+// finished it.
+#[test]
+fn a_helper_with_an_array_is_not_inlined_into_recursion() {
+    let (stdout, stderr, code) = run_capture("--native", "inlined_into_recursion.rk");
+    assert_eq!(code, 0, "{}", stderr);
+    assert_eq!(stdout, "start\n3007\n");
 }

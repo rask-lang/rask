@@ -1,0 +1,43 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+// A link's clone names the same node. The interpreter forwarded `.clone()` to
+// the node, so a struct's derived clone held a copy of the node that no rack
+// knew about, and a delete left the clone's field set (#2070).
+
+import memory.Link
+import memory.Rack
+
+struct Leaf {
+    id: i32
+}
+
+struct Tree {
+    at: Link<Leaf>?
+    kids: Vec<Link<Leaf>>
+}
+
+test "a link's clone is the same link" {
+    mut rack: Rack<Leaf> = Rack.new()
+    let a = rack.insert(Leaf(id: 1))
+    let b = a.clone()
+    assert a == b
+    b.id = 7
+    assert a.id == 7
+}
+
+test "a delete reaches the link in a cloned struct" {
+    mut rack: Rack<Leaf> = Rack.new()
+    let a = rack.insert(Leaf(id: 1))
+    let keep = rack.insert(Leaf(id: 2))
+    mut kids: Vec<Link<Leaf>> = Vec.new()
+    kids.push(keep)
+    let t = Tree(at: a, kids: kids)
+    let t2 = t.clone()
+    let l = t2.at!
+    l.id = 5
+    assert t.at!.id == 5
+    rack.delete(a)
+    assert t.at is none
+    assert t2.at is none
+    assert t2.kids[0] == keep
+}

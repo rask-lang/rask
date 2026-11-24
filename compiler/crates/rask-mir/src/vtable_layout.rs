@@ -38,3 +38,27 @@ pub const VTABLE_METHODS_START: u32 = 24;
 pub fn method_offset(index: usize) -> u32 {
     VTABLE_METHODS_START + (index as u32) * 8
 }
+
+/// The bodies a vtable call may land in, by interface and method: one per
+/// type boxed as that interface. A pass reasoning about what an
+/// `InterfaceCall` hands back asks the same question of each of them that it
+/// asks of a named callee.
+#[derive(Debug, Default, Clone)]
+pub struct VtableBodies(std::collections::HashMap<(String, String), Vec<String>>);
+
+impl VtableBodies {
+    /// `symbol` is empty for a slot no body answers; recorded as is, so a
+    /// question about that method can't be answered "every body does".
+    pub fn insert(&mut self, interface: &str, method: &str, symbol: String) {
+        self.0.entry((interface.to_string(), method.to_string())).or_default().push(symbol);
+    }
+
+    /// Every body `interface.method` may dispatch to, or `None` when no
+    /// vtable for the interface is known.
+    pub fn bodies(&self, interface: &str, method: &str) -> Option<&[String]> {
+        self.0
+            .get(&(interface.to_string(), method.to_string()))
+            .map(Vec::as_slice)
+            .filter(|b| !b.is_empty())
+    }
+}

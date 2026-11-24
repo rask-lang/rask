@@ -1,0 +1,52 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+// A closure variable started from a borrowed parameter and replaced through a
+// `mutate` call on only some paths. `mut g = h` used to copy the reference, so
+// whether `g` owned what it held depended on the branch taken and the release
+// pass left it alone, leaking the replacement (#2022). Copying a borrowed
+// closure now needs `.clone()`, so `g` always owns what it holds.
+
+func setit(mutate g: func() -> i64, n: i64) {
+    g = || n
+}
+
+func keepit(mutate g: func() -> i64, n: i64) {
+    if n < 0 {
+        println("negative")
+    }
+}
+
+func choose(mutate s: func(mutate func() -> i64, i64), c: bool) {
+    if c {
+        s = setit
+    }
+}
+
+func replaced_on_one_path(h: func() -> i64, c: bool) -> i64 {
+    mut g = h.clone()
+    if c {
+        setit(mutate g, 3)
+    }
+    return g()
+}
+
+func replaced_through_a_function_value(h: func() -> i64, c: bool) -> i64 {
+    mut g = h.clone()
+    mut s = keepit
+    choose(mutate s, c)
+    s(mutate g, 3)
+    return g()
+}
+
+test "a mutate call replaces the copy on one path" {
+    let h: func() -> i64 = || 100
+    assert replaced_on_one_path(h, true) == 3
+    assert replaced_on_one_path(h, false) == 100
+    assert h() == 100
+}
+
+test "a function value that may or may not replace the copy" {
+    let h: func() -> i64 = || 100
+    assert replaced_through_a_function_value(h, true) == 3
+    assert replaced_through_a_function_value(h, false) == 100
+}

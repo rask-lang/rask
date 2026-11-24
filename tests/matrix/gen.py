@@ -107,10 +107,11 @@ func add_five(n: i64) -> i64 {
 """),
 
     # A box. `Local` is the single-task strategy, so the cell stays free of
-    # the concurrency machinery (mem.boxes, conc.sync/SH2).
+    # the concurrency machinery (mem.boxes, conc.sync/SH2). A copy is a
+    # visible `.clone()`, so it moves like a Vec.
     "shared": dict(
         decl="Shared<i64, Local>", val="Shared.local(42)", val2="Shared.local(7)",
-        show="42", read="{{{e}.get()}}",
+        show="42", read="{{{e}.get()}}", owned=True,
         imports=["sync.Shared", "sync.Local"]),
 
     # The linear heap box. Consumed exactly once (mem.linear/L1-L3), which is
@@ -530,10 +531,11 @@ def skips():
         ("escaping_closure", "heap"):
             "mem.closures/CM4 — a linear value can't be carried into a closure (E0913)",
     }
-    # A function value moves (mem.closures/CV1), so it meets the same three
-    # rules as a Vec: a closure can't hand out what it borrowed or captured.
-    # `closure_take_param` is the spelling that can.
-    for payload in ("closure", "funcref", "sequence"):
+    # A function value moves (mem.closures/CV1), and so does a `Shared` box,
+    # so they meet the same three rules as a Vec: a closure can't hand out
+    # what it borrowed or captured. `closure_take_param` is the spelling that
+    # can.
+    for payload in ("closure", "funcref", "sequence", "shared"):
         rules[("closure", payload)] = \
             "mem.closures/CM1 — a borrowing closure can't hand out what it borrowed (E0907)"
         rules[("closure_param", payload)] = \

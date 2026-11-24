@@ -24,7 +24,7 @@ use crate::types::{StructLayoutId, EnumLayoutId};
 use rask_ast::{
     decl::{ConstDecl, Decl, DeclKind, FnDecl},
     expr::{BinOp, Expr, ExprKind, UnaryOp},
-    LineMap, NodeId, Span,
+    NodeId, Span,
 };
 use rask_layout::{StructLayout, EnumLayout};
 use rask_types::Type;
@@ -574,8 +574,7 @@ impl<'a> MirContext<'a> {
             folded: empty::folded(),
             extern_funcs: empty::strings(),
             package_modules: empty::strings(),
-            line_map: None,
-            source_file: None,
+            sources: None,
             interface_methods: HashMap::new(),
             interface_take_self: HashMap::new(),
             map_key_fns: CallMap::of(empty::map_key_fns()),
@@ -609,9 +608,8 @@ impl<'a> MirContext<'a> {
         self
     }
 
-    pub fn with_source(mut self, path: &'a str, line_map: Option<&'a LineMap>) -> Self {
-        self.source_file = Some(path);
-        self.line_map = line_map;
+    pub fn with_sources(mut self, sources: &'a rask_ast::SourceMap) -> Self {
+        self.sources = Some(sources);
         self
     }
 
@@ -717,10 +715,8 @@ pub struct MirContext<'a> {
     /// Names of imported external packages — used to recognize cross-package
     /// qualified calls like `pkg.func()` and `pkg.Type` field access.
     pub package_modules: &'a std::collections::HashSet<String>,
-    /// Line map for converting byte offsets to line:col (None in tests)
-    pub line_map: Option<&'a LineMap>,
-    /// Source file path for runtime error messages (None in tests)
-    pub source_file: Option<&'a str>,
+    /// The program's files, for a try site's origin (None in tests).
+    pub sources: Option<&'a rask_ast::SourceMap>,
     /// Interface method lists for interface object dispatch.
     /// Key: interface name, Value: method names in declaration order.
     pub interface_methods: HashMap<String, Vec<String>>,
@@ -999,12 +995,32 @@ impl<'a> MirContext<'a> {
         self.symbols.function_value(name_node, type_args, typed).map(|f| f.symbol)
     }
 
+    /// What a method call on a union runs at this instance: one symbol per
+    /// member, in member order (`Symbols::union_method_calls`).
+    pub fn union_method_calls(&self, call: NodeId) -> Option<Vec<String>> {
+        let callee = self.call_targets.get(&call)?;
+        let calls = self.symbols.union_method_calls(&callee, self.type_defs)?;
+        Some(calls.into_iter().map(|c| c.symbol).collect())
+    }
+
     /// The `message()` symbol of each error the result at `node` can carry,
     /// one per union member in member order (`Symbols::error_messages`).
     pub fn error_messages(&self, node: NodeId) -> Option<Vec<String>> {
         let result = self.lookup_raw_type(node)?;
         let calls = self.symbols.error_messages(&result, self.type_defs)?;
         Some(calls.into_iter().map(|c| c.symbol).collect())
+    }
+
+    /// The whole `if`/`match` type an arm widens to (`TypedProgram::arm_widenings`),
+    /// at this instance. In `if c { x } else { none }` with `T = i64?` the
+    /// whole is `i64??`; read raw it was `T?`, one layer, and `x` went in
+    /// unwrapped.
+    pub fn arm_widening(&self, arm: NodeId) -> Option<Type> {
+        let whole = self.arm_widenings.get(&arm)?;
+        match &self.node_types.instance {
+            Some((inst, _)) => inst.ty(whole),
+            None => Some(whole.clone()),
+        }
     }
 
     /// The error a `try` boxes into the function's `any I`, at this instance,
@@ -1099,8 +1115,7 @@ impl<'a> MirContext<'a> {
             folded: &EMPTY_FOLDED,
             extern_funcs: &EMPTY_EXTERNS,
             package_modules: &EMPTY_PACKAGES,
-            line_map: None,
-            source_file: None,
+            sources: None,
             interface_methods: HashMap::new(),
             interface_take_self: HashMap::new(),
             interface_coercions: &EMPTY_COERCIONS,
@@ -2259,6 +2274,12 @@ pub struct MirLowerer<'a> {
     /// place (`BindPlace`). A whole-value write to one replaces what the
     /// storage holds, so the old value is released there.
     pub(crate) addressed_locals: std::collections::HashSet<LocalId>,
+    /// The `BindPlace` part of `addressed_locals`: storage a collection or a
+    /// box owns. A closure written over one is given back there; a capture's
+    /// old closure is the creating frame's to drop. For an element of a vector
+    /// or map, the container too: a link stored into the element is recorded
+    /// against it (`emit_link_store`).
+    pub(crate) placed_locals: HashMap<LocalId, Option<stmt::ElementHolder>>,
     /// While a `for` body over a sequence is lowered: the names of the loop's
     /// variables a `return` in it moved (`MirContext::return_moves`).
     pub(crate) seq_moved_names: Option<std::collections::HashSet<String>>,
@@ -2689,6 +2710,28 @@ impl<'a> MirLowerer<'a> {
         self.build_err(val.clone(), val_ty, result_ty)
     }
 
+    /// A value leaving a function or closure body as its answer, shaped for
+    /// `ret_ty`: on the error side where the checker put it there (ER9),
+    /// wrapped into the success side's layers otherwise. `node` is the
+    /// returned expression, or a closure's whole body; an expression-bodied
+    /// closure's `|x| Bad(code: x)` came back as the success side (#2021).
+    pub(super) fn shape_returned(
+        &mut self,
+        node: rask_ast::NodeId,
+        val: MirOperand,
+        val_ty: &MirType,
+        ret_ty: &MirType,
+    ) -> Result<MirOperand, LoweringError> {
+        if self.ctx.err_returns.contains(&node) {
+            return self.build_err(val, val_ty, ret_ty).ok_or_else(|| {
+                LoweringError::InvalidConstruct(format!(
+                    "a return on the error side of `{}`, which has none", ret_ty
+                ))
+            });
+        }
+        Ok(self.coerce_into_wrapper(rask_ast::coercion::CoercionSite::Return, val, val_ty, ret_ty))
+    }
+
     /// `val` on the error side of `result_ty`: tag 1, no origin, the error as
     /// payload — a union member wrapped into the union first. `None` when
     /// `result_ty` has no error side.
@@ -2878,10 +2921,17 @@ impl<'a> MirLowerer<'a> {
     /// leaving the body by any route, a panic included, leaves the collection
     /// whole.
     pub(crate) fn bind_element_in_place(&mut self, local: LocalId, collection: MirOperand, at: MirOperand, map: bool) -> LocalId {
-        let slot = self.emit_element_slot(collection, at, map);
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::BindPlace { dst: local, addr: slot }));
-        self.addressed_locals.insert(local);
+        let slot = self.emit_element_slot(collection.clone(), at, map);
+        self.bind_place(local, slot);
+        self.placed_locals.insert(local, Some(stmt::ElementHolder { coll: collection, map }));
         slot
+    }
+
+    /// Bind `local` to the storage at `addr`, where it sits.
+    pub(crate) fn bind_place(&mut self, local: LocalId, addr: LocalId) {
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::BindPlace { dst: local, addr }));
+        self.addressed_locals.insert(local);
+        self.placed_locals.insert(local, None);
     }
 
     /// Read `array[at]` into `dst` for a walk over the array. An element that
@@ -2921,8 +2971,7 @@ impl<'a> MirLowerer<'a> {
             },
         }));
         let place = self.builder.alloc_temp(elem.clone());
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::BindPlace { dst: place, addr: slot }));
-        self.addressed_locals.insert(place);
+        self.bind_place(place, slot);
         // The walk reads a copy of the bytes, still lent: anything that
         // retains it (a pair built around it) retains its own copy, not the
         // array's slot.
@@ -3470,7 +3519,15 @@ impl<'a> MirLowerer<'a> {
 
         let (dst_layers, _) = Self::wrapper_layers(dst_ty);
         let (src_layers, _) = Self::wrapper_layers(src_ty);
-        if dst_layers.len() <= src_layers.len() {
+        // An `i32?` going where an `i64?` belongs widens first (CV1a), so the
+        // layers built below hold a payload of the width they say.
+        let n_add = dst_layers.len().saturating_sub(src_layers.len());
+        let inner_dst = Self::peel_layers(dst_ty, n_add);
+        let (val, src_ty) = match self.widen_optional(val.clone(), src_ty, &inner_dst) {
+            Some(wide) => (wide, &inner_dst),
+            None => (val, src_ty),
+        };
+        if n_add == 0 {
             return val;
         }
 
@@ -3480,8 +3537,6 @@ impl<'a> MirLowerer<'a> {
         if matches!(dst_ty, MirType::Option(inner) if inner.is_niche_payload()) {
             return val;
         }
-
-        let n_add = dst_layers.len() - src_layers.len();
 
         // An error value at a Result layer is the err side, not a payload to
         // wrap as Ok. Only the outermost added layer can be the one it belongs
@@ -3557,19 +3612,76 @@ impl<'a> MirLowerer<'a> {
         // An equality operand is an argument position — `a == v` is `a.eq(v)`
         // after desugaring, and `v` is the argument.
         let site = rask_ast::coercion::CoercionSite::Argument;
-        if let Some(inner) = payload_of(left_ty) {
-            if &inner == right_ty {
-                let wrapped = self.coerce_into_wrapper(site, right, right_ty, left_ty);
-                return (left, wrapped);
-            }
+        // Integers of two widths meet at the wider one (CV1a), so `i64? ==
+        // i32` and `i32? == i64` both compare as `i64?`. Matching the payload
+        // exactly sent either straight to a raw compare of a 16-byte optional
+        // against a scalar, which read the scalar as an address (#1981).
+        let core = |ty: &MirType| payload_of(ty).unwrap_or_else(|| ty.clone());
+        let (lc, rc) = (core(left_ty), core(right_ty));
+        let shared = if lc == rc {
+            lc
+        } else if lc.is_int_like() && rc.is_int_like() {
+            let target = self.ctx.target();
+            if rask_layout::size_of(&rc, target) > rask_layout::size_of(&lc, target) { rc } else { lc }
+        } else {
+            return (left, right);
+        };
+        if payload_of(left_ty).is_none() && payload_of(right_ty).is_none() {
+            return (left, right);
         }
-        if let Some(inner) = payload_of(right_ty) {
-            if &inner == left_ty {
-                let wrapped = self.coerce_into_wrapper(site, left, left_ty, right_ty);
-                return (wrapped, right);
-            }
-        }
+        let wrapper = MirType::Option(Box::new(shared));
+        let left = self.coerce_into_wrapper(site, left, left_ty, &wrapper);
+        let right = self.coerce_into_wrapper(site, right, right_ty, &wrapper);
         (left, right)
+    }
+
+    /// An optional over a narrower integer rebuilt over the wider one `dst`
+    /// asks for, at any depth (`i32??` into `i64??`): the tag copied, the
+    /// payload widened. `None` when nothing needs converting.
+    ///
+    /// A `none`'s payload bytes are copied through the cast too; nothing reads
+    /// them.
+    fn widen_optional(&mut self, val: MirOperand, src_ty: &MirType, dst_ty: &MirType) -> Option<MirOperand> {
+        let (MirType::Option(src_inner), MirType::Option(dst_inner)) = (src_ty, dst_ty) else { return None };
+        if src_inner.is_niche_payload() || dst_inner.is_niche_payload() {
+            return None;
+        }
+        let (src_layers, src_core) = Self::wrapper_layers(src_ty);
+        let (dst_layers, dst_core) = Self::wrapper_layers(dst_ty);
+        let all_options = |l: &[WrapLayer]| l.iter().all(|w| matches!(w, WrapLayer::Option));
+        if src_layers.len() != dst_layers.len()
+            || !all_options(&src_layers)
+            || !all_options(&dst_layers)
+            || !src_core.is_int_like()
+            || !dst_core.is_int_like()
+            || src_core == dst_core
+        {
+            return None;
+        }
+        let tag = self.builder.alloc_temp(MirType::U8);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: tag,
+            rvalue: MirRValue::EnumTag { value: val.clone() },
+        }));
+        let payload = self.builder.alloc_temp((**src_inner).clone());
+        let rvalue = self.payload_field(val, src_ty, src_inner);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign { dst: payload, rvalue }));
+        let payload = MirOperand::Local(payload);
+        let inner = match self.widen_optional(payload.clone(), src_inner, dst_inner) {
+            Some(wide) => wide,
+            None if src_inner.is_int_like() => self.widen_operand(payload, dst_inner),
+            None => payload,
+        };
+        let slot = self.builder.alloc_temp(dst_ty.clone());
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+            addr: slot,
+            offset: rask_types::abi::TAG_OFFSET,
+            value: MirOperand::Local(tag),
+            store_size: rask_types::abi::TAG_BYTES,
+            field: None,
+        }));
+        self.store_wrapper_payload(slot, dst_ty, inner, dst_inner);
+        Some(MirOperand::Local(slot))
     }
 
     /// Write a `T?`'s, a `T or E`'s or a union's tag (a union's member index),
@@ -4364,8 +4476,10 @@ impl<'a> MirLowerer<'a> {
         // cell's to release: `EnsureHookPop` reads what the hook holds, so the
         // frame doesn't release it before the hook is gone.
         let saved_addressed = std::mem::replace(&mut self.addressed_locals, thunk_addressed);
+        let saved_placed = std::mem::take(&mut self.placed_locals);
         let body_result = self.lower_ensure_body(body, else_handler);
         self.addressed_locals = saved_addressed;
+        self.placed_locals = saved_placed;
         thunk_builder = std::mem::replace(&mut self.builder, saved_builder);
         self.locals = saved_locals;
         self.pending_module_consts = saved_pending;
@@ -4697,6 +4811,7 @@ impl<'a> MirLowerer<'a> {
             spawn_result_boxed: false,
             c_callback: false,
             addressed_locals: std::collections::HashSet::new(),
+            placed_locals: HashMap::new(),
             seq_moved_names: None,
             parent_name: func_name,
             pointer_checks: PointerChecks::of(&fn_decl.attrs),
@@ -4926,13 +5041,18 @@ impl<'a> MirLowerer<'a> {
 
         let mut main_fn = lowerer.builder.finish();
         main_fn.is_extern_c = fn_decl.abi.is_some();
+        main_fn.span = decl.span;
         main_fn.inline_hint = fn_decl.attrs.iter().any(|a| a.is("inline"));
-        main_fn.source_file = ctx.source_file.map(|s| s.to_string());
         let mut result = vec![main_fn];
-        for f in &mut lowerer.synthesized_functions {
-            f.source_file = ctx.source_file.map(|s| s.to_string());
-        }
-        result.extend(lowerer.synthesized_functions);
+        // A function lowering made up on the way (an ensure thunk, a wrapper
+        // around a closure) has no declaration of its own; a stack overflow
+        // caught at its entry is reported at the function it was made for.
+        result.extend(lowerer.synthesized_functions.into_iter().map(|mut f| {
+            if f.span.end == 0 {
+                f.span = decl.span;
+            }
+            f
+        }));
         for c in &const_init_thunks {
             result.extend(Self::lower_const_init(c, all_decls, ctx)?);
         }
@@ -7873,8 +7993,7 @@ mod tests {
             folded: &folded,
             extern_funcs: &extern_funcs,
             package_modules: &std::collections::HashSet::new(),
-            line_map: None,
-            source_file: None,
+            sources: None,
             interface_methods: HashMap::new(),
             interface_take_self: HashMap::new(),
             interface_coercions: &empty_coercions,
@@ -7981,8 +8100,7 @@ mod tests {
             folded: &folded,
             extern_funcs: &extern_funcs,
             package_modules: &std::collections::HashSet::new(),
-            line_map: None,
-            source_file: None,
+            sources: None,
             interface_methods: HashMap::new(),
             interface_take_self: HashMap::new(),
             interface_coercions: &empty_coercions,
@@ -8096,8 +8214,7 @@ mod tests {
             folded: &folded,
             extern_funcs: &extern_funcs,
             package_modules: &std::collections::HashSet::new(),
-            line_map: None,
-            source_file: None,
+            sources: None,
             interface_methods: HashMap::new(),
             interface_take_self: HashMap::new(),
             interface_coercions: &empty_coercions,

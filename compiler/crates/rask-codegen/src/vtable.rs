@@ -25,10 +25,11 @@ pub struct VTableInfo {
     pub concrete_align: u32,
     /// Compatible methods in vtable order (interface declaration order, minus incompatible)
     pub methods: Vec<VTableMethod>,
-    /// What the concrete value owns, for a box that owns the value — a moved-in
-    /// one. Empty leaves `owned_release` null. A box built for a call borrows
-    /// instead, and `InterfaceDrop` never reads this slot.
-    pub owned: Vec<crate::drop_fields::DropField>,
+    /// The concrete value's type, for the release of a box that owns the
+    /// value (a moved-in one). What it owns is described the way a container
+    /// element's is; owning nothing leaves `owned_release` null. A box built
+    /// for a call borrows instead, and `InterfaceDrop` never reads that slot.
+    pub concrete_mir: Option<rask_mir::MirType>,
 }
 
 /// A single method entry in a vtable.

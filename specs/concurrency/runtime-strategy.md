@@ -80,7 +80,6 @@ Not yet:
 - **File and stdin parking.** Sockets park (see above); a read of a file, a pipe or stdin still makes the blocking syscall and holds its worker for as long as it takes. epoll can't watch a regular file, so this waits on io_uring, which is also what `conc.runtime/R1.1` wants for disk I/O.
 - **Worker compensation for blocking FFI** (`conc.phase-b/FFI3`) — not built, so a long C call holds its worker too.
 - **macOS.** `green.c` needs a kqueue backend; until then macOS runs `green_threads.c`. The aarch64 switch is assembled for both ELF and Mach-O; `tests/fiber_gate.sh` runs the ELF one under qemu, and the Mach-O one differs only in symbol names.
-- **Stack overflow is an abort, not a panic.** Running into a fiber's guard page prints which task overflowed and aborts.
 
 ## Phase B: M:N Stackful Fibers
 

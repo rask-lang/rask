@@ -69,6 +69,23 @@ func survives_panicked_join() -> bool {
     return true
 }
 
+func boom(n: i64) -> i64 {
+    if n > 3 {
+        panic("boom {n}")
+    }
+    return n
+}
+
+// A panic message goes through a per-thread buffer on its way to the joiner.
+// The buffer outlived the task's thread, one lost block per panicked task
+// (#2080).
+func panicked_task_frees_its_message() -> bool {
+    using Multitasking {
+        let h = spawn { println("{boom(9)}") }
+        return h.join() is JoinError
+    }
+}
+
 test "join returns the task's value" {
     assert joined_value()! == 42
 }
@@ -100,4 +117,8 @@ test "a second Multitasking scope starts cleanly" {
     assert joined_value()! == 42
     assert joined_pair()! == 42
     assert joined_own()! == 7
+}
+
+test "a task that panics with a built message hands back an error" {
+    assert panicked_task_frees_its_message()
 }

@@ -1,0 +1,78 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+// A closure handed borrowed to something that answers a closure lives as long
+// as the answer (mem.closures/SL4), even when the answer leaves the frame that
+// made the closure.
+//
+// The returned environment only pointed at the callback. Natively the frame
+// that built `|x| x > 1` freed it on its way out, and the sequence it returned
+// called into the freed block. Where nothing was freed, a callee that captured
+// its borrowed callback was read as keeping it, and nobody freed it at all.
+import sequence.Sequence
+
+func over_one(v: Vec<i64>, d: i64) -> Sequence<i64> {
+    if d > 0 {
+        return over_one(v, d - 1)
+    }
+    return v.filter(|x| x > 1)
+}
+
+func above(v: Vec<i64>, d: i64, lo: i64) -> Sequence<i64> {
+    if d > 0 {
+        return above(v, d - 1, lo)
+    }
+    return v.filter(|x| x > lo)
+}
+
+func wrap(f: func(i64) -> bool, d: i64) -> func(i64) -> bool {
+    if d > 0 {
+        return wrap(f, d - 1)
+    }
+    return |x| f(x)
+}
+
+func made_here() -> func(i64) -> bool {
+    return wrap(|x| x > 1, 2)
+}
+
+func doubled_rows(g: Vec<Vec<i64>>) -> Vec<i64> {
+    return g.map(|r| r.map(|x| x * 2)).flatten().to_vec()
+}
+
+test "a returned filter keeps the literal it was given" {
+    let v: Vec<i64> = [1, 2, 3]
+    mut n = 0
+    for x in over_one(v, 2) {
+        n += x
+    }
+    assert n == 5
+}
+
+test "a returned filter keeps a literal that captured a parameter" {
+    let v: Vec<i64> = [1, 2, 3]
+    mut n = 0
+    for x in above(v, 1, 2) {
+        n += x
+    }
+    assert n == 3
+}
+
+test "a returned closure keeps the closure it wraps" {
+    let g = made_here()
+    assert g(3)
+    assert !g(0)
+}
+
+test "the caller still has its closure after wrapping it" {
+    let f = |x: i64| x > 5
+    let g = wrap(f, 1)
+    assert g(6)
+    assert f(7)
+}
+
+test "a closure body returns a sequence over its own literal" {
+    let g: Vec<Vec<i64>> = [[1, 2], [3]]
+    let all = doubled_rows(g)
+    assert all.len() == 3
+    assert all[2] == 6
+}

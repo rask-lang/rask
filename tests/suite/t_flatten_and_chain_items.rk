@@ -1,0 +1,67 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// Walking `flatten` and `chain`, and keeping what they hand over.
+//
+// `flatten` is declared for `Vec<Vec<T>>` and `Sequence<Sequence<U>>`; a
+// `Sequence<Vec<T>>` fits neither and is rejected (#2045). Over a held vector
+// of vectors, `flatten` and `chain` lend each item for one call, so a pick
+// can't keep a non-Copy item (E0905). Copy items copy.
+
+import sequence.Sequence
+
+func ranges() -> Sequence<Sequence<i64>> {
+    return |yield| {
+        if !yield((0..3).as_sequence()) { return }
+        if !yield((5..7).as_sequence()) { return }
+    }
+}
+
+test "a vector of vectors flattens in order" {
+    let grid: Vec<Vec<i64>> = [[1, 2], [], [3]]
+    mut seen: Vec<i64> = Vec.new()
+    for x in grid.flatten() {
+        seen.push(x)
+    }
+    assert seen == [1, 2, 3]
+    assert grid.flatten().count() == 3
+}
+
+test "a Copy item picked out of a flatten" {
+    let grid: Vec<Vec<i64>> = [[1, 2], [3, 4]]
+    assert grid.flatten().find(|x| x > 2) == 3
+    assert grid.flatten().find(|x| x > 9) is none
+}
+
+test "a sequence of sequences flattens" {
+    mut n = 0
+    for x in ranges().flatten() {
+        n += x
+    }
+    assert n == 0 + 1 + 2 + 5 + 6
+}
+
+test "chain over two held vectors of vectors" {
+    let a: Vec<Vec<string>> = [["a-heap-string-padded-past-inline"]]
+    let b: Vec<Vec<string>> = [["b", "c"]]
+    mut n = 0
+    for r in a.as_sequence().chain(b.as_sequence()) {
+        n += r.len()
+    }
+    assert n == 3
+    assert a.as_sequence().chain(b.as_sequence()).count() == 2
+}
+
+test "a cloned item picked out of a named or flattened sequence" {
+    // The `map` body only reads its item, but it was settled as taking it
+    // because `find`'s body keeps its own and the yield between them looked
+    // like it could reach both: the source vector's rows were freed inside
+    // `map` and again with `rows` (#2062).
+    let rows: Vec<Vec<i64>> = [[1], [2, 3]]
+    let s = rows.as_sequence()
+    let g = s.map(|r| r.clone()).find(|r| r.len() == 2)
+    assert g!.len() == 2
+    let grid: Vec<Vec<Vec<i64>>> = [[[1], [2, 3]], [[4, 5, 6]]]
+    let h = grid.flatten().map(|r| r.clone()).find(|r| r.len() == 3)
+    assert h!.len() == 3
+    assert rows[1].len() == 2
+}

@@ -263,7 +263,9 @@ func main() {
         assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
         rask_desugar::desugar(&mut parsed.decls);
         let (mut interp, _out) = Interpreter::with_captured_output();
-        interp.set_source_info("leak.rk", src);
+        let mut sources = rask_ast::SourceMap::new();
+        sources.push("leak.rk", src);
+        interp.set_sources(sources);
         interp.set_runtime_checks(checks);
         interp.run(&parsed.decls).map(|_| ()).map_err(|d| d.error)
     }

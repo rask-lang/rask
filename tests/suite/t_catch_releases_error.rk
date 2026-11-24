@@ -56,3 +56,18 @@ test "a bound error is released" {
 test "two catches in one function" {
     assert twice() == "0 x3"
 }
+
+// Inside a loop the vector is freed at the end of each turn under its own
+// flag, and the error was released only on the other branch (#2035).
+func in_loop() -> i64 {
+    mut total = 0
+    for n in 0..3 {
+        let a = make(n) catch _ => Vec.new()
+        total += a.len().to<i64>()!
+    }
+    return total
+}
+
+test "a catch inside a loop" {
+    assert in_loop() == 2
+}

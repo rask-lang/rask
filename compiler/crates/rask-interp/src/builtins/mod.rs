@@ -229,6 +229,36 @@ impl Interpreter {
             Value::TypeConstructor(kind) => {
                 return self.call_type_constructor_method(kind, method, args);
             }
+            // `T?` and `T or E` have no methods, so `.hash()` only reaches one
+            // through a bound (`K: Hashable`). The same mix the checker writes
+            // for native (`hash_by_shape`): a branch's position from 1 mixed
+            // with its payload's hash, an absent optional 0 (#1976).
+            Value::Enum { name, variant, fields, .. }
+                if method == "hash" && matches!(name.as_str(), "Option" | "Result") =>
+            {
+                let tag = match (name.as_str(), variant.as_str()) {
+                    ("Option", "None") => return Ok(Value::Int(0, crate::value::IntKind::U64)),
+                    ("Result", "Err") => 2,
+                    _ => 1,
+                };
+                let h = self.parts_hash(tag, &fields.clone())?;
+                return Ok(Value::Int(h as i64, crate::value::IntKind::U64));
+            }
+            // `a == b` on two `T or E` values reaches here only through a
+            // bound (`K: Equal`): the same branch, and equal payloads.
+            Value::Enum { name, variant, fields, .. }
+                if name == "Result" && matches!(method, "eq" | "ne") && args.len() == 1 =>
+            {
+                let eq = match args.first() {
+                    Some(Value::Enum { name: other_name, variant: other_variant, fields: other_fields, .. })
+                        if other_name == "Result" && other_variant == variant =>
+                    {
+                        self.parts_equal(&fields.clone(), &other_fields.clone())?
+                    }
+                    _ => false,
+                };
+                return Ok(Value::Bool(if method == "eq" { eq } else { !eq }));
+            }
             Value::Enum { name, variant, fields, .. } if name == "Result" => {
                 return self.call_result_method(variant, fields, method, args);
             }
@@ -264,7 +294,7 @@ impl Interpreter {
             }
             Value::Tuple(items) if method == "hash" => {
                 let h = self.parts_hash(FNV_OFFSET, &items.clone())?;
-                return Ok(Value::int(h as i64));
+                return Ok(Value::Int(h as i64, crate::value::IntKind::U64));
             }
             Value::Tuple(..) if method == "compare" => {
                 let ord = args.first()
@@ -321,7 +351,7 @@ impl Interpreter {
             Value::Struct(s) if method == "hash" => {
                 let fields: Vec<Value> = s.lock().unwrap().fields.values().cloned().collect();
                 let h = self.parts_hash(FNV_OFFSET, &fields)?;
-                return Ok(Value::int(h as i64));
+                return Ok(Value::Int(h as i64, crate::value::IntKind::U64));
             }
             // The variant's position, then the payload — what the checker writes
             // for an enum it derives, and for `T?`: absent hashes to 0.
@@ -331,7 +361,7 @@ impl Interpreter {
                 }
                 let seed = fnv_mix(FNV_OFFSET, *variant_index as u64);
                 let h = self.parts_hash(seed, &fields.clone())?;
-                return Ok(Value::int(h as i64));
+                return Ok(Value::Int(h as i64, crate::value::IntKind::U64));
             }
             Value::Struct(..) if method == "compare" => {
                 let ord = args.first()

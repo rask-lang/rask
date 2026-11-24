@@ -29,8 +29,8 @@ pub(crate) enum Format {
 /// program. Without it a diagnostic raised inside one carried a stdlib byte
 /// offset and got resolved against the user's file — `examples/19_unsafe.rk:152`
 /// on a 151-line program, quoting a blank line.
-fn sources_for(files: &[(String, &str)]) -> rask_diagnostics::source_map::SourceMap {
-    let mut map = rask_diagnostics::source_map::SourceMap::new();
+fn sources_for(files: &[(String, &str)]) -> rask_ast::SourceMap {
+    let mut map = rask_ast::SourceMap::new();
     for (i, (name, text)) in files.iter().enumerate() {
         map.insert_at(i as u16, name.clone(), *text);
     }
@@ -78,6 +78,28 @@ pub(crate) fn show_diagnostic_multi(
         None => {
             let fmt = DiagnosticFormatter::new("").with_sources(&sources);
             eprintln!("{}", fmt.format(diagnostic));
+        }
+    }
+}
+
+/// Show an error the program hit while running, placed by its span's file id:
+/// in a package, a panic may come from any of its files.
+pub(crate) fn show_runtime_diagnostic(
+    diagnostic: &Diagnostic,
+    source_files: &[(std::path::PathBuf, String)],
+    format: Format,
+) {
+    match format {
+        Format::Human => show_diagnostic_multi(diagnostic, source_files),
+        Format::Json => {
+            let named: Vec<(String, &str)> = source_files
+                .iter()
+                .map(|(path, text)| (path.to_string_lossy().into_owned(), text.as_str()))
+                .collect();
+            let sources = sources_for(&named);
+            let head = named.first().map(|(name, _)| name.as_str()).unwrap_or("");
+            let report = json::to_json_report(std::slice::from_ref(diagnostic), &sources, head, "runtime");
+            println!("{}", json::to_json_string(&report));
         }
     }
 }

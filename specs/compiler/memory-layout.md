@@ -529,18 +529,18 @@ Test suite should validate:
 
 ## Error Messages
 
-Size/alignment errors surface during monomorphization:
+A type over the 4 GiB a value can hold ([mem.value/VS12](../memory/value-semantics.md)) is rejected by the checker, at the type that is too large:
 
 ```
-ERROR [compiler.layout/L1]: type too large
-  |
-5 | struct BigStruct { data: [u8; 2^31] }
-  |                           ^^^^^^^^^ exceeds maximum size
-
-WHY: Types larger than 2^31 bytes cannot be allocated.
-
-FIX: Use heap indirection or split into smaller chunks.
+error[E0980]: `[u8; 5000000000]` is too large for a value
+  --> main.rk:2:5
+   |
+ 2 |     data: [u8; 5000000000]
+   |     ^^^^^^^^^^^^^^^^^^^^^^ 5000000000 bytes
+   = why: a value's size is a 32-bit count, so one value holds at most 4 GiB
 ```
+
+That many elements belong in a `Vec`.
 
 ## See Also
 

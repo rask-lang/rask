@@ -437,6 +437,19 @@ impl TypeChecker {
             }
             let before = deferred.len();
             for constraint in deferred {
+                // Still nothing to resolve against. Solving it would file it
+                // with the main constraints, which have finished and are never
+                // read again, so it stays here for the next round. In
+                // `users.map(|u| (0, u.name)).to_map().len()` the `to_map`
+                // waits for the `0` to default, and `len` waits for `to_map`:
+                // retried before the default landed, `len` went to the main
+                // queue and was dropped with it, leaving no dispatch record.
+                if let TypeConstraint::HasMethod { ty, .. } = &constraint {
+                    if matches!(self.resolve_named(&self.ctx.apply(ty)), Type::Var(_)) {
+                        self.deferred_methods.push(constraint);
+                        continue;
+                    }
+                }
                 match self.solve_constraint(constraint) {
                     Ok(_) => {}
                     Err(e) => self.errors.push(e),
@@ -1294,7 +1307,16 @@ impl TypeChecker {
                     ((**def_ok).clone(), def.clone())
                 }
             }
-            other => (other.clone(), other.clone()),
+            // An erased payload is what the expression produces, and the
+            // default is boxed into it. Typed as the default's own struct,
+            // `f.maybe(1) ?? Tag(…)` read the present branch's box as a `Tag`.
+            other => match self.ctx.apply(&value) {
+                Type::Result { ok, .. } if matches!(self.ctx.apply(&ok), Type::InterfaceObject { .. }) => {
+                    let payload = self.ctx.apply(&ok);
+                    (payload.clone(), payload)
+                }
+                _ => (other.clone(), other.clone()),
+            },
         };
 
         // OPT3/OPT11: `??` supplies the branch a `T?` has and nothing else
@@ -1390,7 +1412,7 @@ impl TypeChecker {
             let applied = self.ctx.apply(param_ty);
             let peeled = applied.as_option().cloned().unwrap_or_else(|| applied.clone());
             if matches!(peeled, Type::InterfaceObject { .. }) {
-                self.pending_interface_arg_coercions.push((node, applied, arg_ty.clone()));
+                self.pending_interface_coercions.push((node, applied, arg_ty.clone()));
             }
         }
         self.resolve_coercion(
@@ -1502,8 +1524,10 @@ impl TypeChecker {
         span: Span,
     ) -> Result<bool, TypeError> {
         let resolved_expected = self.ctx.apply(&expected);
+        // The whole expression's type. Widening recurses into inner layers
+        // with the same node, and those calls mustn't replace it.
         if let (CoercionSite::Branch, Some(node)) = (site, value_node) {
-            self.arm_widenings.insert(node, expected.clone());
+            self.arm_widenings.entry(node).or_insert_with(|| expected.clone());
         }
 
         // CB1/CB2: a function where C wants a function pointer passes its
@@ -1586,16 +1610,17 @@ impl TypeChecker {
                     // `none` up against `E` (#383).
                     let ok_is_option = self.ctx.apply(ok).is_option();
                     let ret_is_option = matches!(self.ctx.apply(ret_err), Type::None);
+                    //
+                    // The success side is itself an optional slot, so the
+                    // value widens into it like into any other: `return a`
+                    // with `a: i64?` in an `i64?? or E` function gains the
+                    // one layer it lacks (OPT31, #2064).
                     if allow_wrap
                         && ok_is_option
                         && ret_is_option
                         && !resolved_expected.is_option()
                     {
-                        let wrapped = Type::Result {
-                            ok: Box::new(ret_ty),
-                            err: err.clone(),
-                        };
-                        return self.unify(&expected, &wrapped, span);
+                        return self.resolve_coercion(ret_ty, *ok.clone(), site, value_node, span);
                     }
                     self.unify(&expected, &ret_ty, span)
                 }
@@ -1725,13 +1750,11 @@ impl TypeChecker {
                             ok: ok.clone(),
                             err: Box::new(resolved_err),
                         }
-                    } else if resolved_ok.is_option() && !resolved_ret.is_option() {
-                        // `return k` in a `KV? or E` function fills the present
-                        // side — two layers to add, not one (#383).
-                        Type::Result {
-                            ok: Box::new(Type::option(ret_ty)),
-                            err: err.clone(),
-                        }
+                    } else if resolved_ok.is_option() {
+                        // `return k` in a `KV? or E` function fills the
+                        // present side, as many layers deep as the side has
+                        // (#383, #2064).
+                        return self.resolve_coercion(ret_ty, *ok.clone(), site, value_node, span);
                     } else {
                         Type::Result {
                             ok: Box::new(ret_ty),

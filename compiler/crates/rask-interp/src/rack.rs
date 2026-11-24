@@ -266,9 +266,11 @@ pub fn register_element(vec: &Arc<Mutex<crate::value::VecData>>, value: &Value) 
         register_nested(s);
         return;
     }
-    // A struct an enum or a tuple carries (`Small or Oops`, `Wrap.Yes(Cursor)`,
-    // `(Pin, i32)`) records its own fields the same way (#1844).
-    if matches!(value, Value::Enum { .. } | Value::Tuple(_)) {
+    // A struct an enum, a tuple or an inner container carries records its own
+    // edges the same way (#1844): a `Vec<Link<T>>` pushed into a grid holds
+    // its links itself, whether a push recorded them or it arrived fresh from
+    // a `clone`.
+    if matches!(value, Value::Enum { .. } | Value::Tuple(_) | Value::Vec(_) | Value::Map(_)) {
         register_nested(value);
     }
     // A tuple or an enum element is a value: its links are recorded against
@@ -285,32 +287,6 @@ pub fn register_element(vec: &Arc<Mutex<crate::value::VecData>>, value: &Value) 
                 .unwrap()
                 .register_backlink(&target, Backlink::Element(Arc::downgrade(vec)));
         }
-    }
-}
-
-/// Record every link a vector already holds, for a vector of links that
-/// arrives whole: `let w = h.v.clone()`, a `filter` result. Every stored link
-/// is an edge, a local vector's included (mem.racks/RK15); records are one per
-/// (vector, target), so a vector whose pushes already did it changes nothing.
-pub fn register_vec_links(value: &Value) {
-    match value {
-        // A struct or tuple bound whole — `let c2 = c` is a copy with links
-        // of its own, and natively each is an edge the copy's slot holds.
-        // An enum bound whole carries its structs' copies the same way.
-        Value::Struct(_) | Value::Enum { .. } | Value::Tuple(_) => register_nested(value),
-        Value::Vec(v) => {
-            let items: Vec<Value> = v.lock().unwrap().items.clone();
-            for item in &items {
-                register_element(v, item);
-            }
-        }
-        Value::Map(m) => {
-            let values: Vec<Value> = m.lock().unwrap().iter().map(|(_, v)| v.clone()).collect();
-            for value in &values {
-                register_entry(m, None, value);
-            }
-        }
-        _ => {}
     }
 }
 
@@ -439,7 +415,7 @@ pub fn register_entry(
         register_nested(s);
         return;
     }
-    if matches!(value, Value::Enum { .. } | Value::Tuple(_)) {
+    if matches!(value, Value::Enum { .. } | Value::Tuple(_) | Value::Vec(_) | Value::Map(_)) {
         register_nested(value);
     }
     let mut in_value = Vec::new();
@@ -479,7 +455,12 @@ pub fn register_entry(
 /// Used where a whole aggregate arrives at once and its interior hasn't been
 /// registered piecewise: `rack.insert(node)`, a struct literal, and a field
 /// assignment whose value is a container (`old.children = old.children.filter(…)`
-/// builds a fresh `Vec`, whose entries nothing has recorded yet).
+/// builds a fresh `Vec`, whose entries nothing has recorded yet), and a value
+/// bound whole (`let w = rows.clone()`, a `filter` result), whose links are
+/// edges of the new binding's own (mem.racks/RK15). An inner vector records
+/// its elements too, so a clone of a `Vec<Vec<Link<T>>>` loses its links on a
+/// delete like the source does. Records are one per (holder, target), so a
+/// vector whose pushes already did it changes nothing.
 pub fn register_nested(value: &Value) {
     match value {
         Value::Struct(s) => {
@@ -495,21 +476,12 @@ pub fn register_nested(value: &Value) {
             let items: Vec<Value> = vec.lock().unwrap().iter().cloned().collect();
             for it in &items {
                 register_element(vec, it);
-                // An inner container records its own elements; a vector
-                // arriving through `register_element` alone doesn't, so a
-                // loop over a grid stays one pass over its rows.
-                if matches!(it, Value::Vec(_) | Value::Map(_)) {
-                    register_nested(it);
-                }
             }
         }
         Value::Map(map) => {
             let items: Vec<Value> = map.lock().unwrap().values().cloned().collect();
             for it in &items {
                 register_entry(map, None, it);
-                if matches!(it, Value::Vec(_) | Value::Map(_)) {
-                    register_nested(it);
-                }
             }
         }
         Value::Enum { fields, .. } => {

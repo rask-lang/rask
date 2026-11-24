@@ -2,8 +2,8 @@
 
 //! End-to-end tests for the package-managing commands: `rask add`,
 //! `rask remove`, `rask init`, `rask manifest check`, `rask manifest
-//! json-schema` and `rask migrate`. Each runs the built binary in its own
-//! temporary directory.
+//! json-schema`, `rask migrate`, and `rask run` on a package. Each runs the
+//! built binary in its own temporary directory.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -816,4 +816,29 @@ fn check_json_places_an_error_in_the_file_it_is_in() {
     assert!(location["file"].as_str().unwrap().ends_with("b.rk"), "{location}");
     assert_eq!(location["line"], 3, "{location}");
     assert_eq!(location["source_line"], "    println(\"{missing()}\")", "{location}");
+}
+
+/// A panic in the second file of a package is reported in that file, by the
+/// file its span belongs to. The interpreter used to guess the file from which
+/// sources were long enough to hold the span, and with two candidates it named
+/// the package directory instead.
+#[test]
+fn interp_panic_is_located_in_its_own_file() {
+    let dir = TempDir::new("two_files");
+    dir.write("rask.toml", "schema = \"rask-package@1\"\n\n[package]\nname = \"two_files\"\nversion = \"0.1.0\"\n");
+    // The helper is longer than main, so both files could hold the span.
+    dir.write("main.rk", "func main() {\n    boom(3)\n}\n");
+    dir.write("helper.rk", "\n\n\n\n\n\n\n\n\n\nfunc boom(n: i64) {\n    if n > 0 {\n        panic(\"deep in helper\")\n    }\n}\n");
+    let here = format!("{}:13:9", dir.path().join("helper.rk").display());
+
+    let run = rask(dir.path(), &["run", "--interp", "."]);
+    assert_eq!(run.code, 101, "{:?}", run);
+    assert!(run.stderr.contains(&here), "{:?}", run);
+
+    let run = rask(dir.path(), &["run", "--interp", "--format", "json", "."]);
+    assert_eq!(run.code, 101, "{:?}", run);
+    let report: serde_json::Value = serde_json::from_str(&run.stdout).expect("a JSON report on stdout");
+    let at = &report["diagnostics"][0]["location"];
+    assert_eq!(at["file"], dir.path().join("helper.rk").display().to_string(), "{:?}", run);
+    assert_eq!(at["line"], 13, "{:?}", run);
 }

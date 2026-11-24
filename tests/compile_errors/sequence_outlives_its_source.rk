@@ -1,0 +1,165 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A sequence over a local, returned past it (E0862, SL4, SEQ26, #2036).
+//
+// `v.filter(p)` lends `v` to a call that answers a sequence, so the sequence
+// is limited to `v`, the same as `make_filter(v)` would be. The receiver was
+// never asked, and `Sequence` stopped being recognised as something that can
+// hold a borrow once it became a declared type, so all of these compiled and
+// returned a sequence reading a dead frame. Over a parameter or `self` they
+// are fine: the caller still holds the source, and so are views of one (a loop
+// item over a parameter, `let items = b.items` off one).
+import sequence.Sequence
+
+func filtered() -> Sequence<i64> {
+    let v: Vec<i64> = [1, 2, 3]
+    // ERROR: E0862 — the sequence reads `v`, which dies here
+    return v.filter(|x| x > 1)
+}
+
+func chained() -> Sequence<i64> {
+    let v: Vec<i64> = [1, 2, 3]
+    // ERROR: E0862 — `take` keeps the limit the filter had
+    return v.filter(|x| x > 1).take(2)
+}
+
+func named_then_chained() -> Sequence<i64> {
+    let v: Vec<i64> = [1, 2, 3]
+    let s = v.filter(|x| x > 1)
+    // ERROR: E0862 — `s` is limited to `v`, and so is what `take` makes of it
+    return s.take(2)
+}
+
+struct Bag { items: Vec<i64> }
+
+func from_a_field() -> Sequence<i64> {
+    let b = Bag(items: [1, 2])
+    // ERROR: E0862 — `b.items` dies with `b`
+    return b.items.filter(|x| x > 0)
+}
+
+func view_of_a_local() -> Sequence<i64> {
+    let b = Bag(items: [1, 2])
+    let items = b.items
+    // ERROR: E0862 — `items` views `b`, which dies here
+    return items.filter(|x| x > 1)
+}
+
+func item_of_a_local() -> Sequence<i64> {
+    let vs: Vec<Vec<i64>> = [[1, 2]]
+    for v in vs {
+        // ERROR: E0862 — `v` is lent by `vs`, which dies here
+        return v.filter(|x| x > 1)
+    }
+    return Vec.new().as_sequence()
+}
+
+func item_of_a_taken_param(take vs: Vec<Vec<i64>>) -> Sequence<i64> {
+    for v in vs {
+        // ERROR: E0862 — `v` is lent by `vs`, which this frame owns and frees
+        return v.filter(|x| x > 1)
+    }
+    return Vec.new().as_sequence()
+}
+
+func item_hidden_by_a_local(vs: Vec<Vec<i64>>) -> Sequence<i64> {
+    for v in vs {
+        let v: Vec<i64> = [5, 6, 7]
+        // ERROR: E0862 — this `v` is the local, not the item `vs` lends
+        return v.filter(|x| x > 1)
+    }
+    return Vec.new().as_sequence()
+}
+
+func view_hidden_by_an_item(b: Bag) -> Sequence<i64> {
+    let items = b.items
+    let local: Vec<Vec<i64>> = [[5, 6, 7]]
+    for items in local {
+        // ERROR: E0862 — this `items` is lent by `local`, not a view of `b`
+        return items.filter(|x| x > 1)
+    }
+    return items.filter(|x| x > 0)
+}
+
+func make_seq(v: Vec<i64>) -> Sequence<i64> {
+    return v.filter(|x| x > 0)
+}
+
+func through_a_function() -> Sequence<i64> {
+    let v: Vec<i64> = [1, 2]
+    // ERROR: E0862 — a user function answering a sequence lends the same way
+    return make_seq(v)
+}
+
+func over_a_param(v: Vec<i64>) -> Sequence<i64> {
+    return v.filter(|x| x > 1).take(2)
+}
+
+func first_of_param(vs: Vec<Vec<i64>>) -> Sequence<i64> {
+    // A loop item and an index are views of the parameter, which the caller
+    // still holds.
+    for v in vs {
+        return v.filter(|x| x > 1)
+    }
+    return vs[0].filter(|x| x > 0)
+}
+
+func item_again_after_a_shadow(vs: Vec<Vec<i64>>) -> Sequence<i64> {
+    for v in vs {
+        if v.len() > 5 {
+            let v: Vec<i64> = [1]
+            println("{v.len()}")
+        }
+        // The inner `v` is gone; this is the item again.
+        return v.filter(|x| x > 1)
+    }
+    return vs[0].filter(|x| x > 0)
+}
+
+func through_a_view(b: Bag) -> Sequence<i64> {
+    let items = b.items
+    return items.filter(|x| x > 1)
+}
+
+extend Bag {
+    func big(self) -> Sequence<i64> {
+        return self.items.filter(|x| x > 1)
+    }
+}
+
+func a_clone_is_its_own(fs: Vec<func() -> i64>) -> func() -> i64 {
+    let f = fs[0].clone()
+    return f.clone()
+}
+
+func consumed_in_place() -> i64 {
+    let v: Vec<i64> = [1, 2, 3]
+    mut n = 0
+    for x in v.filter(|x| x > 1).take(5) {
+        n += x
+    }
+    return n + v.filter(|x| x > 2).count().to<i64>()!
+}
+
+func main() {
+    let v: Vec<i64> = [1, 2, 3, 4]
+    mut n = 0
+    for x in over_a_param(v) {
+        n += x
+    }
+    let b = Bag(items: [5, 6])
+    for x in b.big() {
+        n += x
+    }
+    let vs: Vec<Vec<i64>> = [[1, 2, 3]]
+    for x in first_of_param(vs) {
+        n += x
+    }
+    for x in item_again_after_a_shadow(vs) {
+        n += x
+    }
+    for x in through_a_view(b) {
+        n += x
+    }
+    let fs: Vec<func() -> i64> = [|| 1]
+    println("{n} {consumed_in_place()} {a_clone_is_its_own(fs)()}")
+}

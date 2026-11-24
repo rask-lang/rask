@@ -119,6 +119,14 @@ fn present_value(payload: Value) -> Value {
 }
 
 /// ER31a: build the boundary-enum variant around a propagated error.
+/// What a call site knows about its arguments beyond their values: the
+/// place behind each `mutate` one, and the optional layers the checker gave
+/// each expression.
+struct CallArgPlaces {
+    slots: Vec<Option<Slot>>,
+    depths: Vec<Option<usize>>,
+}
+
 impl Interpreter {
     /// Run a `catch` handler with the error bound. `catch _ =>` binds nothing —
     /// the discard is visible in the source, so there's no name to introduce.
@@ -148,6 +156,69 @@ impl Interpreter {
             fields: vec![inner],
             variant_index,
             origin: None,
+        }
+    }
+
+    /// `val!`: the payload of a `Some` or `Ok`, or the panic for `none` and
+    /// `Err`, reported at the `!` rather than where the operand starts
+    /// (ctrl.panic/S6, #1372).
+    pub(super) fn force(
+        &mut self,
+        val: &Value,
+        message: Option<&str>,
+        bang: rask_ast::Span,
+    ) -> Result<Value, RuntimeDiagnostic> {
+        match val {
+            Value::Enum {
+                variant, fields, ..
+            } => match variant.as_str() {
+                "Some" => Ok(fields.first().cloned().unwrap_or(Value::Unit)),
+                "None" => {
+                    if let Some(msg) = message {
+                        Err(RuntimeDiagnostic::new(
+                            RuntimeError::Panic(msg.to_string()),
+                            bang
+                        ))
+                    } else {
+                        Err(RuntimeDiagnostic::new(RuntimeError::ForcedAbsent, bang))
+                    }
+                }
+                "Ok" => Ok(fields.first().cloned().unwrap_or(Value::Unit)),
+                "Err" => {
+                    if let Some(msg) = message {
+                        Err(RuntimeDiagnostic::new(
+                            RuntimeError::Panic(msg.to_string()),
+                            bang
+                        ))
+                    } else {
+                        // ER15: `!` panics *using* the error's message.
+                        // The payload is right here, and every error
+                        // type has a `message()` — E0344 is what makes
+                        // that true — so there is always something to
+                        // say beyond "it was an error" (#1009).
+                        let payload = fields.first().cloned().unwrap_or(Value::Unit);
+                        let text = self.describe_error_value(&payload);
+                        Err(RuntimeDiagnostic::new(
+                            RuntimeError::ForcedError(text),
+                            bang,
+                        ))
+                    }
+                }
+                _ => Err(RuntimeDiagnostic::new(
+                    RuntimeError::TypeError(format!(
+                        "! operator requires Option or Result, got {}",
+                        variant
+                    )),
+                    bang
+                )),
+            },
+            _ => Err(RuntimeDiagnostic::new(
+                RuntimeError::TypeError(format!(
+                    "! operator requires Option or Result, got {}",
+                    val.type_name()
+                )),
+                bang
+            )),
         }
     }
 }
@@ -594,9 +665,11 @@ impl Interpreter {
     fn eval_call_args(
         &mut self,
         args: &[rask_ast::expr::CallArg],
-    ) -> Result<(Vec<Value>, Vec<Option<Slot>>), RuntimeDiagnostic> {
+    ) -> Result<(Vec<Value>, CallArgPlaces), RuntimeDiagnostic> {
         let mut values = Vec::with_capacity(args.len());
         let mut places = Vec::with_capacity(args.len());
+        let depths = args.iter().map(|a| self.static_option_depth(&a.expr)).collect();
+        let moves_from = self.pending_moves.len();
         for arg in args {
             if matches!(arg.mode, ArgMode::Mutate | ArgMode::Deleting) {
                 match self.locate(&arg.expr)? {
@@ -614,16 +687,28 @@ impl Interpreter {
                 places.push(None);
             }
         }
-        Ok((values, places))
+        self.complete_moves(moves_from);
+        Ok((values, CallArgPlaces { slots: places, depths }))
+    }
+
+    /// Empty the slots queued since `from`: their hand-over happened.
+    pub(super) fn complete_moves(&mut self, from: usize) {
+        for slot in self.pending_moves.drain(from..) {
+            slot.set(Value::Unit);
+        }
     }
 
     /// Hand the next call to `callee` the places behind its `mutate`
-    /// parameters, indexed by parameter (see `LentArgs`).
-    fn lend_places(&mut self, callee: &str, places: Vec<Option<Slot>>) {
-        self.lent_args = places.iter().any(Option::is_some).then(|| super::LentArgs {
+    /// parameters and the arguments' optional layers, indexed by parameter
+    /// (see `LentArgs`).
+    fn lend_places(&mut self, callee: &str, args: CallArgPlaces) {
+        let CallArgPlaces { slots, depths } = args;
+        let worth_it = slots.iter().any(Option::is_some) || depths.iter().any(Option::is_some);
+        self.lent_args = worth_it.then(|| super::LentArgs {
             depth: self.call_depth,
             callee: callee.to_string(),
-            slots: places,
+            slots,
+            depths,
         });
     }
 
@@ -909,6 +994,57 @@ impl Interpreter {
         self.wrap_as_newtype(&ty, val)
     }
 
+    /// `Atomic<T>.default()`: the cell holds `T`'s zero, read off the
+    /// checker's type for the call. Building a bare integer 0 for every
+    /// payload made `Atomic<bool>.default().load()` print `0` (#2001).
+    fn atomic_default(&self, call: rask_ast::NodeId) -> Result<Value, RuntimeError> {
+        use rask_types::{GenericArg, Type};
+        let payload = match self.node_types.get(&call) {
+            Some(Type::Generic { args, .. } | Type::UnresolvedGeneric { args, .. }) => match args.first() {
+                Some(GenericArg::Type(t)) => Some((**t).clone()),
+                _ => None,
+            },
+            _ => None,
+        };
+        let payload = payload.map(|t| match self.generic_frames.last().and_then(|f| f.as_deref()) {
+            Some(frame) => rask_check::substitute_type(&t, frame),
+            None => t,
+        });
+        let zero = payload.as_ref().and_then(|t| self.zero_of(t)).ok_or_else(|| {
+            RuntimeError::Panic(format!(
+                "`Atomic.default()` has no zero for {}; use `Atomic.new`",
+                payload.map_or("this payload".to_string(), |t| format!("`{t}`")),
+            ))
+        })?;
+        Ok(Value::Atomic(std::sync::Arc::new(std::sync::Mutex::new(zero))))
+    }
+
+    /// The all-zero value of a primitive or a newtype over one: 0, `false`,
+    /// `'\0'`, a null pointer. `None` for anything else.
+    fn zero_of(&self, ty: &rask_types::Type) -> Option<Value> {
+        use rask_types::Type;
+        Some(match ty {
+            Type::Bool => Value::Bool(false),
+            Type::Char => Value::Char('\0'),
+            Type::I128 => Value::Int128(0),
+            Type::U128 => Value::Uint128(0),
+            Type::F32 | Type::F64 => Value::Float(0.0, crate::value::FloatKind::from_type(ty)),
+            Type::RawPtr(_) => Value::RawPtr(crate::ptr::RawPtr::null()),
+            Type::Named(id) => match self.types.get(*id) {
+                Some(rask_types::TypeDef::NominalAlias { underlying, .. }) => {
+                    let inner = self.zero_of(underlying)?;
+                    return Some(self.wrap_as_newtype(ty, inner));
+                }
+                _ => return None,
+            },
+            Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::Isize
+            | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::Usize => {
+                Value::Int(0, crate::value::IntKind::from_type(ty, self.types.target()))
+            }
+            _ => return None,
+        })
+    }
+
     /// `val` as a value of `ty`, adding each newtype layer it lacks: an `i64`
     /// answered for `Outer` over `Inner` over `i64` becomes `Outer(Inner(n))`.
     fn wrap_as_newtype(&self, ty: &rask_types::Type, val: Value) -> Value {
@@ -1112,7 +1248,15 @@ impl Interpreter {
                     });
                 }
                 if let Some(val) = self.env.get(name) {
-                    return Ok(val.clone());
+                    // Handed to a new owner: the old name holds nothing once
+                    // the hand-over happens, so only the new owner keeps it
+                    // alive (#2037).
+                    if self.moving_reads.contains(&expr.id) {
+                        if let Some(slot) = self.env.slot_of(name) {
+                            self.pending_moves.push(slot.clone());
+                        }
+                    }
+                    return Ok(val);
                 }
                 if self.functions.contains_key(name) {
                     // Named as a value, a generic function carries the types
@@ -1250,9 +1394,31 @@ impl Interpreter {
                 // both under this call.
                 let generics = self.call_generics(expr.id);
                 if let Value::Closure { .. } = &func_val {
-                    return self
-                        .call_closure(func_val, arg_vals, places)
-                        .map_err(|e| RuntimeDiagnostic::new(e, expr.span));
+                    // Each argument takes the layers its parameter's type
+                    // has beyond its own: `f(a)` with `a: i64? = none` hands a
+                    // `func(i64??)` a present inner `none`, not the outer one
+                    // (type.optionals/OPT31, #2063).
+                    let arg_vals = match self.node_types.get(&func.id).cloned() {
+                        Some(rask_types::Type::Fn { params, .. }) => arg_vals
+                            .into_iter()
+                            .enumerate()
+                            .map(|(i, v)| {
+                                let want = params.get(i).and_then(|p| self.option_layers(&p.ty));
+                                match (want, places.depths.get(i).copied().flatten()) {
+                                    (Some(want), Some(have)) => (have..want).fold(v, |v, _| Value::some(v)),
+                                    _ => v,
+                                }
+                            })
+                            .collect(),
+                        _ => arg_vals,
+                    };
+                    // A panic inside the body is reported on its own line,
+                    // as a named function's is.
+                    let outer = self.failed_call_span.take();
+                    let result = self.call_closure(func_val, arg_vals, places.slots);
+                    let inner = self.failed_call_span.take();
+                    self.failed_call_span = outer;
+                    return result.map_err(|e| RuntimeDiagnostic::new(e, inner.unwrap_or(expr.span)));
                 }
                 if let Value::Function { name, .. } = &func_val {
                     if let Some(decl) = self.functions.get(name) {
@@ -1466,6 +1632,12 @@ impl Interpreter {
                 };
                 let (mut arg_vals, arg_places) = self.eval_call_args(args)?;
 
+                if method == "default"
+                    && matches!(receiver, Value::TypeConstructor(crate::value::TypeConstructorKind::Atomic))
+                {
+                    return self.atomic_default(expr.id).map_err(|e| RuntimeDiagnostic::new(e, expr.span));
+                }
+
                 // A stdlib parameter declared as one of its type's own
                 // parameters (`take value: T` of `Vec.push`, of `Shared.new`)
                 // takes the type argument, so the value widens to it the way a
@@ -1487,7 +1659,16 @@ impl Interpreter {
                     for (i, p) in meta.slot_params() {
                         let Some(slot) = arg_vals.get_mut(i) else { continue };
                         if let Some(want) = self.container_elem_option_depth(typed_at, p) {
-                            for _ in super::call::option_depth(slot)..want {
+                            // The argument's type says how many layers it
+                            // brings: `push(none)` into a `Vec<i64??>` is the
+                            // outer `none`, not an absent inner value (#2044).
+                            let have = arg_places
+                                .depths
+                                .get(i)
+                                .copied()
+                                .flatten()
+                                .unwrap_or_else(|| super::call::option_depth(slot));
+                            for _ in have..want {
                                 *slot = Value::some(slot.clone());
                             }
                         }
@@ -1707,9 +1888,11 @@ impl Interpreter {
                 // can't leave a stale span for something later (#1110).
                 let outer = self.failed_call_span.take();
                 let generics = self.method_call_generics(expr.id, object.id, &method);
-                let mut places = vec![receiver_place];
-                places.extend(arg_places);
-                self.lend_places(&method, places);
+                let mut slots = vec![receiver_place];
+                slots.extend(arg_places.slots);
+                let mut depths = vec![None];
+                depths.extend(arg_places.depths);
+                self.lend_places(&method, CallArgPlaces { slots, depths });
                 let result = self.call_method(receiver, &method, arg_vals, generics);
                 self.lent_args = None;
                 let inner = self.failed_call_span.take();
@@ -1876,7 +2059,7 @@ impl Interpreter {
                             if let Some(name) = then_name {
                                 self.env.define(name, payload);
                             }
-                            let result = self.eval_expr(then_branch);
+                            let result = self.eval_branch(expr, then_branch);
                             self.env.pop_scope();
                             return result;
                         } else if let Some(else_br) = else_branch {
@@ -1888,11 +2071,11 @@ impl Interpreter {
                                 // Result Err branch binds E; Option None has no payload.
                                 self.env.push_scope();
                                 self.env.define(name, p);
-                                let result = self.eval_expr(else_br);
+                                let result = self.eval_branch(expr, else_br);
                                 self.env.pop_scope();
                                 return result;
                             }
-                            return self.eval_expr(else_br);
+                            return self.eval_branch(expr, else_br);
                         } else {
                             return Ok(Value::Unit);
                         }
@@ -1911,22 +2094,22 @@ impl Interpreter {
                         }
                     };
                     if taken {
-                        let result = self.eval_expr(then_branch);
+                        let result = self.eval_branch(expr, then_branch);
                         self.env.pop_scope();
                         return result;
                     }
                     self.env.pop_scope();
                     return match else_branch {
-                        Some(else_br) => self.eval_expr(else_br),
+                        Some(else_br) => self.eval_branch(expr, else_br),
                         None => Ok(Value::Unit),
                     };
                 }
 
                 let cond_val = self.eval_expr(cond)?;
                 if self.is_truthy(&cond_val) {
-                    self.eval_expr(then_branch)
+                    self.eval_branch(expr, then_branch)
                 } else if let Some(else_br) = else_branch {
-                    self.eval_expr(else_br)
+                    self.eval_branch(expr, else_br)
                 } else {
                     Ok(Value::Unit)
                 }
@@ -2075,8 +2258,12 @@ impl Interpreter {
                     .get(&decl_name)
                     .or_else(|| self.struct_decls.get(&concrete_name))
                     .map(|d| {
+                        // A generic struct's fields are written in its own
+                        // parameters, which this literal's type binds:
+                        // `Slot<i64?> { v: none }` fills a `T?` that is `i64??`.
+                        let frame = self.literal_type_args(expr.id, &d.type_params);
                         d.fields.iter()
-                            .map(|f| (f.name.clone(), f.ty.clone()))
+                            .map(|f| (f.name.clone(), self.fill_type_params(&f.ty, frame.as_ref())))
                             .collect::<Vec<_>>()
                     });
                 for field in fields {
@@ -2085,7 +2272,7 @@ impl Interpreter {
                         .and_then(|ts| ts.iter().find(|(n, _)| *n == field.name))
                     {
                         Some((_, ty)) => super::exec_stmt::auto_wrap_for_annotation(
-                            value, ty, super::exec_stmt::is_none_literal(&field.value),
+                            value, ty, self.static_option_depth(&field.value),
                         ),
                         None => value,
                     };
@@ -2244,11 +2431,20 @@ impl Interpreter {
             // A literal's elements are new owners, like a struct literal's
             // fields: `(v[0], v[1])` copies the elements out, so a later
             // write to `v[0]` doesn't show through the tuple.
+            //
+            // Each element is widened to the literal's element type: in
+            // `let v: Vec<i64??> = [none, a]` the `none` is the outer layer and
+            // `a` (an `i64?`) needs one more, which only the types say (#2044).
             ExprKind::Array(elements) => {
-                let values: Vec<Value> = elements
-                    .iter()
-                    .map(|e| self.eval_owned(e))
-                    .collect::<Result<_, _>>()?;
+                let want = self.literal_elem_option_depth(expr.id);
+                let mut values: Vec<Value> = Vec::with_capacity(elements.len());
+                for e in elements {
+                    let v = self.eval_owned(e)?;
+                    values.push(match (want, self.static_option_depth(e)) {
+                        (Some(want), Some(have)) => (have..want).fold(v, |v, _| Value::some(v)),
+                        _ => v,
+                    });
+                }
                 Ok(self.collection_literal(expr.id, values))
             }
 
@@ -2298,7 +2494,7 @@ impl Interpreter {
                         for (name, val) in bindings {
                             self.env.define(name, val);
                         }
-                        let result = self.eval_expr(&arm.body);
+                        let result = self.eval_branch(expr, &arm.body);
                         self.env.pop_scope();
                         return result;
                     }
@@ -2321,7 +2517,7 @@ impl Interpreter {
                     for (name, val) in bindings {
                         self.env.define(name, val);
                     }
-                    let result = self.eval_expr(then_branch);
+                    let result = self.eval_branch(expr, then_branch);
                     self.env.pop_scope();
                     result
                 } else if let Some(else_br) = else_branch {
@@ -2333,7 +2529,7 @@ impl Interpreter {
                         let rest = Self::else_binding_value(scrutinee_ty, value, rest_ty);
                         self.env.define(name.clone(), rest);
                     }
-                    let result = self.eval_expr(else_br);
+                    let result = self.eval_branch(expr, else_br);
                     self.env.pop_scope();
                     result
                 } else {
@@ -2453,7 +2649,13 @@ impl Interpreter {
                         "Ok" | "Some" => Ok(fields.first().cloned().unwrap_or(Value::Unit)),
                         "Err" | "None" => {
                             let bound = fields.first().cloned().unwrap_or(Value::Unit);
-                            self.run_catch_body(clause, bound)
+                            let value = self.run_catch_body(clause, bound)?;
+                            // The handler's value stands in for a `T?` success
+                            // and widens into it (ER14, OPT31).
+                            Ok(match (self.static_option_depth(expr), self.static_option_depth(&clause.body)) {
+                                (Some(want), Some(have)) if !keeps_shape => (have..want).fold(value, |v, _| Value::some(v)),
+                                _ => value,
+                            })
                         }
                         _ => Err(RuntimeDiagnostic::new(
                             RuntimeError::TypeError(format!(
@@ -2510,61 +2712,8 @@ impl Interpreter {
             }
 
             ExprKind::Unwrap { expr: inner, message, bang } => {
-                // Reported at the `!`, not where the operand starts (ctrl.panic/S6, #1372).
-                let bang = *bang;
                 let val = self.eval_expr(inner)?;
-                match &val {
-                    Value::Enum {
-                        variant, fields, ..
-                    } => match variant.as_str() {
-                        "Some" => Ok(fields.first().cloned().unwrap_or(Value::Unit)),
-                        "None" => {
-                            if let Some(msg) = message {
-                                Err(RuntimeDiagnostic::new(
-                                    RuntimeError::Panic(msg.clone()),
-                                    bang
-                                ))
-                            } else {
-                                Err(RuntimeDiagnostic::new(RuntimeError::ForcedAbsent, bang))
-                            }
-                        }
-                        "Ok" => Ok(fields.first().cloned().unwrap_or(Value::Unit)),
-                        "Err" => {
-                            if let Some(msg) = message {
-                                Err(RuntimeDiagnostic::new(
-                                    RuntimeError::Panic(msg.clone()),
-                                    bang
-                                ))
-                            } else {
-                                // ER15: `!` panics *using* the error's message.
-                                // The payload is right here, and every error
-                                // type has a `message()` — E0344 is what makes
-                                // that true — so there is always something to
-                                // say beyond "it was an error" (#1009).
-                                let payload = fields.first().cloned().unwrap_or(Value::Unit);
-                                let text = self.describe_error_value(&payload);
-                                Err(RuntimeDiagnostic::new(
-                                    RuntimeError::ForcedError(text),
-                                    bang,
-                                ))
-                            }
-                        }
-                        _ => Err(RuntimeDiagnostic::new(
-                            RuntimeError::TypeError(format!(
-                                "! operator requires Option or Result, got {}",
-                                variant
-                            )),
-                            bang
-                        )),
-                    },
-                    _ => Err(RuntimeDiagnostic::new(
-                        RuntimeError::TypeError(format!(
-                            "! operator requires Option or Result, got {}",
-                            val.type_name()
-                        )),
-                        bang
-                    )),
-                }
+                self.force(&val, message.as_deref(), *bang)
             }
 
             ExprKind::Closure { params, body, .. } => {
@@ -2589,6 +2738,12 @@ impl Interpreter {
                 } else {
                     self.env.capture_snapshot(&carried)
                 };
+                // What the closure carries off, its frame no longer holds: a
+                // task that took a `Sender` closes the channel when it ends,
+                // not when the frame that built it does (#2037).
+                for name in self.moved_captures.get(&expr.id).into_iter().flatten() {
+                    self.env.assign(name, Value::Unit);
+                }
                 Ok(Value::Closure {
                     params: params.iter().map(|p| p.name.clone()).collect(),
                     body: (**body).clone(),
@@ -2597,13 +2752,7 @@ impl Interpreter {
                     carried,
                     task_bound: self.closure_is_task_bound(expr.id),
                     generics: self.generic_frames.last().cloned().flatten(),
-                    // A real error side: `T?` is a `Result` whose error is
-                    // `none` to the checker, and its `none` is no success.
-                    wraps_ok: matches!(
-                        self.node_types.get(&expr.id),
-                        Some(rask_types::Type::Fn { ret, .. })
-                            if matches!(&**ret, rask_types::Type::Result { err, .. } if !matches!(**err, rask_types::Type::None))
-                    ),
+                    ret: self.closure_ret(expr.id),
                 })
             }
 

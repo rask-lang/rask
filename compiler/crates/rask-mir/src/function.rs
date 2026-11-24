@@ -15,8 +15,6 @@ pub struct MirFunction {
     pub entry_block: BlockId,
     /// If true, export with C ABI (no name mangling)
     pub is_extern_c: bool,
-    /// Source file path for runtime error messages (None in tests)
-    pub source_file: Option<String>,
     /// Written `@inline`: the inliner takes it whatever its size.
     pub inline_hint: bool,
     /// How each parameter was declared, by position. A `take` one the
@@ -31,6 +29,9 @@ pub struct MirFunction {
     /// keeps the item is settled from the body once the program is lowered
     /// (`container_drop::settle_loop_item_modes`).
     pub item_mode_from_body: bool,
+    /// The declaration this was lowered from, where a stack overflow in it
+    /// is reported. `Span::new(0, 0)` for one lowering made up.
+    pub span: rask_ast::Span,
 }
 
 impl MirFunction {

@@ -44,3 +44,18 @@ test "a newtype over a newtype" {
     let d = double(Outer(Inner(5)))
     assert d.value.value == 10
 }
+
+func fresh<T: Numeric>() -> T {
+    return T.zero()
+}
+
+test "a bound reaches a primitive's statics" {
+    let a: f32 = fresh()
+    let b: i64 = fresh()
+    let c: u8 = fresh()
+    assert a == 0.0
+    assert b == 0
+    assert c == 0
+    let xs: Vec<f64> = [1.5, 2.5]
+    assert total(xs) == 15.0
+}

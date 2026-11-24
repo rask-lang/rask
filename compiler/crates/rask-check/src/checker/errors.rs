@@ -447,6 +447,12 @@ pub enum TypeError {
         from: crate::checker::BoundFrom,
         span: Span,
     },
+    /// `x!.f = v` where the payload is a value: `x!` reads it out, so the
+    /// write lands on the copy (OPT19).
+    #[error("cannot write into a payload `!` read out")]
+    WriteThroughForce {
+        span: Span,
+    },
     #[error("`string` has no `{method}` — strings are immutable")]
     StringIsImmutable {
         method: String,
@@ -1433,6 +1439,17 @@ pub enum TypeError {
         span: Span,
     },
 
+    /// The method is declared only in `extend` blocks whose header this
+    /// receiver doesn't fit: `flatten` is on `Sequence<Sequence<U>>`, so a
+    /// `Sequence<Vec<i64>>` doesn't have it.
+    #[error("no method `{method}` on `{ty}`")]
+    MethodNotForReceiver {
+        ty: String,
+        method: String,
+        headers: Vec<String>,
+        span: Span,
+    },
+
     /// type.generics/GT7: more than one conformance's method takes the call.
     #[error("this `{method}` call fits more than one of `{ty}`'s conformances")]
     AmbiguousConformanceCall {
@@ -1595,6 +1612,23 @@ pub enum TypeError {
     /// An integer literal whose value doesn't fit the type it ended up with.
     /// Codegen would keep the low bits, so `let b: u8 = 300` printed 300 in
     /// the interpreter and 44 natively.
+    /// `[x; n]` whose count isn't known at compile time. The length is part
+    /// of the array's type, so a run-time count has no type to give it.
+    #[error("the count of an array repeat isn't known at compile time")]
+    ArrayRepeatCount {
+        /// A `comptime` parameter named as the count, which can't size one yet.
+        comptime_param: Option<String>,
+        span: Span,
+    },
+
+    #[error("`{ty}` is over the 4 GiB a value can take")]
+    ValueTooLarge {
+        ty: Type,
+        /// The exact size, for an array; layout holds anything else at the cap.
+        bytes: Option<u64>,
+        span: Span,
+    },
+
     #[error("integer literal {literal} is out of range for `{ty}`")]
     IntLiteralOutOfRange {
         /// The literal as written (already signed, with `-` folded in).
@@ -1911,6 +1945,7 @@ impl TypeError {
             TypeError::TypeArgCount { name, params, expected, found, site, .. } => {
                 TypeError::TypeArgCount { name, params, expected, found, site, span }
             }
+            TypeError::ValueTooLarge { ty, bytes, .. } => TypeError::ValueTooLarge { ty, bytes, span },
             other => other,
         }
     }
@@ -1935,6 +1970,7 @@ impl TypeError {
             | ErrorInterfaceMissing { ty, .. }
             | InfiniteType { ty, .. }
             | IntLiteralOutOfRange { ty, .. }
+            | ValueTooLarge { ty, .. }
             | NoSuchField { ty, .. }
             | NoSuchMethod { ty, .. }
             | NotCallable { ty, .. }
@@ -2097,6 +2133,7 @@ impl TypeError {
             | TakeSelfThroughLink { .. }
             | MutateWithBinding { .. }
             | MutateBoundName { .. }
+            | WriteThroughForce { .. }
             | StringIsImmutable { .. }
             | StringNewRemoved { .. }
             | TemporaryKept { .. }
@@ -2191,11 +2228,13 @@ impl TypeError {
             | LegacyWrapperConstructor { .. }
             | LegacyWrapperPattern { .. }
             | InvalidConvert { .. }
+            | ArrayRepeatCount { .. }
             | AtomicOrderDoesNotFit { .. }
             | FieldGivenTwice { .. }
             | LiteralConversionNotComptime { .. }
             | NoConformanceTakes { .. }
             | AmbiguousConformanceCall { .. }
+            | MethodNotForReceiver { .. }
             | LiteralPatternOnBuiltType { .. }
             | EntrySignature { .. }
             | ExitInEnsure { .. }

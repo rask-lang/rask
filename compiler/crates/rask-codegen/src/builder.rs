@@ -216,12 +216,11 @@ struct CodegenCtx<'a> {
     /// `rask_mir::transform::addr_taken`.
     addr_taken: &'a rask_mir::transform::addr_taken::AddrTaken,
     block_map: &'a HashMap<BlockId, Block>,
+    /// The file the statement being lowered came from, for panic locations.
     source_file: Option<&'a str>,
-    line_map: Option<&'a rask_ast::LineMap>,
+    sources: Option<&'a rask_ast::SourceMap>,
     current_line: u32,
     current_col: u32,
-    /// Byte offset of the current MIR statement being lowered
-    current_span_start: u32,
     ret_ty: &'a MirType,
     /// The caller's destination for an aggregate return, when the return goes
     /// through one. Block param zero of the entry block (#1109).
@@ -416,8 +415,8 @@ pub struct FunctionBuilder<'a> {
     current_line: u32,
     current_col: u32,
 
-    /// Line map for converting byte offsets → line:col
-    line_map: Option<&'a rask_ast::LineMap>,
+    /// The program's source files, for panic locations
+    sources: Option<&'a rask_ast::SourceMap>,
 
     /// Table-driven call adaptation (populated from dispatch::stdlib_entries)
     adapt_table: HashMap<String, (ArgAdapt, RetAdapt)>,
@@ -431,6 +430,9 @@ pub struct FunctionBuilder<'a> {
     /// `rask_preempt_requested`, when the runtime provides it. Every function
     /// entry and loop back-edge checks it (conc.runtime/P3).
     preempt_flag: Option<GlobalValue>,
+    /// The runtime's thread-local `rask_stack_limit`, on a target whose
+    /// runtime keeps one. Every function entry checks it (ctrl.panics/S5).
+    stack_limit: Option<GlobalValue>,
     /// A debug build: `ptr_check` is emitted (mem.unsafe).
     debug_checks: bool,
 }
@@ -440,6 +442,24 @@ static NO_C_ABI_PLANS: std::sync::LazyLock<HashMap<String, rask_mir::c_call::Cal
     std::sync::LazyLock::new(HashMap::new);
 
 impl<'a> CodegenCtx<'a> {
+    /// Point panic locations at `span`, in whichever file it is from. A span
+    /// with no file (synthesized, or stdlib) clears the location rather than
+    /// reading its offset against some other file's lines.
+    fn locate(&mut self, span: rask_ast::Span) {
+        match self.sources.and_then(|s| s.locate(span)) {
+            Some((file, line, col)) => {
+                self.source_file = Some(file);
+                self.current_line = line;
+                self.current_col = col;
+            }
+            None => {
+                self.source_file = None;
+                self.current_line = 0;
+                self.current_col = 0;
+            }
+        }
+    }
+
     /// The machine the code is for: the one lowering laid the types out for.
     fn target(&self) -> rask_ast::Target {
         self.field_types.target
@@ -506,11 +526,12 @@ impl<'a> FunctionBuilder<'a> {
             stack_slot_map: HashMap::new(),
             current_line: 0,
             current_col: 0,
-            line_map: None,
+            sources: None,
             adapt_table: crate::dispatch::build_adapt_table(),
             c_abi_plans: &NO_C_ABI_PLANS,
             field_types: &NO_FIELD_TYPES,
             preempt_flag: None,
+            stack_limit: None,
             debug_checks: false,
         })
     }
@@ -527,6 +548,57 @@ impl<'a> FunctionBuilder<'a> {
 
     pub fn set_preempt_flag(&mut self, flag: GlobalValue) {
         self.preempt_flag = Some(flag);
+    }
+
+    pub fn set_stack_limit(&mut self, limit: GlobalValue) {
+        self.stack_limit = Some(limit);
+    }
+
+    /// `if sp - below < rask_stack_limit { rask_stack_overflow_at(..) }`,
+    /// leaving the builder in the block after it. `below` is how far under
+    /// the stack pointer the code that follows will reach before it checks
+    /// again: zero in a function's own entry, where the frame is already
+    /// pushed, and the frame's size in the trampoline of one too big to push
+    /// unchecked. The location is the function's declaration, the same one
+    /// the interpreter names when it runs out of stacks.
+    pub(crate) fn emit_stack_check(
+        builder: &mut ClifFunctionBuilder,
+        limit: GlobalValue,
+        overflow: FuncRef,
+        below: i64,
+        location: Option<(GlobalValue, u32, u32)>,
+    ) {
+        let addr = builder.ins().tls_value(types::I64, limit);
+        let limit_val = builder.ins().load(types::I64, MemFlags::trusted(), addr, 0);
+        let sp = builder.ins().get_stack_pointer(types::I64);
+        let reach = if below > 0 { builder.ins().iadd_imm(sp, -below) } else { sp };
+        let low = builder.ins().icmp(IntCC::UnsignedLessThan, reach, limit_val);
+        let slow = builder.create_block();
+        let cont = builder.create_block();
+        builder.set_cold_block(slow);
+        builder.ins().brif(low, slow, &[], cont, &[]);
+        builder.switch_to_block(slow);
+        builder.seal_block(slow);
+        let (file, line, col) = match location {
+            Some((gv, line, col)) => (builder.ins().global_value(types::I64, gv), line, col),
+            None => (builder.ins().iconst(types::I64, 0), 0, 0),
+        };
+        let line = builder.ins().iconst(types::I32, line as i64);
+        let col = builder.ins().iconst(types::I32, col as i64);
+        builder.ins().call(overflow, &[file, line, col]);
+        builder.ins().trap(TrapCode::user(1).unwrap());
+        builder.switch_to_block(cont);
+        builder.seal_block(cont);
+    }
+
+    /// Where a stack overflow in this function is reported: its declaration.
+    fn declaration_location(&self) -> Option<(GlobalValue, u32, u32)> {
+        let span = self.mir_fn.span;
+        if span.end == 0 {
+            return None;
+        }
+        let (file, line, col) = self.sources?.locate(span)?;
+        Some((*self.string_globals.get(file)?, line, col))
     }
 
     /// The C-ABI call plans, when the program imports a header whose
@@ -553,9 +625,8 @@ impl<'a> FunctionBuilder<'a> {
         builder.seal_block(cont);
     }
 
-    /// Set the line map for converting byte offsets to line:col in assert messages.
-    pub fn set_line_map(&mut self, line_map: &'a rask_ast::LineMap) {
-        self.line_map = Some(line_map);
+    pub fn set_sources(&mut self, sources: &'a rask_ast::SourceMap) {
+        self.sources = Some(sources);
     }
 
     /// Build the Cranelift IR from MIR.
@@ -582,8 +653,13 @@ impl<'a> FunctionBuilder<'a> {
 
         // Pre-compute stack allocation sizes before builder borrows self.func.
         // Entries: (local_id, byte size, alignment) for each aggregate local.
+        // A local nothing in the body names gets no slot. SSA leaves each
+        // original local behind once it has renamed it into versions, and a
+        // slot apiece tripled the frame of a function holding a 32K array.
+        let mentioned = rask_mir::analysis::uses::mentioned_locals(self.mir_fn);
         let mut stack_allocs: Vec<(LocalId, u32, u32)> = self.mir_fn.locals.iter()
             .filter(|l| !l.is_param)
+            .filter(|l| mentioned.contains(&l.id))
             // A borrowed local's storage is the frame that built the closure,
             // so it gets no slot here. Leaving it one puts a slot address in
             // `stack_slot_map` while the variable points at the caller's data,
@@ -670,6 +746,7 @@ impl<'a> FunctionBuilder<'a> {
         let mut cleanup_chain_blocks: HashMap<Vec<BlockId>, cranelift_codegen::ir::Block> =
             HashMap::new();
 
+        let declared_at = self.declaration_location();
         let mut builder = ClifFunctionBuilder::new(self.func, &mut self.builder_ctx);
 
         // Create blocks (skip cleanup-only blocks — handled via shared cleanup blocks)
@@ -760,18 +837,6 @@ impl<'a> FunctionBuilder<'a> {
             builder.def_var(var, block_param);
         }
 
-        // For main(): emit rask_set_origin_file(source_file) so .origin() includes file name
-        if self.mir_fn.name == "main" {
-            if let Some(file_name) = self.mir_fn.source_file.as_deref() {
-                if let Some(gv) = self.string_globals.get(file_name) {
-                    let file_ptr = builder.ins().global_value(types::I64, *gv);
-                    if let Some(func_ref) = self.func_refs.get("rask_set_origin_file") {
-                        builder.ins().call(*func_ref, &[file_ptr]);
-                    }
-                }
-            }
-        }
-
         let mut ctx = CodegenCtx {
             var_map: &self.var_map,
             locals: &self.mir_fn.locals,
@@ -793,11 +858,10 @@ impl<'a> FunctionBuilder<'a> {
             stack_slot_map: &self.stack_slot_map,
             addr_taken: &addr_taken,
             block_map: &self.block_map,
-            source_file: self.mir_fn.source_file.as_deref(),
-            line_map: self.line_map,
+            source_file: None,
+            sources: self.sources,
             current_line: self.current_line,
             current_col: self.current_col,
-            current_span_start: 0,
             ret_ty: &self.mir_fn.ret_ty,
             dst_param,
             is_main: self.mir_fn.name == "main",
@@ -808,6 +872,11 @@ impl<'a> FunctionBuilder<'a> {
             field_types: self.field_types,
             unwind_rec: None,
         };
+        // ctrl.panics/S5: the frame is pushed; is there room under it?
+        if let (Some(limit), Some(overflow)) = (self.stack_limit, ctx.func_refs.get("rask_stack_overflow_at").copied()) {
+            Self::emit_stack_check(&mut builder, limit, overflow, 0, declared_at);
+        }
+
         // ctrl.panic/U6: before anything else, so the frame's ensures, pushed
         // later, run ahead of it on a panic and still see what it owns.
         ctx.unwind_rec = Self::push_unwind_record(&mut builder, self.mir_fn, &ctx);
@@ -850,13 +919,7 @@ impl<'a> FunctionBuilder<'a> {
             // Lower statements
             for stmt in &mir_block.statements {
                 Self::apply_srcloc(&mut builder, stmt.span);
-                ctx.current_span_start = stmt.span.start as u32;
-                // Update line:col from span if we have a line map
-                if let Some(lm) = ctx.line_map {
-                    let (line, col) = lm.offset_to_line_col(stmt.span.start);
-                    ctx.current_line = line as u32;
-                    ctx.current_col = col as u32;
-                }
+                ctx.locate(stmt.span);
                 Self::lower_stmt(&mut builder, stmt, &ctx)?;
             }
 
@@ -937,14 +1000,13 @@ impl<'a> FunctionBuilder<'a> {
             // so a `switch` in an inlined `match` is a switch here too.
             let mut cleanup_targets = self.block_map.clone();
             cleanup_targets.extend(cleanup_block_map.iter().map(|(k, v)| (*k, *v)));
-            // The file and line map stay: a panic in a function an `ensure`
+            // The sources stay: a panic in a function an `ensure`
             // calls is reported where it happens, whichever path ran the
             // body (#1950). Dropping them here printed `panic: not yet
             // implemented` with no location for every panic in a cleanup.
             let mut cleanup_ctx = CodegenCtx {
                 current_line: 0,
                 current_col: 0,
-                current_span_start: 0,
                 block_map: &cleanup_targets,
                 ..ctx
             };
@@ -1015,12 +1077,7 @@ impl<'a> FunctionBuilder<'a> {
                 builder.switch_to_block(cl_block);
                 for stmt in &mir_block.statements {
                     Self::apply_srcloc(&mut builder, stmt.span);
-                    cleanup_ctx.current_span_start = stmt.span.start as u32;
-                    if let Some(lm) = cleanup_ctx.line_map {
-                        let (line, col) = lm.offset_to_line_col(stmt.span.start);
-                        cleanup_ctx.current_line = line as u32;
-                        cleanup_ctx.current_col = col as u32;
-                    }
+                    cleanup_ctx.locate(stmt.span);
                     Self::lower_stmt(&mut builder, stmt, &cleanup_ctx)?;
                 }
 
@@ -1675,7 +1732,10 @@ impl<'a> FunctionBuilder<'a> {
             // exact when narrowing loses nothing. NaN is neither — it converts
             // fine, it just isn't equal to itself, so it's excused explicitly.
             let converted = Self::to_float(builder, val, source_ty, tgt_clif);
-            let exact = if src_clif.is_float() {
+            let exact = if src_clif.is_float() && src_clif.bits() < tgt_clif.bits() {
+                // Widening a float is always exact.
+                builder.ins().iconst(types::I8, 1)
+            } else if src_clif.is_float() {
                 let back = if src_clif.bits() > tgt_clif.bits() {
                     builder.ins().fpromote(src_clif, converted)
                 } else {
@@ -2477,7 +2537,12 @@ impl<'a> FunctionBuilder<'a> {
             // Whole-aggregate copy: rvalue produces a pointer to the source
             // aggregate, dst has its own storage (either a stack slot or an
             // external pointer for mutate-params).
-            (MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_),
+            //
+            // A box's fat pointer too. `c = mkn(i)` in a loop made `c` the
+            // address of the temporary's slot, the next iteration wrote the
+            // new box there, and the drop of `c`'s old box freed the new one:
+            // a use after free, and the old box leaked.
+            (MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_) | MirType::InterfaceObject { .. },
              MirRValue::Use(MirOperand::Local(_))) => true,
             // A whole wrapper from another of the same shape: a wrapper built
             // around a plain value is `WrapSome`, and a result from anything
@@ -7992,7 +8057,7 @@ impl<'a> FunctionBuilder<'a> {
         args.truncate(first);
         for a in &mir_args[first..] {
             let MirOperand::Constant(MirConst::Elem(ty)) = a else { unreachable!() };
-            let map = Self::element_owned_offsets(Some(ty), ctx)
+            let map = crate::elem_offsets::container_elem_offsets(ty, ctx.shapes())
                 .filter(|offs| !offs.is_empty())
                 .and_then(|offs| {
                     let at = Self::element_offsets_global(builder, &offs, ctx)?;

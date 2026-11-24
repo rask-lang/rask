@@ -1409,6 +1409,14 @@ impl ToDiagnostic for crate::TypeError {
                 }
             }
 
+            WriteThroughForce { span } => {
+                Diagnostic::error("cannot write into a payload `!` read out")
+                    .with_code("E0985")
+                    .with_primary(*span, "`!` hands back a copy of what the optional holds")
+                    .with_help("copy the payload out, change the copy, and assign it back")
+                    .with_fix("mut next = opt!\nnext.n = 5\nopt = next")
+                    .with_why("`x!` reads the payload out, the same as `if x? as v` does, so a write into it would land on the copy and be lost [type.optionals/OPT19]. A link is different: its fields are the node's, so `x!.f = v` on a `Link<T>?` writes the node")
+            }
             MutateWithBinding { name, span } => {
                 Diagnostic::error(format!("cannot mutate `{}` — bound from a shared read lock", name))
                     .with_code("E0360")
@@ -3050,6 +3058,18 @@ impl ToDiagnostic for crate::TypeError {
                     .with_fix("compare in a guard: `_ if x == 0 => …`")
                     .with_why(format!("a `{ty}` written as a literal is built by its `from_literal` while compiling (type.primitives/L9), so its bits aren't the literal's, and a pattern only compares bits. `==` compares the built values"))
             }
+            MethodNotForReceiver { ty, method, headers, span } => {
+                let mut d = Diagnostic::error(format!("no method `{}` on `{}`", method, ty))
+                    .with_code("E0981")
+                    .with_primary(*span, "this receiver doesn't fit the block that declares it");
+                for h in headers {
+                    d = d.with_note(format!("`{}` is declared in `extend {}`", method, h));
+                }
+                d.with_why(format!(
+                    "a method declared in an `extend` block whose header names a shape belongs \
+                     only to receivers of that shape; `{ty}` isn't one (std.reflect/R5)"
+                ))
+            }
             AmbiguousConformanceCall { ty, method, candidates, span } => {
                 let mut d = Diagnostic::error(format!("this `{}` call fits more than one of `{}`'s conformances", method, ty))
                     .with_code("E0973")
@@ -3309,6 +3329,32 @@ impl ToDiagnostic for crate::TypeError {
                     .with_code("E0818")
                     .with_primary(*span, "invalid conversion form")
                     .with_why("each conversion form names its data-loss behavior; the source and target kinds must match it [type.primitives/CV11–CV16]")
+            }
+            ArrayRepeatCount { comptime_param, span } => {
+                let d = Diagnostic::error("the count of `[x; n]` isn't known at compile time")
+                    .with_code("E0984")
+                    .with_why("a fixed-size array's length is part of its type, so the count has to be a literal or a module `const`");
+                match comptime_param {
+                    Some(name) => d
+                        .with_primary(*span, format!("`{name}` is a `comptime` parameter"))
+                        .with_help("a `comptime` parameter can't size an array repeat yet (#1623)"),
+                    None => d
+                        .with_primary(*span, "known only when the program runs")
+                        .with_help("for a count known only at run time, push the elements into a `Vec`"),
+                }
+            }
+            ValueTooLarge { ty, bytes, span } => {
+                let d = Diagnostic::error(format!("`{}` is too large for a value", ty))
+                    .with_code("E0980")
+                    .with_why("a value's size is a 32-bit count, so one value holds at most 4 GiB");
+                match bytes {
+                    Some(bytes) => d
+                        .with_primary(*span, format!("{} bytes", bytes))
+                        .with_help("keep this many elements in a `Vec`, which holds them on the heap"),
+                    None => d
+                        .with_primary(*span, "its parts add up to over 4 GiB")
+                        .with_help("keep the large parts on the heap, in a `Vec` or a `Heap`"),
+                }
             }
             IntLiteralOutOfRange { literal, ty, min, max, span } => {
                 let label = format!("`{}` doesn't fit in `{}`", literal, ty);

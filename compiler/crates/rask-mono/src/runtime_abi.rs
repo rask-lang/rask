@@ -31,6 +31,9 @@ runtime_constants! {
     /// Where a `T or E` keeps the source line its error came from: a
     /// `uint32_t`, zero for none (`rask_types::abi`).
     RASK_RESULT_ORIGIN_LINE_OFFSET = rask_types::abi::RESULT_ORIGIN_LINE_OFFSET as i64;
+    /// Where it keeps the file: a `uint64_t`, the file's index in
+    /// `rask_origin_files` plus one, zero for none.
+    RASK_RESULT_ORIGIN_FILE_OFFSET = rask_types::abi::RESULT_ORIGIN_FILE_OFFSET as i64;
 
     /// How the runtime reads one element of a vector it formats or sorts. The
     /// vector only records a width, and a four-byte element could be an i32,
@@ -106,6 +109,10 @@ runtime_constants! {
     RASK_OWNED_HANDLE = 9;
     RASK_OWNED_HANDLE_INDEX_SHIFT = 20;
     RASK_OWNED_HANDLE_OFFSET_MASK = 0xF_FFFF;
+    /// The element *is* a link (`Vec<Link<T>>`, a `Map` of them): the whole
+    /// list, alone. Owns nothing; it lets a container that arrives whole, a
+    /// clone above all, record its own edges (#1972).
+    RASK_OWNED_ELEM_LINK = 10;
 
     /// Word indexes into a vtable (`rask_mir::vtable_layout`): the concrete
     /// value's size and alignment, which size an interface box's block, and

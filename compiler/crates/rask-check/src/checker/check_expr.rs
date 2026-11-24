@@ -412,14 +412,15 @@ impl TypeChecker {
     /// after the call was walked. Runs after solving, from the same list of
     /// deferred checks as the rest.
     pub(super) fn validate_pending_interface_elem_coercions(&mut self) {
-        // A method's own `any Interface` parameter. Free function calls record
-        // this as they're walked; a method only knows its parameters once the
-        // receiver resolves, inside the solver, so `coerce_arg` queues it.
-        // Without it `io.copy(src, dst)` and `c.scaled(Sq(…))` passed the bare
-        // struct where the fat pointer goes, and the first call through it
-        // read a vtable out of the struct.
-        for (node, param, arg) in std::mem::take(&mut self.pending_interface_arg_coercions) {
-            self.note_interface_coercion_node(node, false, &param, &arg);
+        // A value whose slot's type is known only after solving: a method's
+        // own `any Interface` parameter (a method only knows its parameters
+        // once the receiver resolves, inside the solver, so `coerce_arg`
+        // queues it), a `catch` handler's value and a `??` default. Without
+        // it `io.copy(src, dst)` and `c.scaled(Sq(…))` passed the bare struct
+        // where the fat pointer goes, and the first call through it read a
+        // vtable out of the struct.
+        for (node, slot, value) in std::mem::take(&mut self.pending_interface_coercions) {
+            self.note_interface_coercion_node(node, false, &slot, &value);
         }
         let pending = std::mem::take(&mut self.pending_interface_elem_coercions);
         for (node, is_any_cast, recv_ty, arg_ty) in pending {
@@ -1583,6 +1584,11 @@ impl TypeChecker {
                         self.ctx.add_constraint(TypeConstraint::Equal(built.clone(), base_ty, base.span));
                     }
                 }
+                // A declared struct is measured at its declaration; a generic
+                // one only has a size once its arguments are known.
+                if matches!(built, Type::Generic { .. }) {
+                    self.pending_value_sizes.push((built.clone(), expr.span));
+                }
                 built
             }
 
@@ -1623,7 +1629,9 @@ impl TypeChecker {
                 if elem_types.is_empty() {
                     Type::Unit
                 } else {
-                    Type::Tuple(elem_types)
+                    let ty = Type::Tuple(elem_types);
+                    self.pending_value_sizes.push((ty.clone(), expr.span));
+                    ty
                 }
             }
 
@@ -1927,8 +1935,19 @@ impl TypeChecker {
                 }
                 // Still wrapped with the same success type — the shape carries
                 // on, and so does the chain.
+                // On an optional success type, a body is only a step of the
+                // chain when its own success side is that type. A `T?` body on
+                // `T?? or E` is the `T` itself, which widens below: comparing
+                // its `i64` with `i64?` reported `expected i64, found i64??`.
+                let ok_now = self.ctx.apply(&ok_ty);
+                let is_the_success_value = |body_ok: &Type| {
+                    ok_now.is_option() && !matches!(body_ok, Type::Var(_)) && *body_ok != ok_now
+                };
                 if let Type::Result { ok: body_ok, .. } = &resolved_body {
-                    let body_ok = (**body_ok).clone();
+                    let body_ok = self.ctx.apply(body_ok);
+                    if is_the_success_value(&body_ok) {
+                        return self.catch_widens_into(&clause.body, body_ty, ok_ty, expr.span);
+                    }
                     if let Err(e) = self.unify(&body_ok, &ok_ty, expr.span) {
                         self.errors.push(e);
                     }
@@ -1948,6 +1967,19 @@ impl TypeChecker {
                 {
                     self.pending_catch_void_checks.push((ok_ty.clone(), expr.span));
                     return ok_ty;
+                }
+                // The handler's value stands in for the success value, so an
+                // erased success type boxes it. Without this `catch e => Tag(…)`
+                // on an `any Label or E` handed the bare struct on as the box.
+                // Asked once solving has settled both: after a method call
+                // the success type is still open here, and `f.make(-1) catch
+                // e => Tag(…)` was never boxed.
+                if !Self::is_any_cast(&clause.body) {
+                    self.pending_interface_coercions.push((clause.body.id, ok_ty.clone(), body_ty.clone()));
+                }
+                // `one(1) catch _ => 7` on an `i64? or E` was a mismatch.
+                if ok_now.is_option() && !resolved_body.is_option() {
+                    return self.catch_widens_into(&clause.body, body_ty, ok_ty, expr.span);
                 }
                 self.ctx.add_constraint(TypeConstraint::Equal(
                     ok_ty.clone(),
@@ -2653,20 +2685,33 @@ impl TypeChecker {
                 if let Err(e) = self.unify(&Type::Usize, &count_ty, count.span) {
                     self.errors.push(e);
                 }
-                // A literal, or a module const naming one (`[0; N]`); anything
-                // else keeps the 0 placeholder. A local of the same name is
-                // not the const.
-                let len = match &count.kind {
-                    ExprKind::Int(n, _) => *n as usize,
-                    ExprKind::Ident(name) if self.lookup_local(name).is_none() => {
-                        self.types.const_length(name).unwrap_or(0)
-                    }
-                    _ => 0,
+                // A literal, or a module const naming one (`[0; N]`). A local
+                // of the same name is not the const; the const itself sits in
+                // the outermost scope as a `ModuleConst`. Anything else has no
+                // length to put in the type: a placeholder 0 unified with any
+                // array, and natively there was nothing to lower it to (#2057).
+                // A literal that doesn't fit a `usize` (`-1`) was just
+                // reported, and an array of that length has no layout, so the
+                // expression has no type to hand on (#2051).
+                let known = match &count.kind {
+                    ExprKind::Int(n, _) => match usize::try_from(*n) {
+                        Ok(n) => Some(n),
+                        Err(_) => return Type::Error,
+                    },
+                    ExprKind::Ident(name) if self.names_module_const(name) => self.types.const_length(name),
+                    _ => None,
                 };
-                Type::Array {
-                    elem: Box::new(elem_ty),
-                    len,
-                }
+                let Some(len) = known else {
+                    let comptime_param = match &count.kind {
+                        ExprKind::Ident(name) if self.current_comptime_params.contains(name) => Some(name.clone()),
+                        _ => None,
+                    };
+                    self.errors.push(TypeError::ArrayRepeatCount { comptime_param, span: count.span });
+                    return Type::Error;
+                };
+                let ty = Type::Array { elem: Box::new(elem_ty), len };
+                self.pending_value_sizes.push((ty.clone(), expr.span));
+                ty
             }
 
 
@@ -2731,6 +2776,11 @@ impl TypeChecker {
                 if let (Some(inner), Type::Never) = (resolved_val.as_option(), self.ctx.apply(&def_ty)) {
                     let inner = inner.clone();
                     let _ = self.unify(&result, &inner, expr.span);
+                }
+                // The default stands in for the payload, so an erased payload
+                // type boxes it, the way a `catch` handler's value is boxed.
+                if !Self::is_any_cast(default) {
+                    self.pending_interface_coercions.push((default.id, result.clone(), def_ty.clone()));
                 }
                 self.ctx.add_constraint(TypeConstraint::Coalesce {
                     node: expr.id,
@@ -5058,6 +5108,19 @@ impl TypeChecker {
         format!("{}", self.types.resolve_type_names(ty))
     }
 
+    /// ER14 puts the handler's value where the `T` was, and a `T?` takes a
+    /// value by widening (OPT31), the same as an `if` arm next to a `T?` one.
+    fn catch_widens_into(&mut self, body: &Expr, body_ty: Type, ok_ty: Type, span: Span) -> Type {
+        self.coerce_into_node(
+            rask_ast::coercion::CoercionSite::Branch,
+            body_ty,
+            ok_ty.clone(),
+            Some(body.id),
+            span,
+        );
+        ok_ty
+    }
+
     /// Hand a plain `try`'s error to the enclosing function: the same type, a
     /// member of its error union (ER31), or a variant of its error enum (ER31a).
     ///
@@ -6923,6 +6986,23 @@ impl TypeChecker {
     /// A range counts: its bounds are numbers or chars. `"a".."z"` was a
     /// `Range<string>` that native walked as nothing and the interpreter
     /// refused at run time.
+    /// VS12: a value over the 4 GiB a value can take. Sized here rather than
+    /// where it's checked: an element is usually a literal whose type the
+    /// defaults only just settled (`[0; N]`). Each type is reported once, at
+    /// its declaration when it has one.
+    pub(super) fn validate_pending_value_sizes(&mut self) {
+        let mut seen = std::collections::HashSet::new();
+        for (ty, span) in std::mem::take(&mut self.pending_value_sizes) {
+            let ty = self.ctx.apply(&ty);
+            if !seen.insert(ty.clone()) {
+                continue;
+            }
+            if let Some(bytes) = self.types.too_large(&ty) {
+                self.errors.push(TypeError::ValueTooLarge { ty, bytes, span });
+            }
+        }
+    }
+
     pub(super) fn validate_pending_range_bounds(&mut self) {
         for (elem, span) in std::mem::take(&mut self.pending_range_bounds) {
             let ty = self.resolve_named(&self.ctx.apply(&elem));
@@ -8181,24 +8261,49 @@ impl TypeChecker {
     /// Each arm used to be made equal to the others before anything knew the
     /// target, so `none` and `5` never met in the middle (#1692).
     pub(super) fn join_arms(&mut self, arms: Vec<(Type, rask_ast::NodeId)>, span: Span) -> Type {
-        let Some((first, _)) = arms.first().cloned() else {
+        if arms.is_empty() {
             return self.ctx.fresh_var();
-        };
-        let optional_arm = arms
-            .iter()
-            .position(|(ty, _)| self.ctx.apply(ty).as_option().is_some());
+        }
+        // The arm with the most optional layers is what the others widen
+        // into: `if c { y } else { inner }` with `y: i64??` and `inner: i64?`
+        // is an `i64??`, and `inner` is its present branch (OPT31). Taking the
+        // first optional arm made `inner` the target and `y` a mismatch.
+        let depths: Vec<usize> = arms.iter().map(|(ty, _)| self.option_depth(ty)).collect();
+        let deepest = depths.iter().copied().max().unwrap_or(0);
+        let optional_arm = (deepest > 0).then(|| depths.iter().position(|d| *d == deepest)).flatten();
         let Some(target_at) = optional_arm else {
-            for (ty, _) in arms.into_iter().skip(1) {
-                self.ctx.add_constraint(TypeConstraint::Equal(first.clone(), ty, span));
+            // An arm that already is an `any Interface` is what the others
+            // join into, and each of them is boxed once its type settles.
+            // `if c { h.label } else { Tag(…) }` took the first arm's type
+            // and boxed neither, so the `else` value was a bare struct where
+            // the box goes, and the first call through it read a vtable out
+            // of the struct.
+            let target_at = arms
+                .iter()
+                .position(|(ty, _)| matches!(self.ctx.apply(ty), Type::InterfaceObject { .. }))
+                .unwrap_or(0);
+            let target = arms[target_at].0.clone();
+            for (i, (ty, node)) in arms.into_iter().enumerate() {
+                if i == target_at {
+                    continue;
+                }
+                self.pending_interface_coercions.push((node, target.clone(), ty.clone()));
+                self.ctx.add_constraint(TypeConstraint::Equal(target.clone(), ty, span));
             }
-            return first;
+            return target;
         };
         let target = arms[target_at].0.clone();
         for (i, (ty, node)) in arms.into_iter().enumerate() {
             if i == target_at {
                 continue;
             }
-            if self.ctx.apply(&ty).as_option().is_some() {
+            // A bare `none` has an open payload and is the target's own
+            // absent branch; any other arm with as many layers is the same type.
+            let shallower = depths[i] < deepest && !matches!(
+                self.ctx.apply(&ty).as_option().map(|inner| self.ctx.apply(inner)),
+                Some(Type::Var(_))
+            );
+            if depths[i] > 0 && !shallower {
                 self.ctx.add_constraint(TypeConstraint::Equal(target.clone(), ty, span));
             } else {
                 self.coerce_into_node(
@@ -8211,6 +8316,17 @@ impl TypeChecker {
             }
         }
         target
+    }
+
+    /// How many optional layers a type has as far as it is known: 2 for `i64??`.
+    fn option_depth(&self, ty: &Type) -> usize {
+        let mut depth = 0;
+        let mut at = self.ctx.apply(ty);
+        while let Some(inner) = at.as_option() {
+            depth += 1;
+            at = self.ctx.apply(inner);
+        }
+        depth
     }
 }
 

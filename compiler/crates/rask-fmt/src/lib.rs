@@ -749,6 +749,11 @@ func main() {
             "if a { b } else { 0 }",
             "both inline branches",
         );
+        keeps(
+            "func f(s: Shared<i64>) {\n    spawn { with s.write() as t { t += 1 } }.detach()\n}\n",
+            "spawn { with s.write() as t { t += 1 } }.detach()",
+            "an inline `with` inside an inline spawn",
+        );
         // A comment in the block forces the expansion — a trailing comment has
         // nowhere to go on a line that continues with `}`.
         let output = format_source("func f(n: i64) -> i64 {\n    if n <= 1 { return 1 // base\n    }\n    return n\n}\n");

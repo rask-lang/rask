@@ -1,0 +1,42 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+import memory.Heap
+
+enum Chain {
+    End
+    Link(i64, Heap<Chain>)
+}
+
+func chain(n: i64) -> i64 {
+    mut head = Chain.End
+    for i in 0..n {
+        head = Chain.Link(i, Heap(head))
+    }
+    match head {
+        Chain.Link(v, _) => { return v },
+        Chain.End => { return -1 },
+    }
+}
+
+struct Tree {
+    public v: i64
+    public kids: Vec<Tree>
+}
+
+func tree(n: i64) -> i64 {
+    mut t = Tree(v: 0, kids: Vec.new())
+    for i in 1..n {
+        mut p = Tree(v: i, kids: Vec.new())
+        p.kids.push(t)
+        t = p
+    }
+    return t.v
+}
+
+func main() {
+    println("chain {chain(200000)}")
+    println("tree {tree(200000)}")
+    using Multitasking {
+        println("task chain {spawn { return chain(50000) }.join()!}")
+        println("task tree {spawn { return tree(50000) }.join()!}")
+    }
+}

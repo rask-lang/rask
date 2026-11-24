@@ -1,0 +1,101 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+// Returning a non-Copy part of a local moves that part to the caller and
+// releases the rest of the local. Natively the return was read as handing on
+// the whole local, so the strings and vectors beside the part leaked, and a
+// vector field returned from a struct the function built was owned by nobody
+// (#2072). Each function calls itself on a branch never taken, which keeps it
+// from being inlined into the test, where the bug didn't show.
+
+struct Item {
+    s: string
+    v: Vec<i64>
+}
+
+struct Pair {
+    a: Item
+    b: Item
+}
+
+struct Pt {
+    name: string
+    items: Vec<i64>
+    extra: Vec<string>
+}
+
+func item(label: string, n: i64) -> Item {
+    return Item(s: "{label}, long enough to live on the heap {n}", v: Vec.from([n, n + 1]))
+}
+
+func from_field(n: i64) -> Item {
+    if n < 0 {
+        return from_field(n + 1)
+    }
+    let p = Pair(a: item("a", n), b: item("b", n))
+    return p.a
+}
+
+func from_slot(n: i64) -> Item {
+    if n < 0 {
+        return from_slot(n + 1)
+    }
+    let t = (item("left", n), item("right", n))
+    return t.1
+}
+
+func from_binding(n: i64) -> Item {
+    if n < 0 {
+        return from_binding(n + 1)
+    }
+    let p = Pair(a: item("a", n), b: item("b", n))
+    let x = p.b
+    return x
+}
+
+func vector_field(n: i64) -> Vec<i64> {
+    if n < 0 {
+        return vector_field(n + 1)
+    }
+    let t = Pt(name: "a long name that lives on the heap {n}", items: Vec.from([1, 2, n]), extra: Vec.from(["x {n}"]))
+    return t.items
+}
+
+func second(take p: Pair) -> Item {
+    if p.a.v.len() > 1000 {
+        println("big {p.a.s}")
+    }
+    return p.b
+}
+
+test "a struct field" {
+    mut got = from_field(1)
+    assert got.s == "a, long enough to live on the heap 1"
+    got.v.push(9)
+    assert got.v.len() == 3
+}
+
+test "a tuple slot" {
+    let got = from_slot(2)
+    assert got.s == "right, long enough to live on the heap 2"
+    assert got.v[1] == 3
+}
+
+test "a field bound first" {
+    let got = from_binding(3)
+    assert got.s == "b, long enough to live on the heap 3"
+    assert got.v[0] == 3
+}
+
+test "a vector field of a struct built here" {
+    mut v = vector_field(4)
+    v.push(5)
+    assert v.len() == 4
+    assert v[2] == 4
+}
+
+test "a field of a taken parameter" {
+    let p = Pair(a: item("a", 5), b: item("b", 5))
+    let got = second(p)
+    assert got.s == "b, long enough to live on the heap 5"
+    assert got.v[1] == 6
+}

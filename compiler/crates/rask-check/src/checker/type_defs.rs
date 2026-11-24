@@ -125,7 +125,26 @@ pub enum LiteralValue {
     Float(f64),
 }
 
+/// What `.hash()`, `.eq(…)` or `.clone()` on a tuple, optional or result runs.
+/// A wrapper declares no methods, so the call reaches the function the checker
+/// wrote for its type, or is the value itself when a copy is already a clone.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum WrapperMethod {
+    Runs(rask_resolve::SymbolId),
+    IsCopy,
+}
+
 impl TypedProgram {
+    /// What `method` on a value of wrapper type `recv` runs. Asked at an
+    /// instance of a generic body, where a call through a bound
+    /// (`K: Hashable`) lands on whatever `K` is; outside one the checker
+    /// rewrote the call itself (`wrapper_calls`). `None` when `recv` isn't a
+    /// wrapper or nothing was written for it.
+    pub fn wrapper_method(&self, recv: &Type, method: &str) -> Option<WrapperMethod> {
+        let fns = self.wrapper_fns.iter().find(|w| &w.ty == recv)?;
+        fns.methods.iter().find(|(m, _)| m == method).map(|(_, run)| *run)
+    }
+
     /// What a method call's declaration says it does (`@grows`, `@shrinks`,
     /// `@io`, `@waits`). Nothing for a call that isn't a method call or whose
     /// method declares none.
@@ -640,6 +659,12 @@ pub struct TypedProgram {
     /// What each closure literal captures, by name. Worked out by the
     /// ownership pass; the interpreter's carrying closure holds these.
     pub closure_captures: HashMap<NodeId, Vec<String>>,
+    /// Reads that hand a binding to a new owner, and the captures each
+    /// carrying closure takes. Worked out by the ownership pass; the
+    /// interpreter empties those slots so a moved channel end closes when its
+    /// new owner is done with it (#2037).
+    pub moving_reads: std::collections::HashSet<NodeId>,
+    pub moved_captures: HashMap<NodeId, Vec<String>>,
     /// Assignments whose new value is built out of the old one, so the slot's
     /// old value isn't released before the write (`rask_ownership`). Worked out
     /// by the ownership pass and written back here, like `escaping_closures`.

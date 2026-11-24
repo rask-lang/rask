@@ -74,19 +74,31 @@ pub fn tuple_layout(parts: impl IntoIterator<Item = (u32, u32)>) -> (Vec<u32>, u
         max_align = max_align.max(align);
         offset = align_up(offset, align);
         offsets.push(offset);
-        offset += size;
+        offset = offset.saturating_add(size);
     }
     (offsets, align_up(offset, max_align), max_align)
 }
 
 /// `[T; len]`: the elements back to back, so the stride is the element's size.
-pub fn array_layout(elem: (u32, u32), len: u32) -> (u32, u32) {
-    (elem.0 * len, elem.1)
+///
+/// Sizes are `u32`, so a value tops out at 4 GiB. An array over that comes
+/// back as `u32::MAX`, as does a struct, tuple or enum whose parts add up past
+/// it: the checker reports it (E0980), and the passes that
+/// still run on a program with errors, to find more of them, ask its layout
+/// too. `[0; 3000000000]` panicked the compiler in the ownership check's copy
+/// verdict when this panicked instead.
+pub fn array_layout(elem: (u32, u32), len: usize) -> (u32, u32) {
+    let size = u32::try_from(len).ok().and_then(|len| elem.0.checked_mul(len)).unwrap_or(u32::MAX);
+    (size, elem.1)
 }
 
-/// A SIMD vector: its lanes' bytes, at natural alignment up to 32.
-pub fn simd_layout(elem_size: u32, lanes: u32) -> (u32, u32) {
-    let total = elem_size * lanes;
+/// A SIMD vector: its lanes' bytes, at natural alignment up to 32. Lane
+/// counts are small and fixed by the type's name, so overflow is a bug.
+pub fn simd_layout(elem_size: u32, lanes: usize) -> (u32, u32) {
+    let total = u32::try_from(lanes)
+        .ok()
+        .and_then(|lanes| elem_size.checked_mul(lanes))
+        .unwrap_or_else(|| panic!("a {lanes}-lane SIMD vector of {elem_size}-byte lanes overflows its size"));
     (total, total.min(32))
 }
 
@@ -95,8 +107,14 @@ pub fn widest(parts: impl IntoIterator<Item = (u32, u32)>) -> (u32, u32) {
     parts.into_iter().fold((0, 1), |(size, align), (s, a)| (size.max(s), align.max(a)))
 }
 
+/// Rounds `val` up to a multiple of `align`. A size past `u32::MAX` stays
+/// there, the mark the checker reports as too large (E0980): wrapped, two
+/// 3 GB arrays in a struct came out 1.7 GB and the compiler hung (#2061).
 pub(crate) fn align_up(val: u32, align: u32) -> u32 {
-    (val + align - 1) & !(align - 1)
+    match val.checked_add(align - 1) {
+        Some(v) => v & !(align - 1),
+        None => u32::MAX,
+    }
 }
 
 /// Size and alignment of `ty` for this target.
@@ -109,7 +127,7 @@ pub fn size_align_of<T: Shaped>(ty: &T, target: Target) -> (u32, u32) {
         Shape::Buffer => BUFFER_SIZE_ALIGN,
         Shape::FatPointer => fat_pointer(word),
         Shape::Fixed { size, align } => (size, align),
-        Shape::Array(elem, len) => array_layout(size_align_of(elem, target), len),
+        Shape::Array(elem, len) => array_layout(size_align_of(elem, target), len as usize),
         Shape::Tuple(parts) => {
             let (_, size, align) = tuple_layout(parts.iter().map(|p| size_align_of(p, target)));
             (size, align)
@@ -118,7 +136,7 @@ pub fn size_align_of<T: Shaped>(ty: &T, target: Target) -> (u32, u32) {
             let w = wrapper_of(ty, target).expect("a wrapper has a layout");
             (w.size, w.align)
         }
-        Shape::Simd(elem, lanes) => simd_layout(size_of(elem, target), lanes),
+        Shape::Simd(elem, lanes) => simd_layout(size_of(elem, target), lanes as usize),
     }
 }
 

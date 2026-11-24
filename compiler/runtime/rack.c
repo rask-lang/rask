@@ -471,6 +471,23 @@ void rask_link_set(void **slot, void *target) {
     if (!rask_link_is_none(target)) edge_register(RACK_EDGE_SLOT, slot, target);
 }
 
+// `v[i].field = target`: the slot is inside an element of `v`. A record naming
+// the slot would outlive it, since the element moves when `v` regrows and dies
+// with `v`, and `delete` would then write through a freed address (#2069). The
+// record names the vector instead, as `push` records an element's links, and
+// moves and dies with it. The old target's record stays: `delete` rescans the
+// elements and drops a record that finds nothing.
+void rask_link_set_in_vec(RaskVec *v, void **slot, void *target) {
+    *slot = target;
+    rask_link_register_element(v, target);
+}
+
+// The same for a field inside a `Map` value.
+void rask_link_set_in_map(RaskMap *m, void **slot, void *target) {
+    *slot = target;
+    rask_link_register_entry(m, target);
+}
+
 // `payload.<field at offset> = target`, where `payload` is a node of some rack.
 // Codegen emits this instead of `rask_link_set` whenever it can see statically
 // that the holder is a node, which is the overwhelmingly common edge write.
@@ -628,7 +645,9 @@ void rask_link_forget_struct(void *base, int64_t field_count, const int32_t *fie
 //
 // For a container that arrives whole rather than element by element — the
 // classic being `h.list = h.list.filter(…)`, where `filter` builds a fresh
-// vector whose entries no push ever recorded.
+// vector whose entries no push ever recorded. A clone records itself this way
+// (`rask_vec_clone`), so the inner vectors a deep clone makes are recorded one
+// by one as they are made.
 void rask_link_register_vec(RaskVec *v) {
     if (!v) return;
     int64_t n = rask_vec_len(v);
@@ -639,8 +658,10 @@ void rask_link_register_vec(RaskVec *v) {
         return;
     }
     // An element that owns anything isn't a bare link; reading its first word
-    // as one would follow a string or a handle.
-    if (rask_vec_elem_strs(v)->count > 0) return;
+    // as one would follow a string or a handle. A vector with no list at all
+    // is one the compiler asked about because its type holds links.
+    const RaskElemStrs *strs = rask_vec_elem_strs(v);
+    if (strs->count > 0 && !rask_elem_strs_are_links(strs)) return;
     for (int64_t i = 0; i < n; i++) {
         void *elem;
         memcpy(&elem, rask_vec_get_unchecked(v, i), sizeof(elem));
@@ -654,7 +675,8 @@ void rask_link_register_map(RaskMap *m) {
         rask_map_each_value(m, register_entry_cb, m);
         return;
     }
-    if (rask_map_val_strs(m)->count > 0) return;
+    const RaskElemStrs *strs = rask_map_val_strs(m);
+    if (strs->count > 0 && !rask_elem_strs_are_links(strs)) return;
     RaskVec *vals = rask_map_values(m);
     int64_t n = rask_vec_len(vals);
     for (int64_t i = 0; i < n; i++) {
@@ -1212,6 +1234,73 @@ static void rask_map_remap_link_values(RaskMap *m, const RaskRack *r, void **ori
     rask_map_map_values_ptr(m, snapshot_remap_cb, &ctx);
 }
 
+// The vectors and maps an element owns are copies the snapshot made, and their
+// links still name the original's nodes. Each is re-pointed and recorded as a
+// whole, the way a node's own vector is, and so on down (#2071). Recorded
+// already: a clone records itself as it is made, against the originals, and
+// a delete there rescans it, finds nothing and drops the record.
+static void snapshot_remap_vec(RaskVec *v, SnapshotCtx *sc);
+static void snapshot_remap_map(RaskMap *m, SnapshotCtx *sc);
+
+static void snapshot_nested_cb(void **slot, uint32_t kind, void *ctx) {
+    if (!*slot) return;
+    if (kind == RASK_OWNED_VEC) {
+        snapshot_remap_vec((RaskVec *)*slot, (SnapshotCtx *)ctx);
+    } else {
+        snapshot_remap_map((RaskMap *)*slot, (SnapshotCtx *)ctx);
+    }
+}
+
+static void snapshot_nested_value_cb(char *value, void *ctx) {
+    SnapshotValuesCtx *c = (SnapshotValuesCtx *)ctx;
+    rask_elem_containers(value, c->strs, snapshot_nested_cb, c->snap);
+}
+
+static void snapshot_nested_in_vec(RaskVec *v, SnapshotCtx *sc) {
+    const RaskElemStrs *strs = rask_vec_elem_strs(v);
+    if (strs->count == 0 || rask_elem_strs_are_links(strs)) return;
+    int64_t n = rask_vec_len(v);
+    for (int64_t e = 0; e < n; e++) {
+        rask_elem_containers(rask_vec_get_unchecked(v, e), strs, snapshot_nested_cb, sc);
+    }
+}
+
+static void snapshot_nested_in_map(RaskMap *m, SnapshotCtx *sc) {
+    const RaskElemStrs *strs = rask_map_val_strs(m);
+    if (strs->count == 0 || rask_elem_strs_are_links(strs)) return;
+    SnapshotValuesCtx vc = { strs, sc };
+    rask_map_each_value(m, snapshot_nested_value_cb, &vc);
+}
+
+// Only a container whose elements say they hold links has any to re-point:
+// below a node's own fields nothing else vouches for an element's first word
+// being a link.
+static void snapshot_remap_vec(RaskVec *v, SnapshotCtx *sc) {
+    int64_t n = rask_vec_len(v);
+    const RaskElemStrs *strs = rask_vec_elem_strs(v);
+    if (rask_vec_holds_struct_links(v)) {
+        for (int64_t e = 0; e < n; e++) {
+            rask_elem_links(rask_vec_get_unchecked(v, e), strs, snapshot_remap_slot_cb, sc);
+        }
+        rask_link_register_vec(v);
+    } else if (rask_elem_strs_are_links(strs)) {
+        for (int64_t e = 0; e < n; e++) {
+            snapshot_remap_slot_cb((void **)rask_vec_get_unchecked(v, e), sc);
+        }
+        rask_link_register_vec(v);
+    }
+    snapshot_nested_in_vec(v, sc);
+}
+
+static void snapshot_remap_map(RaskMap *m, SnapshotCtx *sc) {
+    const RaskElemStrs *strs = rask_map_val_strs(m);
+    if (rask_map_holds_struct_links(m) || rask_elem_strs_are_links(strs)) {
+        rask_map_remap_link_values(m, sc->rack, sc->origin, sc->n_slots);
+        rask_link_register_map(m);
+    }
+    snapshot_nested_in_map(m, sc);
+}
+
 RaskRack *rask_rack_snapshot(const RaskRack *r) {
     if (!r) return NULL;
     RaskRack *copy = rask_rack_new();
@@ -1316,6 +1405,7 @@ RaskRack *rask_rack_snapshot(const RaskRack *r) {
                     }
                 }
                 rask_link_register_vec(fresh);
+                snapshot_nested_in_vec(fresh, &(SnapshotCtx){ r, origin, n_slots });
                 break;
             }
             case RASK_RACK_FIELD_MAP: {
@@ -1327,6 +1417,7 @@ RaskRack *rask_rack_snapshot(const RaskRack *r) {
                 *slot = fresh;
                 rask_map_remap_link_values(fresh, r, origin, n_slots);
                 rask_link_register_map(fresh);
+                snapshot_nested_in_map(fresh, &(SnapshotCtx){ r, origin, n_slots });
                 break;
             }
             }

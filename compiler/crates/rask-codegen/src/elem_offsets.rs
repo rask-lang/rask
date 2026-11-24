@@ -55,6 +55,9 @@ const KIND_HEAP: i32 = runtime_abi::RASK_OWNED_HEAP as i32;
 const KIND_SELF: i32 = runtime_abi::RASK_OWNED_SELF as i32;
 /// A link inside the element, for the rack rather than for the free.
 const KIND_LINK: i32 = runtime_abi::RASK_OWNED_LINK as i32;
+/// The element is a link, for the rack: a cloned `Vec<Link<T>>` records its
+/// own edges from this.
+const KIND_ELEM_LINK: i32 = runtime_abi::RASK_OWNED_ELEM_LINK as i32;
 /// A handle that frees itself through its type's `@handle(release: …)`. The
 /// offset bits carry the release's index above the byte offset.
 const KIND_HANDLE: i32 = runtime_abi::RASK_OWNED_HANDLE as i32;
@@ -126,6 +129,35 @@ pub fn owned_offsets(ty: &MirType, shapes: Shapes<'_>) -> Option<Vec<i32>> {
     (!out.is_empty()).then_some(out)
 }
 
+/// The list a container carries for its elements: `owned_offsets`, or, for
+/// an element that is itself a link, the one entry that says so. Only a
+/// container's own description says it; a link held anywhere else owns
+/// nothing and is listed nowhere.
+pub fn container_elem_offsets(ty: &MirType, shapes: Shapes<'_>) -> Option<Vec<i32>> {
+    if ty.as_link().is_some() {
+        return Some(vec![entry(0, KIND_ELEM_LINK)]);
+    }
+    owned_offsets(ty, shapes)
+}
+
+/// What a value a box owns has to give back when the box dies, or `None`
+/// when it owns nothing.
+///
+/// An element's list, plus its `Heap` fields. An element leaves those out
+/// because a copy of the element would have to copy the block, and a block
+/// carries no size to copy; a box's value is only ever released through this
+/// list, so the block is the box's to free.
+pub fn box_owned_offsets(ty: &MirType, shapes: Shapes<'_>) -> Option<Vec<i32>> {
+    let layout = match ty {
+        MirType::Struct(id) => Layout::Struct(id.id as usize),
+        MirType::Enum(id) => Layout::Enum(id.id as usize),
+        _ => return owned_offsets(ty, shapes),
+    };
+    let mut out = Vec::new();
+    describe_layout(layout, 0, shapes, 0, Some(layout), &mut out)?;
+    (!out.is_empty()).then_some(out)
+}
+
 /// What a closure environment owns, and where: each capture the environment
 /// owns (`ClosureCapture::owns`) described at its slot. Offsets are from the
 /// environment's start, which is what `rask_closure_free` walks from.
@@ -156,8 +188,8 @@ fn describe(
     match ty {
         MirType::Buffer => out.push(entry(base, KIND_STRING)),
         // A link inside an element is the rack's business: delete nulls it in
-        // place (#1804). An element that *is* a link is listed nowhere — the
-        // rack removes those entries instead, and frees walk nothing for them.
+        // place (#1804). An element that *is* a link is the container's to
+        // say (`container_elem_offsets`): the rack removes those entries.
         MirType::Link(_) if depth > 0 => out.push(entry(base, KIND_LINK)),
         MirType::Option(inner) if inner.is_niche_payload() && depth > 0 => {
             out.push(entry(base, KIND_LINK))

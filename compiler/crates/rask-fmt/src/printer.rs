@@ -2259,13 +2259,23 @@ impl<'a> Printer<'a> {
                     self.emit(" as ");
                     self.emit(&binding.name);
                 }
-                self.emit(" {");
-                self.emit_newline();
-                self.indent += 1;
-                self.format_stmts(body);
-                self.indent -= 1;
-                self.emit_indent();
-                self.emit("}");
+                // A one-line body stays on its line, as a branch's does.
+                // Always expanding it inside a one-line `spawn { … }` broke
+                // idempotence: the spawn kept its line, the second pass saw
+                // the expanded `with` and broke the spawn too.
+                if self.fits_one_line(expr.span, body) {
+                    self.emit(" { ");
+                    self.format_stmt_inline(&body[0]);
+                    self.emit(" }");
+                } else {
+                    self.emit(" {");
+                    self.emit_newline();
+                    self.indent += 1;
+                    self.format_stmts(body);
+                    self.indent -= 1;
+                    self.emit_indent();
+                    self.emit("}");
+                }
             }
             ExprKind::Closure { params, ret_ty, body } => {
                 self.emit("|");

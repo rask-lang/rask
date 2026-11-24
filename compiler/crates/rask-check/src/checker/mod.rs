@@ -38,7 +38,7 @@ pub use reads_as::ReadsAs;
 pub use derive::WrapperFns;
 pub(crate) mod resolved_types;
 
-pub use type_defs::{CContext, Callee, ConformanceCall, LiteralConversion, LiteralValue, TypedProgram, PlacedArg, receiver_name, ErasedError};
+pub use type_defs::{CContext, Callee, ConformanceCall, LiteralConversion, LiteralValue, TypedProgram, WrapperMethod, PlacedArg, receiver_name, ErasedError};
 pub use type_table::{primitive_spelling, CustomDecode, CustomEncode, TaskBound, TypeTable, WireHook};
 pub use operators::{operator_interface, OperatorTarget};
 pub use inference::{TypeConstraint, InferenceContext};
@@ -228,6 +228,11 @@ pub struct TypeChecker {
     pub(super) ensure_floor: Option<usize>,
     /// Each range expression's bound type, checked once literals settle.
     pub(super) pending_range_bounds: Vec<(Type, rask_ast::Span)>,
+    /// `[x; n]` sites, sized once literal defaults settle the element type.
+    /// Types to measure against the 4 GiB a value can take, once literal
+    /// defaults have settled them: array repeats, tuple and struct literals,
+    /// and declared types.
+    pub(super) pending_value_sizes: Vec<(Type, rask_ast::Span)>,
     /// Current Self type (inside extend blocks).
     pub(super) current_self_type: Option<Type>,
     /// Interface bounds on the current function's type params (name → interface names).
@@ -241,6 +246,8 @@ pub struct TypeChecker {
     /// `current_type_param_bounds` from this before layering the method's own
     /// bounds on top (#838).
     pub(super) current_impl_type_param_bounds: HashMap<String, Vec<TypeExpr>>,
+    /// The current function's `comptime` parameters (`N` in `<comptime N: usize>`).
+    pub(super) current_comptime_params: Vec<String>,
     /// Derived bodies written and not yet checked (`derive.rs`), with the
     /// type whose methods they are.
     pub(super) pending_derived: Vec<(Decl, Option<rask_types::TypeId>)>,
@@ -286,6 +293,11 @@ pub struct TypeChecker {
     /// String slices as values (`slices.rs`).
     pub(super) reads_as: ReadsAs,
     pub(super) filed_methods: type_defs::FiledMethods,
+    /// Operator conformances whose block left the method to the type's own:
+    /// (type, operator method, the name the conformance files it under).
+    pub(super) operators_left_to_inherent: Vec<(rask_types::TypeId, String, String)>,
+    /// The `extend` block (no interface) each type's method was declared in.
+    pub(super) inherent_method_blocks: HashMap<(rask_types::TypeId, String), NodeId>,
     /// Each range index's start, end and `..=`, for the slice call it becomes.
     /// Scope stack for local variable types (innermost scope last).
     /// Tuple: (type, binding kind). Const bindings and default params are read-only.
@@ -316,9 +328,10 @@ pub struct TypeChecker {
     /// — `(argument node, was it an `as any Interface`, receiver, argument)`.
     pub(super) pending_interface_elem_coercions:
         Vec<(NodeId, bool, Type, Type)>,
-    /// TR5 for a method argument: `(argument node, declared parameter,
-    /// argument)`, read once the argument's type has settled.
-    pub(super) pending_interface_arg_coercions: Vec<(NodeId, Type, Type)>,
+    /// TR5 for a value whose slot settles during solving (a method argument,
+    /// a `catch` handler's value, a `??` default): `(value node, slot type,
+    /// value type)`, read once both have settled.
+    pub(super) pending_interface_coercions: Vec<(NodeId, Type, Type)>,
     /// ER18: the error a `try { … } catch e =>` handler is waiting for. Inner
     /// `try`s propagate to the innermost of these instead of to the enclosing
     /// function, which is what makes the handler cover the block.
@@ -709,9 +722,11 @@ impl TypeChecker {
             loop_forms: Vec::new(),
             ensure_floor: None,
             pending_range_bounds: Vec::new(),
+            pending_value_sizes: Vec::new(),
             current_self_type: None,
             current_type_param_bounds: HashMap::new(),
             current_impl_type_param_bounds: HashMap::new(),
+            current_comptime_params: Vec::new(),
             pending_derived: Vec::new(),
             derived_decls: Vec::new(),
             derived_written: std::collections::HashSet::new(),
@@ -730,6 +745,8 @@ impl TypeChecker {
             sequence_coercions: HashMap::new(),
             reads_as: ReadsAs::default(),
             filed_methods: Default::default(),
+            operators_left_to_inherent: Vec::new(),
+            inherent_method_blocks: HashMap::new(),
             local_types: Vec::new(),
             borrow_stack: Vec::new(),
 
@@ -737,7 +754,7 @@ impl TypeChecker {
             callee_ident: None,
             written_method_type_args: HashMap::new(),
             pending_interface_elem_coercions: Vec::new(),
-            pending_interface_arg_coercions: Vec::new(),
+            pending_interface_coercions: Vec::new(),
             try_block_errors: Vec::new(),
             debug_fmt_calls: std::collections::HashSet::new(),
             call_targets: HashMap::new(),
@@ -1040,6 +1057,7 @@ impl TypeChecker {
         // are concrete (e.g. `1 as bool` sees `i32`).
         self.validate_pending_casts();
         self.validate_pending_range_bounds();
+        self.validate_pending_value_sizes();
         self.settle_transmutes();
 
         // SEQ45: after literal defaults, so the message names `Sequence<i32>`
@@ -1234,7 +1252,18 @@ impl TypeChecker {
             .filter(|(_, params)| !params.iter().any(|(_, t)| Self::contains_type_var(t)))
             .collect();
 
-        let interface_coercions = self.interface_coercions.clone();
+        // A coercion noted while the value's type was still open (see
+        // `note_interface_coercion_node`) is settled here. One that resolved to
+        // an interface object is already boxed: boxing it again gave mono a
+        // vtable for `any Shape` as a Shape with no bodies, and the interface
+        // drop pass, seeing a slot nothing answers, stopped freeing the boxes
+        // `c = a.twin()` replaced.
+        let interface_coercions: HashMap<NodeId, String> = self
+            .interface_coercions
+            .iter()
+            .filter(|(node, _)| !matches!(node_types.get(node), Some(Type::InterfaceObject { .. })))
+            .map(|(node, name)| (*node, name.clone()))
+            .collect();
         let arm_widenings: HashMap<NodeId, Type> = self
             .arm_widenings
             .iter()
@@ -1332,6 +1361,8 @@ impl TypeChecker {
             // Ownership fills this in; the checker has no say in it.
             escaping_closures: std::collections::HashSet::new(),
             closure_captures: HashMap::new(),
+            moving_reads: std::collections::HashSet::new(),
+            moved_captures: HashMap::new(),
             field_reuses: std::collections::HashSet::new(),
             quiet_loops: std::collections::HashSet::new(),
             return_moves: std::collections::HashMap::new(),

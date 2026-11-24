@@ -1,0 +1,43 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+// A `Vec<Link<T>>` stored into a `Vec<Link<T>>?` still has its links
+// recorded, so a delete takes the dead node out of it. Natively the record
+// was asked of the optional around the vector, and the runtime read the
+// optional's tag and payload as a vector and crashed, on `let` and on `=`.
+import memory.Link
+import memory.Rack
+
+struct Leaf {
+    id: i32
+}
+
+func pair(a: Link<Leaf>, b: Link<Leaf>) -> Vec<Link<Leaf>> {
+    mut v: Vec<Link<Leaf>> = Vec.new()
+    v.push(a)
+    v.push(b)
+    return v
+}
+
+test "a vector bound into an optional loses a deleted node" {
+    mut leaves: Rack<Leaf> = Rack.new()
+    let a = leaves.insert(Leaf(id: 1))
+    let b = leaves.insert(Leaf(id: 2))
+    let o: Vec<Link<Leaf>>? = pair(a, b)
+    let c = o.clone()
+    leaves.delete(a)
+    assert o!.len() == 1
+    assert o![0].id == 2
+    assert c!.len() == 1
+}
+
+test "a vector assigned into an optional loses a deleted node" {
+    mut leaves: Rack<Leaf> = Rack.new()
+    let a = leaves.insert(Leaf(id: 1))
+    let b = leaves.insert(Leaf(id: 2))
+    mut o: Vec<Link<Leaf>>? = none
+    assert o is none
+    o = pair(b, a)
+    leaves.delete(a)
+    assert o!.len() == 1
+    assert o![0].id == 2
+}

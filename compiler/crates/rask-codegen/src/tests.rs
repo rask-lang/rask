@@ -78,10 +78,10 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let mut gen = CodeGenerator::new(crate::BuildMode::Debug).unwrap();
@@ -103,10 +103,10 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let mut gen = CodeGenerator::new(crate::BuildMode::Debug).unwrap();
@@ -141,10 +141,10 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let mut gen = CodeGenerator::new(crate::BuildMode::Debug).unwrap();
@@ -184,10 +184,10 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let main_fn = MirFunction {
@@ -204,10 +204,10 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let mut gen = CodeGenerator::new(crate::BuildMode::Debug).unwrap();
@@ -229,10 +229,10 @@ mod tests {
             blocks: vec![block(0, vec![], ret(None))],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let main_fn = MirFunction {
@@ -247,10 +247,10 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let mut gen = CodeGenerator::new(crate::BuildMode::Debug).unwrap();
@@ -299,10 +299,10 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let mut gen = CodeGenerator::new(crate::BuildMode::Debug).unwrap();
@@ -369,10 +369,10 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let mut gen = CodeGenerator::new(crate::BuildMode::Debug).unwrap();
@@ -414,10 +414,10 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let run_fn = MirFunction {
@@ -458,10 +458,10 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let mut gen = CodeGenerator::new(crate::BuildMode::Debug).unwrap();
@@ -488,10 +488,10 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let mut gen = CodeGenerator::new(crate::BuildMode::Debug).unwrap();
@@ -533,10 +533,10 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let mut gen = CodeGenerator::new(crate::BuildMode::Debug).unwrap();
@@ -564,10 +564,10 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let mut gen = CodeGenerator::new(crate::BuildMode::Debug).unwrap();
@@ -595,10 +595,10 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let mut gen = CodeGenerator::new(crate::BuildMode::Debug).unwrap();
@@ -621,10 +621,10 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let mut gen = CodeGenerator::new(crate::BuildMode::Debug).unwrap();
@@ -664,10 +664,10 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let mono = mono_with_point_struct();
@@ -705,10 +705,10 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let mono = mono_with_point_struct();
@@ -745,10 +745,10 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let mono = mono_with_result_enum();
@@ -799,10 +799,10 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let mono = mono_with_result_enum();
@@ -839,10 +839,10 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let mono = mono_with_point_struct();
@@ -874,10 +874,10 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let mut gen = CodeGenerator::new(crate::BuildMode::Debug).unwrap();
@@ -911,10 +911,10 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let mut gen = CodeGenerator::new(crate::BuildMode::Debug).unwrap();
@@ -944,10 +944,10 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let mut gen = CodeGenerator::new(crate::BuildMode::Debug).unwrap();
@@ -978,10 +978,10 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let mut gen = CodeGenerator::new(crate::BuildMode::Debug).unwrap();
@@ -1012,10 +1012,10 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let mut gen = CodeGenerator::new(crate::BuildMode::Debug).unwrap();
@@ -1054,10 +1054,10 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let mono = mono_with_point_struct();
@@ -1094,10 +1094,10 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let mono = mono_with_result_enum();
@@ -1143,10 +1143,10 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let mut gen = CodeGenerator::new(crate::BuildMode::Debug).unwrap();
@@ -1178,10 +1178,10 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let mut gen = CodeGenerator::new(crate::BuildMode::Debug).unwrap();
@@ -1210,10 +1210,10 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let mut gen = CodeGenerator::new(crate::BuildMode::Debug).unwrap();
@@ -1244,10 +1244,10 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let mut gen = CodeGenerator::new(crate::BuildMode::Debug).unwrap();
@@ -1280,10 +1280,10 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let mut gen = gen_with_stdlib();
@@ -1312,10 +1312,10 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let mut gen = gen_with_stdlib();
@@ -1334,10 +1334,10 @@ mod tests {
             blocks: vec![block(0, vec![], ret(None))],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let caller_fn = MirFunction {
@@ -1352,10 +1352,10 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let mut gen = gen_with_stdlib();
@@ -1423,10 +1423,10 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let main_fn = MirFunction {
@@ -1456,10 +1456,10 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let mut gen = CodeGenerator::new(crate::BuildMode::Debug).unwrap();
@@ -1507,10 +1507,10 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let main_fn = MirFunction {
@@ -1552,10 +1552,10 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let mut gen = CodeGenerator::new(crate::BuildMode::Debug).unwrap();
@@ -1606,10 +1606,10 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let make_fn = MirFunction {
@@ -1636,10 +1636,10 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let main_fn = MirFunction {
@@ -1663,10 +1663,10 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let mut gen = CodeGenerator::new(crate::BuildMode::Debug).unwrap();
@@ -1707,10 +1707,10 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let main_fn = MirFunction {
@@ -1741,10 +1741,10 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let mut gen = CodeGenerator::new(crate::BuildMode::Debug).unwrap();
@@ -1795,10 +1795,10 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let outer_fn = MirFunction {
@@ -1833,10 +1833,10 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let main_fn = MirFunction {
@@ -1870,10 +1870,10 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let all_fns = [inner_fn.clone(), outer_fn.clone(), main_fn.clone()];
@@ -1917,10 +1917,10 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let main_fn = MirFunction {
@@ -1972,10 +1972,10 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let all_fns = [closure_fn.clone(), main_fn.clone()];
@@ -2022,10 +2022,10 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let sub_fn = MirFunction {
@@ -2051,10 +2051,10 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let main_fn = MirFunction {
@@ -2101,10 +2101,10 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let all_fns = [add_fn.clone(), sub_fn.clone(), main_fn.clone()];
@@ -2130,6 +2130,7 @@ mod tests {
         rask_mono::MonoProgram {
         vtables: Default::default(),
         symbols: Default::default(),
+        roots: Vec::new(),
             functions: vec![],
             struct_layouts: vec![],
             enum_layouts: vec![],
@@ -2148,6 +2149,7 @@ mod tests {
         rask_mono::MonoProgram {
         vtables: Default::default(),
         symbols: Default::default(),
+        roots: Vec::new(),
             functions: vec![],
             struct_layouts: vec![
                 rask_layout::StructLayout {
@@ -2204,6 +2206,7 @@ mod tests {
             handle_releases: Default::default(),
         vtables: Default::default(),
         symbols: Default::default(),
+        roots: Vec::new(),
             functions: vec![],
             struct_layouts: vec![],
             enum_layouts: vec![

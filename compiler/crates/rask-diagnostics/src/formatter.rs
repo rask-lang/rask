@@ -20,7 +20,7 @@ use colored::Colorize;
 
 use rask_ast::LineMap;
 
-use crate::source_map::SourceMap;
+use rask_ast::SourceMap;
 use crate::{Diagnostic, Help, LabelStyle, Severity};
 
 /// How wide a diagnostic is allowed to get.

@@ -94,6 +94,26 @@ extern int rask_runtime_checks_enabled;
 // RASK_POISON_STACK is set, so reads of never-written stack slots are
 // deterministic instead of accidentally reading zeros.
 void rask_poison_stack(void);
+// S5: a stack overflow is a panic (stack_guard.c). Every Rask function
+// checks its stack pointer against `rask_stack_limit` on entry. The main
+// thread calls the `main` init, every other thread that runs Rask code the
+// `thread` one, and a fiber the `fiber_start` one with its own stack.
+#define RASK_STACK_RESERVE (256 * 1024)
+extern __thread char *rask_stack_limit;
+void rask_stack_guard_main_init(void);
+void rask_stack_guard_thread_init(void);
+void rask_stack_guard_thread_exit(void);
+// Release a thread's runtime state; the last call a thread makes.
+void rask_thread_end(void);
+void rask_stack_guard_fiber_start(char *lo, char *hi);
+_Noreturn void rask_stack_overflow_at(const char *file, int32_t line, int32_t col);
+// Put the limit back once the catch that ends an overflow has landed.
+void rask_stack_limit_restore(void);
+// A catch landed: drop a release queue whose drain the panic unwound (vec.c).
+void rask_release_unwound(void);
+// The stack bounds' part of `rask_task_tls_swap`.
+size_t rask_stack_tls_size(void);
+void   rask_stack_tls_swap(void *blob);
 
 static inline int64_t rask_safe_mul(int64_t a, int64_t b) {
     if (a > 0 && b > 0 && a > INT64_MAX / b) rask_panic("allocation size overflow");
@@ -859,6 +879,10 @@ void      rask_link_set(void **slot, void *target);
 // link fields keep their edge record inline in the header, so this unlinks and
 // re-splices in O(1) — no scan of the old target's incoming list.
 void      rask_link_set_node(void *payload, int64_t offset, void *target);
+// A slot inside an element of a vector or a map value: recorded against the
+// container, which moves and frees the element (#2069).
+void      rask_link_set_in_vec(RaskVec *v, void **slot, void *target);
+void      rask_link_set_in_map(RaskMap *m, void **slot, void *target);
 void      rask_link_forget(void **slot);
 void      rask_link_forget_vec(RaskVec *v);
 void      rask_link_forget_map(RaskMap *m);
@@ -882,6 +906,10 @@ void    **rask_vec_link_edges(RaskVec *v);
 // Links inside container elements of struct type (`Vec<Cursor>`): the element
 // map's `RASK_OWNED_LINK` entries say where they sit, tag guards included.
 void      rask_elem_links(char *elem, const RaskElemStrs *strs, RaskLinkSlotFn fn, void *ctx);
+// Each vector or map an element owns, with its kind (`RASK_OWNED_VEC` or
+// `RASK_OWNED_MAP`), under the same tag guards as its links.
+typedef void (*RaskContainerSlotFn)(void **slot, uint32_t kind, void *ctx);
+void      rask_elem_containers(char *elem, const RaskElemStrs *strs, RaskContainerSlotFn fn, void *ctx);
 // The links of a value behind a tag (`cur: Cursor?`, an enum variant's
 // fields) whose variant is live, within `[lo, hi)` of the value: the entries
 // of an element map that sit under a guard.
@@ -893,6 +921,9 @@ void      rask_link_guarded_range(void *base, int64_t lo, int64_t hi, int64_t re
                                   int64_t count, const int32_t *owned);
 // The whole value at `base`, as lowering emits it (`Link_guarded`).
 void      rask_link_guarded(void *base, int64_t reg, int64_t count, const int32_t *owned);
+// Whether an element map is the one entry saying each element is a link
+// (`Vec<Link<T>>`, a `Map` of them).
+int64_t   rask_elem_strs_are_links(const RaskElemStrs *s);
 int64_t   rask_vec_holds_struct_links(RaskVec *v);
 const RaskElemStrs *rask_vec_elem_strs(const RaskVec *v);
 int64_t   rask_map_holds_struct_links(RaskMap *m);
@@ -1614,6 +1645,7 @@ void   rask_task_tls_swap(void *blob);
 extern int32_t rask_preempt_requested;
 void rask_preempt_point(void);
 int  rask_preempt_unsafe(void);
+int  rask_panic_unwinding(void);
 int  rask_print_lock_held(void);
 // The parts of it thread.c and random.c keep, swapped by the call above.
 size_t rask_thread_tls_size(void);
@@ -1770,8 +1802,6 @@ int64_t rask_channel_try_send_ptr(int64_t tx, int64_t data_ptr);
 int64_t rask_channel_recv_ptr(int64_t rx, int64_t out_ptr);
 
 // ── Error origin (ER15/ER16) ────────────────────────────────────
-// Set the source file name for error origin formatting.
-void rask_set_origin_file(const char *file);
 // Read origin from a Result and format as "file.rk:42" string.
 void rask_result_origin(RaskStr *out, const void *result_ptr);
 

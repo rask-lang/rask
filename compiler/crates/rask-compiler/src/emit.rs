@@ -24,16 +24,14 @@ pub struct BackEnd<'a> {
     pub decls: &'a [Decl],
     pub folded: &'a Folded,
     pub package_modules: &'a HashSet<String>,
-    /// For panic locations, try origins and DWARF.
-    pub source_file: Option<&'a str>,
-    pub source_text: Option<&'a str>,
+    /// Every source file, by `Span::file_id`: panic locations, try origins,
+    /// DWARF and where a C import's header is looked for.
+    pub sources: &'a rask_ast::SourceMap,
 }
 
 impl<'a> BackEnd<'a> {
     pub fn of(
         result: &'a crate::CompileResult,
-        source_file: Option<&'a str>,
-        source_text: Option<&'a str>,
     ) -> Self {
         BackEnd {
             mono: &result.mono,
@@ -41,8 +39,7 @@ impl<'a> BackEnd<'a> {
             decls: &result.decls,
             folded: &result.folded,
             package_modules: &result.package_modules,
-            source_file,
-            source_text,
+            sources: &result.sources,
         }
     }
 }
@@ -80,7 +77,6 @@ pub struct Lowered {
 /// Lower to MIR and run the pass pipeline.
 pub fn lower(input: &BackEnd, entry: &Entry) -> Result<Lowered, Vec<String>> {
     let all_mono_decls = mono_decls(input.mono, input.decls);
-    let line_map = input.source_text.map(rask_ast::LineMap::new);
     let type_names = input.typed.types.type_name_map();
     let interface_methods = rask_check::interface_vtable_methods(&input.typed.types);
     let interface_take_self = rask_check::interface_take_self_methods(&input.typed.types);
@@ -102,9 +98,8 @@ pub fn lower(input: &BackEnd, entry: &Entry) -> Result<Lowered, Vec<String>> {
     .with_interface_methods(interface_methods)
     .with_interface_take_self(interface_take_self)
     .with_mono_calls(input.mono)
-    .with_nominal_underlying(&nominal_underlying);
-    ctx.line_map = line_map.as_ref();
-    ctx.source_file = input.source_file;
+    .with_nominal_underlying(&nominal_underlying)
+    .with_sources(input.sources);
 
     let mut errors = Vec::new();
     let mut functions = Vec::new();
@@ -152,7 +147,15 @@ pub fn lower(input: &BackEnd, entry: &Entry) -> Result<Lowered, Vec<String>> {
     // A captured scalar has to live in memory before SSA runs, or SSA builds
     // phis over a variable whose real home is a stack slot (#1038).
     let target = ctx.target();
-    rask_mir::transform::addr_taken::run_all(&mut functions, target);
+    // Which body each vtable slot can land in: who keeps an argument handed
+    // through one is that body's answer.
+    let mut vtable_bodies = rask_mir::vtable_layout::VtableBodies::default();
+    for ((_, interface), vtable) in &input.mono.vtables {
+        for slot in &vtable.slots {
+            vtable_bodies.insert(interface, &slot.method, slot.symbol.clone());
+        }
+    }
+    rask_mir::transform::addr_taken::run_all(&mut functions, target, &vtable_bodies);
     for func in &mut functions {
         rask_mir::transform::ssa::construct(func);
     }
@@ -170,12 +173,25 @@ pub fn lower(input: &BackEnd, entry: &Entry) -> Result<Lowered, Vec<String>> {
         .keys()
         .map(|name| rask_mir::lower::const_init_fn_name(name))
         .collect();
+    let outside_roots = outside_roots(&input.mono, &const_init_thunks, entry);
+    // Monomorphization made each instance for a call. Lowering can fuse that
+    // call away (`rows.skip(1).min_by_key(f)` becomes an index loop), and an
+    // instance nobody names then isn't a root: alive, `Vec_skip`'s loop body
+    // shared the `as_sequence` yield with a live `map` body and made it take
+    // rows it was only lent.
+    let made_for_calls = input.mono.functions.iter().map(|f| f.name.clone()).collect();
     let pipeline = rask_mir::PassManager::default_pipeline().run_with(
         &mut functions,
-        target,
-        rack_holders,
-        copy_layouts,
-        const_init_thunks,
+        rask_mir::transform::pass::PassContext {
+            target,
+            rack_holders,
+            copy_layouts,
+            const_init_thunks,
+            vtable_bodies,
+            outside_roots,
+            made_for_calls,
+            ..Default::default()
+        },
     );
 
     for func in &mut functions {
@@ -267,30 +283,71 @@ pub fn emit_lowered(
     Emitted { diagnostics, errors }
 }
 
+/// The functions something other than the program's own calls runs: the
+/// entry points monomorphization started from, what the runner replacing
+/// `main` calls by name, const init thunks, and every symbol codegen or the
+/// runtime reaches through a table rather than a call (vtable slots, handle
+/// releases, map key and codec functions).
+fn outside_roots(
+    mono: &rask_mono::MonoProgram,
+    const_init_thunks: &std::collections::HashSet<String>,
+    entry: &Entry,
+) -> std::collections::HashSet<String> {
+    let mut roots: std::collections::HashSet<String> = mono.roots.iter().cloned().collect();
+    match entry {
+        Entry::Main => {}
+        Entry::Tests(runs) | Entry::Benches(runs) => roots.extend(runs.iter().map(|(_, f)| f.clone())),
+        Entry::Claims(runs) => roots.extend(runs.iter().map(|c| c.fn_name.clone())),
+    }
+    roots.extend(const_init_thunks.iter().cloned());
+    roots.extend(mono.vtables.values().flat_map(|vt| vt.slots.iter().map(|s| s.symbol.clone())));
+    roots.extend(mono.handle_releases.values().cloned());
+    roots.extend(mono.map_key_fns.values().flat_map(|k| [k.hash.clone(), k.eq.clone()]));
+    roots.extend(mono.decode_defaults.values().cloned());
+    roots.extend(mono.claim_generators.values().cloned());
+    roots.extend(mono.custom_decodes.values().map(|d| d.adapter.clone()));
+    roots.extend(mono.custom_encodes.values().cloned());
+    roots
+}
+
 /// Every function `root` can reach, by name, in name order: what it calls,
 /// takes the address of, or builds a closure or ensure hook from, before
 /// the passes or after; the methods of any interface object it boxes; and
 /// the helpers lowering synthesized for it (named `<fn>__…`). A claim's
 /// verdict depends on these and on nothing else the program holds
 /// (type.claims/D4).
+///
+/// Each comes with its body as codegen sees it, or `None` for one inlining
+/// folded into its callers and the passes then dropped: its code is in a
+/// body that is here, and the name still says the claim reaches its source.
 pub fn reached_from<'f>(
     lowered: &'f Lowered,
     input: &BackEnd,
     root: &str,
-) -> std::collections::BTreeMap<&'f str, &'f MirFunction> {
+) -> std::collections::BTreeMap<String, Option<&'f MirFunction>> {
     let by_name: HashMap<&str, &MirFunction> =
         lowered.functions.iter().map(|f| (f.name.as_str(), f)).collect();
     let mut reached = std::collections::BTreeMap::new();
     let mut queue = vec![root.to_string()];
     while let Some(name) = queue.pop() {
-        let Some(f) = by_name.get(name.as_str()) else { continue };
-        if reached.insert(f.name.as_str(), *f).is_some() {
+        if reached.contains_key(&name) {
             continue;
         }
-        let helpers = format!("{}__", f.name);
-        queue.extend(lowered.functions.iter().filter(|g| g.name.starts_with(&helpers)).map(|g| g.name.clone()));
-        queue.extend(referred_to(f, input));
-        queue.extend(lowered.calls_as_lowered.get(&f.name).into_iter().flatten().cloned());
+        let f = by_name.get(name.as_str()).copied();
+        let Some(as_lowered) = lowered.calls_as_lowered.get(&name) else {
+            if let Some(f) = f {
+                queue.extend(referred_to(f, input));
+                reached.insert(name, Some(f));
+            }
+            continue;
+        };
+        queue.extend(as_lowered.iter().cloned());
+        if let Some(f) = f {
+            let helpers = format!("{}__", f.name);
+            queue.extend(lowered.functions.iter().filter(|g| g.name.starts_with(&helpers)).map(|g| g.name.clone()));
+            queue.extend(referred_to(f, input));
+        }
+        reached.insert(name, f);
     }
     reached
 }
@@ -388,11 +445,9 @@ fn emit_inner(
     codegen.register_comptime_globals(&input.folded.data).map_err(fail)?;
     codegen.register_const_slots(&functions).map_err(fail)?;
 
-    // Panic locations and try origins read the line map in every build; the
+    // Panic locations and try origins read the sources in every build; the
     // DWARF tables are codegen's call, by build mode.
-    if let (Some(file), Some(text)) = (input.source_file, input.source_text) {
-        codegen.set_debug_context(file, rask_ast::LineMap::new(text));
-    }
+    codegen.set_sources(input.sources.clone()).map_err(fail)?;
     codegen.set_inline_regions(pipeline.inline_regions);
     codegen.set_field_types(field_types).map_err(fail)?;
 
@@ -447,10 +502,9 @@ fn write_inline_wrappers(
         None => (std::env::consts::ARCH.to_string(), std::env::consts::OS.to_string()),
     };
     let dirs: HashMap<u16, std::path::PathBuf> = input
-        .source_file
-        .and_then(|f| std::path::Path::new(f).parent())
-        .map(|d| (0u16, d.to_path_buf()))
-        .into_iter()
+        .sources
+        .files()
+        .filter_map(|(id, f)| Some((id, std::path::Path::new(&f.name).parent()?.to_path_buf())))
         .collect();
     let cx = crate::c_import::Context { source_dirs: &dirs, arch: &arch, os: &os };
     let src = crate::c_import::inline_wrappers(input.decls, &cx)?.unwrap_or_default();
@@ -614,24 +668,22 @@ pub(crate) fn checked_extern_type(ty: &rask_ast::ty::TypeExpr, types: &rask_chec
 
 /// One vtable per (concrete type, interface) pair some `InterfaceBox` builds.
 fn collect_vtables(functions: &[MirFunction], mono: &MonoProgram) -> Vec<rask_codegen::vtable::VTableInfo> {
-    // Each table with the concrete type it was built for: what the box's
-    // value owns is read off that type's layout.
-    let by_name: HashMap<&str, (&rask_types::Type, &rask_mono::VTable)> =
-        mono.vtables.iter().map(|((ty, _), vt)| (vt.name.as_str(), (ty, vt))).collect();
+    let by_name: HashMap<&str, &rask_mono::VTable> =
+        mono.vtables.values().map(|vt| (vt.name.as_str(), vt)).collect();
     let mut seen = HashSet::new();
     let mut vtables = Vec::new();
     for mir_fn in functions {
         for block in &mir_fn.blocks {
             for stmt in &block.statements {
                 let rask_mir::MirStmtKind::InterfaceBox {
-                    concrete_type, interface_name, concrete_size, concrete_align, vtable_name, ..
+                    value, concrete_type, interface_name, concrete_size, concrete_align, vtable_name, ..
                 } = &stmt.kind else {
                     continue;
                 };
                 if !seen.insert(vtable_name.clone()) {
                     continue;
                 }
-                let Some(&(concrete, table)) = by_name.get(vtable_name.as_str()) else { continue };
+                let Some(&table) = by_name.get(vtable_name.as_str()) else { continue };
                 let vt_methods = table.slots.iter().enumerate()
                     .map(|(i, slot)| rask_codegen::vtable::VTableMethod {
                         name: slot.method.clone(),
@@ -639,13 +691,15 @@ fn collect_vtables(functions: &[MirFunction], mono: &MonoProgram) -> Vec<rask_co
                         vtable_offset: rask_codegen::vtable::method_offset(i),
                     })
                     .collect();
-                // What the concrete value owns, for a box that owns it.
-                // Containers and strings both: a moved-in box has no second
-                // holder for either.
-                let mut visited = HashSet::new();
-                let owned = rask_codegen::drop_fields::owned_fields(
-                    concrete, 0, &mono.struct_layouts, &mono.type_names, &mono.handle_releases, &mut visited,
-                );
+                let concrete_mir = match value {
+                    rask_mir::MirOperand::Local(id) => mir_fn
+                        .locals
+                        .iter()
+                        .chain(mir_fn.params.iter())
+                        .find(|l| l.id == *id)
+                        .map(|l| l.ty.clone()),
+                    _ => None,
+                };
                 vtables.push(rask_codegen::vtable::VTableInfo {
                     data_name: vtable_name.clone(),
                     concrete_type: concrete_type.clone(),
@@ -653,7 +707,7 @@ fn collect_vtables(functions: &[MirFunction], mono: &MonoProgram) -> Vec<rask_co
                     concrete_size: *concrete_size,
                     concrete_align: *concrete_align,
                     methods: vt_methods,
-                    owned,
+                    concrete_mir,
                 });
             }
         }

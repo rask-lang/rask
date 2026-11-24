@@ -27,7 +27,6 @@ mod transmute;
 pub(crate) mod union_bits;
 
 use rask_ast::decl::{BenchmarkDecl, Decl, EnumDecl, FnDecl, StructDecl, TestDecl};
-use rask_ast::span::LineMap;
 use rask_ast::Span;
 use rask_ast::ty::TypeExpr;
 
@@ -202,8 +201,9 @@ pub struct Interpreter {
     pub(crate) cli_args: Vec<String>,
     /// Build script state (set when running via `run_build`).
     pub(crate) build_state: Option<crate::build_context::BuildState>,
-    /// Source info for error origin tracking (ER15): file name + line map.
-    pub(crate) source_info: Option<SourceInfo>,
+    /// The program's files by `Span::file_id`, for error origins (ER15) and
+    /// panic locations.
+    pub(crate) sources: Arc<rask_ast::SourceMap>,
     /// Static expression types from the checker, keyed by NodeId. Used to
     /// recover integer widths for overflow checking (type.overflow). Empty
     /// when types weren't supplied (e.g. comptime pre-check paths).
@@ -219,6 +219,18 @@ pub struct Interpreter {
     pub(crate) cancelled_ensures: std::collections::HashSet<rask_ast::NodeId>,
     /// What each closure literal captures (ownership's answer).
     pub(crate) closure_captures: Arc<HashMap<rask_ast::NodeId, Vec<String>>>,
+    /// Reads that hand a binding to a new owner, and the captures each
+    /// carrying closure takes (ownership's `moving_reads`/`moved_captures`).
+    /// The slot is emptied there, so the old name stops holding what moved:
+    /// a channel end closes when its last owner is done with it (#2037).
+    pub(crate) moving_reads: Arc<std::collections::HashSet<rask_ast::NodeId>>,
+    pub(crate) moved_captures: Arc<HashMap<rask_ast::NodeId, Vec<String>>>,
+    /// Slots read by a moving read whose hand-over hasn't happened yet. A
+    /// call empties the ones its arguments queued once they all evaluated; a
+    /// statement empties the rest when it completes and drops them when it
+    /// leaves early, so `eat(c, try fails())` leaves `c` in place for its
+    /// ensure.
+    pub(crate) pending_moves: Vec<crate::env::Slot>,
     /// Closures that captured a link or a `Local` box (#1356).
     pub(crate) task_bound_closures: std::collections::HashSet<rask_ast::NodeId>,
     /// Closures in a generic body, with each capture whose type mentions a
@@ -240,6 +252,10 @@ pub struct Interpreter {
     /// called, because it can run after the generic call that built it has
     /// returned, or on another task.
     pub(crate) generic_frames: Vec<GenericFrame>,
+    /// Optional layers the checker gave the expression the last `return`
+    /// handed back, for the call to widen it to the declared return type.
+    /// Every `return` sets it, so the call that catches one reads its own.
+    pub(crate) returned_depth: Option<usize>,
     /// `(type, method)` → its `extend` header's target arguments as written
     /// (`["(K, V)"]` for `extend Pairs<(K, V)>`), for a header that has any. A
     /// method call matches them against the receiver's type.
@@ -273,6 +289,9 @@ pub struct Interpreter {
     /// to run out by overflowing: SIGABRT, no message, no exit code (#759).
     /// Counted here so the limit is reported instead.
     pub(crate) call_depth: usize,
+    /// A stack overflow is unwinding: the ensures it runs get the segments
+    /// past the cap, as native's get the reserve below its stack limit.
+    pub(crate) overflow_unwinding: bool,
     /// ER31a: `try` sites whose error the checker decided to wrap in a variant
     /// of the enclosing function's error enum, keyed by the `try` expression.
     pub(crate) error_wraps: HashMap<rask_ast::NodeId, rask_types::ErrorWrap>,
@@ -320,6 +339,9 @@ pub(crate) struct LentArgs {
     pub(crate) depth: usize,
     pub(crate) callee: String,
     pub(crate) slots: Vec<Option<crate::env::Slot>>,
+    /// Optional layers the checker gave each argument's expression, so the
+    /// callee widens by type rather than by what the value carries (#2044).
+    pub(crate) depths: Vec<Option<usize>>,
 }
 
 /// A `for` loop driving a `Sequence<T>`.
@@ -347,13 +369,6 @@ pub(crate) struct YieldFrame {
     pub(crate) scope: std::collections::HashMap<String, crate::env::Slot>,
     /// Which of `scope` are borrowed storage (`Environment::define_lent`).
     pub(crate) lent: std::collections::HashSet<String>,
-}
-
-/// Source location info for computing error origins (ER15).
-#[derive(Clone)]
-pub struct SourceInfo {
-    pub file_name: String,
-    pub line_map: LineMap,
 }
 
 /// What every spawn form says when the task would hold a link or a `Local`
@@ -553,17 +568,21 @@ impl Interpreter {
             output_buffer: None,
             cli_args: vec![],
             build_state: None,
-            source_info: None,
+            sources: Arc::default(),
             node_types: HashMap::new(),
             escaping_closures: std::collections::HashSet::new(),
             ensure_cancels: Arc::new(HashMap::new()),
             cancelled_ensures: std::collections::HashSet::new(),
             closure_captures: Default::default(),
+            moving_reads: Default::default(),
+            moved_captures: Default::default(),
+            pending_moves: Vec::new(),
             task_bound_closures: std::collections::HashSet::new(),
             generic_closure_captures: Arc::new(HashMap::new()),
             types: Arc::new(rask_check::TypeTable::default()),
             call_type_args: Arc::new(HashMap::new()),
             generic_frames: Vec::new(),
+            returned_depth: None,
             extend_header_patterns: HashMap::new(),
             file_packages: HashMap::new(),
             conformance_disambiguation: HashMap::new(),
@@ -573,6 +592,7 @@ impl Interpreter {
             literal_conversions: HashMap::new(),
             conformance_calls: HashMap::new(),
             call_depth: 0,
+            overflow_unwinding: false,
             error_wraps: HashMap::new(),
             try_chain_placement: HashMap::new(),
             else_binding_types: HashMap::new(),
@@ -612,11 +632,15 @@ impl Interpreter {
             ensure_cancels: Arc::new(HashMap::new()),
             cancelled_ensures: std::collections::HashSet::new(),
             closure_captures: Default::default(),
+            moving_reads: Default::default(),
+            moved_captures: Default::default(),
+            pending_moves: Vec::new(),
             task_bound_closures: std::collections::HashSet::new(),
             generic_closure_captures: Arc::new(HashMap::new()),
             types: Arc::new(rask_check::TypeTable::default()),
             call_type_args: Arc::new(HashMap::new()),
             generic_frames: Vec::new(),
+            returned_depth: None,
             extend_header_patterns: HashMap::new(),
             file_packages: HashMap::new(),
             conformance_disambiguation: HashMap::new(),
@@ -626,6 +650,7 @@ impl Interpreter {
             literal_conversions: HashMap::new(),
             conformance_calls: HashMap::new(),
             call_depth: 0,
+            overflow_unwinding: false,
             error_wraps: HashMap::new(),
             try_chain_placement: HashMap::new(),
             else_binding_types: HashMap::new(),
@@ -634,7 +659,7 @@ impl Interpreter {
             err_returns: std::collections::HashSet::new(),
             c_macro_calls: HashMap::new(),
             build_state: None,
-            source_info: None,
+            sources: Arc::default(),
             lent_args: None,
             yield_stack: Vec::new(),
         }
@@ -665,17 +690,21 @@ impl Interpreter {
             output_buffer: Some(buffer.clone()),
             cli_args: vec![],
             build_state: None,
-            source_info: None,
+            sources: Arc::default(),
             node_types: HashMap::new(),
             escaping_closures: std::collections::HashSet::new(),
             ensure_cancels: Arc::new(HashMap::new()),
             cancelled_ensures: std::collections::HashSet::new(),
             closure_captures: Default::default(),
+            moving_reads: Default::default(),
+            moved_captures: Default::default(),
+            pending_moves: Vec::new(),
             task_bound_closures: std::collections::HashSet::new(),
             generic_closure_captures: Arc::new(HashMap::new()),
             types: Arc::new(rask_check::TypeTable::default()),
             call_type_args: Arc::new(HashMap::new()),
             generic_frames: Vec::new(),
+            returned_depth: None,
             extend_header_patterns: HashMap::new(),
             file_packages: HashMap::new(),
             conformance_disambiguation: HashMap::new(),
@@ -685,6 +714,7 @@ impl Interpreter {
             literal_conversions: HashMap::new(),
             conformance_calls: HashMap::new(),
             call_depth: 0,
+            overflow_unwinding: false,
             error_wraps: HashMap::new(),
             try_chain_placement: HashMap::new(),
             else_binding_types: HashMap::new(),
@@ -703,13 +733,14 @@ impl Interpreter {
         self.runtime_checks = on;
     }
 
-    /// Inject `cfg` build configuration into the interpreter environment (CT11-CT16).
-    /// Set source info for error origin tracking (ER15).
-    pub fn set_source_info(&mut self, file_name: &str, source: &str) {
-        self.source_info = Some(SourceInfo {
-            file_name: file_name.to_string(),
-            line_map: LineMap::new(source),
-        });
+    /// The program's files, for error origins (ER15) and panic locations.
+    pub fn set_sources(&mut self, sources: rask_ast::SourceMap) {
+        self.sources = Arc::new(sources);
+    }
+
+    /// `file:line` for where `span` starts, when its file is the program's.
+    fn location(&self, span: Span) -> Option<String> {
+        self.sources.locate(span).map(|(file, line, _)| format!("{}:{}", file, line))
     }
 
     /// Compute an error origin string like `"file.rk:42"` from a span.
@@ -730,24 +761,20 @@ impl Interpreter {
     }
 
     pub(crate) fn origin_string(&self, span: Span) -> Arc<str> {
-        if let Some(info) = &self.source_info {
-            let (line, _) = info.line_map.offset_to_line_col(span.start);
-            Arc::from(format!("{}:{}", info.file_name, line))
-        } else {
-            Arc::from("<unknown>")
-        }
+        Arc::from(self.location(span).unwrap_or_else(|| "<unknown>".to_string()))
     }
 
-    /// What a failed task's message should say when *user code* reads it back
-    /// out of `JoinError.Panicked(msg)`.
+    /// What a panic says where native's `rask_panic_at` would say it: the
+    /// text user code reads out of `JoinError.Panicked(msg)`, and the line a
+    /// failed test reports.
     ///
     /// Not `Display`: that renders a panic as `panic: boom`, and
     /// `JoinError.message()` wraps it again as `task panicked: panic: boom`.
     /// The reporter's own wording belongs at print time, not baked into a
     /// string a program is going to print itself (#748). The location is what
-    /// you want when a background task dies, so that's what it carries —
-    /// `file:line:col: boom`, matching native.
-    pub(crate) fn task_failure_message(&self, diag: &RuntimeDiagnostic) -> String {
+    /// you want when a task or a test dies, so that's what it carries —
+    /// `file:line: boom`, matching native.
+    pub(crate) fn panic_message(&self, diag: &RuntimeDiagnostic) -> String {
         // Every way the program can panic, not the `Panic` variant alone.
         // `is_panic` is the same question the exit code asks — OV1–OV4 and
         // OPT13 say an overflow and a forced `x!` panic, whatever enum variant
@@ -761,14 +788,11 @@ impl Interpreter {
         if !diag.error.is_panic() {
             return msg;
         }
-        match &self.source_info {
-            Some(info) => {
-                // file:line, no column — see the note in the runtime's
-                // rask_panic_at: the two backends point their columns at
-                // different sub-expressions, and the line is the useful half.
-                let (line, _) = info.line_map.offset_to_line_col(diag.span.start);
-                format!("{}:{}: {}", info.file_name, line, msg)
-            }
+        // file:line, no column — see the note in the runtime's rask_panic_at:
+        // the two backends point their columns at different sub-expressions,
+        // and the line is the useful half.
+        match self.location(diag.span) {
+            Some(at) => format!("{}: {}", at, msg),
             None => msg,
         }
     }
@@ -807,6 +831,8 @@ impl Interpreter {
         self.escaping_closures = typed.escaping_closures.clone();
         self.ensure_cancels = Arc::new(typed.ensure_cancels.clone());
         self.closure_captures = Arc::new(typed.closure_captures.clone());
+        self.moving_reads = Arc::new(typed.moving_reads.clone());
+        self.moved_captures = Arc::new(typed.moved_captures.clone());
         self.task_bound_closures = typed.task_bound_closures.clone();
         self.generic_closure_captures = Arc::new(typed.generic_closure_captures.clone());
         self.types = Arc::new(typed.types.clone());
@@ -919,8 +945,111 @@ impl Interpreter {
         Some(rask_ast::expr::Expr { id: object.id, span: object.span, kind })
     }
 
+    /// How many optional layers the checker gave `expr`'s type, with this
+    /// frame's type parameters filled in. `None` when the innermost type is
+    /// still open (an inference variable or a parameter the frame doesn't
+    /// bind), and the caller falls back to what the value carries.
+    ///
+    /// Widening has to read this, not the value: `none` from an `i64?` and
+    /// `none` meant for the outer layer of an `i64??` are the same value, and
+    /// only the type says whether the slot wants `some(none)` (#2044).
+    pub(crate) fn static_option_depth(&self, expr: &rask_ast::expr::Expr) -> Option<usize> {
+        let ty = self.node_types.get(&expr.id)?;
+        self.option_layers(ty)
+    }
+
+    /// How many optional layers `ty` has, with this frame's type parameters
+    /// filled in; `None` while the innermost type is open.
+    pub(crate) fn option_layers(&self, ty: &rask_types::Type) -> Option<usize> {
+        let frame = self.generic_frames.last().and_then(|f| f.as_deref());
+        let ty = match frame {
+            Some(frame) => rask_check::substitute_type(ty, frame),
+            None => ty.clone(),
+        };
+        let mut depth = 0;
+        let mut cur = &ty;
+        while let Some(inner) = cur.as_option() {
+            depth += 1;
+            cur = inner;
+        }
+        match cur {
+            rask_types::Type::Var(_) | rask_types::Type::UnresolvedNamed(_) | rask_types::Type::Error => None,
+            _ => Some(depth),
+        }
+    }
+
+    /// One branch of an `if` or `match`, widened to the whole expression's
+    /// type. `if c { none } else { k }` typed `i64?` hands back a bare `k`
+    /// from its else branch, and whoever reads the `if` counts on the layers
+    /// its type has (#2044).
+    pub(crate) fn eval_branch(
+        &mut self,
+        whole: &rask_ast::expr::Expr,
+        branch: &rask_ast::expr::Expr,
+    ) -> Result<Value, RuntimeDiagnostic> {
+        let value = self.eval_expr(branch)?;
+        Ok(match (self.static_option_depth(whole), self.static_option_depth(branch)) {
+            (Some(want), Some(have)) => (have..want).fold(value, |v, _| Value::some(v)),
+            _ => value,
+        })
+    }
+
+    /// What the closure expression `id` is typed to return, read where it is
+    /// built so a generic frame's parameters are filled in.
+    pub(crate) fn closure_ret(&self, id: rask_ast::NodeId) -> crate::value::ClosureRet {
+        use rask_types::Type;
+        let Some(Type::Fn { ret, .. }) = self.node_types.get(&id) else {
+            return crate::value::ClosureRet { wraps_ok: false, layers: None };
+        };
+        match &**ret {
+            // A real error side: `T?` is a `Result` whose error is `none` to
+            // the checker, and its `none` is no success.
+            Type::Result { ok, err } if !matches!(**err, Type::None) => {
+                crate::value::ClosureRet { wraps_ok: true, layers: self.option_layers(ok) }
+            }
+            other => crate::value::ClosureRet { wraps_ok: false, layers: self.option_layers(other) },
+        }
+    }
+
     pub(crate) fn resolve_type_param(&self, ty: &TypeExpr) -> TypeExpr {
         let frame = self.generic_frames.last().and_then(|f| f.as_deref());
+        self.fill_type_params(ty, frame)
+    }
+
+    /// What a generic struct literal's type binds each of the struct's
+    /// parameters to, read from the checker's type for the literal.
+    pub(crate) fn literal_type_args(
+        &self,
+        literal: rask_ast::NodeId,
+        params: &[rask_ast::decl::TypeParam],
+    ) -> Option<HashMap<String, rask_types::Type>> {
+        if params.is_empty() {
+            return None;
+        }
+        let ty = self.node_types.get(&literal)?;
+        let outer = self.generic_frames.last().and_then(|f| f.as_deref());
+        let ty = match outer {
+            Some(outer) => rask_check::substitute_type(ty, outer),
+            None => ty.clone(),
+        };
+        let args = match &ty {
+            rask_types::Type::Generic { args, .. } | rask_types::Type::UnresolvedGeneric { args, .. } => args,
+            _ => return None,
+        };
+        Some(
+            params
+                .iter()
+                .zip(args)
+                .filter_map(|(p, a)| match a {
+                    rask_types::GenericArg::Type(t) => Some((p.name.clone(), (**t).clone())),
+                    _ => None,
+                })
+                .collect(),
+        )
+    }
+
+    /// `ty` with the parameters `frame` binds written in.
+    pub(crate) fn fill_type_params(&self, ty: &TypeExpr, frame: Option<&HashMap<String, rask_types::Type>>) -> TypeExpr {
         ty.substitute(&|name| {
             let bound = frame?.get(name)?;
             // A type `nameable_type` doesn't cover (an array, anywhere
@@ -943,12 +1072,6 @@ impl Interpreter {
         index: usize,
     ) -> Option<usize> {
         use rask_types::{GenericArg, Type};
-        fn depth(ty: &Type) -> usize {
-            match ty {
-                Type::Result { ok, err } if **err == Type::None => 1 + depth(ok),
-                _ => 0,
-            }
-        }
         let args = match self.node_types.get(&node_id)? {
             Type::Generic { args, .. } | Type::UnresolvedGeneric { args, .. } => args,
             _ => return None,
@@ -956,7 +1079,31 @@ impl Interpreter {
         let GenericArg::Type(inner) = args.get(index)? else {
             return None;
         };
-        Some(depth(inner))
+        // With the frame's type parameters filled in: a `Vec<T?>` in a body
+        // where `T` is `i64?` holds two layers, and counting one left
+        // `v.push(x)` of an absent `x` as the outer `none`.
+        self.option_layers(inner).or_else(|| {
+            let mut depth = 0;
+            let mut cur: &rask_types::Type = inner;
+            while let Some(next) = cur.as_option() {
+                depth += 1;
+                cur = next;
+            }
+            Some(depth)
+        })
+    }
+
+    /// How many optional layers a collection literal's element type has.
+    pub(crate) fn literal_elem_option_depth(&self, id: rask_ast::NodeId) -> Option<usize> {
+        use rask_types::{GenericArg, Type};
+        match self.node_types.get(&id)? {
+            Type::Array { elem, .. } => self.option_layers(elem),
+            Type::Generic { args, .. } | Type::UnresolvedGeneric { args, .. } => match args.first()? {
+                GenericArg::Type(inner) => self.option_layers(inner),
+                _ => None,
+            },
+            _ => None,
+        }
     }
 
     /// ER31a: supply the `try` sites whose error gets wrapped in the enclosing
@@ -1034,6 +1181,8 @@ impl Interpreter {
         child.escaping_closures = self.escaping_closures.clone();
         child.ensure_cancels = self.ensure_cancels.clone();
         child.closure_captures = Arc::clone(&self.closure_captures);
+        child.moving_reads = Arc::clone(&self.moving_reads);
+        child.moved_captures = Arc::clone(&self.moved_captures);
         child.task_bound_closures = self.task_bound_closures.clone();
         child.generic_closure_captures = self.generic_closure_captures.clone();
         child.types = self.types.clone();
@@ -1051,7 +1200,7 @@ impl Interpreter {
         // A task that panics reports `file:line:col`, so the child needs the
         // source it's running (#748). Without this a spawned task's message
         // came back as bare text while the main thread's carried a location.
-        child.source_info = self.source_info.clone();
+        child.sources = Arc::clone(&self.sources);
         child.runtime_checks = self.runtime_checks;
         // The same capture buffer, not a fresh one. A `test` block's runner
         // captures the main thread's output and prints it under the test's
@@ -1100,8 +1249,8 @@ impl Interpreter {
         form: &str,
         closure: Value,
         block: &rask_ast::expr::Expr,
-    ) -> Result<(Interpreter, rask_ast::expr::Expr, bool), RuntimeError> {
-        let Value::Closure { body, captured_env, task_bound, generics, wraps_ok, .. } = closure else {
+    ) -> Result<(Interpreter, rask_ast::expr::Expr, crate::value::ClosureRet), RuntimeError> {
+        let Value::Closure { body, captured_env, task_bound, generics, ret, .. } = closure else {
             return Err(RuntimeError::TypeError(format!(
                 "{form}: a task block evaluated to {}",
                 closure.type_name()
@@ -1126,15 +1275,15 @@ impl Interpreter {
             return Err(RuntimeError::Panic(TASK_BOUND_SPAWN.to_string()));
         }
         let child = self.spawn_child(captured_env, &generics, &named);
-        Ok((child, body, wraps_ok))
+        Ok((child, body, ret))
     }
 
     /// Run a task's body on this thread, now, and hand back a handle whose
     /// join gives what it ended with: a `requires_pool: false` spawn with no
     /// pool.
     pub(crate) fn run_task_in_place(&mut self, closure: Value) -> Result<Value, RuntimeError> {
-        let (child, body, wraps_ok) = self.borrowing_task(closure)?;
-        let ended = run_task_body(child, body, wraps_ok);
+        let (child, body, ret) = self.borrowing_task(closure)?;
+        let ended = run_task_body(child, body, ret);
         let cancel = Arc::new(crate::value::CancelToken::default());
         let join_handle = crate::spawn_interp_thread(move || ended)?;
         Ok(self.hand_out_handle(join_handle, cancel))
@@ -1145,19 +1294,19 @@ impl Interpreter {
     /// writer of until the join, and it may capture task-bound closures: it
     /// ends before the frame does.
     pub(crate) fn spawn_borrowing_task(&mut self, closure: Value) -> Result<Value, RuntimeError> {
-        let (child, body, wraps_ok) = self.borrowing_task(closure)?;
+        let (child, body, ret) = self.borrowing_task(closure)?;
         let cancel = Arc::new(crate::value::CancelToken::default());
         let flag = cancel.clone();
         let join_handle = crate::spawn_interp_thread(move || {
             crate::with_task_slot(move || {
-                crate::value::with_cancel_flag(flag, move || run_task_body(child, body, wraps_ok))
+                crate::value::with_cancel_flag(flag, move || run_task_body(child, body, ret))
             })
         })?;
         Ok(self.hand_out_handle(join_handle, cancel))
     }
 
-    fn borrowing_task(&mut self, closure: Value) -> Result<(Interpreter, rask_ast::expr::Expr, bool), RuntimeError> {
-        let Value::Closure { body, captured_env, generics, wraps_ok, .. } = closure else {
+    fn borrowing_task(&mut self, closure: Value) -> Result<(Interpreter, rask_ast::expr::Expr, crate::value::ClosureRet), RuntimeError> {
+        let Value::Closure { body, captured_env, generics, ret, .. } = closure else {
             return Err(RuntimeError::TypeError(format!(
                 "a task block evaluated to {}",
                 closure.type_name()
@@ -1170,7 +1319,7 @@ impl Interpreter {
             }
         });
         let child = self.spawn_child(captured_env, &generics, &named);
-        Ok((child, body, wraps_ok))
+        Ok((child, body, ret))
     }
 
     /// Inside a `using ThreadPool` block.
@@ -1180,11 +1329,11 @@ impl Interpreter {
 
     /// Start an OS thread (`Thread.spawn { … }`).
     pub(crate) fn spawn_os_thread(&mut self, closure: Value, block: &rask_ast::expr::Expr) -> Result<Value, RuntimeError> {
-        let (child, body, wraps_ok) = self.task_from_closure("Thread.spawn", closure, block)?;
+        let (child, body, ret) = self.task_from_closure("Thread.spawn", closure, block)?;
         let cancel = Arc::new(crate::value::CancelToken::default());
         let flag = cancel.clone();
         let join_handle = crate::spawn_interp_thread(move || {
-            crate::value::with_cancel_flag(flag, move || run_task_body(child, body, wraps_ok))
+            crate::value::with_cancel_flag(flag, move || run_task_body(child, body, ret))
         })?;
         Ok(self.hand_out_handle(join_handle, cancel))
     }
@@ -1205,7 +1354,7 @@ impl Interpreter {
                  Install a `using Multitasking { ... }` block that encloses the call.".to_string(),
             ));
         }
-        let (child, body, wraps_ok) = self.task_from_closure("spawn", closure, block)?;
+        let (child, body, ret) = self.task_from_closure("spawn", closure, block)?;
 
         // The thread starts now; the body waits for one of the scope's
         // task slots before running, so `workers: n` bounds how many
@@ -1214,7 +1363,7 @@ impl Interpreter {
         let flag = cancel.clone();
         let join_handle = crate::spawn_interp_thread(move || {
             crate::with_task_slot(move || {
-                crate::value::with_cancel_flag(flag, move || run_task_body(child, body, wraps_ok))
+                crate::value::with_cancel_flag(flag, move || run_task_body(child, body, ret))
             })
         })?;
         Ok(self.hand_out_handle(join_handle, cancel))
@@ -1233,7 +1382,7 @@ impl Interpreter {
                 ))
             }
         };
-        let (child, body, wraps_ok) = self.task_from_closure("ThreadPool.spawn", closure, block)?;
+        let (child, body, ret) = self.task_from_closure("ThreadPool.spawn", closure, block)?;
 
         let (result_tx, result_rx) = mpsc::sync_channel::<Result<Value, String>>(1);
         let cancel = Arc::new(crate::value::CancelToken::default());
@@ -1241,7 +1390,7 @@ impl Interpreter {
 
         let task = PoolTask {
             work: Box::new(move || {
-                let ended = crate::value::with_cancel_flag(flag, move || run_task_body(child, body, wraps_ok));
+                let ended = crate::value::with_cancel_flag(flag, move || run_task_body(child, body, ret));
                 let _ = result_tx.send(ended);
             }),
         };
@@ -1886,6 +2035,7 @@ impl RuntimeError {
                 | RuntimeError::NoMatchingArm
                 | RuntimeError::ResourceClosed { .. }
                 | RuntimeError::AssertionFailed(_)
+                | RuntimeError::RecursionTooDeep { .. }
         )
     }
 }
@@ -1916,12 +2066,13 @@ impl std::error::Error for RuntimeDiagnostic {}
 /// The task's result, the way a closure call produces one: `return v` and a
 /// `try` that leaves both end the block with their value (conc.async/S7), and
 /// a value of type `T` filling a `T or E` result is its success side.
-fn run_task_body(mut interp: Interpreter, body: rask_ast::expr::Expr, wraps_ok: bool) -> Result<Value, String> {
-    match interp.eval_expr(&body) {
-        Ok(val) => Ok(dispatch::closure_result(val, wraps_ok)),
-        Err(diag) => match diag.error {
-            RuntimeError::Return(val) | RuntimeError::TryError(val) => Ok(dispatch::closure_result(val, wraps_ok)),
-            _ => Err(interp.task_failure_message(&diag)),
-        },
-    }
+fn run_task_body(mut interp: Interpreter, body: rask_ast::expr::Expr, ret: crate::value::ClosureRet) -> Result<Value, String> {
+    let ended = match interp.eval_expr(&body) {
+        Ok(val) => Ok(val),
+        Err(diag) if matches!(diag.error, RuntimeError::Return(_) | RuntimeError::TryError(_)) => Err(diag.error),
+        Err(diag) => return Err(interp.panic_message(&diag)),
+    };
+    interp
+        .closure_outcome(&body, ended, ret)
+        .map_err(|e| interp.panic_message(&RuntimeDiagnostic::new(e, body.span)))
 }

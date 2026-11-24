@@ -338,7 +338,7 @@ pub fn is_method_symbol(name: &str) -> bool {
 /// Heads of the symbols lowering makes up that name no stdlib type: a
 /// `Shared<T, Local>` is called through `Cell_*`, a field read that consumes
 /// its slot is `Field_take`, and `Link<T>` has no stdlib file to declare
-/// `Link_set`.
+/// `Link_hash`.
 const MIR_FAMILIES: &[&str] = &["Cell", "Mutex", "Field", "Link"];
 
 pub fn type_has_method(prefix: &str, method: &str) -> bool {

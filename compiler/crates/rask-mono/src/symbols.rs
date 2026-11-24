@@ -139,18 +139,37 @@ impl Symbols {
             Type::Union(members) => members.iter().collect(),
             other => vec![other],
         };
-        members
-            .into_iter()
-            .map(|member| {
-                let callee = rask_check::Callee::Method {
-                    recv: member.clone(),
-                    method: "message".to_string(),
-                    package: None,
-                    body: types.method_body(member, "message", None),
-                };
-                self.method_call(&callee, Vec::new(), types)
-            })
-            .collect()
+        members.into_iter().map(|member| self.member_method(member, "message", None, types)).collect()
+    }
+
+    /// What `e.method()` on a union runs: each member's own body, in member
+    /// order (the index a value carries picks the arm). `None` when `callee`
+    /// isn't a union's method, or any member has no body in Rask.
+    pub fn union_method_calls(
+        &self,
+        callee: &rask_check::Callee,
+        types: &rask_check::TypeTable,
+    ) -> Option<Vec<ResolvedCall>> {
+        let rask_check::Callee::Method { recv: Type::Union(members), method, package, .. } = callee else {
+            return None;
+        };
+        members.iter().map(|member| self.member_method(member, method, package.as_deref(), types)).collect()
+    }
+
+    fn member_method(
+        &self,
+        member: &Type,
+        method: &str,
+        package: Option<&str>,
+        types: &rask_check::TypeTable,
+    ) -> Option<ResolvedCall> {
+        let callee = rask_check::Callee::Method {
+            recv: member.clone(),
+            method: method.to_string(),
+            package: package.map(str::to_string),
+            body: types.method_body(member, method, package),
+        };
+        self.method_call(&callee, Vec::new(), types)
     }
 
     /// What `json.encode(v)` runs for a `JsonValue`: the value's own

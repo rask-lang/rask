@@ -19,6 +19,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::analysis::uses;
+use crate::vtable_layout::VtableBodies;
 use crate::{LocalId, MirFunction, MirOperand, MirStmt, MirStmtKind, MirTerminatorKind};
 
 /// Optimize closures across all functions with cross-function analysis.
@@ -29,8 +30,8 @@ use crate::{LocalId, MirFunction, MirOperand, MirStmt, MirStmtKind, MirTerminato
 /// returns/forwards → heap-allocate, suppress caller drop).
 ///
 /// Unknown callees (runtime functions, external) are assumed to take ownership.
-pub fn optimize_all_closures(fns: &mut [MirFunction]) {
-    let callee_escapes = build_callee_escape_map(fns, CaptureRule::EscapingClosure);
+pub fn optimize_all_closures(fns: &mut [MirFunction], vtables: &VtableBodies) {
+    let callee_escapes = build_callee_escape_map(fns, CaptureRule::EscapingClosure, vtables);
     let kept = KeptThroughCalls::build(fns);
     let heap_slots = captures_holding_heap_closures(fns);
     let lent = LentCells::build(fns, heap_slots);
@@ -277,8 +278,8 @@ impl KeptThroughCalls {
 /// copied. Ownership is the opposite kind of question: it is about the frame
 /// that ends up holding the thing, so it can only be asked once inlining has
 /// settled which frame that is.
-pub fn insert_all_closure_drops(fns: &mut [MirFunction]) {
-    let callee_escapes = build_callee_escape_map(fns, CaptureRule::HeapClosure);
+pub fn insert_all_closure_drops(fns: &mut [MirFunction], vtables: &VtableBodies) {
+    let callee_escapes = build_callee_escape_map(fns, CaptureRule::HeapClosure, vtables);
 
     // A function that hands a closure back makes its caller the owner —
     // `let tick = counter()` is the caller receiving a block nobody else will
@@ -390,8 +391,8 @@ fn decide_allocation(
 /// on the create and the access on each `LoadCapture` — live in two separate
 /// `MirFunction`s that share nothing but the name. So a closure handed on in one
 /// frame captures by value in all of them.
-pub(crate) fn closures_handed_on(fns: &[MirFunction]) -> HashSet<String> {
-    let callee_escapes = build_callee_escape_map(fns, CaptureRule::HeapClosure);
+pub(crate) fn closures_handed_on(fns: &[MirFunction], vtables: &VtableBodies) -> HashSet<String> {
+    let callee_escapes = build_callee_escape_map(fns, CaptureRule::HeapClosure, vtables);
     let kept = KeptThroughCalls::build(fns);
     let routes = &kept.routes;
     let mut names = HashSet::new();
@@ -694,6 +695,7 @@ fn insert_drops(
     let mut owned: HashMap<LocalId, bool> =
         retain_loads_handed_on(func, callee_escapes).into_iter().map(|l| (l, true)).collect();
     owned.extend(clone_lent_params_handed_on(func, callee_escapes).into_iter().map(|l| (l, true)));
+    owned.extend(carry_closures_heap_environments_point_at(func).into_iter().map(|l| (l, true)));
     for block in &func.blocks {
         for stmt in &block.statements {
             match &stmt.kind {
@@ -899,6 +901,134 @@ fn retain_loads_handed_on(func: &mut MirFunction, callee_escapes: &HashMap<Strin
                 }
             }
             si += 1;
+        }
+    }
+    cloned
+}
+
+/// A closure a heap environment points at goes where that environment goes.
+///
+/// `|x| f(x)` over a borrowed `f` points at the caller's closure (CM3), and the
+/// caller's literal in `v.filter(|x| x > 1)` lives as long as the sequence
+/// (SL4). Pointing works while the result stays in the frame that made the
+/// literal. Returned, the frame freed the literal on its way out and the
+/// sequence called into the freed block. So a heap environment owns its own:
+/// a closure this frame made and reads nowhere else is carried in, anything
+/// else (a parameter, a closure read again, one made on the stack or in a
+/// loop that builds the environment more than once) is cloned for it. The
+/// clone points where the original points, so it keeps the same limit (CV2).
+///
+/// Returns the clones, which this frame owns until the environment takes them.
+fn carry_closures_heap_environments_point_at(func: &mut MirFunction) -> HashSet<LocalId> {
+    let is_closure = |func: &MirFunction, l: LocalId| matches!(func.local_ty(l), Some(crate::MirType::FuncPtr(_)));
+    let mut sites: Vec<(usize, usize, usize)> = Vec::new();
+    for (bi, block) in func.blocks.iter().enumerate() {
+        for (si, stmt) in block.statements.iter().enumerate() {
+            if let MirStmtKind::ClosureCreate { heap: true, captures, .. } = &stmt.kind {
+                for (ci, c) in captures.iter().enumerate() {
+                    if c.lent && !c.by_ref && is_closure(func, c.local_id) {
+                        sites.push((bi, si, ci));
+                    }
+                }
+            }
+        }
+    }
+    let mut cloned = HashSet::new();
+    if sites.is_empty() {
+        return cloned;
+    }
+
+    // Closures this frame made on the heap, and every name each goes by.
+    let made: HashMap<LocalId, bool> = func
+        .blocks
+        .iter()
+        .flat_map(|b| b.statements.iter())
+        .filter_map(|s| match &s.kind {
+            MirStmtKind::ClosureCreate { dst, heap: true, .. } => Some((*dst, true)),
+            _ => None,
+        })
+        .collect();
+    let aliases = closure_aliases(func, &made);
+    let names_of = |o: LocalId| -> HashSet<LocalId> {
+        let mut names: HashSet<LocalId> =
+            func.locals.iter().map(|l| l.id).filter(|l| aliases.origins(l) == [o]).collect();
+        names.insert(o);
+        names
+    };
+    let in_loop = |bi: usize| {
+        let here = func.blocks[bi].id;
+        crate::analysis::cfg::successors(&func.blocks[bi].terminator)
+            .into_iter()
+            .any(|s| crate::analysis::cfg::reachable_from(func, s).contains(&here))
+    };
+    // A read other than renaming it, arming or disarming its unwind slot,
+    // freeing it, or the capture at `at`.
+    let read_elsewhere = |names: &HashSet<LocalId>, at: (usize, usize)| {
+        func.blocks.iter().enumerate().any(|(bi, b)| {
+            b.statements.iter().enumerate().any(|(si, s)| {
+                if (bi, si) == at {
+                    return false;
+                }
+                match &s.kind {
+                    MirStmtKind::Assign { rvalue: crate::MirRValue::Use(MirOperand::Local(_)), .. }
+                    | MirStmtKind::Phi { .. }
+                    | MirStmtKind::UnwindArm { .. }
+                    | MirStmtKind::UnwindDisarm { .. }
+                    | MirStmtKind::ClosureDrop { .. } => false,
+                    _ => names.iter().any(|n| uses::stmt_reads(s, *n)),
+                }
+            }) || names.iter().any(|n| uses::terminator_reads(&b.terminator, *n))
+        })
+    };
+
+    let carry: Vec<bool> = sites
+        .iter()
+        .map(|&(bi, si, ci)| {
+            let MirStmtKind::ClosureCreate { captures, .. } = &func.blocks[bi].statements[si].kind else {
+                return false;
+            };
+            let [origin] = aliases.origins(&captures[ci].local_id) else { return false };
+            let captured_once = sites
+                .iter()
+                .filter(|&&(b, s, c)| match &func.blocks[b].statements[s].kind {
+                    MirStmtKind::ClosureCreate { captures, .. } => aliases.origins(&captures[c].local_id).contains(origin),
+                    _ => false,
+                })
+                .count()
+                == 1;
+            captured_once && !in_loop(bi) && !read_elsewhere(&names_of(*origin), (bi, si))
+        })
+        .collect();
+
+    let mut next = func.locals.iter().chain(func.params.iter()).map(|l| l.id.0).max().map_or(0, |m| m + 1);
+    // Inserting a clone shifts the statements after it, so go back to front.
+    for (&(bi, si, ci), carried) in sites.iter().zip(carry).rev() {
+        let MirStmtKind::ClosureCreate { captures, .. } = &func.blocks[bi].statements[si].kind else { continue };
+        let of = captures[ci].local_id;
+        let ty = func.local_ty(of).cloned().unwrap_or(crate::MirType::Ptr);
+        let keep = if carried {
+            of
+        } else {
+            let copy = LocalId(next);
+            next += 1;
+            func.locals.push(crate::MirLocal { id: copy, name: None, ty: ty.clone(), is_param: false });
+            func.blocks[bi].statements.insert(
+                si,
+                MirStmt::dummy(MirStmtKind::Call {
+                    dst: Some(copy),
+                    func: crate::FunctionRef::borrowing("rask_closure_clone"),
+                    args: vec![MirOperand::Local(of)],
+                }),
+            );
+            cloned.insert(copy);
+            copy
+        };
+        let at = if carried { si } else { si + 1 };
+        if let MirStmtKind::ClosureCreate { captures, .. } = &mut func.blocks[bi].statements[at].kind {
+            let cap = &mut captures[ci];
+            cap.local_id = keep;
+            cap.lent = false;
+            cap.owns = Some(ty);
         }
     }
     cloned
@@ -1207,6 +1337,7 @@ pub(crate) enum CaptureRule {
 pub(crate) fn build_callee_escape_map(
     fns: &[MirFunction],
     rule: CaptureRule,
+    vtables: &VtableBodies,
 ) -> HashMap<String, Vec<bool>> {
     let kept = (rule == CaptureRule::EscapingClosure).then(|| KeptThroughCalls::build(fns));
     // Start from "nothing escapes" and keep adding until nothing new appears.
@@ -1248,7 +1379,7 @@ pub(crate) fn build_callee_escape_map(
                 if map.get(&func.name).is_some_and(|e| e[i]) {
                     continue;
                 }
-                if param_escapes_from(func, p.id, rule, &leaving, &map, &lent.slots, &targets) {
+                if param_escapes_from(func, p.id, rule, &leaving, &map, &lent.slots, &targets, vtables) {
                     if let Some(e) = map.get_mut(&func.name) {
                         e[i] = true;
                         changed = true;
@@ -1275,6 +1406,7 @@ fn param_escapes_from(
     known: &HashMap<String, Vec<bool>>,
     heap_slots: &HashSet<(String, u32)>,
     targets: &crate::closure_targets::ClosureTargets,
+    vtables: &VtableBodies,
 ) -> bool {
     // A task block captures a lent closure parameter as a view, so for who
     // frees what the caller's closure stays the caller's. It still has to be
@@ -1329,7 +1461,16 @@ fn param_escapes_from(
                         CaptureRule::HeapClosure => *heap,
                         CaptureRule::EscapingClosure => leaving.contains(dst),
                     };
-                    if takes_it && captures.iter().any(|c| is_it(&c.local_id)) {
+                    // A heap environment gets a clone of a lent closure it
+                    // points at (`carry_closures_heap_environments_point_at`),
+                    // so for who frees it, that capture is only a read.
+                    let cloned_for_it = |c: &crate::stmt::ClosureCapture| {
+                        rule == CaptureRule::HeapClosure
+                            && c.lent
+                            && !c.by_ref
+                            && matches!(func.local_ty(c.local_id), Some(crate::MirType::FuncPtr(_)))
+                    };
+                    if takes_it && captures.iter().any(|c| is_it(&c.local_id) && !cloned_for_it(c)) {
                         return true;
                     }
                 }
@@ -1353,14 +1494,51 @@ fn param_escapes_from(
                 // s(mutate g, h)` keeps `h` as `set_to(mutate g, h)` does; read
                 // as a borrow, the caller built `h` on its stack and the frame
                 // that took it freed it. A call nobody can place stays a
-                // borrow, as before.
+                // borrow for the closure rules, which ask where an environment
+                // lives. Asked who frees a box (`AnyClosure`), it is kept: the
+                // body behind it may push it somewhere, and read as lent the
+                // caller freed what that body stored.
                 MirStmtKind::ClosureCall { closure, args, .. } => {
-                    let Some(bodies) = targets.known(&func.name, *closure) else { continue };
+                    let bodies = targets.known(&func.name, *closure);
+                    if bodies.is_none() && rule != CaptureRule::AnyClosure {
+                        continue;
+                    }
                     for (i, arg) in args.iter().enumerate() {
                         if !names.iter().any(|n| uses::operand_reads(arg, *n)) {
                             continue;
                         }
-                        if bodies.iter().any(|b| known.get(b).and_then(|e| e.get(i + 1)).copied().unwrap_or(true)) {
+                        let keeps = bodies.is_none_or(|bodies| {
+                            bodies.iter().any(|b| known.get(b).and_then(|e| e.get(i + 1)).copied().unwrap_or(true))
+                        });
+                        if keeps {
+                            return true;
+                        }
+                    }
+                }
+                // Through a vtable, every body the slot can land in answers,
+                // with `self` as each body's parameter 0. With no vtable to
+                // ask, the same split as an unplaceable closure call.
+                // `Relay.keep(take o)` doing `s.put(o)` on an `any Sink` read
+                // as keeping nothing, so its caller freed the box `put` had
+                // pushed into a vector.
+                MirStmtKind::InterfaceCall { interface_object, method_name, args, takes_receiver, .. } => {
+                    let bodies = match func.local_ty(*interface_object) {
+                        Some(crate::MirType::InterfaceObject { interface_name }) => {
+                            vtables.bodies(interface_name, method_name)
+                        }
+                        _ => None,
+                    };
+                    let keeps = |slot: usize| match bodies {
+                        Some(bodies) => bodies
+                            .iter()
+                            .any(|b| known.get(b).and_then(|e| e.get(slot)).copied().unwrap_or(true)),
+                        None => rule == CaptureRule::AnyClosure,
+                    };
+                    if *takes_receiver && is_it(interface_object) && keeps(0) {
+                        return true;
+                    }
+                    for (i, arg) in args.iter().enumerate() {
+                        if names.iter().any(|n| uses::operand_reads(arg, *n)) && keeps(i + 1) {
                             return true;
                         }
                     }
@@ -1497,7 +1675,10 @@ fn find_escaping_closures(
                 // body is its own function, and the write only becomes a store
                 // once `addr_taken` runs, after this decision. Left on the
                 // stack, `f` pointed into the body's frame after it returned.
-                MirStmtKind::LoadCapture { dst, .. } => {
+                // A local bound to storage where it sits (`BindPlace`: a
+                // collection element, a `with` block's payload) is the same:
+                // `with sh.write() as g { g = || v }` puts the closure in the box.
+                MirStmtKind::LoadCapture { dst, .. } | MirStmtKind::BindPlace { dst, .. } => {
                     escaping.extend(aliases.origins(dst).iter().copied());
                 }
                 // The other side of the same trade: what this frame puts in a
@@ -1693,8 +1874,8 @@ mod tests {
     /// first pass never saw (#1045). A test that called only the first half
     /// would assert on drops that nothing had inserted yet.
     fn run_closure_passes(fns: &mut Vec<MirFunction>) {
-        optimize_all_closures(fns);
-        insert_all_closure_drops(fns);
+        optimize_all_closures(fns, &VtableBodies::default());
+        insert_all_closure_drops(fns, &VtableBodies::default());
     }
 
     fn temp(id: u32, ty: MirType) -> MirLocal { MirLocal { id: LocalId(id), name: None, ty, is_param: false } }
@@ -1746,10 +1927,10 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let mut fns = vec![func];
@@ -1780,10 +1961,10 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         }];
 
         run_closure_passes(&mut fns);
@@ -1818,10 +1999,10 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         }];
 
         run_closure_passes(&mut fns);
@@ -1851,10 +2032,10 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let caller_fn = MirFunction {
@@ -1880,10 +2061,10 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let mut fns = vec![apply_fn, caller_fn];
@@ -1915,10 +2096,10 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let caller_fn = MirFunction {
@@ -1944,10 +2125,10 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let mut fns = vec![store_fn, caller_fn];
@@ -2006,10 +2187,10 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let f_fn = MirFunction {
@@ -2036,10 +2217,10 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let mut fns = vec![outer_closure, f_fn];
@@ -2095,10 +2276,10 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let f_fn = MirFunction {
@@ -2135,10 +2316,10 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let mut fns = vec![outer_closure, f_fn];
@@ -2212,10 +2393,10 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         }];
 
         run_closure_passes(&mut fns);
@@ -2271,10 +2452,10 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         }];
 
         run_closure_passes(&mut fns);
@@ -2357,10 +2538,10 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         }];
 
         run_closure_passes(&mut fns);
@@ -2414,10 +2595,10 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         }];
 
         run_closure_passes(&mut fns);
@@ -2490,10 +2671,10 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         }];
 
         run_closure_passes(&mut fns);
@@ -2545,10 +2726,10 @@ mod tests {
             ], ret(None))],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
         let mut fns = vec![func];
         let escapes = HashMap::from([("keep_nothing".to_string(), vec![false])]);

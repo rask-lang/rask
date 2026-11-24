@@ -7,7 +7,7 @@
 // This type-checked and ran and answered wrong, which is the worst quadrant.
 //
 // Only Copy captures get this far — anything larger is already an escaping
-// borrow (E0862) or moved in, and a move leaves the parent nothing to read.
+// borrow (E0982) or moved in, and a move leaves the parent nothing to read.
 //
 // A task joined in the block that spawned it borrows instead, and its writes
 // land (conc.async/B1). These hand their handles on, so they carry.

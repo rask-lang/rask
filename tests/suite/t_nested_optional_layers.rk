@@ -1,0 +1,293 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A `none` widened into a slot with more optional layers than it has.
+//
+// `i64??` holds three things: nothing, a present-but-empty inner `i64?`, and a
+// number. An absent `i64?` stored there is the second, `some(none)`; a bare
+// `none` written for the slot itself is the first. Both backends decided by
+// looking at the value, and the two are the same value, so an inner `none`
+// came out as nothing at all. A generic `T?` with `T = i64?` lost its layer
+// the same way, and native typed `return none` from `-> i64??` as the inner
+// layer, then wrapped it (#2044). The types say which one is meant.
+//
+// Reading the types means every place a value is handed over has to add the
+// layers its type is short of: a branch of an `if` holding a bare value, a
+// closure returning one, a `push` into a vector. And a `try` that leaves hands
+// back the outer `none`, never an absent inner value.
+
+func outer_none() -> i64?? {
+    return none
+}
+
+func inner_none() -> i64?? {
+    let a: i64? = none
+    return a
+}
+
+func is_absent(x: i64??) -> bool {
+    return x is none
+}
+
+func wrap<T>(x: T) -> T? {
+    return x
+}
+
+struct Slot<T> { v: T? }
+
+func pick(k: i64) -> i64? {
+    let r = if k > 0 { k } else { none }
+    return r
+}
+
+func pick_match(k: i64) -> i64? {
+    let r = match k {
+        0 => none,
+        _ => k,
+    }
+    return r
+}
+
+func through_try(b: i64?) -> i64?? {
+    let v = try b
+    return v
+}
+
+func first_item(xs: Vec<i64?>) -> i64?? {
+    for x in xs {
+        return x
+    }
+    return none
+}
+
+test "a returned none fills the outer layer" {
+    assert outer_none() is none
+}
+
+test "a returned absent inner value is present" {
+    assert !(inner_none() is none)
+    assert inner_none()! is none
+}
+
+test "a none argument fills the outer layer" {
+    assert is_absent(none)
+}
+
+test "an absent inner argument is present" {
+    let a: i64? = none
+    assert !is_absent(a)
+}
+
+test "a binding and an assignment keep the inner none" {
+    let a: i64? = none
+    let x: i64?? = a
+    assert !(x is none)
+    mut m: i64?? = 3
+    m = a
+    assert !(m is none)
+    m = none
+    assert m is none
+    let n: i64?? = none
+    assert n is none
+}
+
+test "a generic optional of an optional adds its layer" {
+    let a: i64? = none
+    let w = wrap(a)
+    assert !(w is none)
+    assert w! is none
+    let three: i64? = 3
+    assert wrap(three)!! == 3
+}
+
+test "a generic struct field adds its layer" {
+    let a: i64? = none
+    let s = Slot<i64?>(v: a)
+    assert !(s.v is none)
+    let t = Slot<i64?>(v: none)
+    assert t.v is none
+}
+
+test "the first item of a list of optionals" {
+    let xs: Vec<i64?> = [none, 2]
+    assert !(first_item(xs) is none)
+    assert first_item(xs)! is none
+    let empty: Vec<i64?> = []
+    assert first_item(empty) is none
+}
+
+test "a branch holding a bare value widens to the if" {
+    assert pick(4)! == 4
+    assert pick(0) is none
+    assert pick_match(7)! == 7
+    assert pick_match(0) is none
+}
+
+test "a closure returning a bare value widens to its type" {
+    let f = |k: i64| -> i64? {
+        if k > 0 { return k }
+        return none
+    }
+    assert f(3)! == 3
+    assert f(0) is none
+    let g = |k: i64| -> i64? { k * 2 }
+    assert g(2)! == 4
+}
+
+test "a try that leaves is the outer none" {
+    assert through_try(none) is none
+    assert through_try(3)!! == 3
+}
+
+test "pushing none into a list of nested optionals" {
+    let a: i64? = none
+    mut v: Vec<i64??> = Vec.new()
+    v.push(a)
+    v.push(none)
+    v.push(4)
+    assert !(v[0] is none)
+    assert v[1] is none
+    assert v[2]!! == 4
+}
+
+test "a closure argument widens to its parameter" {
+    // Native passed the bare number where the body reads an optional, and
+    // the interpreter passed an absent inner `i64?` as the outer `none`
+    // (#2063).
+    let f = |x: i64?| -> bool { return x is none }
+    assert f(none)
+    assert !f(3)
+    let a: i64? = none
+    let g = |x: i64??| -> bool { return x is none }
+    assert g(none)
+    assert !g(a)
+    assert !g(3)
+}
+
+func gen_if<T: Copy>(c: bool, x: T) -> T? {
+    let r = if c { x } else { none }
+    return r
+}
+
+func gen_match<T: Copy>(k: i64, x: T) -> T? {
+    return match k {
+        0 => none,
+        _ => x,
+    }
+}
+
+func push_gen<T: Copy>(x: T) -> Vec<T?> {
+    mut v: Vec<T?> = Vec.new()
+    v.push(x)
+    v.push(none)
+    return v
+}
+
+test "a generic branch widens to the type its parameter took" {
+    // With `T = i64?` the whole `if` is an `i64??`. Native read the arm's
+    // target as `T?` without filling in `T`, so `x` went in bare and the
+    // `none` arm came back as an absent inner value (#2044).
+    let a: i64? = none
+    assert gen_if(false, a) is none
+    assert !(gen_if(true, a) is none)
+    assert gen_match(0, a) is none
+    assert !(gen_match(1, a) is none)
+    let b: i64? = 5
+    assert gen_if(true, b)!! == 5
+}
+
+test "a generic push widens to the type its parameter took" {
+    // The interpreter counted `Vec<T?>` as one layer and stored an absent
+    // `x` as the outer `none`.
+    let a: i64? = none
+    let v = push_gen(a)
+    assert !(v[0] is none)
+    assert v[1] is none
+}
+
+test "a list literal's none is the element type's outer none" {
+    // The interpreter re-counted the layers each element value carried
+    // after the fact, so the literal `none` and an absent `a` looked alike.
+    let a: i64? = none
+    let v: Vec<i64??> = [none, a, 3]
+    assert v[0] is none
+    assert !(v[1] is none)
+    assert v[2]!! == 3
+}
+
+struct Bad { code: i64 }
+extend Bad {
+    public func message(self) -> string { return "bad" }
+}
+
+func two_layers_or_bad(k: i64) -> i64?? or Bad {
+    let a: i64? = none
+    if k == 0 { return none }
+    if k == 1 { return a }
+    if k == 2 { return 5 }
+    return Bad(code: 1)
+}
+
+test "a return widens through both layers of an optional success side" {
+    // Returning into `i64?? or Bad` added one layer and stopped, so `a`
+    // and `5` were refused with E0308 (#2064).
+    let n = two_layers_or_bad(0) catch _ => { return }
+    assert n is none
+    let sn = two_layers_or_bad(1) catch _ => { return }
+    assert !(sn is none)
+    assert sn! is none
+    let s = two_layers_or_bad(2) catch _ => { return }
+    assert s!! == 5
+    let failed = two_layers_or_bad(3) catch _ => none
+    assert failed is none
+}
+
+func one_layer_or_bad(k: i64) -> i64? or Bad {
+    if k == 0 { return none }
+    if k == 1 { return 5 }
+    return Bad(code: 1)
+}
+
+test "a catch handler widens into an optional success side" {
+    // The handler stands where the success value was, so it widens like an
+    // `if` arm: `7` into `i64?`, and an `i64?` into `i64??` as its present
+    // branch. Both were refused with E0308 (#2065).
+    let a = one_layer_or_bad(2) catch _ => 7
+    assert a! == 7
+    let b = one_layer_or_bad(1) catch _ => 7
+    assert b! == 5
+    let c = one_layer_or_bad(0) catch _ => 7
+    assert c is none
+    let inner: i64? = none
+    let d = two_layers_or_bad(3) catch _ => inner
+    assert !(d is none)
+    assert d! is none
+    let e = two_layers_or_bad(3) catch _ => 3
+    assert e!! == 3
+}
+
+test "an if arm one layer short is the other arm's present branch" {
+    let inner: i64? = none
+    let deep: i64?? = none
+    let z = if inner? { deep } else { inner }
+    assert !(z is none)
+    assert z! is none
+    let other: i64?? = none
+    let w = if inner? { inner } else { other }
+    assert w is none
+}
+
+test "get on a present none element is present" {
+    mut opts = Vec<f32?>.new()
+    opts.push(1.5)
+    opts.push(none)
+    assert !(opts.get(1) is none)
+    let g = opts.get(1)
+    assert !(g is none)
+    assert g! is none
+    mut seen = false
+    if opts.get(1)? as inner {
+        seen = inner is none
+    }
+    assert seen
+    assert opts.get(5) is none
+}

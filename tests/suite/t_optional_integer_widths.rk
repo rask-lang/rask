@@ -1,0 +1,58 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+// An optional over one integer width meets a value of another: `i64? == i32`,
+// `i32? == i64`, or an `i32?` stored where an `i64?` belongs. Integers widen
+// without a cast when every value fits, and the optional widens with them.
+// Natively the compare read the bare integer as an address and crashed, and
+// the store copied an `i32?`'s bytes into an `i64?` unconverted (#1981).
+
+func lift(x: i32?) -> i64? {
+    return x
+}
+
+test "an optional compares with a narrower bare integer" {
+    let small: i32 = 5
+    let big: i64? = 5
+    assert big == small
+    assert small == big
+    let other: i32 = 6
+    assert big != other
+    let gone: i64? = none
+    assert gone != small
+}
+
+test "an optional over a narrower integer compares with a wider one" {
+    let wide: i64 = 5
+    let small: i32? = 5
+    assert small == wide
+    assert wide == small
+    let far: i64 = 4294967301
+    assert small != far
+    let neg: i32? = -3
+    let neg_wide: i64 = -3
+    assert neg == neg_wide
+    let b: u8? = 200
+    let w: u32 = 200
+    assert b == w
+}
+
+test "two optionals of different widths compare by value" {
+    let a: i32? = 7
+    let b: i64? = 7
+    assert a == b
+    let n: i32? = none
+    assert n != b
+    let m: i64? = none
+    assert n == m
+}
+
+test "an optional widens into a wider optional" {
+    let small: i32? = -5
+    let w: i64? = small
+    assert w! == -5
+    let gone: i32? = none
+    let g: i64? = gone
+    assert g is none
+    assert lift(small)! == -5
+    assert lift(none) is none
+}

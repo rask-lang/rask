@@ -44,6 +44,18 @@ pub struct PassContext {
     /// function's name. Lowering made them from the const declarations, so
     /// it says which they are; `const_free` reads them.
     pub const_init_thunks: HashSet<String>,
+    /// What each vtable slot calls, from monomorphization's vtables.
+    pub vtable_bodies: crate::vtable_layout::VtableBodies,
+    /// Functions run from outside the program's own calls: the entry, test
+    /// runners, C exports, vtable slots, what codegen calls by name. Liveness
+    /// starts here (`dead_fns`).
+    pub outside_roots: HashSet<String>,
+    /// Functions that exist to be called: every instance monomorphization
+    /// made (a call asked for it), every one some body named before
+    /// inlining, and every copy closure specialization made. Anything else
+    /// lowering made for its own reasons, so liveness starts there too
+    /// (`dead_fns`).
+    pub made_for_calls: HashSet<String>,
 }
 
 /// Convenience alias.
@@ -89,20 +101,12 @@ impl PassManager {
     /// prints after every pass. Restrict to one function with
     /// `RASK_DUMP_FN=<function name>`.
     pub fn run(&self, fns: &mut Vec<MirFunction>) -> PipelineResult {
-        self.run_with(fns, rask_ast::Target::default(), HashSet::new(), crate::CopyLayouts::default(), HashSet::new())
+        self.run_with(fns, PassContext::default())
     }
 
-    /// `run`, told which struct layouts hold a rack and which functions are
-    /// const init thunks.
-    pub fn run_with(
-        &self,
-        fns: &mut Vec<MirFunction>,
-        target: rask_ast::Target,
-        rack_holders: HashSet<u32>,
-        copy_layouts: crate::CopyLayouts,
-        const_init_thunks: HashSet<String>,
-    ) -> PipelineResult {
-        let mut ctx = PassContext { target, rack_holders, copy_layouts, const_init_thunks, ..PassContext::default() };
+    /// `run`, starting from what the caller knows about the program: the
+    /// target, rack-holding layouts, const init thunks, vtables.
+    pub fn run_with(&self, fns: &mut Vec<MirFunction>, mut ctx: PassContext) -> PipelineResult {
         let dump_after = std::env::var("RASK_DUMP_PASS").ok();
         let dump_fn = std::env::var("RASK_DUMP_FN").ok();
         for pass in &self.passes {
@@ -136,6 +140,10 @@ impl PassManager {
         // anyway. Before every pass that reads `ClosureTargets`, which is the
         // whole point (#1146).
         pm.add(ClosureSpecializationPass);
+        // Before anything asks a whole-program question: a function nothing
+        // calls any more still answers it, and its specialized closures share
+        // bodies with the live ones (`dead_fns`).
+        pm.add(DeadFunctionPass);
         // After inlining, deliberately: an inlined chain's environments end up
         // in a frame the pre-inline analysis never saw (#1045).
         pm.add(ClosureDropInsertionPass);
@@ -248,8 +256,8 @@ pub struct ClosureDropInsertionPass;
 
 impl MirPass for ClosureDropInsertionPass {
     fn name(&self) -> &str { "closure_drop_insertion" }
-    fn run(&self, fns: &mut Vec<MirFunction>, _ctx: &mut PassContext) {
-        crate::insert_all_closure_drops(fns);
+    fn run(&self, fns: &mut Vec<MirFunction>, ctx: &mut PassContext) {
+        crate::insert_all_closure_drops(fns, &ctx.vtable_bodies);
     }
 }
 
@@ -258,8 +266,8 @@ pub struct InterfaceDropInsertionPass;
 
 impl MirPass for InterfaceDropInsertionPass {
     fn name(&self) -> &str { "interface_drop_insertion" }
-    fn run(&self, fns: &mut Vec<MirFunction>, _ctx: &mut PassContext) {
-        crate::insert_interface_drops(fns);
+    fn run(&self, fns: &mut Vec<MirFunction>, ctx: &mut PassContext) {
+        crate::insert_interface_drops(fns, &ctx.vtable_bodies);
     }
 }
 
@@ -269,7 +277,18 @@ pub struct InliningPass;
 impl MirPass for InliningPass {
     fn name(&self) -> &str { "inlining" }
     fn run(&self, fns: &mut Vec<MirFunction>, ctx: &mut PassContext) {
-        ctx.inline_regions = crate::transform::inline::inline_functions(fns);
+        ctx.made_for_calls.extend(crate::transform::dead_fns::named_anywhere(fns));
+        ctx.inline_regions = crate::transform::inline::inline_functions(fns, ctx.target);
+    }
+}
+
+/// Drop the functions inlining orphaned (`dead_fns`).
+pub struct DeadFunctionPass;
+
+impl MirPass for DeadFunctionPass {
+    fn name(&self) -> &str { "dead-functions" }
+    fn run(&self, fns: &mut Vec<MirFunction>, ctx: &mut PassContext) {
+        crate::transform::dead_fns::remove_dead_functions(fns, &ctx.made_for_calls, &ctx.outside_roots);
     }
 }
 
@@ -351,8 +370,13 @@ pub struct ClosureSpecializationPass;
 
 impl MirPass for ClosureSpecializationPass {
     fn name(&self) -> &str { "closure_specialize" }
-    fn run(&self, fns: &mut Vec<MirFunction>, _ctx: &mut PassContext) {
+    fn run(&self, fns: &mut Vec<MirFunction>, ctx: &mut PassContext) {
+        let before: HashSet<String> = fns.iter().map(|f| f.name.clone()).collect();
         crate::transform::closure_specialize::specialize_adapters(fns);
+        // A copy made here was made for the call sites it serves. Read as
+        // unnamed before inlining, one serving only a dead function stayed
+        // as a root of its own.
+        ctx.made_for_calls.extend(fns.iter().map(|f| &f.name).filter(|n| !before.contains(*n)).cloned());
     }
 }
 

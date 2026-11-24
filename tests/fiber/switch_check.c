@@ -117,6 +117,15 @@ static void registers_survive(RaskFiber *self, RaskFiber *other, uint64_t seed) 
 
 static volatile int b_saw_default_rounding = 0;
 
+// fiber.c hands a starting fiber's stack bounds to the stack limit (stack_guard.c);
+// here they are only recorded and checked.
+static char *started_lo, *started_hi;
+
+void rask_stack_guard_fiber_start(char *lo, char *hi) {
+    started_lo = lo;
+    started_hi = hi;
+}
+
 // Deep enough to use a good part of the stack, shallow enough for 1 MiB.
 static int recurse(int n) {
     volatile char pad[256];
@@ -126,7 +135,10 @@ static int recurse(int n) {
 
 static void fiber_a_main(void *arg) {
     (void)arg;
-    rask_fiber_started();
+    rask_fiber_started(&fiber_a);
+    char here;
+    CHECK(&here > started_lo && &here < started_hi,
+          "the stack bounds a fiber reports at start don't hold its own frame");
     registers_survive(&fiber_a, &fiber_b, 0xA);
 
     // A rounding mode set here belongs to this fiber.
@@ -145,7 +157,7 @@ static void fiber_a_main(void *arg) {
 
 static void fiber_b_main(void *arg) {
     (void)arg;
-    rask_fiber_started();
+    rask_fiber_started(&fiber_b);
     registers_survive(&fiber_b, &fiber_a, 0xB);
 
     b_saw_default_rounding = fegetround() == FE_TONEAREST;
@@ -158,7 +170,7 @@ static RaskFiber fiber_c;
 
 static void fiber_c_main(void *arg) {
     (void)arg;
-    rask_fiber_started();
+    rask_fiber_started(&fiber_c);
     // Never checks its own: main destroys it while it's switched out.
     registers_survive(&fiber_c, &main_fiber, 0xC);
 }
@@ -169,7 +181,7 @@ static RaskFiber short_fiber;
 static int short_runs = 0;
 
 static void short_main(void *arg) {
-    rask_fiber_started();
+    rask_fiber_started(&short_fiber);
     short_runs += (int)(intptr_t)arg;
     rask_fiber_switch_final(&short_fiber, &main_fiber);
 }

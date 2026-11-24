@@ -816,7 +816,11 @@ fn written_through(st: &mut State, n: LocalId) {
 /// the frame owns it outright here. Only then is it the field that leaves:
 /// where the struct is ours only under a flag, or may be somebody else's, the
 /// pass has no single place to empty the slot, and the whole goes with it.
-fn field_taken_from(st: &State, moved: &BTreeSet<LocalId>, n: LocalId) -> Option<Value> {
+/// The struct value `n` takes a field out of, and the flag it is ours under
+/// when it is ours on only some paths. A join only narrows a name to one
+/// part of a flagged value when it holds that part wherever the flag is set
+/// (`join`), so the field leaves under the same flag.
+fn field_taken_from(st: &State, moved: &BTreeSet<LocalId>, n: LocalId) -> Option<(Value, Option<GuardKey>)> {
     if !moved.contains(&n) {
         return None;
     }
@@ -824,7 +828,7 @@ fn field_taken_from(st: &State, moved: &BTreeSet<LocalId>, n: LocalId) -> Option
     let Some(Bind::Part(v)) = (held.len() == 1).then(|| *held.iter().next().unwrap()) else {
         return None;
     };
-    (st.owned(v) && !st.guard.contains_key(&v)).then_some(v)
+    st.owned(v).then(|| (v, st.guard.get(&v).copied()))
 }
 
 fn hand_over(st: &mut State, moved: &BTreeSet<LocalId>, n: LocalId) {
@@ -862,6 +866,10 @@ struct Kills {
     edges: HashSet<(usize, usize, Value)>,
     /// Owned from entry and released before the first statement.
     entry: HashSet<Value>,
+    /// The releases in `at` and in `edges` that run under a drop flag. A
+    /// flagged release covers only the paths that set the flag.
+    guarded_at: HashSet<(usize, usize, Value)>,
+    guarded_edges: HashSet<(usize, usize, Value)>,
 }
 
 fn join(
@@ -994,8 +1002,12 @@ fn join(
         out.own.insert(j, true);
     }
     // A name holding the flagged value on every path where it is ours, and
-    // something untracked on the rest, certainly holds it whenever the flag
-    // is set, which is the only time it is released.
+    // nothing ours on the rest, certainly holds it whenever the flag is set,
+    // which is the only time it is released. "Nothing ours" counts a value
+    // already released on that path: a `return` from inside a match arm
+    // jumps past the arm's end, where the other arm released the same name's
+    // value, and requiring an untracked name there left the value with no
+    // name to be released under at the return (#2038).
     for (v, ours) in &flagged {
         for (n, set) in out.bind.iter_mut() {
             if set.len() < 2 {
@@ -1005,7 +1017,7 @@ fn join(
             let fits = seen.iter().enumerate().all(|(k, st)| {
                 let s = st.binds(*n);
                 if !ours[k] {
-                    return s.iter().all(|b| *b == Bind::Other);
+                    return s.iter().all(|b| b.value().is_none_or(|w| !st.owned(w)));
                 }
                 let one = (s.len() == 1).then(|| *s.iter().next().unwrap());
                 match one {
@@ -1194,12 +1206,17 @@ impl NeededLater {
             }
         }
         let joins = (0..func.blocks.len()).filter(|b| sh.preds[*b].len() >= 2).collect();
+        // Only releases that run on every path through them. A flagged one
+        // runs only where its flag is set: a `return` from inside a match arm
+        // released the arm's struct at the function's end under a flag, and
+        // reading that as covering the arm's normal exit, where the flag is
+        // clear, left the struct unreleased there (#2038).
         let mut released_at: std::collections::BTreeMap<Value, Vec<(usize, usize)>> = Default::default();
-        for (b, si, v) in &kills.at {
+        for (b, si, v) in kills.at.iter().filter(|k| !kills.guarded_at.contains(k)) {
             released_at.entry(*v).or_default().push((*b, *si));
         }
         let mut released_on: std::collections::BTreeMap<Value, HashSet<(usize, usize)>> = Default::default();
-        for (from, to, v) in &kills.edges {
+        for (from, to, v) in kills.edges.iter().filter(|k| !kills.guarded_edges.contains(k)) {
             released_on.entry(*v).or_default().insert((*from, *to));
         }
         NeededLater { succs: sh.succs.clone(), needing, joins, released_at, released_on }
@@ -1287,13 +1304,18 @@ pub struct Plan {
     /// The drop flags `releases` and `unwind` name by index.
     pub guards: Vec<Guard>,
     /// Hand-overs of a `Facts::moved_parts` name that took a field out of a
-    /// struct the frame owns: `(block, statement, name, holders)`, by index.
+    /// struct the frame owns (`MovedOut`), by index.
     /// The statement index is the block's length for the terminator. The
     /// holders are every name that holds the struct's bytes there: copies of an
     /// aggregate are copies of its bytes, so the field is emptied in each, and
     /// whichever one the struct is released under later skips it.
-    pub moved_out: Vec<(usize, usize, LocalId, Vec<LocalId>)>,
+    pub moved_out: Vec<MovedOut>,
 }
+
+/// `(block, statement, name, holders, guard)`: see `Plan::moved_out`. The
+/// guard is the flag the struct is ours under, when it is ours on only some
+/// of the paths there.
+pub type MovedOut = (usize, usize, LocalId, Vec<LocalId>, Option<usize>);
 
 /// Where each value this frame owns is released, and under which name.
 pub fn plan(func: &MirFunction, facts: &Facts, placement: Placement) -> Plan {
@@ -1355,6 +1377,9 @@ pub fn plan(func: &MirFunction, facts: &Facts, placement: Placement) -> Plan {
                         kills.entry.insert(v);
                     } else {
                         kills.at.insert((block, si, v));
+                        if g.is_some() {
+                            kills.guarded_at.insert((block, si, v));
+                        }
                     }
                 }
                 continue;
@@ -1377,11 +1402,32 @@ pub fn plan(func: &MirFunction, facts: &Facts, placement: Placement) -> Plan {
             }
             out.push(Release::OnEdge { from: ids[pi], to: ids[bi], name, made: v.made(), guard: flags.of(g) });
             kills.edges.insert((pi, bi, v));
+            if g.is_some() {
+                kills.guarded_edges.insert((pi, bi, v));
+            }
+        }
+    }
+    let (entries, exits, defs) = solve(func, facts, &sh, &live, &kills, &mut HashSet::new());
+    // A release on an edge reads its flag off the round that placed it, and a
+    // later round can find the value flagged there: one released on a loop's
+    // back edge comes round again already released, so the second turn's
+    // state at the same edge has it ours only under a flag. Unwrapped, the
+    // release ran every turn and freed the value again (`last = l` in a loop).
+    for &(pi, bi, v) in &kills.edges {
+        if kills.guarded_edges.contains(&(pi, bi, v)) {
+            continue;
+        }
+        let Some(g) = exits[pi].as_ref().and_then(|x| x.guard.get(&v)).copied() else { continue };
+        for r in out.iter_mut() {
+            if let Release::OnEdge { from, to, made, guard: guard @ None, .. } = r {
+                if *from == ids[pi] && *to == ids[bi] && *made == v.made() {
+                    *guard = flags.of(Some(g));
+                }
+            }
         }
     }
     out.sort();
     out.dedup();
-    let (entries, exits, defs) = solve(func, facts, &sh, &live, &kills, &mut HashSet::new());
     if std::env::var("RASK_OWNERSHIP_TRACE").is_ok_and(|v| v == func.name) {
         for bi in 0..func.blocks.len() {
             eprintln!("bb{} entry {:?}", ids[bi].0, entries[bi]);
@@ -1392,12 +1438,12 @@ pub fn plan(func: &MirFunction, facts: &Facts, placement: Placement) -> Plan {
         eprintln!("flags {:?}", defs);
     }
     let unwind = unwind_marks(func, facts, &sh, &live, &entries, &exits, &kills, &mut flags);
-    let guards = flags.guards(func, &defs);
     let moved_out = if facts.moved_parts.is_empty() {
         Vec::new()
     } else {
-        fields_moved_out(func, facts, &live, &entries, &kills)
+        fields_moved_out(func, facts, &live, &entries, &kills, &mut flags)
     };
+    let guards = flags.guards(func, &defs);
     Plan { releases: out, unwind, guards, moved_out }
 }
 
@@ -1409,8 +1455,9 @@ fn fields_moved_out(
     live: &Live,
     entries: &[Option<State>],
     kills: &Kills,
-) -> Vec<(usize, usize, LocalId, Vec<LocalId>)> {
-    let note = |st: &State, events: &[Event], bi: usize, si: usize, out: &mut Vec<(usize, usize, LocalId, Vec<LocalId>)>| {
+    flags: &mut FlagIndex,
+) -> Vec<MovedOut> {
+    let mut note = |st: &State, events: &[Event], bi: usize, si: usize, out: &mut Vec<MovedOut>| {
         for ev in events {
             let names: Vec<LocalId> = match ev {
                 Event::HandOver(n) => vec![*n],
@@ -1418,9 +1465,9 @@ fn fields_moved_out(
                 _ => continue,
             };
             for n in names {
-                let Some(v) = field_taken_from(st, &facts.moved_parts, n) else { continue };
-                if !out.iter().any(|(b, s, m, _)| (*b, *s, *m) == (bi, si, n)) {
-                    out.push((bi, si, n, st.holders(v)));
+                let Some((v, g)) = field_taken_from(st, &facts.moved_parts, n) else { continue };
+                if !out.iter().any(|(b, s, m, _, _)| (*b, *s, *m) == (bi, si, n)) {
+                    out.push((bi, si, n, st.holders(v), flags.of(g)));
                 }
             }
         }
@@ -1567,9 +1614,18 @@ fn on_edges(
                     // Anywhere else it is still ours further on, and waits.
                     // A join value made at `bi` is a new one on every way
                     // in, so the one arriving here is always the last turn's.
+                    //
+                    // And a name live past the join that holds it only as
+                    // another way in brings it was written over on this one:
+                    // `last = l` in a loop. Its scope ended at the write. Left
+                    // for the function's end, the name there held this value
+                    // or a later turn's, and neither was released.
                     Placement::ScopeEnd => {
                         let remade = v.block as usize == bi && v.at == u32::MAX;
-                        remade || !entries[bi].as_ref().is_some_and(|e| e.owned(v))
+                        let written_over = entries[bi]
+                            .as_ref()
+                            .is_some_and(|e| e.needed(v, &live.at[bi][first]));
+                        remade || written_over || !entries[bi].as_ref().is_some_and(|e| e.owned(v))
                     }
                 };
                 if !site {

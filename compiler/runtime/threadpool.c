@@ -90,9 +90,11 @@ static void pool_worker_loop(void) {
 static void *pool_worker(void *arg) {
     (void)arg;
     rask_fp_reset();
+    rask_stack_guard_thread_init();
     rask_outside_thread_start();
     pool_worker_loop();
     rask_outside_thread_exit();
+    rask_thread_end();
     return NULL;
 }
 

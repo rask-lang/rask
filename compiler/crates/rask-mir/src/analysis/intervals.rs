@@ -886,10 +886,10 @@ mod tests {
             ],
             entry_block: block(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let Some((analysis, ops, results)) = analyze(&func) else {
@@ -971,10 +971,10 @@ mod tests {
             ],
             entry_block: block(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
 
         let Some((analysis, ops, results)) = analyze(&func) else {
@@ -1059,10 +1059,10 @@ mod tests {
             ],
             entry_block: block(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         }
     }
 
@@ -1106,10 +1106,10 @@ mod tests {
             ],
             entry_block: block(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,
-            source_file: None,
         };
         assert!(analyze(&func).is_none(), "IV1: no analysis without indexing");
     }
@@ -1134,10 +1134,10 @@ mod tests {
                 }],
                 entry_block: block(0),
                 is_extern_c: false,
+                span: rask_ast::Span::new(0, 0),
                 inline_hint: false,
                 param_modes: Vec::new(),
                 item_mode_from_body: false,
-                source_file: None,
             };
             func
         }).unwrap();

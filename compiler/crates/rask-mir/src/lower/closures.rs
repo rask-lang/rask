@@ -520,6 +520,7 @@ impl<'a> MirLowerer<'a> {
             let saved_builder = std::mem::replace(&mut self.builder, closure_builder);
             let saved_locals = std::mem::replace(&mut self.locals, closure_locals);
             let saved_captures = std::mem::replace(&mut self.addressed_locals, addressed_locals);
+            let saved_placed = std::mem::take(&mut self.placed_locals);
             let saved_loop_stack = std::mem::take(&mut self.loop_stack);
             // The cleanup chain belongs to the enclosing function, and its
             // blocks live in that function's MIR. A `return` inside this body
@@ -545,28 +546,24 @@ impl<'a> MirLowerer<'a> {
             // type `T` (`|x| x * 2` in a `func(i64) -> i64?` slot) hands back
             // the success side, as a function declared that way does. Lowering
             // builds that wrapper; codegen no longer adds it.
-            let body_result = self.lower_expr(body).map(|(op, ty)| {
-                if self.is_ordering_ty(&ty) && closure_ret == MirType::I64 {
+            let body_result = self.lower_expr(body).and_then(|(op, ty)| {
+                Ok(if self.is_ordering_ty(&ty) && closure_ret == MirType::I64 {
                     let tag = self.emit_ordering_tag_i64(op);
                     (MirOperand::Local(tag), MirType::I64)
                 } else if matches!(closure_ret, MirType::Result { .. } | MirType::Option(_))
                     && self.builder.current_block_unterminated()
                 {
-                    let wrapped = self.coerce_into_wrapper(
-                        rask_ast::coercion::CoercionSite::Return,
-                        op,
-                        &ty,
-                        &closure_ret,
-                    );
-                    (wrapped, closure_ret.clone())
+                    let shaped = self.shape_returned(body.id, op, &ty, &closure_ret)?;
+                    (shaped, closure_ret.clone())
                 } else {
                     (op, ty)
-                }
+                })
             });
 
             closure_builder = std::mem::replace(&mut self.builder, saved_builder);
             self.locals = saved_locals;
             self.addressed_locals = saved_captures;
+            self.placed_locals = saved_placed;
             self.loop_stack = saved_loop_stack;
             self.ensure_stack = saved_ensure_stack;
             self.ensure_flags = saved_ensure_flags;
@@ -586,6 +583,9 @@ impl<'a> MirLowerer<'a> {
         }
 
         let mut closure_fn = closure_builder.finish();
+        // A stack overflow caught at this closure's entry is reported here
+        // (ctrl.panics/S6: every panic has a location).
+        closure_fn.span = body.span;
         closure_fn.is_extern_c = c_abi;
 
 
@@ -735,8 +735,18 @@ impl<'a> MirLowerer<'a> {
             dst: ret_flag,
             rvalue: MirRValue::Use(MirOperand::Constant(crate::operand::MirConst::Int(0))),
         }));
+        // Inside another loop's body, a `return` here answers the same
+        // function, so it writes the slot that body's `return` writes. With a
+        // slot of its own, the outer body copied the answer on and nothing
+        // released the copy it was made from (#2042).
+        let enclosing_slot = match &self.inline_return_target {
+            Some((dst, _, Some(_))) => Some(*dst),
+            _ => None,
+        };
         let ret_value = if outer_ret == MirType::Void {
             None
+        } else if enclosing_slot.is_some() {
+            enclosing_slot
         } else {
             Some(self.builder.alloc_local(
                 format!("__seq_ret_value_{}", self.closure_counter), outer_ret.clone(),
@@ -844,6 +854,7 @@ impl<'a> MirLowerer<'a> {
             let saved_builder = std::mem::replace(&mut self.builder, yb);
             let saved_locals = std::mem::replace(&mut self.locals, yield_locals);
             let saved_captures = std::mem::replace(&mut self.addressed_locals, body_captures);
+            let saved_placed = std::mem::take(&mut self.placed_locals);
             let saved_moved = std::mem::replace(&mut self.seq_moved_names, Some(Default::default()));
             let saved_loops = std::mem::take(&mut self.loop_stack);
             // The cleanup chain belongs to the enclosing function, and its
@@ -906,6 +917,7 @@ impl<'a> MirLowerer<'a> {
             yb = std::mem::replace(&mut self.builder, saved_builder);
             self.locals = saved_locals;
             self.addressed_locals = saved_captures;
+            self.placed_locals = saved_placed;
             let moved = std::mem::replace(&mut self.seq_moved_names, saved_moved).unwrap_or_default();
             // A `return` in a loop nested in another loop's body leaves that
             // body too, so what it moved is moved there as well.
@@ -989,7 +1001,9 @@ impl<'a> MirLowerer<'a> {
         for local in moved_out {
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::MovedOut { local }));
         }
-        self.terminate_return(ret_value.map(MirOperand::Local));
+        // Already in the enclosing body's slot: leave with nothing to write.
+        let answer = if enclosing_slot.is_some() { None } else { ret_value.map(MirOperand::Local) };
+        self.terminate_return(answer);
         self.builder.switch_to_block(done);
         Ok(())
     }

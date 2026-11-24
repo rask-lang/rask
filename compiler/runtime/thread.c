@@ -509,9 +509,11 @@ static void task_entry_run(TaskEntry *entry) {
 
 static void *task_thread_entry(void *arg) {
     rask_fp_reset();
+    rask_stack_guard_thread_init();
     rask_outside_thread_start();
     task_entry_run((TaskEntry *)arg);
     rask_outside_thread_exit();
+    rask_thread_end();
     return NULL;
 }
 

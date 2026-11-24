@@ -125,3 +125,63 @@ test "a container removed from a container is the caller's" {
     vv.pop()
     assert vv.len() == 1
 }
+
+// An adapter over an owning chain passes some items on and drops the rest;
+// the ones it drops are its to free, the ones the body keeps are the body's
+// (#2027). A chain that only lends can't be kept from at all (E0902).
+func long(c: string) -> string {
+    return "{c}-padded-well-past-the-inline-string-length"
+}
+
+test "a body keeps the last item an adapter passes on" {
+    mut src: Vec<Vec<i64>> = [[1, 2], [3, 4], [5, 6]]
+    mut keep: Vec<i64> = Vec.new()
+    for v in src.take_all().filter(|v| v[0] != 3) {
+        keep = v
+    }
+    assert keep[0] == 5
+
+    mut s2: Vec<string> = [long("a"), long("b"), long("c")]
+    mut k2 = ""
+    for s in s2.take_all().take(2) {
+        k2 = s
+    }
+    assert k2 == long("b")
+
+    mut s3: Vec<string> = [long("a"), long("b"), long("c")]
+    mut k3 = ""
+    for s in s3.take_all().skip(1).take_while(|s| s.len() > 3) {
+        k3 = s
+    }
+    assert k3 == long("c")
+}
+
+// A struct item carrying a `Vec`, handed over whole (#2031). From a sequence
+// that only lends it is E0902; from an owning chain the struct and its
+// fields become the body's.
+struct Bag {
+    public name: string
+    public items: Vec<string>
+}
+
+test "a body keeps struct items an owning chain hands it" {
+    mut src: Vec<Bag> = Vec.new()
+    src.push(Bag(name: long("1"), items: [long("2")]))
+    src.push(Bag(name: long("3"), items: [long("4")]))
+    mut out: Vec<Bag> = Vec.new()
+    for b in src.take_all() {
+        out.push(b)
+    }
+    assert out[1].items[0] == long("4")
+
+    mut keep = Bag(name: long("0"), items: [])
+    mut src2: Vec<Bag> = Vec.new()
+    src2.push(Bag(name: long("7"), items: [long("8")]))
+    src2.push(Bag(name: long("9"), items: []))
+    for b in src2.take_all().filter(|b| b.name.len() > 0) {
+        if b.items.len() > 0 {
+            keep = b
+        }
+    }
+    assert keep.items[0] == long("8")
+}

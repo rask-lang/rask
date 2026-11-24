@@ -1617,6 +1617,7 @@ dependencies = [
 name = "rask-miri"
 version = "0.6.1"
 dependencies = [
+ "rask-ast",
  "rask-check",
  "rask-layout",
  "rask-mir",
@@ -1739,6 +1740,7 @@ name = "rask-wasm"
 version = "0.6.1"
 dependencies = [
  "console_error_panic_hook",
+ "rask-ast",
  "rask-compiler",
  "rask-diagnostics",
  "rask-interp",

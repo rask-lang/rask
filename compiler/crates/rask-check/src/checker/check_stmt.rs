@@ -337,10 +337,15 @@ impl TypeChecker {
                 }
                 let ret_ty = if let Some(expr) = value {
                     if let Some(expected) = &self.current_return_type.clone() {
-                        // If expecting Result<T, E>, propagate T as the expected type
-                        // so literals like `return 42` infer the correct inner type
-                        let effective = match &self.ctx.apply(expected) {
-                            Type::Result { ok, .. } => (**ok).clone(),
+                        // Expecting `T or E`, the value is asked for as the `T`, so
+                        // `return 42` infers the ok side's type. An optional is a
+                        // `Result` whose error is `none` and isn't peeled: `none`
+                        // takes its type from the slot, and `return none` from an
+                        // `-> i64??` was typed an `i64?` and then wrapped into a
+                        // present outer layer (#2044).
+                        let applied = self.ctx.apply(expected);
+                        let effective = match &applied {
+                            Type::Result { ok, .. } if !applied.is_option() => (**ok).clone(),
                             _ => expected.clone(),
                         };
                         self.infer_expr_expecting(expr, &effective)
@@ -841,6 +846,9 @@ impl TypeChecker {
             self.errors.push(TypeError::NotAPlace { what, span: target.span });
             return;
         }
+        if matches!(target.kind, ExprKind::Field { .. }) {
+            self.check_write_through_force(target);
+        }
         let what = match &target.kind {
             ExprKind::Ident(_)
             | ExprKind::Field { .. }
@@ -868,6 +876,25 @@ impl TypeChecker {
             _ => "this expression",
         };
         self.errors.push(TypeError::NotAPlace { what, span: target.span });
+    }
+
+    /// `x!.f = v` writes into the payload `!` read out, which is a copy unless
+    /// a link sits between the `!` and the write: a link's field is the node's
+    /// (OPT19, #2075). An index ends the walk, since a container's elements
+    /// live in the container, not in the copy.
+    fn check_write_through_force(&mut self, target: &Expr) {
+        let mut current = target;
+        while let ExprKind::Field { object, .. } = &current.kind {
+            let object_ty = self.node_types.get(&object.id).map(|t| self.ctx.apply(t));
+            if object_ty.is_some_and(|t| self.link_node_type(&t).is_some()) {
+                return;
+            }
+            if let ExprKind::Unwrap { .. } = &object.kind {
+                self.errors.push(TypeError::WriteThroughForce { span: object.span });
+                return;
+            }
+            current = object;
+        }
     }
 
     /// Validate E5 for let/const bindings: `const x = shared.read()` is an error.

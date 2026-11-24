@@ -442,9 +442,16 @@ const MAX_STACK_SEGMENTS: usize = {
 #[cfg(target_family = "wasm")]
 const MAX_STACK_SEGMENTS: usize = 1;
 
-/// Has the chain of stacks reached its cap?
-pub(crate) fn stack_segments_exhausted() -> bool {
-    STACK_SEGMENTS.get() + 1 >= MAX_STACK_SEGMENTS
+/// The segments past the cap that the ensures of an unwinding stack overflow
+/// may use (ctrl.panics: the overflow panics, and its ensures still run).
+#[cfg(not(target_family = "wasm"))]
+pub(crate) const OVERFLOW_ENSURE_SEGMENTS: usize = 1;
+#[cfg(target_family = "wasm")]
+pub(crate) const OVERFLOW_ENSURE_SEGMENTS: usize = 0;
+
+/// Has the chain of stacks reached its cap, plus `extra` segments?
+pub(crate) fn stack_segments_exhausted(extra: usize) -> bool {
+    STACK_SEGMENTS.get() + 1 >= MAX_STACK_SEGMENTS + extra
 }
 
 /// Continue evaluating on a fresh stack.
@@ -579,7 +586,7 @@ pub fn join_detached_reapers() {
 }
 
 pub use build_context::BuildState;
-pub use interp::{BenchmarkResult, Interpreter, RuntimeDiagnostic, RuntimeError, SourceInfo, TestResult};
+pub use interp::{BenchmarkResult, Interpreter, RuntimeDiagnostic, RuntimeError, TestResult};
 
 #[cfg(test)]
 mod drift;

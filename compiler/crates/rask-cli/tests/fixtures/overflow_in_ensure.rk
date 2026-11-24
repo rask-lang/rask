@@ -1,0 +1,32 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+import async.JoinError
+
+func down(n: i64) -> i64 {
+    if n == 0 {
+        return 0
+    }
+    return down(n - 1) + 1
+}
+
+func inner() -> i64 {
+    ensure println("inner ensure {down(100000000)}")
+    panic("plain")
+}
+
+func outer() -> i64 {
+    ensure println("outer ensure {down(100000000)}")
+    return inner()
+}
+
+func main() {
+    using Multitasking {
+        let r = spawn { return outer() }.join()
+        match r {
+            i64 as _ => println("returned"),
+            JoinError.Panicked(msg) => println("panicked: {msg}"),
+            JoinError as _ => println("other"),
+        }
+        let after = spawn { return down(10) }.join()!
+        println("after: {after}")
+    }
+}

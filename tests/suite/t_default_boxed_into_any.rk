@@ -1,0 +1,67 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A `catch` handler or a `??` default that fills an `any` slot.
+//
+// Both values have to be boxed, since the other branch hands over a box. The
+// checker decided whether to box a `catch` handler before the method's result
+// type was solved, so behind an interface call it saw nothing to box into. A
+// `??` took the default's own type as the result, so the box the present
+// branch handed over was read as a `Tag`. Both crashed natively. The strings
+// are long enough to live on the heap.
+
+interface Label {
+    func text(self) -> string
+}
+
+struct Refused { why: string }
+extend Refused {
+    func message(self) -> string { return self.why }
+}
+
+struct Tag { name: string }
+Tag implements Label {
+    func text(self) -> string { return self.name }
+}
+
+interface Maker {
+    func make(self, n: i64) -> any Label or Refused
+    func maybe(self, n: i64) -> any Label?
+}
+
+struct Fac { pre: string }
+Fac implements Maker {
+    func make(self, n: i64) -> any Label or Refused {
+        if n < 0 { return Refused(why: "refused-{self.pre}-padded-long-enough") }
+        return Tag(name: "made-{n}-{self.pre}")
+    }
+    func maybe(self, n: i64) -> any Label? {
+        if n % 2 == 0 { return Tag(name: "maybe-{n}-{self.pre}") }
+        return none
+    }
+}
+
+func fac() -> Fac {
+    return Fac(pre: "prefix-string-long-enough-for-heap")
+}
+
+test "catch fills an any slot after a method call" {
+    let f = fac()
+    let r = f.make(-1) catch e => Tag(name: "caught-padded-long-enough-heap")
+    assert r.text() == "caught-padded-long-enough-heap"
+    let ok = f.make(2) catch e => Tag(name: "caught-padded-long-enough-heap")
+    assert ok.text() == "made-2-prefix-string-long-enough-for-heap"
+}
+
+test "catch behind an interface value" {
+    let m: any Maker = fac()
+    let r = m.make(-1) catch e => Tag(name: "caught-through-any-padded-long")
+    assert r.text() == "caught-through-any-padded-long"
+}
+
+test "a ?? default fills an any slot" {
+    let f = fac()
+    let d = f.maybe(1) ?? Tag(name: "coalesced-default-padded-long-enough")
+    assert d.text() == "coalesced-default-padded-long-enough"
+    let p = f.maybe(2) ?? Tag(name: "coalesced-default-padded-long-enough")
+    assert p.text() == "maybe-2-prefix-string-long-enough-for-heap"
+}

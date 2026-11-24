@@ -1,0 +1,38 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+import async.JoinError
+import thread.Thread
+
+// Running out of stack is a panic (ctrl.panics/S5): the task or thread that
+// overflowed fails, `join` reports it, and the program carries on. Natively a
+// fiber aborted the process and a thread died with a bare SIGSEGV (#2073), and
+// with no stack probes a large frame could step past the guard into other
+// memory (#2066).
+
+func down(n: i64) -> i64 {
+    if n == 0 {
+        return 0
+    }
+    return down(n - 1) + 1
+}
+
+func panicked(r: i64 or JoinError) -> bool {
+    match r {
+        i64 as _ => { return false },
+        JoinError.Panicked(_) => { return true },
+        JoinError as _ => { return false },
+    }
+}
+
+test "a task that recurses without end panics, again and again" {
+    using Multitasking {
+        for _ in 0..6 {
+            assert panicked(spawn { return down(100000000) }.join())
+        }
+        assert !panicked(spawn { return down(10) }.join())
+    }
+}
+
+test "a thread that recurses without end panics" {
+    assert panicked(Thread.spawn { return down(100000000) }.join())
+    assert !panicked(Thread.spawn { return down(10) }.join())
+}

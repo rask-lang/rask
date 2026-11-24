@@ -1602,7 +1602,12 @@ impl TypeChecker {
                 }
                 let found = if conformance_pick.is_some() {
                     conformance_pick.as_ref()
-                } else if candidates.len() > 1 {
+                } else if candidates.len() > 1 || candidates.iter().any(|m| Self::header_has_shape(m)) {
+                    // A header with a shape (`extend Sequence<Sequence<U>>`)
+                    // only fits some receivers even when it is the only block:
+                    // a `Sequence<Vec<i64>>` has no `flatten`, and taking it
+                    // anyway left `U` unbound and the items read as sequences
+                    // they weren't (#2045).
                     let settled = generic_args.iter().all(|a| match a {
                         GenericArg::Type(t) => !self.ctx.apply(t).has_unsolved_var(),
                         _ => true,
@@ -1621,7 +1626,26 @@ impl TypeChecker {
                         });
                         return Ok(false);
                     }
-                    candidates.iter().copied().find(|m| self.header_fits(m, *base, generic_args))
+                    let fits = candidates.iter().copied().find(|m| self.header_fits(m, *base, generic_args));
+                    if fits.is_none() {
+                        // The stdlib's runtime table knows the name without
+                        // the header, so falling through would accept it.
+                        let base_name = self.types.type_name(*base);
+                        let headers = candidates
+                            .iter()
+                            .map(|m| {
+                                let pats: Vec<String> = m.owner_patterns.iter().map(|p| p.to_string()).collect();
+                                format!("{}<{}>", base_name, pats.join(", "))
+                            })
+                            .collect();
+                        return Err(TypeError::MethodNotForReceiver {
+                            ty: self.types.resolve_type_names(&self.ctx.apply(&ty)).to_string(),
+                            method,
+                            headers,
+                            span,
+                        });
+                    }
+                    fits
                 } else {
                     candidates.first().copied()
                 };
@@ -2986,8 +3010,22 @@ impl TypeChecker {
     /// `Atomic<Slot>` over `{ index: i32, generation: i32 }` was rejected as two
     /// words, and that struct is the example mem.atomics' own text uses. Fields
     /// hold their declared widths now (#1083), so the rule reads the width.
+    /// `ty` with every newtype layer taken off: the type its bytes are.
+    fn under_newtypes(&self, ty: &Type) -> Type {
+        let ty = self.resolve_named(ty);
+        if let Type::Named(id) = ty {
+            if let Some(TypeDef::NominalAlias { underlying, .. }) = self.types.get(id) {
+                let underlying = underlying.clone();
+                return self.under_newtypes(&underlying);
+            }
+        }
+        ty
+    }
+
+    /// A newtype has its underlying value's bytes, so it is a payload exactly
+    /// when that is.
     fn atomic_payload_problem(&self, ty: &Type) -> Option<String> {
-        match self.resolve_named(ty) {
+        match self.under_newtypes(ty) {
             // Still open — the value that settles it decides, and rejecting on
             // "don't know" would refuse code the checker later accepts.
             Type::Var(_) | Type::Error | Type::UnresolvedNamed(_) => None,
@@ -3008,7 +3046,7 @@ impl TypeChecker {
                     }
                     let widths: Option<Vec<u32>> = fields
                         .iter()
-                        .map(|f| self.resolve_named(f).scalar_bytes())
+                        .map(|f| self.under_newtypes(f).scalar_bytes())
                         .collect();
                     let Some(widths) = widths else {
                         return Some(
@@ -3610,6 +3648,17 @@ impl TypeChecker {
                 self.unify(ret, &Type::RawPtr(Box::new(target)), span)
             }
         }
+    }
+
+    /// Does the block's header say more than "any argument" anywhere: a
+    /// tuple, a generic, or a concrete type in place of a parameter?
+    fn header_has_shape(sig: &MethodSig) -> bool {
+        sig.owner_patterns.iter().any(|p| match p {
+            TypeExpr::Named { path, args } if args.is_empty() && path.len() == 1 => {
+                !rask_ast::type_params::is_type_param_name(&path[0])
+            }
+            _ => true,
+        })
     }
 
     /// Does this receiver's type arguments fit the header of the block that

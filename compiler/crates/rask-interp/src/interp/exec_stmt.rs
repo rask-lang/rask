@@ -22,18 +22,30 @@ fn continues_here(err: &RuntimeError, label: Option<&str>) -> bool {
 
 impl Interpreter {
     pub(super) fn exec_stmt(&mut self, stmt: &Stmt) -> Result<Value, RuntimeDiagnostic> {
+        let moves_from = self.pending_moves.len();
+        let result = self.exec_stmt_kind(stmt);
+        match result {
+            Ok(_) => self.complete_moves(moves_from),
+            // Left before the hand-over: the names still own what they hold.
+            Err(_) => self.pending_moves.truncate(moves_from),
+        }
+        result
+    }
+
+    fn exec_stmt_kind(&mut self, stmt: &Stmt) -> Result<Value, RuntimeDiagnostic> {
         match &stmt.kind {
             StmtKind::Expr(expr) => self.eval_expr(expr),
 
             StmtKind::Let { name, init, ty, .. } => {
                 let mut value = self.eval_owned(init)?;
                 if let Some(ty_str) = ty {
-                    value = auto_wrap_for_annotation(value, ty_str, is_none_literal(init));
+                    let ty_str = self.resolve_type_param(ty_str);
+                    value = auto_wrap_for_annotation(value, &ty_str, self.static_option_depth(init));
                 }
                 if let Some(id) = self.get_resource_id(&value) {
                     self.resource_tracker.set_var_name(id, name.clone(), stmt.span);
                 }
-                crate::rack::register_vec_links(&value);
+                crate::rack::register_nested(&value);
                 self.env.define(name.clone(), value);
                 Ok(Value::Unit)
             }
@@ -49,15 +61,15 @@ impl Interpreter {
                 };
                 // OPT6: auto-wrap bare T into T? / T or E when annotated.
                 let value = if let Some(ty_str) = ty {
-                    let value = auto_wrap_for_annotation(value, ty_str, is_none_literal(init));
-                    value
+                    let ty_str = self.resolve_type_param(ty_str);
+                    auto_wrap_for_annotation(value, &ty_str, self.static_option_depth(init))
                 } else {
                     value
                 };
                 if let Some(id) = self.get_resource_id(&value) {
                     self.resource_tracker.set_var_name(id, name.clone(), stmt.span);
                 }
-                crate::rack::register_vec_links(&value);
+                crate::rack::register_nested(&value);
                 self.env.define(name.clone(), value);
                 Ok(Value::Unit)
             }
@@ -95,10 +107,23 @@ impl Interpreter {
             }
 
             StmtKind::Assign { target, value, .. } => {
+                let moves_from = self.pending_moves.len();
                 let val = self.eval_owned(value)?;
+                // The value holds what it moved before the store: in
+                // `left = Expr.Add(left: left, …)` the place written is the
+                // one read, and emptying it after the statement would empty
+                // the new value.
+                self.complete_moves(moves_from);
+                // The place's type says how many layers it holds, and the
+                // value's type how many it brings: `m = a` with `m: i64??` and
+                // `a: i64?` stores `some(a)` even when `a` is `none` (#2044).
+                let val = match (self.static_option_depth(target), self.static_option_depth(value)) {
+                    (Some(want), Some(have)) => (have..want).fold(val, |v, _| Value::some(v)),
+                    _ => val,
+                };
                 // Same as a binding: a vector of links that arrives whole is
                 // an edge holder from here on.
-                crate::rack::register_vec_links(&val);
+                crate::rack::register_nested(&val);
                 self.assign_target(target, val)
                     .map_err(|e| RuntimeDiagnostic::new(e, stmt.span))?;
                 Ok(Value::Unit)
@@ -111,6 +136,7 @@ impl Interpreter {
                     Some(e) => self.eval_expr(e)?,
                     None => Value::Unit,
                 };
+                self.returned_depth = expr.as_ref().and_then(|e| self.static_option_depth(e));
                 Err(RuntimeDiagnostic::new(RuntimeError::Return(value), stmt.span))
             }
 
@@ -617,7 +643,10 @@ impl Interpreter {
             rask_ast::expr::ExprKind::Field { .. } | rask_ast::expr::ExprKind::Ident(_)
         );
         if !matches!(iter.kind, rask_ast::expr::ExprKind::Field { .. }) {
-            crate::rack::register_vec_links(&Value::Vec(std::sync::Arc::clone(v)));
+            let items: Vec<Value> = v.lock().unwrap().items.clone();
+            for item in &items {
+                crate::rack::register_element(v, item);
+            }
         }
         // The loop walks the live vector through a cursor, not a snapshot: a
         // call in the body can pop, clear, swap or replace entries, and the
@@ -699,11 +728,12 @@ impl Interpreter {
 /// already has as many optional layers as the annotation asks for. For Result,
 /// picks Ok vs Err by the value's type.
 ///
-/// `rhs_is_none_literal` marks a bare `none` on the right-hand side. It names
-/// the *outermost* absent, so it never gains a layer no matter how deep the
-/// annotation is — `const x: T?? = none` means "nothing at all", not "an empty
-/// inner slot" (OPT29).
-pub(crate) fn auto_wrap_for_annotation(value: Value, ty: &TypeExpr, rhs_is_none_literal: bool) -> Value {
+/// `have` is how many optional layers the checker gave the value's
+/// expression; the annotation's extra layers are added on top. Counting the
+/// value's own layers instead can't tell a `none` meant for the outer layer
+/// (`let x: i64?? = none`, nothing at all) from an inner `i64?` that is absent
+/// (`some(none)`), so it is only the fallback when the type is still open.
+pub(crate) fn auto_wrap_for_annotation(value: Value, ty: &TypeExpr, have: Option<usize>) -> Value {
     // `i128`/`u128` are 16-byte types (type.primitives), and the interpreter has
     // a value variant for each with full 128-bit arithmetic behind it. What was
     // missing was ever *producing* one: `IntKind` is a tag on an i64 payload and
@@ -738,32 +768,12 @@ pub(crate) fn auto_wrap_for_annotation(value: Value, ty: &TypeExpr, rhs_is_none_
     // was never recognised here at all (#1238).
     let want = super::call::optional_depth(ty);
     if want > 0 {
-        if rhs_is_none_literal {
-            return value;
-        }
+        let have = have.unwrap_or_else(|| value_option_depth(&value));
         let mut out = value;
-        for _ in value_option_depth(&out)..want {
+        for _ in have..want {
             out = Value::some(out);
         }
         return out;
-    }
-    // A container's elements need the same treatment its binding got. Only the
-    // outer type was ever looked at, so `let xs: Vec<i64?> = [1, none, 3]`
-    // bound the 1 and the 3 bare — `xs[0]!` then failed with "! requires Option
-    // or Result, got i64" while native handled it (#909). The element type is
-    // right there in the annotation.
-    if let Some(elem_ty) = container_element_type(ty) {
-        if let Value::Vec(items) = &value {
-            let mut guard = items.lock().unwrap();
-            for item in guard.items.iter_mut() {
-                // `false` for the none-literal flag: an element that already is
-                // `none` carries its layer, and `value_option_depth` counts it,
-                // so nothing double-wraps.
-                let taken = std::mem::replace(item, Value::Unit);
-                *item = auto_wrap_for_annotation(taken, elem_ty, false);
-            }
-        }
-        return value;
     }
     // A bare value here is the success side: only a `return` may put a bare
     // error on the error side (ER9); a binding needs the whole `T or E`
@@ -775,27 +785,6 @@ pub(crate) fn auto_wrap_for_annotation(value: Value, ty: &TypeExpr, rhs_is_none_
         return Value::ok(value);
     }
     value
-}
-
-/// The element type of a sequence annotation — `Vec<T>`, `[T; N]`, `[]T`.
-///
-/// `None` for anything else, including a `Map`: a map literal's values would
-/// want the same treatment, but its annotation carries two type arguments and
-/// the interpreter's map value isn't a `Value::Vec`, so that's its own case
-/// rather than a widening of this one.
-fn container_element_type(ty: &TypeExpr) -> Option<&TypeExpr> {
-    match ty {
-        TypeExpr::Named { path, args } if path.len() == 1 && path[0] == "Vec" && args.len() == 1 => {
-            Some(&args[0])
-        }
-        TypeExpr::Array { elem, .. } => Some(elem),
-        _ => None,
-    }
-}
-
-/// OPT29: is this expression a bare `none` literal?
-pub(crate) fn is_none_literal(expr: &rask_ast::expr::Expr) -> bool {
-    matches!(expr.kind, rask_ast::expr::ExprKind::None)
 }
 
 /// How many optional layers a value already carries at its head.

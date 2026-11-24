@@ -1,0 +1,66 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+// Reading the vector out of a `Vec<i64>?` doesn't take it: `if o? as x`
+// names the payload, and `o` still holds it afterwards. Natively the read
+// was given the vector to free whenever the frame had built the optional
+// itself, so `o!` after the branch read freed memory, and `==`, `hash` and
+// `clone` on such an optional, which read the payload the same way, crashed.
+
+func same<K: Equal>(a: K, b: K) -> bool {
+    return a == b
+}
+
+func code<K: Hashable>(k: K) -> u64 {
+    return k.hash()
+}
+
+func dup<K: Cloneable>(a: K) -> K {
+    return a.clone()
+}
+
+func made() -> Vec<i64>? {
+    mut v: Vec<i64> = Vec.new()
+    for i in 0..3 {
+        v.push(i)
+    }
+    return v
+}
+
+test "a bound name leaves the optional holding its vector" {
+    let o: Vec<i64>? = Vec.from([1])
+    if o? as x {
+        assert x.len() == 1
+    }
+    assert o!.len() == 1
+    let m = made()
+    if m? as x {
+        assert x.len() == 3
+    }
+    assert m![2] == 2
+}
+
+test "a vector optional read in a loop stays whole" {
+    let o: Vec<i64>? = Vec.from([4, 5])
+    mut total = 0
+    for _i in 0..3 {
+        if o? as x {
+            total += x[1]
+        }
+    }
+    assert total == 15
+    assert o!.len() == 2
+}
+
+test "compare, hash and clone keep both vectors" {
+    let a: Vec<i64>? = Vec.from([1])
+    let b: Vec<i64>? = Vec.from([1])
+    assert a == b
+    assert same(a, b)
+    assert code(a) == code(b)
+    let c = dup(a)
+    assert c!.len() == 1
+    let d = a.clone()
+    assert d!.len() == 1
+    assert a!.len() == 1
+    assert b!.len() == 1
+}

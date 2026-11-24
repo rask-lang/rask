@@ -17,7 +17,7 @@ Every panic source is a programmer bug by definition. Expected failures use `T o
 | **S2: Force operators** | `x!` / `r!` on empty/error values (`type.errors/ER15`) |
 | **S3: Checked arithmetic** | Overflow, divide-by-zero, `i32.MIN / -1` (`type.overflow/OV1–OV3`) |
 | **S4: Access checks** | Index out of bounds, `with` aliasing (`mem.borrowing/W3–W4`) |
-| **S5: Runtime guards** | `spawn` with no runtime (`conc.async/CC3`), stack overflow via guard page (`conc.runtime`) |
+| **S5: Runtime guards** | `spawn` with no runtime (`conc.async/CC3`), stack overflow via the stack limit check (`conc.runtime`) |
 | **S6: Message + location** | Every panic carries a message and the source location of the failing operation |
 | **S7: Nothing the compiler already knows** | A condition the compiler can decide from the source alone must be a compile error, never a panic compiled into the program. This covers unimplemented paths too: "not supported yet" is a diagnostic, not a runtime message |
 
@@ -175,7 +175,7 @@ Resolves the panic open question in `determinism`.
 | Detached task panics during `using` block drain | O4, C4 | Reported to stderr; drain continues |
 | Panic crossing an FFI boundary (Rask fn called from C) | A1 | Unwind must not enter foreign frames — the runtime aborts at the boundary |
 | Panic in comptime | S-note | Compile error, not a runtime event |
-| Stack overflow | S5 | Guard page converts to panic; overflow *during unwind* falls into A1 |
+| Stack overflow | S5 | The function entry that finds the stack below its limit panics; an ensure that overflows again while that unwinds falls into A1 |
 
 ---
 

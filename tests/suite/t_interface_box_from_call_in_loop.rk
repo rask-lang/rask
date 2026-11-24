@@ -1,0 +1,31 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A box assigned from a call in a loop gets its own slot.
+//
+// `c = mkn(i)` made `c` the address of the call result's temporary slot
+// rather than copying the box's fat pointer out of it. The next iteration
+// wrote the new box into that same slot, so dropping `c`'s old box freed the
+// new one: a use after free, and the old box leaked.
+
+interface Shape {
+    func area(self) -> i64
+}
+
+struct Sq { s: i64, tag: string }
+Sq implements Shape {
+    func area(self) -> i64 {
+        return self.s * self.s
+    }
+}
+
+func mkn(n: i64) -> any Shape {
+    return Sq(s: n, tag: "named-tag-padded-long-enough-x")
+}
+
+test "a box replaced from a call each iteration" {
+    mut c = mkn(0)
+    for i in 1..4 {
+        c = mkn(i)
+    }
+    assert c.area() == 9
+}

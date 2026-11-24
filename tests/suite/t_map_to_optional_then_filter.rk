@@ -1,0 +1,17 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+// A closure declared `-> i64?` that returns a bare `i64` hands back a present
+// optional, so `filter(|o| o?)` downstream sees an optional. The interpreter
+// passed the bare `i64` through `map` and the presence test refused it (#2032).
+
+test "a mapped optional reaches filter as an optional" {
+    let xs = Vec.from([1, 2, 3])
+    let kept = xs.map(|x| -> i64? x).filter(|o| o?).to_vec()
+    assert kept.len() == 3
+}
+
+test "some present, some absent" {
+    let xs = Vec.from([1, 2, 3, 4])
+    let kept = xs.map(|x| -> i64? if x % 2 == 0 { return x } else { return none }).filter(|o| o?).to_vec()
+    assert kept.len() == 2
+}

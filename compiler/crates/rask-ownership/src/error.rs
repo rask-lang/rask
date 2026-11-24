@@ -70,6 +70,21 @@ pub enum OwnershipErrorKind {
         captured: String,
     },
 
+    /// conc.async/S5: a task that leaves its block names something it only
+    /// borrows.
+    #[error("a task that outlives this block reads `{name}`, which is only borrowed")]
+    TaskCapturesBorrow {
+        name: String,
+        lender: Lender,
+    },
+
+    /// mem.value/VS11: `[x; n]` copies `x` into every slot, and `x` moves.
+    #[error("`[x; n]` repeats a `{ty}`, which isn't Copy")]
+    RepeatNotCopy {
+        ty: String,
+        reason: MoveReason,
+    },
+
     /// mem.closures/CV4: a carrying closure holds a value that can't be
     /// cloned, so the closure itself couldn't be.
     #[error("a closure that carries its captures can't hold `{captured}`: `{ty}` isn't Cloneable")]
@@ -833,6 +848,17 @@ pub enum OwnershipErrorKind {
         take_at: Span,
     },
 
+    /// conc.async/S5 per instantiation: a leaving task in a generic body reads
+    /// a borrowed `x: T`, and this call makes `T` a type that moves.
+    #[error("a task in `{}` would carry `{name}`, a borrowed `{type_arg}`", chain.last().map(String::as_str).unwrap_or("?"))]
+    TaskBorrowInGenericInstance {
+        chain: Vec<String>,
+        name: String,
+        lender: Lender,
+        type_arg: String,
+        read_at: Span,
+    },
+
     /// mem.resources/RC5: `for x in v.take_all()` over elements that must be
     /// consumed. The loop owns the drained vector, so leaving it early drops
     /// what's left.
@@ -865,6 +891,17 @@ pub enum OwnershipErrorKind {
         inner: Box<OwnershipErrorKind>,
         inner_span: Span,
     },
+}
+
+/// Who a borrowed name belongs to.
+#[derive(Debug, Clone)]
+pub enum Lender {
+    /// A borrowed or `mutate` parameter.
+    Caller,
+    /// A `for` item; the collection it's read out of.
+    Loop(String),
+    /// A `with … as` binding; the place it reaches into.
+    With(String),
 }
 
 /// Where a value is handed: every place it gets a new holder. The ownership

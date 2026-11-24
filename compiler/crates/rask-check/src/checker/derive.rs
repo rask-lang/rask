@@ -53,6 +53,10 @@ pub struct WrapperFns {
     /// Only for a wrapper holding something a copy can't duplicate: a
     /// `string?` or a `(Vec<i64>, i64)`. An `i64?` clones by being copied.
     pub clone: Option<String>,
+    /// Each method a value of the type answers, by the method's name → what
+    /// it runs. A generic body's call through a bound reads this
+    /// (`TypedProgram::wrapper_method`).
+    pub methods: Vec<(String, super::type_defs::WrapperMethod)>,
 }
 
 impl TypeChecker {
@@ -557,9 +561,24 @@ impl TypeChecker {
         let mut ids = Vec::new();
         rask_ast::visit::walk_decls(decls, &mut |e| ids.push(e.id));
         let mut args: Vec<Type> = Vec::new();
+        let own: std::collections::HashSet<NodeId> = ids.iter().copied().collect();
         for id in ids {
             if let Some(ty) = self.node_types.get(&id) {
                 collect_wrapper_args(&self.ctx.apply(ty), &mut args);
+            }
+        }
+        // A generic call's type arguments: `code((1, 2))` with `K: Hashable`
+        // calls `k.hash()` on a tuple at that instance (#1976).
+        let call_args: Vec<Type> = self
+            .pending_call_type_args
+            .iter()
+            .filter(|(call, _)| own.contains(call))
+            .flat_map(|(_, vars)| vars.iter().map(|(_, t)| self.ctx.apply(t)))
+            .collect();
+        for ty in call_args {
+            collect_wrapper_args(&ty, &mut args);
+            if Self::is_wrapper(&ty) && !args.contains(&ty) {
+                args.push(ty);
             }
         }
         for ty in args {
@@ -601,7 +620,7 @@ impl TypeChecker {
             return found.clone();
         }
         let n = self.wrapper_fns.len();
-        let fns = WrapperFns {
+        let mut fns = WrapperFns {
             ty: ty.clone(),
             eq: self.type_has_method(ty, "eq").then(|| derived_fn_name("eq", n)),
             hash: self.type_has_method(ty, "hash").then(|| derived_fn_name("hash", n)),
@@ -609,7 +628,11 @@ impl TypeChecker {
                 .then(|| derived_fn_name("compare", n)),
             clone: (!Self::clones_by_copy(ty) && self.type_has_method(ty, "clone"))
                 .then(|| derived_fn_name("clone", n)),
+            methods: Vec::new(),
         };
+        if Self::clones_by_copy(ty) && self.type_has_method(ty, "clone") {
+            fns.methods.push(("clone".to_string(), super::type_defs::WrapperMethod::IsCopy));
+        }
         // Registered before the bodies are written: one holding another
         // wrapper asks for that one's pair while this one is half built.
         self.wrapper_fns.push(fns.clone());
@@ -634,6 +657,14 @@ impl TypeChecker {
             let sym = self.wrapper_symbol(name, ty, ty.clone());
             self.wrapper_symbols.insert(name.clone(), sym);
             written.push((name.clone(), 3, sym));
+        }
+        // The method each `which` writes, in the order of the arms below.
+        const METHODS: [&str; 4] = ["eq", "hash", "compare", "clone"];
+        for (_, which, sym) in &written {
+            fns.methods.push((METHODS[*which].to_string(), super::type_defs::WrapperMethod::Runs(*sym)));
+        }
+        if let Some(entry) = self.wrapper_fns.iter_mut().find(|w| &w.ty == ty) {
+            entry.methods = fns.methods.clone();
         }
         for (name, which, sym) in written {
             let f = match which {

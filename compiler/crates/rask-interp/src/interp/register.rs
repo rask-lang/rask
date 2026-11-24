@@ -441,7 +441,7 @@ impl Interpreter {
             // does for `let`: `const F: f64 = 7` is 7.0.
             if let Some(ty) = &c.ty {
                 value = super::exec_stmt::auto_wrap_for_annotation(
-                    value, ty, super::exec_stmt::is_none_literal(&c.init),
+                    value, ty, self.static_option_depth(&c.init),
                 );
             }
             self.env.define(c.name.clone(), value);
@@ -537,8 +537,11 @@ impl Interpreter {
                         }
                         break;
                     }
-                    Err(e) => {
-                        errors.push(format!("{}", e));
+                    // A panic says where, as native's does (#1971).
+                    Err(diag) => {
+                        // The test's panic ends here, an overflow's too.
+                        self.overflow_unwinding = false;
+                        errors.push(self.panic_message(&diag));
                         break;
                     }
                 }
@@ -601,8 +604,10 @@ impl Interpreter {
             Err(diag) if matches!(&diag.error, RuntimeError::TestExpectFail) => {
                 expect_fail = true;
             }
-            Err(e) => {
-                errors.push(format!("{}", e));
+            Err(diag) => {
+                // The test's panic ends here, an overflow's too.
+                self.overflow_unwinding = false;
+                errors.push(self.panic_message(&diag));
             }
         }
 

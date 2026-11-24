@@ -75,7 +75,13 @@ pub fn resolve_type_expr(ty: &TypeExpr, types: &TypeTable) -> Result<Type, TypeE
             ok: Box::new(resolve_type_expr(ok, types)?),
             err: Box::new(resolve_type_expr(err, types)?),
         }),
-        TypeExpr::Tuple(elems) => Ok(Type::Tuple(resolve_all(elems)?)),
+        TypeExpr::Tuple(elems) => {
+            let ty = Type::Tuple(resolve_all(elems)?);
+            match types.too_large(&ty) {
+                Some(bytes) => Err(TypeError::ValueTooLarge { ty, bytes, span: Span::new(0, 0) }),
+                None => Ok(ty),
+            }
+        }
         TypeExpr::Array { elem, len } => {
             let elem = resolve_type_expr(elem, types)?;
             // A literal size, then a module-level `const` naming one. Anything
@@ -83,7 +89,11 @@ pub fn resolve_type_expr(ty: &TypeExpr, types: &TypeTable) -> Result<Type, TypeE
             // 0 placeholder so element checking can proceed — the length then
             // resolves at comptime.
             let len: usize = len.parse().ok().or_else(|| types.const_length(len)).unwrap_or(0);
-            Ok(Type::Array { elem: Box::new(elem), len })
+            let ty = Type::Array { elem: Box::new(elem), len };
+            match types.too_large(&ty) {
+                Some(bytes) => Err(TypeError::ValueTooLarge { ty, bytes, span: Span::new(0, 0) }),
+                None => Ok(ty),
+            }
         }
         // `[N]T` is a layout spelling for `@binary` fields, not a value type.
         TypeExpr::FixedCount { .. } => Err(TypeError::GenericError(
@@ -107,7 +117,15 @@ pub fn resolve_type_expr(ty: &TypeExpr, types: &TypeTable) -> Result<Type, TypeE
             format!("`{}` is a value, not a type", n),
             Span::new(0, 0),
         )),
-        TypeExpr::Named { path, args } => resolve_named_expr(path, args, types),
+        TypeExpr::Named { path, args } => {
+            let ty = resolve_named_expr(path, args, types)?;
+            // `Pair<[u8; 3000000000]>`: the arguments can take a generic past
+            // the cap that its declaration doesn't reach.
+            match types.too_large(&ty).filter(|_| !args.is_empty()) {
+                Some(bytes) => Err(TypeError::ValueTooLarge { ty, bytes, span: Span::new(0, 0) }),
+                None => Ok(ty),
+            }
+        }
     }
 }
 

@@ -83,7 +83,18 @@ impl Interpreter {
             return self.call_function(&copy, args, None);
         }
         if crate::stack_nearly_exhausted() {
-            if crate::stack_segments_exhausted() {
+            let extra = if self.overflow_unwinding { crate::OVERFLOW_ENSURE_SEGMENTS } else { 0 };
+            if crate::stack_segments_exhausted(extra) {
+                // A second overflow while the first unwinds has no room left
+                // to unwind in: an abort (ctrl.panics/A1), as on native.
+                if self.overflow_unwinding {
+                    eprintln!(
+                        "stack overflow while a stack overflow unwinds: \
+                         an ensure needs more stack than is left"
+                    );
+                    std::process::abort();
+                }
+                self.overflow_unwinding = true;
                 return Err(RuntimeDiagnostic::new(
                     RuntimeError::RecursionTooDeep {
                         function: func.name.clone(),
@@ -139,11 +150,11 @@ impl Interpreter {
     ) -> Result<Value, RuntimeDiagnostic> {
         // Taken before anything else runs, so a default argument's own calls
         // can't see it. Only the call it was made for may use it.
-        let lent: Vec<Option<crate::env::Slot>> = self
+        let (lent, arg_depths): (Vec<Option<crate::env::Slot>>, Vec<Option<usize>>) = self
             .lent_args
             .take()
             .filter(|l| l.depth + 1 == self.call_depth && l.callee == func.name)
-            .map(|l| l.slots)
+            .map(|l| (l.slots, l.depths))
             .unwrap_or_default();
         // Fill in default values for missing trailing arguments
         if args.len() < func.params.len() {
@@ -190,7 +201,7 @@ impl Interpreter {
             // call. Without it `present_bare(3)` bound a raw 3 and `x?` had no
             // tag to read (#393).
             let arg = match &param.ty {
-                Some(ty) => wrap_optional_layers(arg, ty),
+                Some(ty) => wrap_optional_layers(arg, &self.resolve_type_param(ty), arg_depths.get(i).copied().flatten()),
                 None => arg,
             };
             // PM2: a `mutate` parameter is the caller's place, bound as such.
@@ -206,6 +217,12 @@ impl Interpreter {
         }
 
         let result = self.exec_stmts(&func.body);
+        // Read while this call's frame still binds its type parameters.
+        let ret_ty = func.ret_ty.as_ref().map(|t| self.resolve_type_param(t));
+        let returned_depth = match &result {
+            Err(diag) if matches!(&diag.error, RuntimeError::Return(_)) => self.returned_depth.take(),
+            _ => None,
+        };
 
         let scope_depth = self.env.scope_depth();
         let caller_depth = scope_depth.saturating_sub(1);
@@ -254,6 +271,10 @@ impl Interpreter {
         self.generic_frames.pop();
         self.env.pop_scope();
 
+        // A `try` that left hands back the failure already shaped as the
+        // whole return: `none` from `try b` in a `-> i64??` is the outer
+        // `none`, not an absent inner value to wrap.
+        let propagated = matches!(&result, Err(diag) if matches!(diag.error, RuntimeError::TryError(_)));
         let value = match result {
             Ok(_) => Value::Unit,
             Err(diag) if matches!(&diag.error, RuntimeError::Return(_)) => {
@@ -273,7 +294,7 @@ impl Interpreter {
             Err(e) => return Err(e),
         };
 
-        let result_sides = func.ret_ty.as_ref().and_then(result_sides);
+        let result_sides = ret_ty.as_ref().and_then(result_sides);
         let returns_result = result_sides.is_some();
         // Both spellings. `wrap_optional_layers` has always understood
         // `Option<T>` as well as `T?` — this gate didn't, so a function
@@ -281,8 +302,10 @@ impl Interpreter {
         // said "requires Option or Result, got i64". `get_clone` in
         // `stdlib/collections.rk` is written that way, so every `get_clone` on
         // the interpreter was broken (#1211).
-        let returns_option = func.ret_ty.as_ref().is_some_and(|t| optional_depth(t) > 0);
-        if returns_result {
+        let returns_option = ret_ty.as_ref().is_some_and(|t| optional_depth(t) > 0);
+        if propagated && !returns_result {
+            Ok(value)
+        } else if returns_result {
             // Already a Result: pass through. That includes every return
             // the checker put on the error side — `return` wrapped those.
             if matches!(&value, Value::Enum { name, .. } if name == "Result") {
@@ -293,7 +316,7 @@ impl Interpreter {
             // `try f()` handed back a KV where the caller expected a KV? and
             // read it as absent (#383).
             let payload = match result_sides {
-                Some((ok, _)) => wrap_optional_layers(value, ok),
+                Some((ok, _)) => wrap_optional_layers(value, ok, returned_depth),
                 None => value,
             };
             return Ok(Value::ok(payload));
@@ -302,8 +325,8 @@ impl Interpreter {
             // returning a bare `T` got a single Some, and the caller's second
             // peel found a `T` where it expected an Option and read it as
             // absent. Same helper the ok side and the arguments use.
-            match func.ret_ty.as_ref() {
-                Some(ret) => Ok(wrap_optional_layers(value, ret)),
+            match ret_ty.as_ref() {
+                Some(ret) => Ok(wrap_optional_layers(value, ret, returned_depth)),
                 None => Ok(value),
             }
         } else {
@@ -342,7 +365,7 @@ impl Interpreter {
 
         // A panic exiting the body means we're already unwinding; ensure-body
         // panics during that unwind are secondary (ctrl.panic/E3).
-        let body_panicked = matches!(&exit_error, Some(d) if matches!(d.error, RuntimeError::Panic(_)));
+        let body_panicked = matches!(&exit_error, Some(d) if d.error.is_panic());
         let ensure_fatal = self.run_ensures(&ensures, body_panicked);
 
         match (exit_error, ensure_fatal) {
@@ -351,7 +374,7 @@ impl Interpreter {
             // A panic from the body is primary; ensure panics were already
             // reported as secondary inside run_ensures. (A body `Exit` never
             // reaches here — it returned above without running any ensure.)
-            (Some(e), _) if matches!(e.error, RuntimeError::Panic(_)) => Err(e),
+            (Some(e), _) if e.error.is_panic() => Err(e),
             // A panic raised by an ensure kills the task (E1), overriding a
             // non-panic body exit (error propagation, return, break, continue).
             (_, Some(f)) => Err(f),
@@ -427,10 +450,16 @@ impl Interpreter {
                             }
                         }
                     }
-                    Err(diag) if matches!(&diag.error, RuntimeError::Panic(_)) => {
+                    Err(diag) if diag.error.is_panic() => {
                         // E3: first panic wins. A panic here while already unwinding,
                         // or after a prior ensure-panic, is contained + reported.
                         if unwinding || first_panic.is_some() {
+                            // Contained here. An overflow it raised is over
+                            // once this frame is back inside the cap, as
+                            // native puts its limit back at the catch.
+                            if !crate::stack_segments_exhausted(0) {
+                                self.overflow_unwinding = false;
+                            }
                             self.report_secondary_panic(&diag);
                         } else {
                             first_panic = Some(diag);
@@ -462,13 +491,15 @@ impl Interpreter {
     /// Report a panic that fired during unwind and was contained (E3). The first
     /// panic remains the task's panic; this one goes to stderr and continues.
     fn report_secondary_panic(&self, diag: &RuntimeDiagnostic) {
-        if let RuntimeError::Panic(msg) = &diag.error {
-            eprintln!(
-                "secondary panic during unwind at {}: {}",
-                self.origin_string(diag.span),
-                msg
-            );
-        }
+        let msg = match &diag.error {
+            RuntimeError::Panic(m) => m.clone(),
+            e => format!("{}", e),
+        };
+        eprintln!(
+            "secondary panic during unwind at {}: {}",
+            self.origin_string(diag.span),
+            msg
+        );
     }
 
     /// An ensure body is a block like any other (ctrl.ensure/EN1): an `ensure`
@@ -507,11 +538,11 @@ impl Interpreter {
                 None => Ok(last_value),
             };
         }
-        let panicked = matches!(&failure, Some(d) if matches!(d.error, RuntimeError::Panic(_)));
+        let panicked = matches!(&failure, Some(d) if d.error.is_panic());
         let nested_fatal = self.run_ensures(&nested, panicked);
         match (failure, nested_fatal) {
             (_, Some(f)) if matches!(f.error, RuntimeError::Exit(_)) => Err(f),
-            (Some(e), _) if matches!(e.error, RuntimeError::Panic(_)) => Err(e),
+            (Some(e), _) if e.error.is_panic() => Err(e),
             (_, Some(f)) => Err(f),
             (Some(e), _) => Err(e),
             (None, None) => Ok(last_value),
@@ -567,12 +598,15 @@ pub(super) fn optional_depth(ty: &TypeExpr) -> usize {
     }
 }
 
-/// Add whatever optional layers `ty` asks for that `value` doesn't already
-/// carry.
-fn wrap_optional_layers(value: Value, ty: &TypeExpr) -> Value {
+/// Add the optional layers `ty` asks for beyond the `have` the checker gave
+/// the value's expression, or, when that isn't known, beyond what the value
+/// carries (see `Interpreter::static_option_depth` for why the count alone
+/// is ambiguous).
+fn wrap_optional_layers(value: Value, ty: &TypeExpr, have: Option<usize>) -> Value {
     let want = optional_depth(ty);
+    let have = have.unwrap_or_else(|| option_depth(&value));
     let mut out = value;
-    for _ in option_depth(&out)..want {
+    for _ in have..want {
         out = Value::some(out);
     }
     out
