@@ -12,6 +12,9 @@
 //! - `@inline` → inline whatever the size
 //! - Recursive functions → never inline
 //! - Extern functions → never inline
+//! - A frame over `FRAME_CHECKED_IN_PLACE` → never inline: in the caller it
+//!   would make the caller's frame that big, and the stack check for it would
+//!   fire at the caller's entry, ahead of code that runs before the call
 
 use std::collections::HashMap;
 
@@ -46,7 +49,7 @@ const MAX_INLINE_DEPTH: usize = 8;
 ///
 /// Returns DI5 inline region metadata as a side-channel (caller name → regions).
 /// This keeps debug concerns out of MirFunction.
-pub fn inline_functions(fns: &mut Vec<MirFunction>) -> HashMap<String, Vec<InlineRegion>> {
+pub fn inline_functions(fns: &mut Vec<MirFunction>, target: rask_ast::Target) -> HashMap<String, Vec<InlineRegion>> {
     let mut inline_metadata: HashMap<String, Vec<InlineRegion>> = HashMap::new();
 
     // Build call graph for heuristics
@@ -65,6 +68,7 @@ pub fn inline_functions(fns: &mut Vec<MirFunction>) -> HashMap<String, Vec<Inlin
         .filter(|f| should_inline(&cg, &f.name) || (f.inline_hint && !cg.is_recursive(&f.name)))
         .filter(|f| !writers.get(&f.name).is_some_and(|s| !s.is_empty()))
         .filter(|f| !builds_borrowing_closure(f))
+        .filter(|f| locals_size(f, target) <= crate::FRAME_CHECKED_IN_PLACE)
         .map(|f| (f.name.clone(), f.clone()))
         .collect();
 
@@ -290,6 +294,10 @@ fn pointer_shaped(ty: &MirType) -> bool {
             | MirType::Option(_)
             | MirType::Result { .. }
     )
+}
+
+fn locals_size(f: &MirFunction, target: rask_ast::Target) -> u32 {
+    f.locals.iter().fold(0u32, |sum, l| sum.saturating_add(rask_layout::size_of(&l.ty, target)))
 }
 
 fn should_inline(cg: &CallGraph, callee_name: &str) -> bool {
@@ -1242,7 +1250,7 @@ mod tests {
         let mut caller = make_caller();
         caller.blocks[0].statements = vec![call.clone(), call];
         let mut fns = vec![caller, callee];
-        let _ = inline_functions(&mut fns);
+        let _ = inline_functions(&mut fns, rask_ast::Target::LP64);
         fns[0].blocks.iter().flat_map(|b| &b.statements).any(|s| {
             matches!(&s.kind, MirStmtKind::Call { func, .. } if func.name == "big")
         })
@@ -1257,7 +1265,7 @@ mod tests {
     #[test]
     fn basic_inline() {
         let mut fns = vec![make_caller(), make_simple_callee()];
-        let _ = inline_functions(&mut fns);
+        let _ = inline_functions(&mut fns, rask_ast::Target::LP64);
 
         let main = &fns[0];
         // Original block should now end with Goto (not the call)
@@ -1315,7 +1323,7 @@ mod tests {
         };
 
         let mut fns = vec![caller, callee];
-        let _ = inline_functions(&mut fns);
+        let _ = inline_functions(&mut fns, rask_ast::Target::LP64);
 
         fns[0].blocks.iter().flat_map(|b| &b.statements).find_map(|s| match &s.kind {
             MirStmtKind::Store { addr, offset, value: MirOperand::Constant(MirConst::Int(v)), .. }
@@ -1387,7 +1395,7 @@ mod tests {
             },
         ];
         let blocks_before = fns[0].blocks.len();
-        let _ = inline_functions(&mut fns);
+        let _ = inline_functions(&mut fns, rask_ast::Target::LP64);
         // Should NOT have inlined — block count unchanged
         assert_eq!(fns[0].blocks.len(), blocks_before);
     }
@@ -1474,7 +1482,7 @@ mod tests {
 
         }];
         let blocks_before = fns[0].blocks.len();
-        let _ = inline_functions(&mut fns);
+        let _ = inline_functions(&mut fns, rask_ast::Target::LP64);
         assert_eq!(fns[0].blocks.len(), blocks_before);
     }
 

@@ -278,7 +278,7 @@ impl MirPass for InliningPass {
     fn name(&self) -> &str { "inlining" }
     fn run(&self, fns: &mut Vec<MirFunction>, ctx: &mut PassContext) {
         ctx.made_for_calls.extend(crate::transform::dead_fns::named_anywhere(fns));
-        ctx.inline_regions = crate::transform::inline::inline_functions(fns);
+        ctx.inline_regions = crate::transform::inline::inline_functions(fns, ctx.target);
     }
 }
 

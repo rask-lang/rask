@@ -24,6 +24,14 @@ mod operand;
 mod program;
 mod stmt;
 pub mod transform;
+
+/// The largest frame a function pushes before it checks the stack limit.
+/// A bigger one is checked by a trampoline first (codegen's
+/// `define_frame_trampoline`), and the inliner keeps a callee that big out of
+/// its callers so the check stays at the callee's own entry. What a frame
+/// pushes unchecked comes out of the room the limit keeps for the C runtime,
+/// so this stays a small part of it.
+pub const FRAME_CHECKED_IN_PLACE: u32 = 16 * 1024;
 mod types;
 
 pub mod layout_check;

@@ -2152,7 +2152,7 @@ impl CodeGenerator {
         let frame: i64 = self.ctx.func.sized_stack_slots.values()
             .map(|s| s.size as i64 + (1i64 << s.align_shift))
             .sum();
-        let trampoline = self.stack_limit_data.is_some() && frame > FRAME_CHECKED_IN_PLACE;
+        let trampoline = self.stack_limit_data.is_some() && frame > rask_mir::FRAME_CHECKED_IN_PLACE as i64;
         let body_id = if trampoline {
             let sig = self.ctx.func.signature.clone();
             self.module
@@ -2239,11 +2239,6 @@ impl CodeGenerator {
 
 }
 
-/// The largest frame a function pushes before it checks the stack limit.
-/// A bigger one is checked by a trampoline first (`define_frame_trampoline`).
-/// What a frame pushes unchecked comes out of the room the limit keeps for
-/// the C runtime, so this stays a small part of it.
-const FRAME_CHECKED_IN_PLACE: i64 = 16 * 1024;
 
 /// The `tls_model` setting a target reaches the runtime's stack limit with,
 /// or None where its runtime keeps no stack bounds (stack_guard.c).
