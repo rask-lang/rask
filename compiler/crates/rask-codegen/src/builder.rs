@@ -1727,7 +1727,10 @@ impl<'a> FunctionBuilder<'a> {
             // exact when narrowing loses nothing. NaN is neither — it converts
             // fine, it just isn't equal to itself, so it's excused explicitly.
             let converted = Self::to_float(builder, val, source_ty, tgt_clif);
-            let exact = if src_clif.is_float() {
+            let exact = if src_clif.is_float() && src_clif.bits() < tgt_clif.bits() {
+                // Widening a float is always exact.
+                builder.ins().iconst(types::I8, 1)
+            } else if src_clif.is_float() {
                 let back = if src_clif.bits() > tgt_clif.bits() {
                     builder.ins().fpromote(src_clif, converted)
                 } else {
