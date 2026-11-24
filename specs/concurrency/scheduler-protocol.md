@@ -1,7 +1,7 @@
 <!-- id: conc.scheduler -->
 <!-- status: proposed -->
-<!-- summary: What a task is made of, and who decides when it runs. The second becomes a protocol a library conforms to. The first stays the compiler's: a stack sized from what the task calls (mem.stack), and a stackless mode for builds with no heap -->
-<!-- depends: memory/stack.md, concurrency/runtime.md, concurrency/runtime-strategy.md, concurrency/async.md, compiler/effects.md, memory/relocatable.md, memory/closures.md, memory/borrowing.md, analysis/library-protocols.md, analysis/bare-metal.md -->
+<!-- summary: What a task is made of, and who decides when it runs. The second becomes a protocol a library conforms to. The first stays the compiler's, but gets a growable stack, which Rask can have without a GC because nothing stores a reference, and a stackless mode for builds with no heap -->
+<!-- depends: concurrency/runtime.md, concurrency/runtime-strategy.md, concurrency/async.md, compiler/effects.md, memory/relocatable.md, memory/closures.md, memory/borrowing.md, analysis/library-protocols.md, analysis/bare-metal.md -->
 
 # Tasks and Schedulers
 
@@ -20,19 +20,19 @@ own, or a heap object sized to exactly those locals. Everything else follows fro
 
 ### Three shapes
 
-| | Fixed stack (today) | Sized stack (`mem.stack`) | Stackless frame |
+| | Fixed stack (today) | Growable stack | Stackless frame |
 |---|---|---|---|
 | Idle cost per task, MMU machine | touched pages (4–8 KB) plus two VMAs | touched pages, one allocation | the live set, exactly |
-| Idle cost per task, no MMU | the whole reservation | the root's summary | the live set, exactly |
+| Idle cost per task, no MMU | the whole reservation | current size, from 1 KB | the live set, exactly |
 | Ceiling | `vm.max_map_count` (about 32k tasks at Linux's default) | memory | memory |
 | Coloring in source | none | none | none, inferred |
 | Preemption | yes (P2) | yes | no, pauses only |
-| Indirect call across a pause | fine | fine, a chunk when short | heap frame, or refused without one |
-| Recursion across a pause | fine | fine, at its declared depth | heap frame, or refused without one |
+| Indirect call across a pause | fine | fine | heap frame, or refused without one |
+| Recursion across a pause | fine | fine | heap frame, or refused without one |
 | C frames | fine | fine, never moved | a C callback can't pause |
 | Stack traces | real | real | reconstructed |
-| Needs a heap | no | only for chunks | no |
-| Per-call cost | the preempt check (P3) | the preempt check; a compare at indirect calls only | state dispatch on resume |
+| Needs a heap | no | yes, for growth | no |
+| Per-call cost | the preempt check (P3) | the same branch, one more compare | state dispatch on resume |
 
 The fixed stack is `conc.runtime/T3`: 1 MiB reserved per fiber, demand-paged. On a
 machine with an MMU the memory cost is already small, since only touched pages are
@@ -40,17 +40,33 @@ committed, and what actually limits it is the kernel's map count, two entries pe
 fiber. On a chip without an MMU the reservation is the cost, so a fixed stack there
 has to be small and overflow is a fault. That's the gap bare-metal.md calls the biggest.
 
-### A sized stack
+### A growable stack, without a GC
 
-The growable stack this page used to propose (start at a few KB, copy to a bigger
-stack when full, repair every pointer into it) is withdrawn in favour of
-[mem.stack](../memory/stack.md). The compiler knows how much stack a chain of direct
-calls needs, and recursion declares its depth, so a task's stack is reserved at its
-root's summary up front (`mem.stack/ST7`). Nothing grows except at an indirect call,
-which runs its callee on a chunk when the room left is short (`mem.stack/ST9`). A chunk
-never moves, so there's no pointer list to keep and no rule against raw pointers held
-across a park. On a chip without an MMU the reservation is real memory, and it's the
-exact number `rask check --stack` prints.
+Go's answer is to start every goroutine with a 2 KB stack and copy it to a bigger one
+when it fills, fixing up every pointer into the old one. Go can do that because its
+garbage collector already knows where every pointer is. Rust can't, because a `&T`
+into the stack can live anywhere, which is why Rust went stackless and paid in
+`async`. Rask is in neither position: it has no GC, but it also has no stored
+references, so at any point the compiler can say exactly what points into a task's
+stack. That's the same fact `mem.relocatable` uses to serialize a rack.
+
+| Rule | Description |
+|------|-------------|
+| **SG1: Start small, grow by copying** | A fiber's stack starts at a few KB. When a function entry finds less room than it needs, the runtime allocates a larger stack, copies the old one over, repairs every pointer into it, and frees the old one |
+| **SG2: The compiler lists the pointers** | At every call that can park, codegen records which stack slots and registers hold an address into the current stack: an aggregate passed down by address (`mem.parameters`), a stack closure's environment (`mem.closures/CM1`), a `with` binding (`mem.borrowing/W1`), the frame's unwind record (`ctrl.panic/U6`), and the saved context itself. Nothing else can hold one, by `mem.borrowing/S3` |
+| **SG3: A raw pointer to a local may not cross a park** | `unsafe` is the one way to take a stack address the compiler can't track. Holding one across a call that can park is a compile error naming both lines: the compiler knows the address was taken (`addr_taken`) and which calls block (`comp.effects/BL2`) |
+| **SG4: Moves happen at parks and at entry, never under C** | A stack is copied when a function entry asks for room or when a parked task is resumed onto a bigger stack. Preemption (P2) never moves one. A C frame never sits on a stack that moves: C code can't park (`conc.runtime/P2.4`), and a Rask callback called from C runs on the caller's stack, which is pinned for the call |
+| **SG5: One check, shared** | The room check is a compare of the stack pointer against the fiber's limit, folded into the safe-point check P3 already places at every function entry. The cold path grows; the common path is one more compare on a branch that is already there |
+
+SG2 is the design. The list is short because the language made it short: every other
+language that tried growable stacks without a GC (Rust, 2014) gave up at exactly this
+point, because the list wasn't enumerable. Here it's five items, each with a rule that
+says why it's the whole list.
+
+What it costs: the compare in SG5; a copy whenever a task outgrows its stack, which is
+once per power of two and amortizes to nothing for a task that lives long; and a heap
+to grow into, which `Vec` already needs. What it doesn't change: coloring, preemption,
+FFI, stack traces, or a single line of a program.
 
 ### Stackless, as a build mode
 
@@ -120,7 +136,27 @@ is; the three shapes above do that, and they're the build's choice.
 
 ## How to prove it
 
-The stackless mode rests on one claim: that SL4's two refusals are rare enough to
+The growable stack rests on one claim: SG2's list is complete. There are three ways to
+check it, and I'd do all three in order.
+
+1. **From the rules.** Enumerate every construct that can hold the address of stack
+   memory, and for each name the rule that bounds its life to a scope the compiler
+   sees. Parameters: `mem.borrowing/B3`. Views: `S3`. `with`: `W8`. Closures: `CM1`,
+   `MC3`. Sequences: `type.sequence/SEQ34`, `SEQ44`. Raw pointers: SG3. Anything not on
+   that list is a hole in the argument, so the argument is also an audit of the specs.
+2. **Measured on the corpus.** A MIR pass that, at every call site codegen knows can
+   park, lists each live local of pointer type and says which of SG2's five kinds it
+   is, or that it can't tell. Run over `tests/suite/` and `examples/` under an
+   environment variable. The output is
+   either "every pointer at every park is classified" or the list of ones that aren't,
+   each a design question with a file and line. No tool prints this yet; it's the
+   first thing to build.
+3. **Enforced per program.** The pass in 2 becomes a compile-time check, so the
+   property is proven for each program as it's built rather than assumed for the
+   language. That's how the unwind records already work (`ctrl.panic/U6`): nothing
+   trusts that a frame owns nothing, the analysis says so.
+
+The stackless mode has a different claim: that SL4's two refusals are rare enough to
 live with. That one is a count. For every function the Blocks effect reaches from a
 task, count the indirect calls and the recursive edges inside it. The effect inference
 exists (`rask-effects`) but has no CLI; a `rask effects <file>` that prints it per
@@ -128,16 +164,25 @@ function is the measurement, and the number of refusals over the suite is the an
 If a plain server program trips them everywhere, the mode is for chips only, as
 written. If it rarely trips them, the mode is more useful than I've claimed.
 
+A runtime prototype of SG1 is a day's work once 2 exists: `fiber.c` already has the
+stack and the switch, and Cranelift can emit a stack map at a call site, which is the
+list SG2 asks for in the form the copy needs.
+
 ## What changes if this is accepted
 
+- `conc.runtime/T3` gains stack growth; the "demand-paged fixed reservation" line in
+  the P3 rationale goes, since the room check now exists and P3 shares it.
 - `conc.runtime/IO1`: the slot is a flag; the scheduler is the program's type.
 - `sim` (`specs/sim.md`) is a `Scheduler` conformance written in Rask.
+- `conc.runtime-strategy/B1` lists SG1 among Phase B's parts.
 - `analysis/bare-metal.md` section 5: a bare build may run tasks under SL1, and its
   scheduler is a package.
 - `analysis/library-protocols.md`: the scheduler item in "Still open" is this page.
 
 ## Still open
 
+- **The starting size.** Go uses 2 KB (it was 8). Rask's frames are leaner than Go's
+  in one way (no GC headers) and fatter in another (strings are 16 bytes). Measure.
 - **A library that installs nothing but wants to run under a specific scheduler**
   (a test harness that needs `sim`'s determinism) has to ask the program to install
   it, since the type is the program's. `conc.async/C6` already says libraries don't
@@ -145,3 +190,8 @@ written. If it rarely trips them, the mode is more useful than I've claimed.
 - **`Thread.spawn` and `ThreadPool`** are OS threads and untouched; only green tasks
   go through the slot. Whether a scheduler conformance should be able to say "I have
   no threads" for a chip is a question for the bare build.
+- **Growth under a signal.** SG4 says preemption never moves a stack, so a task that
+  grows only at entry is safe. A task that never calls anything and never grows is
+  fine too. The case to think through is a park inside a deeply nested call that was
+  entered before the last growth; the saved context's addresses are on the list in
+  SG2, so it should be covered, but it wants the prototype.
