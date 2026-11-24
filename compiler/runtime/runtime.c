@@ -321,9 +321,12 @@ static char *forced_error_text(const RaskStr *msg) {
 // assert and check messages, skip reasons, panics. Per thread, and good until
 // the next call — each caller prints or copies it straight away. The block
 // grows to the longest message that thread has asked for.
+static __thread char *message_buf;
+static __thread size_t message_cap;
+
 const char *rask_string_message(const RaskStr *s) {
-    static __thread char *buf;
-    static __thread size_t cap;
+    char *buf = message_buf;
+    size_t cap = message_cap;
     int64_t len = s ? rask_string_len(s) : 0;
     size_t n = len > 0 ? (size_t)len : 0;
     if (cap < n + 1) {
@@ -332,12 +335,22 @@ const char *rask_string_message(const RaskStr *s) {
             fputs("panic: out of memory building a message\n", stderr);
             abort();
         }
-        buf = grown;
-        cap = n + 1;
+        buf = message_buf = grown;
+        cap = message_cap = n + 1;
     }
     if (n) memcpy(buf, rask_string_ptr(s), n);
     buf[n] = '\0';
     return buf;
+}
+
+// What a thread that ran Rask code holds for itself, released on its way out.
+// The message buffer lived until the process did, so every task thread that
+// panicked left its message behind (#2080).
+void rask_thread_end(void) {
+    free(message_buf);
+    message_buf = NULL;
+    message_cap = 0;
+    rask_stack_guard_thread_exit();
 }
 
 /* Panic with a Rask string as-is. `rask_panic` takes a C string, so a message

@@ -927,7 +927,7 @@ static void *worker_entry(void *arg) {
         idle_spins = 0;
     }
 
-    rask_stack_guard_thread_exit();
+    rask_thread_end();
     tl_worker = NULL;
     return NULL;
 }

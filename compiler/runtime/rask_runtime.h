@@ -103,6 +103,8 @@ extern __thread char *rask_stack_limit;
 void rask_stack_guard_main_init(void);
 void rask_stack_guard_thread_init(void);
 void rask_stack_guard_thread_exit(void);
+// Release a thread's runtime state; the last call a thread makes.
+void rask_thread_end(void);
 void rask_stack_guard_fiber_start(char *lo, char *hi);
 _Noreturn void rask_stack_overflow_at(const char *file, int32_t line, int32_t col);
 // Put the limit back once the catch that ends an overflow has landed.

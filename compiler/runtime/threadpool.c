@@ -94,7 +94,7 @@ static void *pool_worker(void *arg) {
     rask_outside_thread_start();
     pool_worker_loop();
     rask_outside_thread_exit();
-    rask_stack_guard_thread_exit();
+    rask_thread_end();
     return NULL;
 }
 
