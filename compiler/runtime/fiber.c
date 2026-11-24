@@ -22,6 +22,7 @@
 #endif
 
 #include "fiber.h"
+#include "rask_runtime.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -67,8 +68,9 @@ void __sanitizer_finish_switch_fiber(void *fake_stack_save, const void **bottom_
 #endif
 
 #define FIBER_STACK_SIZE (1024 * 1024)
-// The whole mapping: from the bottom, the guard page, the reserve
-// (stack_guard.c), then FIBER_STACK_SIZE less a page of stack proper.
+// The whole mapping: from the bottom, the guard page, the reserve under the
+// stack limit (stack_guard.c), then FIBER_STACK_SIZE less a page for Rask
+// code.
 #define FIBER_MAP_SIZE (FIBER_STACK_SIZE + RASK_STACK_RESERVE)
 
 // ─── The switch ─────────────────────────────────────────────
@@ -259,8 +261,8 @@ static void *stack_get(void) {
                 FIBER_MAP_SIZE / 1024);
         abort();
     }
-    // The guard and the reserve: the stack grows down into them.
-    if (mprotect(base, page_size() + RASK_STACK_RESERVE, PROT_NONE) != 0) {
+    // The guard: the stack grows down into it.
+    if (mprotect(base, page_size(), PROT_NONE) != 0) {
         fprintf(stderr, "rask: could not protect a task stack's guard page\n");
         abort();
     }
@@ -275,13 +277,6 @@ static void stack_put(void *base) {
     }
     pthread_mutex_unlock(&pool_lock);
     if (base) munmap(base, FIBER_MAP_SIZE);
-}
-
-int rask_fiber_stack(const RaskFiber *f, char **reserve, char **top) {
-    if (!f || !f->stack) return 0;
-    *reserve = (char *)f->stack + page_size();
-    *top = (char *)f->stack + FIBER_MAP_SIZE;
-    return 1;
 }
 
 // ─── Fibers ─────────────────────────────────────────────────
@@ -362,8 +357,10 @@ _Noreturn void rask_fiber_switch_final(RaskFiber *from, RaskFiber *to) {
 }
 
 // First thing a fresh fiber runs: the other half of the switch that started it.
-void rask_fiber_started(void) {
+void rask_fiber_started(const RaskFiber *self) {
 #ifdef RASK_ASAN
     __sanitizer_finish_switch_fiber(NULL, NULL, NULL);
 #endif
+    char *bottom = (char *)self->stack;
+    rask_stack_guard_fiber_start(bottom + page_size(), bottom + FIBER_MAP_SIZE);
 }

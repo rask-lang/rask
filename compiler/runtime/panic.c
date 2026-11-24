@@ -110,10 +110,10 @@ static void ffi_boundary_abort(const char *msg) {
 
 // Retrieve the panic message after longjmp. Transfers ownership to caller.
 //
-// Every catcher calls this on landing, so it is also where an overflow's
-// reserve closes again: the panic that ran in it is over.
+// Every catcher calls this on landing, so it is also where a stack
+// overflow's lowered limit goes back up: the panic that ran under it is over.
 char *rask_panic_take_message(void) {
-    rask_stack_guard_rearm();
+    rask_stack_limit_restore();
     char *msg = panic_ctx.message;
     panic_ctx.message = NULL;
     return msg;
@@ -249,6 +249,7 @@ static void unwind_to(RaskUnwindRec *floor, int frames) {
             panic_ctx.access_floor = tl_held_access;
             rec->run(rec);
         } else {
+            rask_stack_limit_restore();
             char *m = panic_ctx.message;
             // F1: task id prefix when a runtime task is active.
             if (tl_task_id > 0) {
@@ -384,10 +385,11 @@ int rask_preempt_unsafe(void) {
 // A zeroed blob is a task that hasn't started.
 //
 // Anything added to this file as `__thread` has the same question to answer:
-// the thread's, or the task's? The task's goes in here. Two other files keep
-// task state of their own, the running task and its worker slot (thread.c)
-// and its `random` generator (random.c), and swap it through the tail of the
-// same blob, so one call covers a task wherever its state lives.
+// the thread's, or the task's? The task's goes in here. Three other files keep
+// task state of their own, the running task and its worker slot (thread.c),
+// its `random` generator (random.c) and its stack's bounds (stack_guard.c),
+// and swap it through the tail of the same blob, so one call covers a task
+// wherever its state lives.
 
 typedef struct TaskTls {
     struct RaskPanicCtx panic;
@@ -408,9 +410,10 @@ extern void *rask_staged_stack_swap(void *head);
 #define TLS_ALIGN(n) (((n) + 15) & ~(size_t)15)
 static size_t thread_part_at(void) { return TLS_ALIGN(sizeof(TaskTls)); }
 static size_t random_part_at(void) { return thread_part_at() + TLS_ALIGN(rask_thread_tls_size()); }
+static size_t stack_part_at(void) { return random_part_at() + TLS_ALIGN(rask_random_tls_size()); }
 
 size_t rask_task_tls_size(void) {
-    return random_part_at() + rask_random_tls_size();
+    return stack_part_at() + rask_stack_tls_size();
 }
 
 #define SWAP(a, b) do { __typeof__(a) tmp_ = (a); (a) = (b); (b) = tmp_; } while (0)
@@ -429,6 +432,7 @@ void rask_task_tls_swap(void *blob) {
     t->staged = rask_staged_stack_swap(t->staged);
     rask_thread_tls_swap((char *)blob + thread_part_at());
     rask_random_tls_swap((char *)blob + random_part_at());
+    rask_stack_tls_swap((char *)blob + stack_part_at());
 }
 
 #undef SWAP
@@ -604,7 +608,7 @@ RaskCaughtPanic *rask_panic_catch(void (*fn)(void *, void *), void *a, void *b) 
         panic_ctx.access_floor = tl_held_access;
         fn(a, b);
     } else {
-        rask_stack_guard_rearm();
+        rask_stack_limit_restore();
         caught = (RaskCaughtPanic *)malloc(sizeof(RaskCaughtPanic));
         caught->message = panic_ctx.message ? panic_ctx.message : strdup("(unknown panic)");
         caught->located = panic_ctx.located;

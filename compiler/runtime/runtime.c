@@ -165,18 +165,23 @@ void rask_exit(int64_t code) {
 // freshly-mapped stack and looks correct, which is why such bugs only show up
 // after a program has run a while. Poisoning makes the read deterministic.
 // Opt-in via RASK_POISON_STACK; when off this costs one load.
+// The buffer is in a frame of its own, pushed only when poisoning is on: a
+// program started with a small stack has no 192 KiB to spare otherwise.
+__attribute__((noinline)) static void poison_below(void) {
+    volatile unsigned char buf[192 * 1024];
+    memset((void *)buf, 0xAA, sizeof buf);
+    (void)buf[0];
+}
+
 __attribute__((noinline)) void rask_poison_stack(void) {
     static int enabled = -1;
     if (enabled < 0) {
         const char *e = getenv("RASK_POISON_STACK");
         enabled = (e && *e && *e != '0') ? 1 : 0;
     }
-    if (!enabled) {
-        return;
+    if (enabled) {
+        poison_below();
     }
-    volatile unsigned char buf[192 * 1024];
-    memset((void *)buf, 0xAA, sizeof buf);
-    (void)buf[0];
 }
 
 _Noreturn void rask_main_error_exit(const RaskStr *msg) {

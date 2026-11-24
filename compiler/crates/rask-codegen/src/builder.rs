@@ -430,6 +430,9 @@ pub struct FunctionBuilder<'a> {
     /// `rask_preempt_requested`, when the runtime provides it. Every function
     /// entry and loop back-edge checks it (conc.runtime/P3).
     preempt_flag: Option<GlobalValue>,
+    /// The runtime's thread-local `rask_stack_limit`, on a target whose
+    /// runtime keeps one. Every function entry checks it (ctrl.panics/S5).
+    stack_limit: Option<GlobalValue>,
     /// A debug build: `ptr_check` is emitted (mem.unsafe).
     debug_checks: bool,
 }
@@ -528,6 +531,7 @@ impl<'a> FunctionBuilder<'a> {
             c_abi_plans: &NO_C_ABI_PLANS,
             field_types: &NO_FIELD_TYPES,
             preempt_flag: None,
+            stack_limit: None,
             debug_checks: false,
         })
     }
@@ -544,6 +548,57 @@ impl<'a> FunctionBuilder<'a> {
 
     pub fn set_preempt_flag(&mut self, flag: GlobalValue) {
         self.preempt_flag = Some(flag);
+    }
+
+    pub fn set_stack_limit(&mut self, limit: GlobalValue) {
+        self.stack_limit = Some(limit);
+    }
+
+    /// `if sp - below < rask_stack_limit { rask_stack_overflow_at(..) }`,
+    /// leaving the builder in the block after it. `below` is how far under
+    /// the stack pointer the code that follows will reach before it checks
+    /// again: zero in a function's own entry, where the frame is already
+    /// pushed, and the frame's size in the trampoline of one too big to push
+    /// unchecked. The location is the function's declaration, the same one
+    /// the interpreter names when it runs out of stacks.
+    pub(crate) fn emit_stack_check(
+        builder: &mut ClifFunctionBuilder,
+        limit: GlobalValue,
+        overflow: FuncRef,
+        below: i64,
+        location: Option<(GlobalValue, u32, u32)>,
+    ) {
+        let addr = builder.ins().tls_value(types::I64, limit);
+        let limit_val = builder.ins().load(types::I64, MemFlags::trusted(), addr, 0);
+        let sp = builder.ins().get_stack_pointer(types::I64);
+        let reach = if below > 0 { builder.ins().iadd_imm(sp, -below) } else { sp };
+        let low = builder.ins().icmp(IntCC::UnsignedLessThan, reach, limit_val);
+        let slow = builder.create_block();
+        let cont = builder.create_block();
+        builder.set_cold_block(slow);
+        builder.ins().brif(low, slow, &[], cont, &[]);
+        builder.switch_to_block(slow);
+        builder.seal_block(slow);
+        let (file, line, col) = match location {
+            Some((gv, line, col)) => (builder.ins().global_value(types::I64, gv), line, col),
+            None => (builder.ins().iconst(types::I64, 0), 0, 0),
+        };
+        let line = builder.ins().iconst(types::I32, line as i64);
+        let col = builder.ins().iconst(types::I32, col as i64);
+        builder.ins().call(overflow, &[file, line, col]);
+        builder.ins().trap(TrapCode::user(1).unwrap());
+        builder.switch_to_block(cont);
+        builder.seal_block(cont);
+    }
+
+    /// Where a stack overflow in this function is reported: its declaration.
+    fn declaration_location(&self) -> Option<(GlobalValue, u32, u32)> {
+        let span = self.mir_fn.span;
+        if span.end == 0 {
+            return None;
+        }
+        let (file, line, col) = self.sources?.locate(span)?;
+        Some((*self.string_globals.get(file)?, line, col))
     }
 
     /// The C-ABI call plans, when the program imports a header whose
@@ -686,6 +741,7 @@ impl<'a> FunctionBuilder<'a> {
         let mut cleanup_chain_blocks: HashMap<Vec<BlockId>, cranelift_codegen::ir::Block> =
             HashMap::new();
 
+        let declared_at = self.declaration_location();
         let mut builder = ClifFunctionBuilder::new(self.func, &mut self.builder_ctx);
 
         // Create blocks (skip cleanup-only blocks — handled via shared cleanup blocks)
@@ -811,6 +867,11 @@ impl<'a> FunctionBuilder<'a> {
             field_types: self.field_types,
             unwind_rec: None,
         };
+        // ctrl.panics/S5: the frame is pushed; is there room under it?
+        if let (Some(limit), Some(overflow)) = (self.stack_limit, ctx.func_refs.get("rask_stack_overflow_at").copied()) {
+            Self::emit_stack_check(&mut builder, limit, overflow, 0, declared_at);
+        }
+
         // ctrl.panic/U6: before anything else, so the frame's ensures, pushed
         // later, run ahead of it on a panic and still see what it owns.
         ctx.unwind_rec = Self::push_unwind_record(&mut builder, self.mir_fn, &ctx);

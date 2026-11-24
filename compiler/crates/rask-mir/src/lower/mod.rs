@@ -5041,6 +5041,7 @@ impl<'a> MirLowerer<'a> {
 
         let mut main_fn = lowerer.builder.finish();
         main_fn.is_extern_c = fn_decl.abi.is_some();
+        main_fn.span = decl.span;
         main_fn.inline_hint = fn_decl.attrs.iter().any(|a| a.is("inline"));
         let mut result = vec![main_fn];
         result.extend(lowerer.synthesized_functions);

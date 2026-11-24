@@ -94,16 +94,22 @@ extern int rask_runtime_checks_enabled;
 // RASK_POISON_STACK is set, so reads of never-written stack slots are
 // deterministic instead of accidentally reading zeros.
 void rask_poison_stack(void);
-// S5: catch this thread's stack overflow as a panic (stack_guard.c). The
-// main thread calls the `main` one.
+// S5: a stack overflow is a panic (stack_guard.c). Every Rask function
+// checks its stack pointer against `rask_stack_limit` on entry. The main
+// thread calls the `main` init, every other thread that runs Rask code the
+// `thread` one, and a fiber the `fiber_start` one with its own stack.
+#define RASK_STACK_RESERVE (256 * 1024)
+extern __thread char *rask_stack_limit;
 void rask_stack_guard_main_init(void);
 void rask_stack_guard_thread_init(void);
 void rask_stack_guard_thread_exit(void);
-// Close the running stack's reserve again once a panic has been caught.
-void rask_stack_guard_rearm(void);
-// The running task's reserve and stack top (green.c; never, off Linux, where
-// a task is a thread).
-int rask_task_stack(char **reserve, char **top);
+void rask_stack_guard_fiber_start(char *lo, char *hi);
+_Noreturn void rask_stack_overflow_at(const char *file, int32_t line, int32_t col);
+// Put the limit back once the catch that ends an overflow has landed.
+void rask_stack_limit_restore(void);
+// The stack bounds' part of `rask_task_tls_swap`.
+size_t rask_stack_tls_size(void);
+void   rask_stack_tls_swap(void *blob);
 
 static inline int64_t rask_safe_mul(int64_t a, int64_t b) {
     if (a > 0 && b > 0 && a > INT64_MAX / b) rask_panic("allocation size overflow");

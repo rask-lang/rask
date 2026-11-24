@@ -449,11 +449,11 @@ static void fiber_yield(void) {
 }
 
 static void fiber_main(void *arg) {
-    rask_fiber_started();
+    GreenTask *t = (GreenTask *)arg;
+    rask_fiber_started(&t->fiber);
     // A fresh fiber stack reads as zeros, which hides a slot codegen forgot to
     // write exactly the way a fresh thread stack does.
     rask_poison_stack();
-    GreenTask *t = (GreenTask *)arg;
 
     rask_panic_install();
     jmp_buf *jb = rask_panic_jmpbuf();
@@ -690,15 +690,6 @@ void rask_preempt_point(void) {
     // into: an unwind, a C caller's frames, or a line being printed.
     if (rask_preempt_unsafe()) return;
     switch_to_worker(t, SWITCH_PREEMPTED);
-}
-
-// ─── Stack overflow ─────────────────────────────────────────
-
-// The running task's stack, for the overflow handler (stack_guard.c): 0 when
-// no task is running.
-int rask_task_stack(char **reserve, char **top) {
-    GreenTask *t = tl_current_task;
-    return t && rask_fiber_stack(&t->fiber, reserve, top);
 }
 
 // ─── Deadlock ───────────────────────────────────────────────

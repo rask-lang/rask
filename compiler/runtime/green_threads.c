@@ -126,11 +126,4 @@ void rask_preempt_point(void) {
     rask_task_slot_preempt();
 }
 
-// A task is a thread here, so its overflow is the thread's own (stack_guard.c).
-int rask_task_stack(char **reserve, char **top) {
-    (void)reserve;
-    (void)top;
-    return 0;
-}
-
 #endif // !RASK_HAS_GREEN

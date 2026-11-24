@@ -31,18 +31,10 @@ void rask_fiber_destroy(RaskFiber *f);
 // switches back to `from`.
 void rask_fiber_switch(RaskFiber *from, RaskFiber *to);
 
-// Call first thing in a fiber's entry function.
-void rask_fiber_started(void);
+// Call first thing in a fiber's entry function, with the fiber.
+void rask_fiber_started(const RaskFiber *self);
 
 // The last switch off a fiber that will never be resumed.
 _Noreturn void rask_fiber_switch_final(RaskFiber *from, RaskFiber *to);
-
-// Whether `addr` is in `f`'s guard page — a stack overflow.
-// S5: the room an overflow panic runs in, just above a stack's guard page.
-// PROT_NONE until the stack overflows into it (stack_guard.c).
-#define RASK_STACK_RESERVE (256 * 1024)
-
-// A fiber's reserve and the top of its stack, or 0 for a thread's own.
-int rask_fiber_stack(const RaskFiber *f, char **reserve, char **top);
 
 #endif // RASK_FIBER_H

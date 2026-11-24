@@ -51,6 +51,13 @@ pub struct CodeGenerator {
     /// The runtime's `rask_preempt_requested`, which every function entry and
     /// loop back-edge checks (conc.runtime/P3).
     preempt_flag_data: Option<cranelift_module::DataId>,
+    /// The runtime's thread-local `rask_stack_limit`, which every function
+    /// entry compares its stack pointer against (ctrl.panics/S5). None on a
+    /// target whose runtime has no stack bounds.
+    stack_limit_data: Option<cranelift_module::DataId>,
+    /// Whether the target can reach a thread-local, so functions check the
+    /// stack limit. Set from the target when the generator is made.
+    stack_checks: bool,
     /// MIR names of stdlib functions that can panic at runtime
     panicking_fns: HashSet<String>,
     /// Names of functions compiled as Rask code (not C stdlib)
@@ -100,9 +107,10 @@ impl CodeGenerator {
         // compiler already does with `__int128`, so the two agree (#762).
         let _ = flag_builder.set("enable_llvm_abi_extensions", "true");
         // A frame over a page touches each page from the top down before it's
-        // used, so an overflow faults in the stack's guard, which the runtime
-        // turns into a panic (ctrl.panics/S5). Without probes an 80 MB local
-        // array stepped over the guard into whatever was mapped below (#2066).
+        // used. A stack overflow is caught by the entry check against the
+        // stack limit (ctrl.panics/S5) before any frame gets near the guard;
+        // the probes make anything that slips past that fault in the guard
+        // rather than step over it into whatever is mapped below (#2066).
         let _ = flag_builder.set("enable_probestack", "true");
         let _ = flag_builder.set("probestack_strategy", "inline");
         // Darwin has no non-PIE option. Without this Cranelift reaches a string
@@ -113,6 +121,16 @@ impl CodeGenerator {
         if cfg!(target_os = "macos") {
             let _ = flag_builder.set("is_pic", "true");
         }
+        // How a thread-local is reached: the stack limit every function
+        // checks is one (ctrl.panics/S5).
+        let stack_checks = match stack_check_tls_model(
+            cfg!(target_os = "linux"),
+            cfg!(target_os = "macos"),
+            cfg!(any(target_arch = "x86_64", target_arch = "aarch64")),
+        ) {
+            Some(model) => flag_builder.set("tls_model", model).is_ok(),
+            None => false,
+        };
         let isa = isa_builder.finish(settings::Flags::new(flag_builder))
             .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
 
@@ -139,6 +157,8 @@ impl CodeGenerator {
             element_offset_data: HashMap::new(),
             comptime_data: HashMap::new(),
             preempt_flag_data: None,
+            stack_limit_data: None,
+            stack_checks,
             panicking_fns: crate::dispatch::panicking_functions(),
             internal_fns: HashSet::new(),
             fn_param_types: HashMap::new(),
@@ -172,7 +192,7 @@ impl CodeGenerator {
         let _ = flag_builder.set("opt_level", "speed");
         // See `new` — 128-bit values in signatures need this (#762).
         let _ = flag_builder.set("enable_llvm_abi_extensions", "true");
-        // See `new`: stack probes, so an overflow lands in the guard (#2066).
+        // See `new`: stack probes, so nothing steps over the guard (#2066).
         let _ = flag_builder.set("enable_probestack", "true");
         let _ = flag_builder.set("probestack_strategy", "inline");
         // Position-independent code. Linux wants it; Darwin *requires* it —
@@ -186,6 +206,22 @@ impl CodeGenerator {
         ) {
             let _ = flag_builder.set("is_pic", "true");
         }
+        // See `new`: the stack limit is a thread-local.
+        let darwin = matches!(
+            target.operating_system,
+            target_lexicon::OperatingSystem::Darwin | target_lexicon::OperatingSystem::MacOSX { .. }
+        );
+        let stack_checks = match stack_check_tls_model(
+            matches!(target.operating_system, target_lexicon::OperatingSystem::Linux),
+            darwin,
+            matches!(
+                target.architecture,
+                target_lexicon::Architecture::X86_64 | target_lexicon::Architecture::Aarch64(_)
+            ),
+        ) {
+            Some(model) => flag_builder.set("tls_model", model).is_ok(),
+            None => false,
+        };
         let flags = settings::Flags::new(flag_builder);
 
         let isa = isa::lookup(target)
@@ -216,6 +252,8 @@ impl CodeGenerator {
             element_offset_data: HashMap::new(),
             comptime_data: HashMap::new(),
             preempt_flag_data: None,
+            stack_limit_data: None,
+            stack_checks,
             panicking_fns: crate::dispatch::panicking_functions(),
             internal_fns: HashSet::new(),
             fn_param_types: HashMap::new(),
@@ -956,6 +994,23 @@ impl CodeGenerator {
                 .declare_data("rask_preempt_requested", Linkage::Import, true, false)
                 .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
             self.preempt_flag_data = Some(flag);
+        }
+
+        // Stack overflow (ctrl.panics/S5): the limit every function entry
+        // reads, and what it calls when the stack pointer is below it.
+        if self.stack_checks {
+            let mut sig = self.module.make_signature();
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I32));
+            sig.params.push(AbiParam::new(types::I32));
+            let id = self.module
+                .declare_function("rask_stack_overflow_at", Linkage::Import, &sig)
+                .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+            self.func_ids.insert("rask_stack_overflow_at".to_string(), id);
+            let limit = self.module
+                .declare_data("rask_stack_limit", Linkage::Import, true, true)
+                .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+            self.stack_limit_data = Some(limit);
         }
 
         // rask_closure_free(ptr: i64) -> void
@@ -2050,6 +2105,9 @@ impl CodeGenerator {
         let preempt_flag = self
             .preempt_flag_data
             .map(|d| self.module.declare_data_in_func(d, &mut self.ctx.func));
+        let stack_limit = self
+            .stack_limit_data
+            .map(|d| self.module.declare_data_in_func(d, &mut self.ctx.func));
 
         // Build the function
         let mut builder = FunctionBuilder::new(
@@ -2077,6 +2135,9 @@ impl CodeGenerator {
         if let Some(gv) = preempt_flag {
             builder.set_preempt_flag(gv);
         }
+        if let Some(gv) = stack_limit {
+            builder.set_stack_limit(gv);
+        }
         builder.build()?;
 
         // Temporary: dump CLIF IR for debugging
@@ -2084,9 +2145,26 @@ impl CodeGenerator {
             eprintln!("=== CLIF IR for {} ===\n{}", mir_fn.name, self.ctx.func.display());
         }
 
+        // A frame too big for the room under the stack limit would run its
+        // probes into the guard before its entry check could run. Its body
+        // goes under a name of its own, and the function itself becomes a
+        // trampoline that checks for the whole frame first.
+        let frame: i64 = self.ctx.func.sized_stack_slots.values()
+            .map(|s| s.size as i64 + (1i64 << s.align_shift))
+            .sum();
+        let trampoline = self.stack_limit_data.is_some() && frame > FRAME_CHECKED_IN_PLACE;
+        let body_id = if trampoline {
+            let sig = self.ctx.func.signature.clone();
+            self.module
+                .declare_function(&format!("{}$frame", mir_fn.name), Linkage::Local, &sig)
+                .map_err(|e| CodegenError::CraneliftError(e.to_string()))?
+        } else {
+            func_id
+        };
+
         // Define the function in the module
         self.module
-            .define_function(func_id, &mut self.ctx)
+            .define_function(body_id, &mut self.ctx)
             .map_err(|e| CodegenError::CraneliftError(format!("{:?}", e)))?;
 
         // Collect debug info (srclocs, variables, inline regions)
@@ -2095,7 +2173,7 @@ impl CodeGenerator {
                 let inline_regions = self.inline_regions.get(&mir_fn.name)
                     .map(|v| v.as_slice()).unwrap_or(&[]);
                 if let Some(info) = crate::debug_info::collect_function_debug(
-                    compiled, func_id, mir_fn, inline_regions,
+                    compiled, body_id, mir_fn, inline_regions,
                     &self.struct_layouts, &self.enum_layouts, self.target(),
                 ) {
                     self.debug_srclocs.push(info);
@@ -2103,9 +2181,78 @@ impl CodeGenerator {
             }
         }
 
+        if trampoline {
+            self.define_frame_trampoline(mir_fn, func_id, body_id, frame)?;
+        }
+
         Ok(())
     }
 
+    /// `func_id` as a call to `body_id`, its body, after checking that the
+    /// stack has room for `frame` bytes more than its own.
+    fn define_frame_trampoline(
+        &mut self,
+        mir_fn: &MirFunction,
+        func_id: cranelift_module::FuncId,
+        body_id: cranelift_module::FuncId,
+        frame: i64,
+    ) -> CodegenResult<()> {
+        let (Some(limit_data), Some(&overflow_id)) =
+            (self.stack_limit_data, self.func_ids.get("rask_stack_overflow_at"))
+        else {
+            return Ok(());
+        };
+        let sig = self.ctx.func.signature.clone();
+        self.ctx.clear();
+        self.ctx.func.signature = sig;
+        let limit = self.module.declare_data_in_func(limit_data, &mut self.ctx.func);
+        let overflow = self.module.declare_func_in_func(overflow_id, &mut self.ctx.func);
+        self.ctx.func.stencil.dfg.ext_funcs[overflow].colocated = true;
+        let body = self.module.declare_func_in_func(body_id, &mut self.ctx.func);
+        let location = if mir_fn.span.end == 0 {
+            None
+        } else {
+            self.sources.locate(mir_fn.span).and_then(|(file, line, col)| {
+                let data = *self.string_data.get(file)?;
+                Some((self.module.declare_data_in_func(data, &mut self.ctx.func), line, col))
+            })
+        };
+
+        let mut fb_ctx = cranelift_frontend::FunctionBuilderContext::new();
+        let mut b = cranelift_frontend::FunctionBuilder::new(&mut self.ctx.func, &mut fb_ctx);
+        let entry = b.create_block();
+        b.append_block_params_for_function_params(entry);
+        b.switch_to_block(entry);
+        b.seal_block(entry);
+        let args = b.block_params(entry).to_vec();
+        FunctionBuilder::emit_stack_check(&mut b, limit, overflow, frame, location);
+        let call = b.ins().call(body, &args);
+        let results = b.inst_results(call).to_vec();
+        b.ins().return_(&results);
+        b.finalize();
+
+        self.module
+            .define_function(func_id, &mut self.ctx)
+            .map_err(|e| CodegenError::CraneliftError(format!("{:?}", e)))?;
+        Ok(())
+    }
+
+}
+
+/// The largest frame a function pushes before it checks the stack limit.
+/// A bigger one is checked by a trampoline first (`define_frame_trampoline`).
+/// What a frame pushes unchecked comes out of the room the limit keeps for
+/// the C runtime, so this stays a small part of it.
+const FRAME_CHECKED_IN_PLACE: i64 = 16 * 1024;
+
+/// The `tls_model` setting a target reaches the runtime's stack limit with,
+/// or None where its runtime keeps no stack bounds (stack_guard.c).
+fn stack_check_tls_model(linux: bool, darwin: bool, arch_ok: bool) -> Option<&'static str> {
+    match (linux, darwin, arch_ok) {
+        (true, _, true) => Some("elf_gd"),
+        (_, true, true) => Some("macho"),
+        _ => None,
+    }
 }
 
 /// A MIR function is an empty stub if it has a single block with no

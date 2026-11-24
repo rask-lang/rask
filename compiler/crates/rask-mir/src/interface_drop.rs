@@ -1099,6 +1099,7 @@ mod tests {
             blocks,
             entry_block: block_id(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
             param_modes: Vec::new(),
             item_mode_from_body: false,

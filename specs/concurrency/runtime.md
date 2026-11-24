@@ -79,7 +79,7 @@ struct SavedContext {
 
 **Memory model:** The 1 MiB stack is virtual address space, not physical memory. Physical pages are allocated on first touch (demand paging). A fiber whose deepest call uses 4 KiB consumes 4 KiB of RSS. 100 k fibers average 4 KiB deep = ~400 MiB RSS, ~100 GiB virtual — fine on 64-bit (256 TiB address space).
 
-**Guard page:** A `PROT_NONE` page at the top of each stack catches stack overflow as a SIGSEGV, converted to a Rask panic with a clear message. The same holds for the main thread and OS threads, whose guard is the one the platform puts below their stacks. Codegen probes every page of a frame larger than one, top down, so a large frame faults in the guard instead of stepping past it into other memory.
+**Stack limit:** Every Rask function compares its stack pointer against its thread's stack limit on entry and panics when it is below, naming the function. The limit sits a reserve above the bottom of the stack (256 KiB, or a quarter of a smaller stack), which is the room the C runtime and C libraries run in under a Rask frame. A task carries its fiber's limit with it as it moves between workers. While the overflow unwinds, the limit drops so its ensures get most of the reserve; an ensure that overflows that as well aborts (`ctrl.panic/A1`). A function whose frame is too big to push unchecked checks for the whole frame before pushing it. Below each stack is a `PROT_NONE` guard (a fiber's own page, the platform's for threads and the main thread); only C code that ran through the whole reserve reaches it, and that aborts with a message.
 
 **Spawn cost:** Stack regions are pooled. First spawn mmaps a fresh region (~1 µs); subsequent spawns reuse freed regions (~100 ns).
 

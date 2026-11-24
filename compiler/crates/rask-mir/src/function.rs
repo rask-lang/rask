@@ -29,6 +29,9 @@ pub struct MirFunction {
     /// keeps the item is settled from the body once the program is lowered
     /// (`container_drop::settle_loop_item_modes`).
     pub item_mode_from_body: bool,
+    /// The declaration this was lowered from, where a stack overflow in it
+    /// is reported. `Span::new(0, 0)` for one lowering made up.
+    pub span: rask_ast::Span,
 }
 
 impl MirFunction {
