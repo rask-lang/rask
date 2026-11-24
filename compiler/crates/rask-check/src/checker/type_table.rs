@@ -321,7 +321,7 @@ pub struct TypeTable {
     pub(crate) sizeless: std::collections::HashSet<TypeId>,
     /// Whether every declared type is in and every recursive one marked
     /// `sizeless`. Until then a size is a guess at a half-built table, so the
-    /// 4 GiB check on a written type waits (`too_large`).
+    /// value size check on a written type waits (`too_large`).
     pub(crate) declarations_settled: bool,
     /// The bounds a generic struct or enum declares on its parameters, in
     /// declaration order: `struct Holder<T: Named>` → `[("T", [Named])]`.

@@ -3346,13 +3346,13 @@ impl ToDiagnostic for crate::TypeError {
             ValueTooLarge { ty, bytes, span } => {
                 let d = Diagnostic::error(format!("`{}` is too large for a value", ty))
                     .with_code("E0980")
-                    .with_why("a value's size is a 32-bit count, so one value holds at most 4 GiB");
+                    .with_why("any value can land in a stack frame and a task's stack is 1 MiB, so one value holds at most 64 KiB");
                 match bytes {
                     Some(bytes) => d
                         .with_primary(*span, format!("{} bytes", bytes))
                         .with_help("keep this many elements in a `Vec`, which holds them on the heap"),
                     None => d
-                        .with_primary(*span, "its parts add up to over 4 GiB")
+                        .with_primary(*span, "its parts add up to over 64 KiB")
                         .with_help("keep the large parts on the heap, in a `Vec` or a `Heap`"),
                 }
             }

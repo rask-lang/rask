@@ -6,7 +6,7 @@ use std::collections::HashMap;
 
 use rask_layout::{
     compute_enum_layout, compute_shared_enum_layout, compute_shared_struct_layout, compute_struct_layout,
-    compute_union_layout, generic_is_one_word, known_size_align, settle, substitute_inside, type_size_align,
+    compute_union_layout, generic_is_one_word, MAX_VALUE_SIZE, known_size_align, settle, substitute_inside, type_size_align,
     EnumLayout, FieldLayout, IsParam, LayoutCache, LayoutKey, StructLayout, Unsolved,
 };
 use rask_types::{GenericArg, Type, TypeDef, TypeId};
@@ -40,11 +40,11 @@ impl crate::TypeTable {
         known_size_align(&ty, &cache)
     }
 
-    /// VS12: whether `ty` is over the 4 GiB a value can take. `Some(Some(bytes))`
+    /// VS12: whether `ty` is over the 64 KiB a value can take. `Some(Some(bytes))`
     /// for an array, whose size is exact; `Some(None)` for a struct, tuple,
-    /// enum or union whose parts add up past it, which layout holds at
-    /// `u32::MAX`. A type with a part already over is left to that part's
-    /// report, so two 3 GB arrays in a struct are one error, at the struct.
+    /// enum or union whose parts add up past it. A type with a part already
+    /// over is left to that part's report, so two 40 KB arrays in a struct are
+    /// one error, at the struct.
     ///
     /// `None` while declarations are still being collected: a field naming a
     /// type declared further down, or the type it sits in, has no layout yet.
@@ -61,9 +61,9 @@ impl crate::TypeTable {
         if let Type::Array { elem, len } = ty {
             let (size, _) = self.size_align(elem, is_param)?;
             let bytes = u64::from(size).saturating_mul(*len as u64);
-            return (bytes > u64::from(u32::MAX) && size != u32::MAX).then_some(Some(bytes));
+            return (bytes > u64::from(MAX_VALUE_SIZE) && size <= MAX_VALUE_SIZE).then_some(Some(bytes));
         }
-        if self.size_align(ty, is_param).is_none_or(|(size, _)| size != u32::MAX) {
+        if self.size_align(ty, is_param).is_none_or(|(size, _)| size <= MAX_VALUE_SIZE) {
             return None;
         }
         let part_sizes: Vec<u32> = match ty {
@@ -94,7 +94,7 @@ impl crate::TypeTable {
             }
             _ => Vec::new(),
         };
-        (!part_sizes.contains(&u32::MAX)).then_some(None)
+        (!part_sizes.iter().any(|&s| s > MAX_VALUE_SIZE)).then_some(None)
     }
 
     /// `size_align` for the copy rule, which has to answer inside a generic

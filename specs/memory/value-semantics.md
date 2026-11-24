@@ -117,7 +117,7 @@ Use it where staying small is API: math primitives, IDs, anything callers pass a
 | **VS9: Copy is special** | Compiler-known interface that affects codegen and assignment semantics |
 | **VS10: Unique overrides** | `@unique` overrides structural satisfaction |
 | **VS11: Array repeat copies** | `[x; n]` puts a copy of `x` in every slot, so `x`'s type must be Copy. A value that moves would have n owners; build such elements one at a time (a loop pushing into a `Vec`). The length is part of the array's type, so `n` is a literal or a module `const` (E0984) |
-| **VS12: A value is at most 4 GiB** | A size is a 32-bit count. A type over that is a compile error (E0980): an array, or a struct, tuple or enum whose parts add up past it. Large parts belong on the heap, in a `Vec` or a `Heap` |
+| **VS12: A value is at most 64 KiB** | Any value can sit in a stack frame, and a task's stack is 1 MiB. A type over 64 KiB is a compile error (E0980): an array, or a struct, tuple or enum whose parts add up past it. Large parts belong on the heap, in a `Vec` or a `Heap`. Every target and backend has the same limit |
 
 <!-- test: skip -->
 ```rask
@@ -220,8 +220,10 @@ FIX: shrink the type (id: u32 fits in 16), or remove @small and let Point
 | `@small` on generic type, one bad instantiation | SM3 | Error at that instantiation, naming the type arguments |
 | `[row; 3]` where `Row` holds a `Vec` | VS11 | Error: the three slots would share one buffer |
 | `[t; n]` with an unbounded type parameter `T` | VS11 | Error in the generic body; `T: Copy` makes it legal |
-| `[0i64; 600000000]` | VS12 | Error: 4.8 GB is over the 4 GiB a value can take |
-| A struct of two `[u8; 3000000000]` fields | VS12 | Error: each fits, the struct doesn't |
+| `[0i64; 8193]` | VS12 | Error: 65,544 bytes is over the 64 KiB a value can take |
+| `[0i64; 8192]` | VS12 | OK: exactly 64 KiB |
+| A struct of two `[u8; 40000]` fields | VS12 | Error: each fits, the struct doesn't |
+| `Vec<u8>` holding 10 MB | VS12 | OK: the elements live on the heap; the value is the `Vec`'s three words |
 
 ---
 
@@ -248,6 +250,8 @@ FIX: shrink the type (id: u32 fits in 16), or remove @small and let Point
 **The Goldilocks principle:** Languages like Hylo require explicit `.copy()` even for a `Point2D` — that's ceremony protecting from a trivial cost. Swift has the opposite problem: any struct is a value type regardless of size. Rask avoids both extremes.
 
 **Platform ABI considerations:** The 16-byte threshold is a *semantic* boundary, not an ABI boundary. On Windows x64 (8-byte register limit), 9-16 byte types are still semantically Copy but passed by hidden reference. The ABI detail is invisible to the programmer.
+
+**A value fits on the stack (VS12):** A local, a temporary, an argument and the copy you get reading a `Vec` element all live in a stack frame natively, and a task runs on a 1 MiB stack. So `let z = [0i64; 10000000]` compiled, ran on the interpreter (which has no stack limit) and overflowed natively (#2066). Moving big values to the heap behind the program's back would make the backends agree, at the cost of a hidden allocation, which is exactly what Rask avoids elsewhere. So the limit is part of the type instead: a value is at most 64 KiB, which leaves room for sixteen of them on a task's stack, and anything bigger is a `Vec` or a `Heap` you can see. This catches a single value that can't fit. It can't catch a frame with dozens of large locals, or recursion too deep for the stack; those still stop with a stack overflow panic at run time.
 
 **Pointer width (VS7a):** A struct of three pointers is 24 bytes on a 64-bit target and 12 on a 32-bit one. If VS1 measured the real layout, it would move on one and copy on the other, and the same source would have use-after-move errors on only one of them. So VS1 measures every type as if pointers were 8 bytes, whatever the target, and the layout in memory uses the real width. On a 32-bit target some small types are therefore moved when copying would be cheap. I'd rather pay that than have a program's meaning depend on where it's built.
 

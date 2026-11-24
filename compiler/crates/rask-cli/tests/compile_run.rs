@@ -10767,18 +10767,6 @@ fn an_overflow_caught_in_a_closure_says_where() {
     );
 }
 
-// A function whose frame is too big to check in place must keep its own
-// frame. Inlined into `main` (it's called once), its 16 MB array made `main`'s
-// frame that big, and the stack check fired at `main`'s entry, before the
-// first line printed (#2079).
-#[test]
-fn a_huge_frame_is_not_inlined_into_its_caller() {
-    let (stdout, stderr, code) = run_capture("--native", "huge_local_inlined.rk");
-    assert_eq!(code, 101, "{}", stderr);
-    assert_eq!(stdout, "5050\n", "{}", stderr);
-    assert!(stderr.contains("huge_local_inlined.rk:11:"), "should name `huge`: {}", stderr);
-}
-
 // A recursive function's frame is paid at every level. Inlining a helper's
 // 4.8K array into it, though the helper only runs at the bottom, made each
 // level that much bigger and `rec(3000)` overflowed natively; the interpreter

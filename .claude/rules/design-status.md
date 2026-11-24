@@ -16,6 +16,7 @@ concrete reason.
 | Area | Decision | Spec |
 |------|----------|------|
 | Ownership | Single owner, move semantics, 16-byte copy threshold | [memory/](../../specs/memory/) |
+| Value size | A value is at most 64 KiB, so it fits a task's stack. Bigger is a compile error; use `Vec` or `Heap`. No hidden heap spill | [value-semantics.md](../../specs/memory/value-semantics.md) |
 | Borrowing | Block-scoped (fixed sources); growable sources: read-only `let` views, writes inline or `with` | [borrowing.md](../../specs/memory/borrowing.md) |
 | Closures | Capture mode is inferred — a closure that outlives its frame carries what it captured, one that stays points at it. No `own` keyword. A closure value is move-only; `.clone()` copies its environment | [closures.md](../../specs/memory/closures.md) |
 | Linearity | Consume exactly once (L1–L6) — shared by `@resource` and `Heap<T>` | [linear.md](../../specs/memory/linear.md) |

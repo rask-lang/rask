@@ -6986,7 +6986,7 @@ impl TypeChecker {
     /// A range counts: its bounds are numbers or chars. `"a".."z"` was a
     /// `Range<string>` that native walked as nothing and the interpreter
     /// refused at run time.
-    /// VS12: a value over the 4 GiB a value can take. Sized here rather than
+    /// VS12: a value over the 64 KiB a value can take. Sized here rather than
     /// where it's checked: an element is usually a literal whose type the
     /// defaults only just settled (`[0; N]`). Each type is reported once, at
     /// its declaration when it has one.
