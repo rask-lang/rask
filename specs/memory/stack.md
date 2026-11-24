@@ -1,11 +1,11 @@
 <!-- id: mem.stack -->
 <!-- status: proposed -->
-<!-- summary: Values are capped so a frame stays small; the runtime's C walks over values never recurse; every stack has a guaranteed size and every function checks it on entry, so overflow is a panic that names the recursion; a function can declare a depth, counted in calls, and get an error instead -->
+<!-- summary: Values are capped so a frame stays small; the runtime's walks over values (clone, drop) never recurse; every stack has a guaranteed size and every function checks it on entry, so overflow is a panic that names the recursion; a function can declare a depth, counted in calls, and get an error instead -->
 <!-- depends: memory/value-semantics.md, memory/linear.md, types/error-types.md, control/panics.md, control/comptime.md, concurrency/runtime.md, concurrency/async.md -->
 
 # The Stack
 
-Natively, every value a function holds lives in its stack frame, and a stack is a fixed size, so a program can run out of it. Rask keeps two things off the stack by construction: a value bigger than 64 KiB is a compile error, and the runtime's own C code never recurses over a value. What's left is calls: a chain of them deeper than the stack. Every stack has a size the runtime picks and guarantees, and every function checks it on entry, so running out is a panic with a message, at the same call every run. A function that recurses over input can declare how deep it may go, and then the limit is a count of calls, the same on every target and both backends.
+Natively, every value a function holds lives in its stack frame, and a stack is a fixed size, so a program can run out of it. Rask keeps two things off the stack by construction: a value bigger than 64 KiB is a compile error, and the runtime never recurses over a value when it clones or drops one. What's left is calls: a chain of them deeper than the stack. Every stack has a size the runtime picks and guarantees, and every function checks it on entry, so running out is a panic with a message, at the same call every run. A function that recurses over input can declare how deep it may go, and then the limit is a count of calls, the same on every target and both backends.
 
 ## Rules
 
@@ -15,7 +15,7 @@ Natively, every value a function holds lives in its stack frame, and a stack is 
 |------|-------------|
 | **ST1: A value is at most 64 KiB** | [mem.value/VS12](value-semantics.md), E0980. Checked on every value, at the concrete type each generic instance gives it |
 | **ST2: Sizes are counted the same on every target** | With 8-byte pointers, as the copy rule counts them ([mem.value/VS7a](value-semantics.md)), so a program compiles on every target or none |
-| **ST3: The runtime's C never recurses over a value** | Clone, `==`, drop and hashing, which the runtime does in C, walk a value with a work list on the heap. A value nested a million deep costs heap there, not stack. Rask code that walks a value, generated or written (a derived `Encode`, a format library), recurses like any other Rask code and is caught by ST6 |
+| **ST3: Clone and drop never recurse** | The runtime clones and drops a value with a work list on the heap, so a value nested a million deep costs heap there, not stack. The interpreter's own walks (clone, drop, comparing map keys, printing) continue on a fresh stack instead. `==` and `hash` are Rask code, derived or in the stdlib (`Vec.eq`), and so is any other walk a program or library writes (a derived `Encode`, a format library): they recurse like any other Rask code and are caught by ST6 |
 
 ### Stacks
 
@@ -89,8 +89,8 @@ panic at tree.rk:2: stack overflow in `depth`
 |------|------|----------|
 | `[0i64; 8192]` | ST1 | OK: exactly 64 KiB |
 | `struct Slots { lists: [Vec<i64>; 8193] }` | ST2 | E0980 on every target, wasm32 included |
-| `a == b` on a tree a million deep | ST3 | Runs; the walk is a loop |
-| A derived `==` called through `Vec<Tree>` from user code | ST3 | The same walk; no user frames involved |
+| `a.clone()` or dropping a tree a million deep | ST3 | Runs; the walk is a loop |
+| `a == b` on a tree a million deep | ST3, ST7 | Panics: the derived `Tree.eq` and `Vec.eq<Tree>` recurse, and ST7's message names them |
 | Derived `Encode` on a list a million deep | ST3, ST6 | Recurses in Rask; ST7's panic names `encode` |
 | `ulimit -s unlimited`, then deep recursion in `main` | ST4 | Panics at the same call as with any other `ulimit`: `main`'s stack is the runtime's |
 | A cycle of two functions, one annotated | ST9 | Only the annotated one is counted |
@@ -139,7 +139,7 @@ error[E0989]: `walk_dir` can refuse a call, so it can't take `dir`
 
 **Why count calls to one function, not frames of a cycle?** A cycle is something the compiler works out, and the reader can't see it: adding a call in one function changes which functions are in it. Calls to the annotated function are in the source, and the number means what it says.
 
-**Why the runtime and not the user for deep values?** A tree built with a loop has no recursion in its source, so nothing tells the author that `==` on it recurses. When that recursion is Rask code, the entry check catches it with a clear panic. When it's the runtime's C, nothing does: it runs through the reserve and aborts. So the C walks are loops, and the Rask ones are ordinary recursion.
+**Why are clone and drop loops when `==` isn't?** A tree built with a loop has no recursion in its source, so nothing tells the author that walking it recurses. When the walk is Rask code, as `==` and `hash` are, the entry check catches it with a clear panic. When it's the runtime's C, nothing does: it runs through the reserve and aborts. Clone and drop are C, and drop runs on every value without anyone writing a call, so a tree that can be built must be droppable. So the C walks are loops, and the Rask ones are ordinary recursion.
 
 ### What changes if this is accepted
 
@@ -147,7 +147,7 @@ error[E0989]: `walk_dir` can refuse a call, so it can't take `dir`
 - `conc.async`: `ThreadPool` config takes `stack: n`.
 - `ctrl.comptime/CT27`, `CT29`: comptime honours `@recursion_depth` as ST11 does.
 - `std.encoding`: the format-library pattern recurses in Rask, so a library reading untrusted input declares a depth; `std.json`'s decoder declares 128 and maps `RecursionLimit` to its parse error.
-- The runtime's recursive walks over values become loops ([#2084](https://github.com/rask-lang/rask/issues/2084)).
+- The runtime's clone and drop become loops, and the interpreter's walks continue on fresh stacks ([#2084](https://github.com/rask-lang/rask/issues/2084)).
 
 ### See Also
 
