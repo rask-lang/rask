@@ -1,13 +1,11 @@
 <!-- id: mem.stack -->
 <!-- status: proposed -->
-<!-- summary: Every function carries a stack summary, checked like a signature; a root whose calls can need more stack than it has is a compile error, and recursion needs a proven or declared depth -->
-<!-- depends: memory/value-semantics.md, types/error-types.md, concurrency/runtime.md -->
+<!-- summary: A task's stack is sized from what it calls, so direct calls can't overflow; visible recursion declares or proves its depth and panics past it at the same call everywhere; only indirect calls are checked at run time -->
+<!-- depends: memory/value-semantics.md, types/error-types.md, control/panics.md, concurrency/runtime.md -->
 
 # The Stack
 
-Natively, every value a function holds lives in its stack frame, and a stack is a fixed size, so a program can run out of it. C, C++, Rust and Zig find out when the program crashes; Go grows the stack until memory runs out. Rask answers the question at compile time. Each function carries a stack summary, the most stack a call to it can use, and every place a stack begins is checked against the summaries of what it calls.
-
-The summary is checked the way a signature is. Checking a function reads its own body and its callees' summaries, never their bodies, so a function is still checked on its own.
+Natively, every value a function holds lives in its stack frame, and a stack is a fixed size, so a program can run out of it. C, C++, Rust and Zig find out when the program crashes. Go grows the stack until it hits a 1 GB cap. Rask moves the question to the compiler. A stack only holds what the compiler can bound, the same rule the value cap applies to a single value: width is capped at 64 KiB, and depth comes from the calls, which the compiler can count. What it can't count, recursion over data, has to say how deep it may go.
 
 ## Rules
 
@@ -22,86 +20,78 @@ The summary is checked the way a signature is. Checking a function reads its own
 
 | Rule | Description |
 |------|-------------|
-| **ST3: A function's summary** | Its own frame, as native codegen lays it out (locals, temporaries, saved registers, the outgoing-argument area, anything inlined into it), plus the largest summary among the calls it makes. Codegen records the frame when it compiles the function; the summary ships with the compiled package beside the signatures |
-| **ST4: Summaries are checked locally** | A function's summary is computed from its own body and its callees' summaries. Changing a function's frame rechecks its callers, as changing its return type would. A generic function has a summary per instance |
-| **ST5: A closure parameter is part of the summary** | A function that calls a closure or function value it was given as a parameter has a summary in terms of that parameter: `each`'s is its frame plus whatever `f` needs. The caller, which knows what it passed, fills it in. `rows.each(\|r\| process(r))` and `for r in rows { process(r) }` get the same answer |
-| **ST6: What has no summary** | A call through a function value read from a field or a collection, through `any Interface`, or into C that isn't Rask's own runtime has no summary. It counts as unbounded (ST10) |
+| **ST3: A function's summary** | The most stack a call to it can use: its frame as codegen lays it out (after inlining), plus the largest summary among its direct calls, plus what its recursive cycles need (ST13). Codegen records it beside the function's signature in the compiled package |
+| **ST4: Summaries are computed locally** | From the function's own frame and its callees' summaries, never their bodies, the way an inferred signature is. A generic function has one per instance. A summary is in bytes and differs between targets; it sizes stacks and never decides whether a program compiles |
+| **ST5: A closure parameter is part of the summary** | A function that calls a closure it was given as a parameter has a summary in terms of that parameter, filled in by the caller that passes it. `rows.each(\|r\| process(r))` and `for r in rows { process(r) }` get the same summary |
+| **ST6: An indirect call has no summary at compile time** | A call through a function value read from a field or a collection, through `any Interface`, or from C into Rask. The callee's summary travels with it at run time: in the function value and in the vtable entry |
 
-### Roots
+### Stacks
 
 | Rule | Description |
 |------|-------------|
-| **ST7: Every stack has a size the runtime guarantees** | `main` 8 MiB, a `spawn { }` task 1 MiB, a `Thread.spawn { }` thread 8 MiB, a pool worker 8 MiB, a `test` or `benchmark` block 8 MiB. The runtime makes that true whatever `ulimit -s` or the OS default says. The space the runtime keeps for unwinding is on top of these numbers, not taken from them |
-| **ST8: A root that can overflow is a compile error** | A root whose summary is over its stack is E0986, at the root, with the chain that needs the most and each frame's size |
-| **ST9: A root can ask for more** | `spawn(stack: n) { }`, `Thread.spawn(stack: n) { }`, `@stack(n)` on `main`, a `test` or a `benchmark`, with `n` in bytes and known at compile time. A library that spawns its caller's function (`http.serve`) takes a `stack` option and passes it on |
-| **ST10: Unbounded is checked at run time** | A root whose chain passes through a call with no summary (ST6) isn't an error. Every function still checks the stack on entry, and running out panics with a stack overflow naming the function. `rask check --stack` lists every root and what made it unbounded |
+| **ST7: A stack is as big as its root needs** | `main`, a `spawn { }` task, a `Thread.spawn { }` thread and a `test` or `benchmark` block each get a stack reserved at their root's summary. Pages are committed when touched, so a reservation costs address space until it's used. A root whose summary is unbounded (ST6) gets a reservation of its bounded part plus 1 MiB |
+| **ST8: Direct calls are never checked** | A function whose callers reserved its summary can't run out, so it has no stack check on entry. The only checks are at indirect calls (ST9) and at entry from C (ST15) |
+| **ST9: An indirect call makes room** | It compares the room left with the callee's summary. If it's short, the callee runs on a chunk: a block mapped for it with a guard page and the C reserve (ST15) below it. A task keeps one spare chunk when the call returns and frees the rest |
+| **ST10: Indirect calls nest at most 100,000 deep** | Per task. The call past that panics with "indirect calls nested 100,000 deep", naming the callee. Only recursion through function values or interfaces gets near it, and it's counted the same on every backend and target |
+| **ST11: `@no_alloc` code can't take a chunk** | An indirect call in it that finds too little room panics instead (ST10's message, with the room missing). `rask check --stack` lists every such call |
 
 ### Recursion
 
 | Rule | Description |
 |------|-------------|
-| **ST11: A recursive cycle needs a depth** | A cycle in the call graph (a function calling itself, or functions calling each other) is a compile error (E0987) unless its depth is proven (ST12) or declared (ST13). A cycle can't span packages, since packages don't import each other in a cycle, so finding one needs only the package |
-| **ST12: Proven depth** | The compiler proves a depth without help in two shapes: every recursive call passes a counter of an integer type strictly smaller, behind a guard that stops at zero (`f(n - 1)` with `n: u8` goes at most 255 deep); or every recursive call passes a length at most half of its own (`sort(v[..mid])` with `mid = v.len() / 2` goes at most 64 deep). The check reads the function's own body |
-| **ST13: Declared depth** | `@recursion_depth(n)` on each function in the cycle. The function's return type must include `RecursionLimit` (`i64 or RecursionLimit`); a call that would go deeper than `n` returns `RecursionLimit` without entering. The caller handles it like any error: `try`, `catch`, `match`, or `!` to panic with its message |
-| **ST14: A cycle's summary** | Its depth times the sum of its members' frames, plus the largest summary among the calls it makes out of the cycle |
-| **ST15: Tail calls aren't recursion** | A call in tail position (`return f(x)`) reuses the frame, which codegen guarantees, and doesn't count as a cycle |
-| **ST16: The depth is the same on both backends** | Depth is counted in calls, per task, so the interpreter returns `RecursionLimit` at exactly the call native does |
+| **ST12: A visible cycle needs a depth** | A cycle in the call graph is a compile error (E0987) unless its depth is proven (ST13) or declared (ST14). The graph has the direct calls, the closures passed as parameters (ST5), and calls through `any I` to every implementation of that method in the same package. Packages don't import each other in a cycle, so the package is all the check reads |
+| **ST13: Proven depth** | The compiler proves a depth in two shapes, read from the function's own body: every recursive call passes a counter of an integer type strictly smaller than the one it got, behind a guard that stops at zero; or every recursive call passes a length at most `(len + 1) / 2` of its own behind a guard that `len >= 2`. A proof counts only if it bounds the depth at 1,048,576 calls or fewer: a `u16` counter qualifies, an `i64` counter doesn't, halving gives 64 |
+| **ST14: Declared depth** | `@recursion_depth(n)` on each function in the cycle, or on an interface method, which counts every call through it. The call that would go deeper than `n` panics with the function's name and `n`. A function whose return type includes `RecursionLimit` gets the error back instead, from the call that would have gone too deep, and handles it like any other |
+| **ST15: Depth is counted in calls** | Per task, on entry to the cycle, the same on both backends, every target and every optimisation level, and at comptime. Inlining never changes the count |
+| **ST16: A cycle's summary** | Its depth times the sum of its members' frames, plus the largest summary among the calls it makes out of the cycle |
+
+### C
+
+| Rule | Description |
+|------|-------------|
+| **ST17: C runs in a fixed reserve** | Every call to C has 256 KiB below the Rask frame, counted in the caller's summary. The runtime's own C stays inside it: none of its walks over a value recurse. Foreign C that runs through the reserve hits the guard page and aborts with a message |
+| **ST18: C calling Rask checks on entry** | The entry thunk compares the room left with the callee's summary and moves to a chunk when short (ST9). A callback on a thread C started runs on a stack the runtime maps for it, sized from its summary |
 
 ## Examples
 
-Recursion on parsed input declares its depth and hands the limit to its caller:
+A tree walk declares how deep it goes. Past that, it panics at exactly that call, on every backend:
 
 ```rask
 @recursion_depth(10_000)
-func eval(e: Expr) -> i64 or RecursionLimit {
-    match e {
-        Expr.Num(n) => return n,
-        Expr.Add(a, b) => return try eval(a) + try eval(b),
+func sum(n: Node) -> i64 {
+    mut total = n.value
+    for c in n.children {
+        total += sum(c)
     }
-}
-
-func main() {
-    let e = parse(input())
-    println(eval(e)!)                // or catch RecursionLimit and report "too deeply nested"
+    return total
 }
 ```
 
-A sort proves its own depth and needs nothing:
+A parser on untrusted input wants an error instead, so it puts `RecursionLimit` in its return type and maps it into its own:
+
+```rask
+@recursion_depth(512)
+func parse_value(s: Scanner) -> Json or ParseError or RecursionLimit {
+    // ... parse_array and parse_object call parse_value, and carry the same annotation
+}
+
+public func parse(text: string) -> Json or ParseError {
+    match parse_value(Scanner.new(text)) {
+        Json as v => return v,
+        RecursionLimit => return ParseError.TooDeep,
+        ParseError as e => return e,
+    }
+}
+```
+
+A sort proves its depth and needs nothing:
 
 ```rask
 func merge_sort(v: Vec<i64>) -> Vec<i64> {
-    if v.len() <= 1 { return v }
+    if v.len() < 2 { return v }
     let mid = v.len() / 2
     return merge(merge_sort(v[..mid].to_vec()), merge_sort(v[mid..].to_vec()))
 }
-```
-
-A task whose chain is too big for its stack:
-
-```rask
-func scratch() -> i64 {
-    mut a1 = [0u8; 65536]
-    // ... through a20
-    return 0
-}
-
-func main() {
-    using Multitasking {
-        let h = spawn { return scratch() }    // E0986
-        println(h.join()!)
-    }
-}
-```
-
-```
-error[E0986]: this task can need more stack than it has
-  --> main.rk:9:17
-   |
- 9 |         let h = spawn { return scratch() }
-   |                 ^^^^^ a task has 1 MiB
-   = chain: spawn body (48 B) → scratch (1,310,784 B) = 1,310,832 B
-   = help: give it more with `spawn(stack: 2_097_152) { ... }`, or keep
-           the arrays in a `Vec`
 ```
 
 ## Edge Cases
@@ -110,16 +100,17 @@ error[E0986]: this task can need more stack than it has
 |------|------|----------|
 | `[0i64; 8192]` | ST1 | OK: exactly 64 KiB |
 | `struct Slots { lists: [Vec<i64>; 8193] }` | ST2 | E0980 on every target, wasm32 included |
-| A big frame in a function only `main` calls | ST8 | Checked against `main`'s 8 MiB, not a task's 1 MiB |
-| One function reached from `main` and from a `spawn` | ST8 | Checked against each root; the error names the one that fails |
-| A dependency's patch release grows a private frame | ST4 | A caller's root can fail E0986 on update. The chain names the dependency's function |
+| A function with a 60 KiB frame called 20 deep | ST7 | The stack is reserved at 1.2 MiB; nothing is checked |
+| A dependency's release grows a private frame | ST4 | Callers' stacks grow with it. Nothing fails to compile |
 | `vec.sort_by(cmp)` | ST5 | `sort_by`'s summary includes `cmp`'s, filled in at the call |
-| `handlers[i](req)`, a function value from a `Vec` | ST6, ST10 | Unbounded; the run-time check covers it |
-| A callback C calls on a thread C started | ST6 | No Rask root; the run-time check has no bound there and says so in `rask check --stack` |
-| Recursion through a closure stored in a field | ST6, ST11 | Not a visible cycle; unbounded, checked at run time |
-| `@recursion_depth` on a function not in a cycle | ST13 | Compile error: nothing to bound |
-| A cycle where one member lacks `@recursion_depth` | ST13 | E0987 on that member |
-| `return f(x - 1)` | ST15 | A loop, no depth needed |
+| `handlers[i](req)` | ST6, ST9 | Compares room with the handler's summary; a chunk if short |
+| `Vec<any Node>`, where `walk` calls `child.walk()` | ST12 | A cycle when the package implements `Node.walk`; needs a depth |
+| Recursion through a closure stored in a field | ST10 | Not a visible cycle; panics past 100,000 nested indirect calls |
+| `return f(x - 1)` | ST12 | Still recursion. A loop says the same thing without a depth |
+| `@recursion_depth` on a function not in a cycle | ST14 | Compile error: nothing to bound |
+| A cycle where one member lacks `@recursion_depth` | ST14 | E0987 on that member |
+| An ensure running while a task unwinds | ST3 | Its calls are in its function's summary, so it has room |
+| A comptime call 300 deep in a cycle declared 10,000 | ST15 | Runs; comptime counts the same as run time |
 
 ## Error Messages
 
@@ -129,9 +120,12 @@ error[E0987]: `walk` calls itself with no bound on how deep it goes
    |
  3 | func walk(n: Node) -> i64 {
    |      ^^^^ cycle: walk → walk
-   = help: declare a depth with `@recursion_depth(n)` and return
-           `i64 or RecursionLimit`, or make the call the last thing `walk`
-           does
+   = help: declare a depth with `@recursion_depth(n)`, or write it as a
+           loop over a `Vec` of pending nodes
+```
+
+```
+panic at tree.rk:3: `walk` went deeper than its @recursion_depth(10000)
 ```
 
 ---
@@ -140,18 +134,31 @@ error[E0987]: `walk` calls itself with no bound on how deep it goes
 
 ### Rationale
 
-**Why native's frame and not one counted from the source?** A count from the source can only be a lower bound. Native also saves registers around calls, passes arguments on the stack, and merges inlined callees into the frame, and the register allocator decides those. A function passing forty `i64` arguments counted 72 bytes from the source and used 608. Only codegen knows the real number, so codegen records it. The cost is that the interpreter needs native's numbers for E0986, so every command runs codegen up to frame layout, without emitting code.
+**Why size the stack instead of checking it?** Because the compiler knows. A chain of direct calls is finite, and its frames are known once codegen has laid them out, so a root's summary is an exact upper bound. Every function checking the stack on entry, which is what Rask does today, guards against something that can't happen. What's left after that is recursion and indirect calls, and the rules handle each where it is.
 
-**Why summaries and not a whole-program pass?** I want each function checked on its own. A summary is to the stack what a signature is to types: the caller reads it, never the body. That also means a function's stack use is part of what it promises, so a dependency that grows a frame can break a caller. That's true of the stack in every language. Here it's a compile error with the chain in it rather than a crash.
+**Why bytes from codegen and not a count from the source?** A count from the source can't bound native: register saves, outgoing arguments and inlining all add to the frame, and the inliner can merge siblings into one frame bigger than any call chain would need. An earlier draft made a summary decide whether a program compiles, which tied compiling to the target and the inliner. Here bytes only size stacks, so they're free to come from codegen. What decides whether a program compiles is counted in calls, the same everywhere.
 
-**Why make recursion declare its depth?** Recursion over input (a tree parsed from a file, nested JSON) goes as deep as the input does, and no analysis can bound that. Rewriting it as a loop with a `Vec` moves the same memory to the heap and fails there instead. What's left is to make the bound visible and the failure an ordinary error. A JSON parser should refuse input nested past some depth anyway; `@recursion_depth` makes it say so, and `RecursionLimit` makes the caller decide what happens.
+**Why make recursion declare its depth?** Recursion over input (a parsed tree, nested JSON) goes as deep as the input does. Without a bound, the choice is between a fixed stack that overflows at a depth nobody chose and a growing one that eats memory until the kernel kills the process. A declared depth is a bound you chose, and the stack is sized for it. Going past it is an ordinary panic at the same call every time.
 
-**Why an error and not a panic?** A panic is easy to forget about. An error in the return type has to be handled, and `!` is the one-character way to say it can't happen here.
+**Why a panic and not an error?** Almost nobody would handle it. A tree walk or a sort past its depth is a bug, and an error would make every caller write `!`. The one caller that wants an error, a parser reading untrusted input, asks for it by putting `RecursionLimit` in its return type. It's the same split as heap exhaustion, which panics unless you use the `try_` variants.
 
-**Why stop at function values in fields?** A function value stored in a struct or a `Vec` can be anything stored there from anywhere in the program. Bounding it would mean a whole-program pass or a stack bound in every function type. ST5 covers the common shape, a closure passed straight to the function that calls it, and the rest is left to the run-time check and listed by `rask check --stack`.
+**Why chunks for indirect calls, and why keep one?** The callee isn't known until the call, so its room can't be reserved ahead. A chunk never moves, so pointers into the stack stay valid. Segmented stacks were dropped by Rust and Go because a call sitting on a segment boundary allocated and freed on every iteration. Keeping one spare chunk makes that a stack-pointer switch, a few nanoseconds.
+
+**What's still a run-time failure?** Recursion past its declared depth, an indirect-call nest past 100,000, foreign C running through its reserve, and the machine running out of memory to back the pages. The first is a bound you wrote; the second is recursion through a function value or an interface in another package, which seeing would take the whole program (CORE_DESIGN principle 5); the last two are outside what Rask can see.
+
+### What changes if this is accepted
+
+- `conc.runtime`, "Stack limit": the check on every function entry goes, replaced by ST8–ST9. The 1 MiB fiber reservation becomes ST7's.
+- `ctrl.panic/S5`: stack overflow becomes "past a declared depth (ST14) or past ST10's nesting". The edge case of an ensure overflowing while it unwinds goes (ST3 covers it).
+- `ctrl.comptime/CT27`, `CT29`: comptime counts recursion as ST15 does, with no limit of its own.
+- `comp.codegen`, open issue 4: answered here.
+- `conc.scheduler`: its copying stack is replaced by ST7 and ST9.
+- The interpreter runs recursion on a stack that grows with it, since depth is now bounded by ST14 and ST10 rather than by its host stack.
+- The runtime's recursive walks over values become loops ([#2084](https://github.com/rask-lang/rask/issues/2084)).
 
 ### See Also
 
 - [mem.value](value-semantics.md): VS12, the value cap
-- [type.errors](../types/error-types.md): `try`, `catch`, `!`
-- [conc.runtime](../concurrency/runtime.md): stacks and the run-time check
+- [type.errors](../types/error-types.md): `catch` and `!`
+- [ctrl.panic](../control/panics.md): S5
+- [conc.runtime](../concurrency/runtime.md): task stacks
