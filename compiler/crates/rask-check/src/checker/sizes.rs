@@ -59,15 +59,15 @@ impl crate::TypeTable {
         let in_scope = |n: &str| self.is_type_param_in_scope(n);
         let is_param: IsParam = &in_scope;
         if let Type::Array { elem, len } = ty {
-            let size = self.value_size(elem, is_param)?;
+            let size = self.rule_size(elem, Unsolved::Refuse, is_param)?;
             let bytes = u64::from(size).saturating_mul(*len as u64);
             return (bytes > u64::from(MAX_VALUE_SIZE) && size <= MAX_VALUE_SIZE).then_some(Some(bytes));
         }
-        if self.value_size(ty, is_param).is_none_or(|size| size <= MAX_VALUE_SIZE) {
+        if self.rule_size(ty, Unsolved::Refuse, is_param).is_none_or(|size| size <= MAX_VALUE_SIZE) {
             return None;
         }
         let part_sizes: Vec<u32> = match ty {
-            Type::Tuple(elems) => elems.iter().filter_map(|e| self.value_size(e, is_param)).collect(),
+            Type::Tuple(elems) => elems.iter().filter_map(|e| self.rule_size(e, Unsolved::Refuse, is_param)).collect(),
             Type::Named(_) | Type::Generic { .. } => {
                 let (id, args) = match ty {
                     Type::Named(id) => (*id, Vec::new()),
@@ -86,7 +86,7 @@ impl crate::TypeTable {
                         .collect(),
                     Some(TypeDef::Union { fields, .. }) => fields
                         .iter()
-                        .filter_map(|(_, f)| self.value_size(f, is_param))
+                        .filter_map(|(_, f)| self.rule_size(f, Unsolved::Refuse, is_param))
                         .collect(),
                     _ => Vec::new(),
                 }
@@ -96,26 +96,28 @@ impl crate::TypeTable {
         (!part_sizes.iter().any(|&s| s > MAX_VALUE_SIZE)).then_some(None)
     }
 
-    /// A value's size as VS12 measures it: with 64-bit pointers whatever the
-    /// target (#2066), so a program compiles everywhere or nowhere.
-    /// Measured with the target's, `[Vec<i64>; 8193]` was over on x86_64 and
-    /// fit on wasm32.
-    fn value_size(&self, ty: &Type, is_param: IsParam) -> Option<u32> {
-        let ty = settle(ty, Unsolved::Refuse, is_param)?;
+    /// Sizes the language's rules read, as opposed to the target's layout:
+    /// counted with 64-bit pointers on every target, so a program compiles
+    /// everywhere or nowhere. The copy rule (`mem.value/VS7a`) asks with
+    /// `Unsolved::Word`, since it has to answer inside a generic body where a
+    /// type parameter counts as a word. The value cap (VS12) asks with
+    /// `Unsolved::Refuse`; measured with the target's pointers it let
+    /// `[Vec<i64>; 8193]` through on wasm32 and stopped it on x86_64 (#2066).
+    fn rule_size(&self, ty: &Type, unsolved: Unsolved, is_param: IsParam) -> Option<u32> {
+        let ty = settle(ty, unsolved, is_param)?;
         let mut cache = LayoutCache::for_copy_rule();
         self.fill_layouts(&ty, &mut cache, &mut Vec::new());
-        known_size_align(&ty, &cache).map(|(size, _)| size)
+        match unsolved {
+            // The copy rule has to answer for every type; what layout can't
+            // size counts as a word.
+            Unsolved::Word => Some(type_size_align(&ty, &cache).0),
+            Unsolved::Refuse | Unsolved::KeepParams => known_size_align(&ty, &cache).map(|(size, _)| size),
+        }
     }
 
-    /// `size_align` for the copy rule, which has to answer inside a generic
-    /// body too: a type parameter counts as a word there.
-    ///
-    /// Measured with 64-bit pointers on every target (`mem.value/VS7a`).
+    /// The size the copy rule compares against 16 bytes.
     pub fn copy_size(&self, ty: &Type, is_param: IsParam) -> usize {
-        let ty = settle(ty, Unsolved::Word, is_param).expect("a lenient settling always answers");
-        let mut cache = LayoutCache::for_copy_rule();
-        self.fill_layouts(&ty, &mut cache, &mut Vec::new());
-        type_size_align(&ty, &cache).0 as usize
+        self.rule_size(ty, Unsolved::Word, is_param).expect("a lenient settling always answers") as usize
     }
 
     /// Size and alignment of a type with nothing left to settle, as a laid-out
