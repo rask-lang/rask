@@ -83,7 +83,18 @@ impl Interpreter {
             return self.call_function(&copy, args, None);
         }
         if crate::stack_nearly_exhausted() {
-            if crate::stack_segments_exhausted() {
+            let extra = if self.overflow_unwinding { crate::OVERFLOW_ENSURE_SEGMENTS } else { 0 };
+            if crate::stack_segments_exhausted(extra) {
+                // A second overflow while the first unwinds has no room left
+                // to unwind in: an abort (ctrl.panics/A1), as on native.
+                if self.overflow_unwinding {
+                    eprintln!(
+                        "stack overflow while a stack overflow unwinds: \
+                         an ensure needs more stack than is left"
+                    );
+                    std::process::abort();
+                }
+                self.overflow_unwinding = true;
                 return Err(RuntimeDiagnostic::new(
                     RuntimeError::RecursionTooDeep {
                         function: func.name.clone(),
@@ -443,6 +454,12 @@ impl Interpreter {
                         // E3: first panic wins. A panic here while already unwinding,
                         // or after a prior ensure-panic, is contained + reported.
                         if unwinding || first_panic.is_some() {
+                            // Contained here. An overflow it raised is over
+                            // once this frame is back inside the cap, as
+                            // native puts its limit back at the catch.
+                            if !crate::stack_segments_exhausted(0) {
+                                self.overflow_unwinding = false;
+                            }
                             self.report_secondary_panic(&diag);
                         } else {
                             first_panic = Some(diag);

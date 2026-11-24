@@ -539,6 +539,8 @@ impl Interpreter {
                     }
                     // A panic says where, as native's does (#1971).
                     Err(diag) => {
+                        // The test's panic ends here, an overflow's too.
+                        self.overflow_unwinding = false;
                         errors.push(self.panic_message(&diag));
                         break;
                     }
@@ -603,6 +605,8 @@ impl Interpreter {
                 expect_fail = true;
             }
             Err(diag) => {
+                // The test's panic ends here, an overflow's too.
+                self.overflow_unwinding = false;
                 errors.push(self.panic_message(&diag));
             }
         }

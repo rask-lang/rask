@@ -10735,3 +10735,34 @@ fn an_overflow_in_an_unwinding_ensure_is_a_reported_secondary_panic() {
         assert_eq!(reports.len(), 2, "{}: both ensures should report: {}", mode, stderr);
     }
 }
+
+// Dropping a deep value frees what it owns level by level, in the C runtime,
+// which has no stack limit check of its own. Done by plain recursion, an
+// 8000-link chain dropped in a task ran past its 1 MiB stack and aborted in
+// the stack guard. The runtime now queues a nested free near the limit
+// instead of recursing. Native only: the interpreter's own drop of a value
+// this deep overflows the Rust stack (#2077), and at depths it
+// survives it takes minutes.
+#[test]
+fn a_value_too_deep_to_free_recursively_is_freed() {
+    let (stdout, stderr, code) = run_capture("--native", "deep_drop.rk");
+    assert_eq!(code, 0, "{}", stderr);
+    assert_eq!(
+        stdout,
+        "chain 199999\ntree 199999\ntask chain 49999\ntask tree 49999\n",
+        "{}", stderr,
+    );
+}
+
+// A stack overflow is reported at the function whose entry caught it. A
+// closure's compiled function carried no source position, so an overflow
+// caught at a closure's entry panicked with no file or line (ctrl.panics/S6).
+#[test]
+fn an_overflow_caught_in_a_closure_says_where() {
+    let (_, stderr, code) = run_capture("--native", "overflow_in_closure.rk");
+    assert_eq!(code, 101, "{}", stderr);
+    assert!(
+        stderr.contains("overflow_in_closure.rk:2:") || stderr.contains("overflow_in_closure.rk:3:"),
+        "should name `go` or its closure: {}", stderr,
+    );
+}

@@ -107,6 +107,8 @@ void rask_stack_guard_fiber_start(char *lo, char *hi);
 _Noreturn void rask_stack_overflow_at(const char *file, int32_t line, int32_t col);
 // Put the limit back once the catch that ends an overflow has landed.
 void rask_stack_limit_restore(void);
+// A catch landed: drop a release queue whose drain the panic unwound (vec.c).
+void rask_release_unwound(void);
 // The stack bounds' part of `rask_task_tls_swap`.
 size_t rask_stack_tls_size(void);
 void   rask_stack_tls_swap(void *blob);

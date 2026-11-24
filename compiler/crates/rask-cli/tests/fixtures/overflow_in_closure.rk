@@ -1,0 +1,12 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+func go(n: i64) -> i64 {
+    let g = |k: i64| -> i64 { return go(k - 1) }
+    if n == 0 {
+        return 0
+    }
+    return g(n) + 1
+}
+
+func main() {
+    println("{go(100000000)}")
+}

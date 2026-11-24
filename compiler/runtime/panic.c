@@ -108,12 +108,19 @@ static void ffi_boundary_abort(const char *msg) {
     abort();
 }
 
+// Whatever a panic left half done below the catch: a stack overflow's
+// lowered limit, a release queue whose drain it unwound.
+static void catch_landed(void) {
+    rask_stack_limit_restore();
+    rask_release_unwound();
+}
+
 // Retrieve the panic message after longjmp. Transfers ownership to caller.
 //
-// Every catcher calls this on landing, so it is also where a stack
-// overflow's lowered limit goes back up: the panic that ran under it is over.
+// Every catcher calls this on landing, so it is also where the state a panic
+// left half done is put right (`catch_landed`).
 char *rask_panic_take_message(void) {
-    rask_stack_limit_restore();
+    catch_landed();
     char *msg = panic_ctx.message;
     panic_ctx.message = NULL;
     return msg;
@@ -249,7 +256,7 @@ static void unwind_to(RaskUnwindRec *floor, int frames) {
             panic_ctx.access_floor = tl_held_access;
             rec->run(rec);
         } else {
-            rask_stack_limit_restore();
+            catch_landed();
             char *m = panic_ctx.message;
             // F1: task id prefix when a runtime task is active.
             if (tl_task_id > 0) {
@@ -608,7 +615,7 @@ RaskCaughtPanic *rask_panic_catch(void (*fn)(void *, void *), void *a, void *b) 
         panic_ctx.access_floor = tl_held_access;
         fn(a, b);
     } else {
-        rask_stack_limit_restore();
+        catch_landed();
         caught = (RaskCaughtPanic *)malloc(sizeof(RaskCaughtPanic));
         caught->message = panic_ctx.message ? panic_ctx.message : strdup("(unknown panic)");
         caught->located = panic_ctx.located;

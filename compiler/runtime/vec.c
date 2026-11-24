@@ -111,6 +111,110 @@ void rask_handle_release(int64_t index, void *handle) {
     rask_handle_releases[index](handle);
 }
 
+// ─── Releasing what owns more ───────────────────────────────
+//
+// Freeing a value frees what it owns first, and that is recursive: a `Vec`
+// of trees frees each tree's `Vec` of children, a `Heap` chain frees the
+// next link. Done by plain recursion, a deep enough structure runs the C
+// stack past the Rask stack limit, and C code has no check of its own, so
+// the drop of an 8000-link chain in a task died in the stack guard.
+//
+// So a nested release that would run within RELEASE_ROOM of the limit is
+// queued instead, and the outermost release on the thread (the drain) runs
+// the queue in a loop once its own work is done. Every queued release starts
+// back at the drain's depth, so the stack a free uses is bounded whatever
+// the shape of the value. Only the order of frees that deep changes, and
+// nothing observes it: what a release runs frees memory and drops counts.
+//
+// A free can panic (a `Vec` freed while borrowed), and the longjmp leaves
+// the drain behind. `rask_release_unwound` runs at every catch and drops a
+// queue whose drain is gone; what was in it leaks, which a panic in the
+// middle of a free already does.
+
+#define RELEASE_ROOM (64 * 1024)
+
+typedef enum {
+    PENDING_HEAP, PENDING_VEC, PENDING_MAP, PENDING_CLOSURE, PENDING_BOX, PENDING_HANDLE,
+} PendingKind;
+
+typedef struct PendingRelease {
+    PendingKind kind;
+    int32_t index;              // PENDING_HANDLE: which release
+    void *p;
+    const int64_t *vtable;      // PENDING_BOX
+    const int32_t *entries;     // PENDING_HEAP: what the block holds
+    int64_t count;
+    const int32_t *root;
+    int64_t root_count;
+} PendingRelease;
+
+// Frees never yield, so a drain starts and ends on one thread without the
+// task switching out from under it: thread-local is task-local here.
+static __thread PendingRelease *pending;
+static __thread int64_t pending_len, pending_cap;
+static __thread char *drain_frame;
+
+typedef enum { OWNED_RELEASE, OWNED_RETAIN } RaskOwnedOp;
+
+static void owned_walk_from(char *elem, const int32_t *entries, int64_t count,
+                            const int32_t *root, int64_t root_count,
+                            RaskOwnedOp op);
+
+static void queue_drop(void) {
+    if (pending) rask_realloc(pending, pending_cap * (int64_t)sizeof *pending, 0);
+    pending = NULL;
+    pending_len = pending_cap = 0;
+    drain_frame = NULL;
+}
+
+static void release_run(const PendingRelease *r) {
+    switch (r->kind) {
+        case PENDING_HEAP:
+            if (r->entries && r->count > 0) {
+                owned_walk_from(r->p, r->entries, r->count, r->root, r->root_count, OWNED_RELEASE);
+            }
+            rask_free(r->p);
+            break;
+        case PENDING_VEC:     rask_vec_free((RaskVec *)r->p); break;
+        case PENDING_MAP:     rask_map_free((RaskMap *)r->p); break;
+        case PENDING_CLOSURE: rask_closure_free(r->p); break;
+        case PENDING_BOX:     rask_box_release(r->p, r->vtable, 1); break;
+        case PENDING_HANDLE:  rask_handle_release(r->index, r->p); break;
+    }
+}
+
+static void release_nested(PendingRelease r) {
+    if (!r.p) return;
+    char *here = (char *)__builtin_frame_address(0);
+    if (drain_frame) {
+        if (rask_stack_limit && here < rask_stack_limit + RELEASE_ROOM) {
+            if (pending_len == pending_cap) {
+                int64_t cap = pending_cap ? pending_cap * 2 : 64;
+                pending = rask_realloc(pending, pending_cap * (int64_t)sizeof *pending,
+                                       cap * (int64_t)sizeof *pending);
+                pending_cap = cap;
+            }
+            pending[pending_len++] = r;
+        } else {
+            release_run(&r);
+        }
+        return;
+    }
+    drain_frame = here;
+    release_run(&r);
+    while (pending_len > 0) {
+        PendingRelease next = pending[--pending_len];
+        release_run(&next);
+    }
+    queue_drop();
+}
+
+void rask_release_unwound(void) {
+    if (drain_frame && (char *)__builtin_frame_address(0) > drain_frame) {
+        queue_drop();
+    }
+}
+
 // One entry of an element map. Shared by every container's free and retain
 // walks — the encoding is described next to `RaskElemStrs` in the header.
 void rask_owned_release(char *elem, int32_t entry) {
@@ -121,7 +225,8 @@ void rask_owned_release(char *elem, int32_t entry) {
         case RASK_OWNED_HANDLE: {
             int32_t bits = entry & RASK_OWNED_OFFSET_MASK;
             void **slot = (void **)(elem + (bits & RASK_OWNED_HANDLE_OFFSET_MASK));
-            rask_handle_release(bits >> RASK_OWNED_HANDLE_INDEX_SHIFT, *slot);
+            release_nested((PendingRelease){ .kind = PENDING_HANDLE, .p = *slot,
+                                             .index = bits >> RASK_OWNED_HANDLE_INDEX_SHIFT });
             *slot = NULL;
             break;
         }
@@ -129,18 +234,18 @@ void rask_owned_release(char *elem, int32_t entry) {
             rask_string_free((const RaskStr *)at);
             break;
         case RASK_OWNED_VEC:
-            rask_vec_free(*(RaskVec **)at);
+            release_nested((PendingRelease){ .kind = PENDING_VEC, .p = *(RaskVec **)at });
             *(RaskVec **)at = NULL;
             break;
         case RASK_OWNED_MAP:
-            rask_map_free(*(RaskMap **)at);
+            release_nested((PendingRelease){ .kind = PENDING_MAP, .p = *(RaskMap **)at });
             *(RaskMap **)at = NULL;
             break;
         // The block describes itself, so there is nothing to look up: its
         // header lists what the environment owns, and the free walks that
         // list before giving the bytes back.
         case RASK_OWNED_CLOSURE:
-            rask_closure_free(*(void **)at);
+            release_nested((PendingRelease){ .kind = PENDING_CLOSURE, .p = *(void **)at });
             break;
         // A box in a container owns its value — it was moved in, which the
         // checker enforces (using the local again after `v.push(h)` is E0800).
@@ -154,7 +259,7 @@ void rask_owned_release(char *elem, int32_t entry) {
             int64_t *fat = (int64_t *)at;
             void *data = (void *)(intptr_t)fat[0];
             const int64_t *vt = (const int64_t *)(intptr_t)fat[1];
-            rask_box_release(data, vt, 1);
+            release_nested((PendingRelease){ .kind = PENDING_BOX, .p = data, .vtable = vt });
             fat[0] = 0;
             break;
         }
@@ -233,8 +338,6 @@ void rask_owned_retain(char *elem, int32_t entry) {
 // loop over the three single-entry functions above. Arms nest: a variant whose
 // payload is another enum contributes a guard inside a guard, and the recursion
 // bottoms out because each arm is strictly shorter than the list holding it.
-typedef enum { OWNED_RELEASE, OWNED_RETAIN } RaskOwnedOp;
-
 // `root`/`root_count` are the list this walk started from, carried down so a
 // `RASK_OWNED_SELF` entry can start it over. That is how a recursive type is
 // described: the block inside a `Cons` holds another `List`, and the entries
@@ -266,8 +369,10 @@ static void owned_walk_from(char *elem, const int32_t *entries, int64_t count,
                 // nothing left to walk. Only on release — a retain would have
                 // to copy the block, and a block carries no size to copy.
                 if (op == OWNED_RELEASE) {
-                    owned_walk_from(block, entries + i + 1, body, root, root_count, op);
-                    rask_free(block);
+                    release_nested((PendingRelease){
+                        .kind = PENDING_HEAP, .p = block,
+                        .entries = entries + i + 1, .count = body,
+                        .root = root, .root_count = root_count });
                     *slot = NULL;
                 }
             }
@@ -309,11 +414,10 @@ void rask_heap_field_release(char *slot, const int32_t *entries, int64_t count) 
     char **p = (char **)slot;
     char *block = *p;
     if (!block) return;
-    // Contents first: after the free there is nothing left to walk.
-    if (entries && count > 0) {
-        owned_walk_from(block, entries, count, entries, count, OWNED_RELEASE);
-    }
-    rask_free(block);
+    release_nested((PendingRelease){
+        .kind = PENDING_HEAP, .p = block,
+        .entries = entries, .count = entries ? count : 0,
+        .root = entries, .root_count = entries ? count : 0 });
     *p = NULL;
 }
 

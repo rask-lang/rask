@@ -583,6 +583,9 @@ impl<'a> MirLowerer<'a> {
         }
 
         let mut closure_fn = closure_builder.finish();
+        // A stack overflow caught at this closure's entry is reported here
+        // (ctrl.panics/S6: every panic has a location).
+        closure_fn.span = body.span;
         closure_fn.is_extern_c = c_abi;
 
 

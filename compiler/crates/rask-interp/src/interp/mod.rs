@@ -289,6 +289,9 @@ pub struct Interpreter {
     /// to run out by overflowing: SIGABRT, no message, no exit code (#759).
     /// Counted here so the limit is reported instead.
     pub(crate) call_depth: usize,
+    /// A stack overflow is unwinding: the ensures it runs get the segments
+    /// past the cap, as native's get the reserve below its stack limit.
+    pub(crate) overflow_unwinding: bool,
     /// ER31a: `try` sites whose error the checker decided to wrap in a variant
     /// of the enclosing function's error enum, keyed by the `try` expression.
     pub(crate) error_wraps: HashMap<rask_ast::NodeId, rask_types::ErrorWrap>,
@@ -589,6 +592,7 @@ impl Interpreter {
             literal_conversions: HashMap::new(),
             conformance_calls: HashMap::new(),
             call_depth: 0,
+            overflow_unwinding: false,
             error_wraps: HashMap::new(),
             try_chain_placement: HashMap::new(),
             else_binding_types: HashMap::new(),
@@ -646,6 +650,7 @@ impl Interpreter {
             literal_conversions: HashMap::new(),
             conformance_calls: HashMap::new(),
             call_depth: 0,
+            overflow_unwinding: false,
             error_wraps: HashMap::new(),
             try_chain_placement: HashMap::new(),
             else_binding_types: HashMap::new(),
@@ -709,6 +714,7 @@ impl Interpreter {
             literal_conversions: HashMap::new(),
             conformance_calls: HashMap::new(),
             call_depth: 0,
+            overflow_unwinding: false,
             error_wraps: HashMap::new(),
             try_chain_placement: HashMap::new(),
             else_binding_types: HashMap::new(),

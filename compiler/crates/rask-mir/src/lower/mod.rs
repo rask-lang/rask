@@ -5044,7 +5044,15 @@ impl<'a> MirLowerer<'a> {
         main_fn.span = decl.span;
         main_fn.inline_hint = fn_decl.attrs.iter().any(|a| a.is("inline"));
         let mut result = vec![main_fn];
-        result.extend(lowerer.synthesized_functions);
+        // A function lowering made up on the way (an ensure thunk, a wrapper
+        // around a closure) has no declaration of its own; a stack overflow
+        // caught at its entry is reported at the function it was made for.
+        result.extend(lowerer.synthesized_functions.into_iter().map(|mut f| {
+            if f.span.end == 0 {
+                f.span = decl.span;
+            }
+            f
+        }));
         for c in &const_init_thunks {
             result.extend(Self::lower_const_init(c, all_decls, ctx)?);
         }
