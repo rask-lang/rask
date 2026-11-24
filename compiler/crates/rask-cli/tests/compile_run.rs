@@ -10777,3 +10777,21 @@ fn a_helper_with_an_array_is_not_inlined_into_recursion() {
     assert_eq!(code, 0, "{}", stderr);
     assert_eq!(stdout, "start\n3007\n");
 }
+
+/// The value cap counts pointers as 8 bytes on every target (#2066),
+/// so a type over it on x86_64 is over it on wasm32 too. Measured with the
+/// target's own pointers, `[Vec<i64>; 8193]` fit in 32 KiB there and the same
+/// program compiled on one machine and not the other.
+#[test]
+fn the_value_cap_counts_the_same_on_a_32_bit_target() {
+    let out = Command::new(rask_binary())
+        .arg("compile")
+        .arg("--dump-mir")
+        .arg("--target")
+        .arg("wasm32-none")
+        .arg(fixture("value_cap_any_target.rk"))
+        .output()
+        .expect("failed to run rask compile");
+    let text = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    assert!(text.contains("E0980"), "wasm32 accepted a value over 64 KiB:\n{text}");
+}

@@ -59,15 +59,15 @@ impl crate::TypeTable {
         let in_scope = |n: &str| self.is_type_param_in_scope(n);
         let is_param: IsParam = &in_scope;
         if let Type::Array { elem, len } = ty {
-            let (size, _) = self.size_align(elem, is_param)?;
+            let size = self.value_size(elem, is_param)?;
             let bytes = u64::from(size).saturating_mul(*len as u64);
             return (bytes > u64::from(MAX_VALUE_SIZE) && size <= MAX_VALUE_SIZE).then_some(Some(bytes));
         }
-        if self.size_align(ty, is_param).is_none_or(|(size, _)| size <= MAX_VALUE_SIZE) {
+        if self.value_size(ty, is_param).is_none_or(|size| size <= MAX_VALUE_SIZE) {
             return None;
         }
         let part_sizes: Vec<u32> = match ty {
-            Type::Tuple(elems) => elems.iter().filter_map(|e| self.size_align(e, is_param)).map(|(s, _)| s).collect(),
+            Type::Tuple(elems) => elems.iter().filter_map(|e| self.value_size(e, is_param)).collect(),
             Type::Named(_) | Type::Generic { .. } => {
                 let (id, args) = match ty {
                     Type::Named(id) => (*id, Vec::new()),
@@ -76,18 +76,17 @@ impl crate::TypeTable {
                 };
                 match self.get(id) {
                     Some(TypeDef::Struct { .. }) => {
-                        self.struct_layout(id, &args)?.fields.iter().map(|f| f.size).collect()
+                        self.struct_layout_in(id, &args, LayoutCache::for_copy_rule())?.fields.iter().map(|f| f.size).collect()
                     }
                     Some(TypeDef::Enum { .. }) => self
-                        .enum_layout(id, &args)?
+                        .enum_layout_in(id, &args, LayoutCache::for_copy_rule())?
                         .variants
                         .iter()
                         .flat_map(|v| v.fields.iter().map(|f| f.size))
                         .collect(),
                     Some(TypeDef::Union { fields, .. }) => fields
                         .iter()
-                        .filter_map(|(_, f)| self.size_align(f, is_param))
-                        .map(|(s, _)| s)
+                        .filter_map(|(_, f)| self.value_size(f, is_param))
                         .collect(),
                     _ => Vec::new(),
                 }
@@ -95,6 +94,17 @@ impl crate::TypeTable {
             _ => Vec::new(),
         };
         (!part_sizes.iter().any(|&s| s > MAX_VALUE_SIZE)).then_some(None)
+    }
+
+    /// A value's size as VS12 measures it: with 64-bit pointers whatever the
+    /// target (#2066), so a program compiles everywhere or nowhere.
+    /// Measured with the target's, `[Vec<i64>; 8193]` was over on x86_64 and
+    /// fit on wasm32.
+    fn value_size(&self, ty: &Type, is_param: IsParam) -> Option<u32> {
+        let ty = settle(ty, Unsolved::Refuse, is_param)?;
+        let mut cache = LayoutCache::for_copy_rule();
+        self.fill_layouts(&ty, &mut cache, &mut Vec::new());
+        known_size_align(&ty, &cache).map(|(size, _)| size)
     }
 
     /// `size_align` for the copy rule, which has to answer inside a generic
@@ -123,12 +133,15 @@ impl crate::TypeTable {
 
     /// The layout of the enum `id`, with these type arguments.
     pub fn enum_layout(&self, id: TypeId, args: &[Type]) -> Option<EnumLayout> {
+        self.enum_layout_in(id, args, LayoutCache::new(self.target()))
+    }
+
+    fn enum_layout_in(&self, id: TypeId, args: &[Type], mut cache: LayoutCache) -> Option<EnumLayout> {
         if !self.layout_types.contains(&id) {
             return None;
         }
         let def = self.get(id)?;
         let TypeDef::Enum { .. } = def else { return None };
-        let mut cache = LayoutCache::new(self.target());
         for ty in args {
             self.fill_layouts(ty, &mut cache, &mut Vec::new());
         }
