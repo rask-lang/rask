@@ -653,8 +653,13 @@ impl<'a> FunctionBuilder<'a> {
 
         // Pre-compute stack allocation sizes before builder borrows self.func.
         // Entries: (local_id, byte size, alignment) for each aggregate local.
+        // A local nothing in the body names gets no slot. SSA leaves each
+        // original local behind once it has renamed it into versions, and a
+        // slot apiece tripled the frame of a function holding a 32K array.
+        let mentioned = rask_mir::analysis::uses::mentioned_locals(self.mir_fn);
         let mut stack_allocs: Vec<(LocalId, u32, u32)> = self.mir_fn.locals.iter()
             .filter(|l| !l.is_param)
+            .filter(|l| mentioned.contains(&l.id))
             // A borrowed local's storage is the frame that built the closure,
             // so it gets no slot here. Leaving it one puts a slot address in
             // `stack_slot_map` while the variable points at the caller's data,
