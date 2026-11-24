@@ -1497,6 +1497,10 @@ impl Interpreter {
     /// `transfer_resource_to_scope`, moving entries out instead of re-depthing
     /// them (#882).
     pub(crate) fn hand_resources_to_task(&mut self, value: &Value, child: &mut Interpreter) {
+        // A value can nest deeper than one stack holds (#2084).
+        if crate::stack_nearly_exhausted() {
+            return crate::grow_interp_stack(|| self.hand_resources_to_task(value, child));
+        }
         if self.resource_tracker.is_empty() {
             return;
         }
@@ -1573,6 +1577,12 @@ impl Interpreter {
         if self.resource_tracker.is_empty() {
             return;
         }
+        // One level of the walk per level of nesting, and a value built by a
+        // loop can nest deeper than a stack holds (#2084).
+        crate::with_stack_room(|| self.move_resources_here(value, new_depth, outward_only))
+    }
+
+    fn move_resources_here(&mut self, value: &Value, new_depth: usize, outward_only: bool) {
         match value {
             _ if value.tracked_as_file().is_some() => {
                 let ptr = value.tracked_as_file().expect("just checked");

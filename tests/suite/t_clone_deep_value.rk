@@ -91,3 +91,44 @@ test "a closure holding a deep value clones" {
     assert g()
     assert f()
 }
+
+struct Key {
+    tags: Vec<string>
+}
+
+// Order-independent: hashes a sorted copy of the tags. Cloning a map with
+// this key used to rehash every key mid-clone, and the copy this makes then
+// dropped strings the clone hadn't taken references to yet.
+Key implements Hashable {
+    public func hash(self) -> u64 {
+        mut t = self.tags.clone()
+        t.sort()
+        return t.len() as u64
+    }
+    public func eq(self, other: Key) -> bool {
+        return self.tags.len() == other.tags.len()
+    }
+}
+
+test "a nested map whose key hash clones survives the clone" {
+    mut m: Map<Key, i64> = Map.new()
+    mut tags: Vec<string> = Vec.new()
+    tags.push("beta-long-enough-to-live-on-the-heap")
+    tags.push("alpha-long-enough-to-live-on-the-heap")
+    m.insert(Key(tags: tags), 1)
+    mut all: Vec<Map<Key, i64>> = Vec.new()
+    all.push(m)
+    let copy = all.clone()
+    assert copy[0].len() == 1
+    assert all[0].len() == 1
+}
+
+test "a deep value clones while a task is live" {
+    let e = build(200000)
+    using Multitasking {
+        let h = spawn { return 0 }
+        let c = e.clone()
+        assert is_neg(c)
+        h.join()!
+    }
+}

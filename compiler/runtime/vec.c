@@ -444,7 +444,9 @@ void rask_owned_retain_all(char *elem, const int32_t *entries, int64_t count) {
 // A list that fits in `CLONE_LOCAL` entries lives in the draining frame.
 //
 // Nothing in a drain yields or runs Rask code, so the list is per thread and a
-// drain starts and ends on one. A panic can leave a drain (an over-aligned
+// drain starts and ends on one. That's why a map clone copies its table rather
+// than inserting each entry: inserting hashes the key, and a key's own `hash`
+// could clone and drop values the list hasn't reached yet. A panic can leave a drain (an over-aligned
 // element with an allocator that can't align); `rask_release_unwound` drops
 // the list then, and what was copied so far leaks.
 

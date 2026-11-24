@@ -611,6 +611,10 @@ impl Interpreter {
     /// Compare two runtime values for ordering.
     /// Returns None if the values are not comparable.
     pub(crate) fn value_cmp(a: &Value, b: &Value) -> Option<std::cmp::Ordering> {
+        // A value can nest deeper than one stack holds (#2084).
+        if crate::stack_nearly_exhausted() {
+            return crate::grow_interp_stack(|| Self::value_cmp(a, b));
+        }
         match (a, b) {
             // A `u64` travels as its bit pattern in an i64, so one above
             // `i64::MAX` reads as negative. Compared signed, `sort()` put

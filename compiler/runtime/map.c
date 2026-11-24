@@ -757,22 +757,28 @@ RaskVec *rask_map_take_all(RaskMap *m, int64_t voff, int64_t stride,
     return v;
 }
 
+// Slot for slot, under the source's seed, so no key is hashed again. Hashing
+// a key can run its own Rask `hash` or `eq`, and that code can clone and drop
+// values while a clone's work list still has to visit them.
 RaskMap *rask_map_clone(const RaskMap *m) {
     if (!m) return rask_map_new(8, 8, NULL, 0, 0, NULL, 0, 0);
-    RaskMap *dst = map_new(m->key_size, m->val_size, m->hash_fn, m->eq_fn, MAP_INITIAL_CAP,
+    RaskMap *dst = map_new(m->key_size, m->val_size, m->hash_fn, m->eq_fn, m->cap,
                            m->key_strs, m->val_strs);
-    for (int64_t i = 0; i < m->cap; i++) {
-        if (m->states[i] == MAP_OCCUPIED) {
-            rask_map_insert(dst, m->keys + i * m->key_size, m->vals + i * m->val_size);
-        }
-    }
+    dst->seed = m->seed;
+    memcpy(dst->states, m->states, (size_t)m->cap);
+    memcpy(dst->keys, m->keys, (size_t)rask_safe_mul(m->cap, m->key_size));
+    memcpy(dst->vals, m->vals, (size_t)rask_safe_mul(m->cap, m->val_size));
+    dst->len = m->len;
+    dst->tombstones = m->tombstones;
     // The entries name what the source's do until the work list gives each
     // one references of its own. Nothing reads `dst` before that: the drain
     // finishes inside the outermost clone.
     rask_clone_contents(RASK_CLONE_MAP, dst);
-    // `rask_map_insert` recorded values holding links; values that are links
-    // are recorded here, as `rask_vec_clone` does (#1972).
-    if (rask_elem_strs_are_links(&dst->val_strs)) rask_link_register_map(dst);
+    // The copy holds the source's links, and the rack has to hear about it or
+    // a delete leaves the copy naming a freed node (#1972).
+    if (rask_map_holds_struct_links(dst) || rask_elem_strs_are_links(&dst->val_strs)) {
+        rask_link_register_map(dst);
+    }
     return dst;
 }
 

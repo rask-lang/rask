@@ -1836,6 +1836,11 @@ impl Value {
 
 impl fmt::Display for Value {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // A value can nest deeper than one stack holds (#2084).
+        if crate::stack_nearly_exhausted() {
+            let text = crate::grow_interp_stack(|| self.to_string());
+            return f.write_str(&text);
+        }
         match self {
             Value::Unit => write!(f, "()"),
             Value::Bool(b) => write!(f, "{}", b),
