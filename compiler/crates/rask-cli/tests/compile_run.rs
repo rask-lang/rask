@@ -7619,7 +7619,8 @@ sum=500500
 fn runaway_recursion_is_reported_not_aborted() {
     let (stdout, stderr, code) = run_capture("--interp", "runaway_recursion.rk");
     let out = format!("{}{}", stdout, stderr);
-    assert_eq!(code, 1, "should exit 1, not abort: {}", out);
+    // Running out of stack is a panic (ctrl.panics/S5), so 101 like native.
+    assert_eq!(code, 101, "should exit 101, not abort: {}", out);
     assert!(out.contains("R0023"), "should be the recursion diagnostic: {}", out);
     assert!(out.contains("recursion too deep"), "{}", out);
     assert!(
@@ -10707,4 +10708,30 @@ fn csv_reads_a_generic_structs_custom_field_as_its_wire_type() {
         stdout,
         "2 true false\nCSV row 2, column \"x\": \"maybe\" is not true or false\n",
     );
+}
+
+// A stack overflow inside an ensure that runs while a panic unwinds is a
+// secondary panic: reported, contained, and the first panic is the task's.
+// The interpreter used to treat its overflow as an interpreter failure rather
+// than a panic, so it swallowed it with no report while native printed one.
+// The two backends word the overflow differently, so this checks what both
+// report instead of comparing their output byte for byte.
+#[test]
+fn an_overflow_in_an_unwinding_ensure_is_a_reported_secondary_panic() {
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "overflow_in_ensure.rk");
+        assert_eq!(code, 0, "{}: {}", mode, stderr);
+        let lines: Vec<&str> = stdout.lines().collect();
+        assert_eq!(lines.len(), 2, "{}: {}{}", mode, stdout, stderr);
+        assert!(
+            lines[0].starts_with("panicked: ") && lines[0].ends_with("overflow_in_ensure.rk:13: plain"),
+            "{}: the first panic should be the task's: {}", mode, stdout,
+        );
+        assert_eq!(lines[1], "after: 10", "{}", mode);
+        let reports: Vec<&str> = stderr
+            .lines()
+            .filter(|l| l.contains("secondary panic during unwind") && l.contains("overflow_in_ensure.rk:4"))
+            .collect();
+        assert_eq!(reports.len(), 2, "{}: both ensures should report: {}", mode, stderr);
+    }
 }

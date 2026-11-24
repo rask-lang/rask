@@ -354,7 +354,7 @@ impl Interpreter {
 
         // A panic exiting the body means we're already unwinding; ensure-body
         // panics during that unwind are secondary (ctrl.panic/E3).
-        let body_panicked = matches!(&exit_error, Some(d) if matches!(d.error, RuntimeError::Panic(_)));
+        let body_panicked = matches!(&exit_error, Some(d) if d.error.is_panic());
         let ensure_fatal = self.run_ensures(&ensures, body_panicked);
 
         match (exit_error, ensure_fatal) {
@@ -363,7 +363,7 @@ impl Interpreter {
             // A panic from the body is primary; ensure panics were already
             // reported as secondary inside run_ensures. (A body `Exit` never
             // reaches here — it returned above without running any ensure.)
-            (Some(e), _) if matches!(e.error, RuntimeError::Panic(_)) => Err(e),
+            (Some(e), _) if e.error.is_panic() => Err(e),
             // A panic raised by an ensure kills the task (E1), overriding a
             // non-panic body exit (error propagation, return, break, continue).
             (_, Some(f)) => Err(f),
@@ -439,7 +439,7 @@ impl Interpreter {
                             }
                         }
                     }
-                    Err(diag) if matches!(&diag.error, RuntimeError::Panic(_)) => {
+                    Err(diag) if diag.error.is_panic() => {
                         // E3: first panic wins. A panic here while already unwinding,
                         // or after a prior ensure-panic, is contained + reported.
                         if unwinding || first_panic.is_some() {
@@ -474,13 +474,15 @@ impl Interpreter {
     /// Report a panic that fired during unwind and was contained (E3). The first
     /// panic remains the task's panic; this one goes to stderr and continues.
     fn report_secondary_panic(&self, diag: &RuntimeDiagnostic) {
-        if let RuntimeError::Panic(msg) = &diag.error {
-            eprintln!(
-                "secondary panic during unwind at {}: {}",
-                self.origin_string(diag.span),
-                msg
-            );
-        }
+        let msg = match &diag.error {
+            RuntimeError::Panic(m) => m.clone(),
+            e => format!("{}", e),
+        };
+        eprintln!(
+            "secondary panic during unwind at {}: {}",
+            self.origin_string(diag.span),
+            msg
+        );
     }
 
     /// An ensure body is a block like any other (ctrl.ensure/EN1): an `ensure`
@@ -519,11 +521,11 @@ impl Interpreter {
                 None => Ok(last_value),
             };
         }
-        let panicked = matches!(&failure, Some(d) if matches!(d.error, RuntimeError::Panic(_)));
+        let panicked = matches!(&failure, Some(d) if d.error.is_panic());
         let nested_fatal = self.run_ensures(&nested, panicked);
         match (failure, nested_fatal) {
             (_, Some(f)) if matches!(f.error, RuntimeError::Exit(_)) => Err(f),
-            (Some(e), _) if matches!(e.error, RuntimeError::Panic(_)) => Err(e),
+            (Some(e), _) if e.error.is_panic() => Err(e),
             (_, Some(f)) => Err(f),
             (Some(e), _) => Err(e),
             (None, None) => Ok(last_value),

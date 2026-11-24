@@ -2029,6 +2029,7 @@ impl RuntimeError {
                 | RuntimeError::NoMatchingArm
                 | RuntimeError::ResourceClosed { .. }
                 | RuntimeError::AssertionFailed(_)
+                | RuntimeError::RecursionTooDeep { .. }
         )
     }
 }
