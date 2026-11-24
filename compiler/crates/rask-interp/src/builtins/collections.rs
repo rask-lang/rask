@@ -403,7 +403,7 @@ impl Interpreter {
                 // Custom comparison via closure — accepts Ordering enum or Int
                 vec.sort_by(|a, b| {
                     match self.call_value(closure.clone(), vec![a.clone(), b.clone()]) {
-                        Ok(Value::Enum { name, variant, .. }) if name == "Ordering" => {
+                        Ok(Value::Enum { ref name, ref variant, .. }) if name == "Ordering" => {
                             match variant.as_str() {
                                 "Less" => std::cmp::Ordering::Less,
                                 "Greater" => std::cmp::Ordering::Greater,
@@ -585,7 +585,7 @@ impl Interpreter {
                 // than being copied into it — links must observe writes made
                 // through any other link to the same node.
                 let node = match item {
-                    Value::Struct(st) => st,
+                    Value::Struct(ref st) => st.clone(),
                     other => {
                         return Err(RuntimeError::TypeError(format!(
                             "rack.insert() expects a struct node, found {}",
@@ -680,7 +680,7 @@ impl Interpreter {
                 }))))
             }
             "apply" => {
-                let Some(Value::Staged(ops)) = args.into_iter().next() else {
+                let Some(Value::Staged(ops)) = &args.into_iter().next() else {
                     return Err(RuntimeError::TypeError("rack.apply() expects a Staged buffer".to_string()));
                 };
                 self.apply_staged(s, &ops)
@@ -757,10 +757,10 @@ impl Interpreter {
                 Ok(Value::Unit)
             }
             "append" => {
-                let Some(Value::Staged(other)) = args.into_iter().next() else {
+                let Some(Value::Staged(other)) = &args.into_iter().next() else {
                     return Err(RuntimeError::TypeError("Staged.append() expects a Staged buffer".to_string()));
                 };
-                if Arc::ptr_eq(s, &other) {
+                if Arc::ptr_eq(s, other) {
                     return Ok(Value::Unit);
                 }
                 let (rack_id, epoch, ops) = {
@@ -1077,7 +1077,7 @@ impl Interpreter {
                     .ok_or_else(|| RuntimeError::TypeError("Vec.from requires 1 argument".to_string()))?;
 
                 match arr {
-                    Value::Vec(v) => {
+                    Value::Vec(ref v) => {
                         let vec = v.lock().unwrap();
                         let cloned = vec.clone();
                         Ok(Value::Vec(Arc::new(Mutex::new(cloned))))
@@ -1189,7 +1189,7 @@ impl Interpreter {
                     got: 0,
                 })?;
                 match arr {
-                    Value::Vec(v) => {
+                    Value::Vec(ref v) => {
                         let vec = v.lock().unwrap().items.clone();
                         let pairs = Arc::new(Mutex::new(MapData::with_capacity(vec.len())));
                         for item in vec.iter() {

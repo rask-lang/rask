@@ -64,7 +64,7 @@ impl Interpreter {
                 }
                 Ok((**items).clone())
             }
-            Value::Vec(v) => {
+            Value::Vec(ref v) => {
                 let vec = v.lock().unwrap();
                 if vec.len() != expected {
                     return Err(RuntimeError::TypeError(format!(
@@ -211,8 +211,8 @@ impl Interpreter {
         let slot = new_items.get_mut(i).ok_or(RuntimeError::IndexOutOfBounds { index: i as i64, len })?;
         if chain.len() == 1 {
             *slot = wrap_like(Some(slot), value);
-        } else if let Value::Tuple(inner) = slot.clone() {
-            *slot = self.tuple_with_written(&inner, &chain[1..], value)?;
+        } else if let Value::Tuple(inner) = &slot.clone() {
+            *slot = self.tuple_with_written(inner, &chain[1..], value)?;
         } else {
             self.assign_nested_field(slot, &chain[1..], value)?;
         }
@@ -314,7 +314,7 @@ impl Interpreter {
             // `(*p).x = v` is `p.x = v`, and the deref peels off here.
             ExprKind::Unary { op: rask_ast::expr::UnaryOp::Deref, operand } => {
                 let target = self.eval_expr(operand).map_err(|diag| diag.error)?;
-                if let Value::RawPtr(p) = target {
+                if let Value::RawPtr(p) = &target {
                     return p.write(value);
                 }
                 self.assign_target(operand, value)

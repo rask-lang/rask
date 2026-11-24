@@ -45,6 +45,14 @@ pub static DELETES: AtomicUsize = AtomicUsize::new(0);
 /// question, same answer.
 pub static RACKS_MADE: AtomicUsize = AtomicUsize::new(0);
 
+/// Whether any value can hold a link yet. A link comes from a rack, so until
+/// the program makes one there is nothing to record and the registration walks
+/// return at once. Without this, pushing a value walked all of it, so a tree
+/// built by pushing each level into the next was quadratic to build (#2084).
+pub fn links_possible() -> bool {
+    RACKS_MADE.load(Ordering::Relaxed) > 0
+}
+
 pub fn stats_enabled() -> bool {
     std::env::var("RASK_RACK_STATS").is_ok()
 }
@@ -70,6 +78,9 @@ pub fn print_stats() {
 /// The node a value names, seeing through the `Link<T>?` optional every edge
 /// field carries.
 fn link_target(v: &Value, rack_id: u32) -> Option<Arc<Mutex<StructData>>> {
+    if crate::stack_nearly_exhausted() {
+        return crate::grow_interp_stack(|| link_target(v, rack_id));
+    }
     match v {
         Value::Link { rack_id: sid, node } if *sid == rack_id => Some(Arc::clone(node)),
         Value::Enum { name, variant, fields, .. } if name == "Option" && variant == "Some" => {
@@ -136,6 +147,9 @@ pub fn register_field(
     old: Option<&Value>,
     value: &Value,
 ) {
+    if !links_possible() {
+        return;
+    }
     let slot = BacklinkKey { holder: Arc::as_ptr(holder) as usize, field: Some(field.to_string()) };
 
     // Unlink first: `a.target = a.target` must not drop the backlink it re-adds.
@@ -199,6 +213,9 @@ pub fn register_field(
 
 /// A loop's temporary vector of links is done with: drop its records.
 pub fn forget_vec_links(value: &Value) {
+    if !links_possible() {
+        return;
+    }
     forget_container_edges(value);
 }
 
@@ -206,6 +223,9 @@ pub fn forget_vec_links(value: &Value) {
 /// replaced. Descends through options and nested containers; stops at a struct,
 /// whose data may still be reachable through another name.
 fn forget_container_edges(value: &Value) {
+    if crate::stack_nearly_exhausted() {
+        return crate::grow_interp_stack(|| forget_container_edges(value));
+    }
     match value {
         Value::Vec(vec) => {
             let slot = BacklinkKey { holder: Arc::as_ptr(vec) as usize, field: None };
@@ -257,6 +277,9 @@ fn forget_container_edges(value: &Value) {
 /// matching element goes away is dropped by `fix_elements` on the visit that
 /// finds nothing.
 pub fn register_element(vec: &Arc<Mutex<crate::value::VecData>>, value: &Value) {
+    if !links_possible() {
+        return;
+    }
     // A struct or enum element is walked here and only here, so nested
     // vectors of structs cost one pass, not two per level.
     // An element of struct type holds its links in fields of its own: those
@@ -313,6 +336,9 @@ pub fn link_is_dead(v: &Value) -> bool {
 /// The links a tuple holds, at any depth of tuple nesting. A struct inside one
 /// is a cell with fields of its own and records itself.
 fn tuple_links(v: &Value, out: &mut Vec<(u32, Arc<Mutex<StructData>>)>) {
+    if crate::stack_nearly_exhausted() {
+        return crate::grow_interp_stack(|| tuple_links(v, out));
+    }
     let items: &[Value] = match v {
         Value::Tuple(items) => items,
         // An enum's variant fields are values the same way (#1801), and so
@@ -336,6 +362,9 @@ fn tuple_links(v: &Value, out: &mut Vec<(u32, Arc<Mutex<StructData>>)>) {
 /// `v` with every link to `dead` inside its tuples set to `none`, or `None`
 /// when nothing in it named `dead`.
 fn tuple_nulled(v: &Value, rack_id: u32, dead: &Arc<Mutex<StructData>>) -> Option<Value> {
+    if crate::stack_nearly_exhausted() {
+        return crate::grow_interp_stack(|| tuple_nulled(v, rack_id, dead));
+    }
     let items: &[Value] = match v {
         Value::Tuple(items) => items,
         Value::Enum { fields, .. } if has_value_fields(v) => fields,
@@ -385,6 +414,9 @@ pub fn may_hold_value_links(v: &Value) -> bool {
 /// is recorded here: a bare link in a local is a root, and a struct records
 /// itself.
 pub fn register_var(cell: &Arc<Mutex<Value>>, old: Option<&Value>, value: &Value) {
+    if !links_possible() {
+        return;
+    }
     let key = BacklinkKey { holder: Arc::as_ptr(cell) as usize, field: None };
     let mut before = Vec::new();
     if let Some(old) = old {
@@ -411,6 +443,9 @@ pub fn register_entry(
     old: Option<&Value>,
     value: &Value,
 ) {
+    if !links_possible() {
+        return;
+    }
     if let s @ Value::Struct(_) = strip_some(value) {
         register_nested(s);
         return;
@@ -462,6 +497,12 @@ pub fn register_entry(
 /// delete like the source does. Records are one per (holder, target), so a
 /// vector whose pushes already did it changes nothing.
 pub fn register_nested(value: &Value) {
+    if crate::stack_nearly_exhausted() {
+        return crate::grow_interp_stack(|| register_nested(value));
+    }
+    if !links_possible() {
+        return;
+    }
     match value {
         Value::Struct(s) => {
             let fields: Vec<(String, Value)> = {
@@ -514,6 +555,9 @@ pub fn register_nested(value: &Value) {
 /// The vectors a dying node holds by value are freed with it natively. Mark
 /// them, so a loop still walking one stops as the native one does.
 fn mark_owned_vecs_freed(value: &Value) {
+    if crate::stack_nearly_exhausted() {
+        return crate::grow_interp_stack(|| mark_owned_vecs_freed(value));
+    }
     match value {
         Value::Struct(s) => {
             let fields: Vec<Value> = s.lock().unwrap().fields.values().cloned().collect();
@@ -532,6 +576,9 @@ fn mark_owned_vecs_freed(value: &Value) {
 }
 
 fn forget_own_edges(value: &Value) {
+    if crate::stack_nearly_exhausted() {
+        return crate::grow_interp_stack(|| forget_own_edges(value));
+    }
     match value {
         Value::Struct(s) => {
             let fields: Vec<(String, Value)> = {
@@ -671,6 +718,9 @@ fn fix_entries(map: &Arc<Mutex<crate::value::MapData>>, rack_id: u32, dead: &Arc
 /// Fix edges nested inside a value a backlink pointed at. Bounded by the value's
 /// own size, and never follows a link.
 fn fix_container(v: &Value, rack_id: u32, dead: &Arc<Mutex<StructData>>) {
+    if crate::stack_nearly_exhausted() {
+        return crate::grow_interp_stack(|| fix_container(v, rack_id, dead));
+    }
     match v {
         Value::Vec(vec) => {
             fix_elements(vec, rack_id, dead);
@@ -833,6 +883,9 @@ fn rewrite_links(
     new_id: u32,
     map: &HashMap<usize, Arc<Mutex<StructData>>>,
 ) -> Option<Value> {
+    if crate::stack_nearly_exhausted() {
+        return crate::grow_interp_stack(|| rewrite_links(value, old_id, new_id, map));
+    }
     match value {
         Value::Link { rack_id, node } if *rack_id == old_id => map
             .get(&node_key(node))

@@ -53,7 +53,7 @@ impl Interpreter {
     /// variants store their name as "Shape.Circle", so the type is also tried
     /// with the variant stripped. Stub registrations have empty bodies and
     /// don't count.
-    fn user_method(&self, receiver: &Value, method: &str) -> Option<rask_ast::decl::FnDecl> {
+    fn user_method(&self, receiver: &Value, method: &str) -> Option<Arc<rask_ast::decl::FnDecl>> {
         let type_name = match receiver {
             Value::Struct(s) => s.lock().unwrap().name.clone(),
             Value::Enum { name, .. } => name.clone(),
@@ -61,7 +61,7 @@ impl Interpreter {
             _ => return None,
         };
         let conformance_key = self.conformance_method_name(method);
-        let lookup = |ms: &HashMap<String, FnDecl>| -> Option<FnDecl> {
+        let lookup = |ms: &HashMap<String, Arc<FnDecl>>| -> Option<Arc<FnDecl>> {
             conformance_key
                 .as_ref()
                 .and_then(|k| ms.get(k).cloned())
@@ -101,7 +101,7 @@ impl Interpreter {
             String::new()
         } else {
             match self.call_builtin_method(receiver.clone(), "to_string", vec![], None)? {
-                Value::String(s) => s.lock().unwrap().clone(),
+                Value::String(ref s) => s.lock().unwrap().clone(),
                 other => format!("{}", other),
             }
         };
@@ -468,7 +468,7 @@ impl Interpreter {
         // block is keyed with the package that wrote it. The running package
         // decides which one this call means.
         let conformance_key = self.conformance_method_name(method);
-        let lookup = |ms: &HashMap<String, FnDecl>| -> Option<FnDecl> {
+        let lookup = |ms: &HashMap<String, Arc<FnDecl>>| -> Option<Arc<FnDecl>> {
             conformance_key
                 .as_ref()
                 .and_then(|k| ms.get(k).cloned())
@@ -520,7 +520,7 @@ impl Interpreter {
             let args = args
                 .into_iter()
                 .map(|a| match a {
-                    Value::Nominal { inner, .. } => (*inner).clone(),
+                    Value::Nominal { ref inner, .. } => (**inner).clone(),
                     other => other,
                 })
                 .collect();

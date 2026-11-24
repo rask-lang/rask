@@ -698,7 +698,7 @@ fn escape_json_string(s: &str) -> String {
 fn value_to_json(
     value: &Value,
     struct_decls: &HashMap<String, StructDecl>,
-    enums: &HashMap<String, rask_ast::decl::EnumDecl>,
+    enums: &HashMap<String, Arc<rask_ast::decl::EnumDecl>>,
 ) -> Result<Value, RuntimeError> {
     match value {
         Value::Unit => Ok(make_json_null()),
@@ -1076,11 +1076,12 @@ fn json_to_typed(
                 });
             }
         };
-        return match answer {
-            Value::Enum { variant, mut fields, .. } if variant == "Ok" && fields.len() == 1 => Ok(fields.remove(0)),
-            Value::Enum { variant, mut fields, .. } if variant == "Err" && fields.len() == 1 => {
+        let mut answer = answer;
+        return match &mut answer {
+            Value::Enum { variant, fields, .. } if variant == "Ok" && fields.len() == 1 => Ok(fields.remove(0)),
+            Value::Enum { variant, fields, .. } if variant == "Err" && fields.len() == 1 => {
                 let why = match fields.remove(0) {
-                    Value::String(s) => s.lock().unwrap().clone(),
+                    Value::String(ref s) => s.lock().unwrap().clone(),
                     other => format!("{:?}", other),
                 };
                 let where_ = if path.is_empty() { "the value" } else { path };

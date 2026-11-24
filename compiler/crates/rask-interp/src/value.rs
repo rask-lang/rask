@@ -1283,7 +1283,7 @@ pub enum Value {
     /// which is what capturing by move means.
     Closure {
         params: Vec<String>,
-        body: Expr,
+        body: Arc<Expr>,
         captured_env: HashMap<String, crate::env::Slot>,
         /// Captures that are the caller's storage behind a `mutate`
         /// parameter. Shared even by a carrying closure, and still borrowed
@@ -1691,8 +1691,25 @@ impl Value {
         }
     }
 
+    /// Whether dropping this value can drop other values: what `Drop` checks
+    /// before it looks at the stack.
+    fn holds_values(&self) -> bool {
+        match self {
+            Value::Enum { fields, .. } => !fields.is_empty(),
+            Value::Vec(_) | Value::Map(_) | Value::Tuple(_) | Value::Struct(_)
+            | Value::Cell(_) | Value::Atomic(_) | Value::Shared(_) | Value::RaskMutex(_)
+            | Value::Closure { .. } | Value::Nominal { .. } | Value::Link { .. }
+            | Value::Rack(_) => true,
+            _ => false,
+        }
+    }
+
     /// Deep clone a value — creates independent copies of reference-counted internals.
     pub fn deep_clone(&self) -> Value {
+        crate::with_stack_room(|| self.deep_clone_here())
+    }
+
+    fn deep_clone_here(&self) -> Value {
         match self {
             Value::String(s) => Value::String(Arc::new(Mutex::new(s.lock().unwrap().clone()))),
             Value::Vec(v) => {
@@ -2046,4 +2063,17 @@ pub fn range_count(start: i64, end: i64, inclusive: bool, step: i64) -> i64 {
         q
     };
     n.max(0)
+}
+
+/// Rust drops what a value holds by recursing into it, a host frame or more per
+/// level, so dropping a list built by a loop a million deep ran off the stack
+/// and aborted the interpreter (#2084). When the stack is nearly spent, the rest
+/// of the drop continues on a fresh segment.
+impl Drop for Value {
+    fn drop(&mut self) {
+        if self.holds_values() && crate::stack_nearly_exhausted() {
+            let rest = std::mem::replace(self, Value::Unit);
+            crate::grow_interp_stack(move || drop(rest));
+        }
+    }
 }

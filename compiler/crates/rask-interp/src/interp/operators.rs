@@ -12,7 +12,7 @@ impl Interpreter {
     pub(super) fn coerce_to_simd_f32x8(value: Value) -> Result<Value, RuntimeError> {
         match value {
             Value::SimdF32x8(_) => Ok(value),
-            Value::Vec(v) => {
+            Value::Vec(ref v) => {
                 let vec = v.lock().unwrap();
                 let mut arr = [0.0f32; 8];
                 for (i, val) in vec.iter().take(8).enumerate() {

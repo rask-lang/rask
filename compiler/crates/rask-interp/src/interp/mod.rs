@@ -135,10 +135,10 @@ pub struct Interpreter {
     /// Function declarations, one entry per declaration. The key is the
     /// function's name, except that a stdlib function sharing a name with a
     /// program one goes by `name~std` (#1706).
-    functions: HashMap<String, FnDecl>,
+    functions: HashMap<String, Arc<FnDecl>>,
     /// Template copies (`rask-template`) by the template's id, each with the
     /// instance arguments it was written out for, as reflection spells them.
-    template_copies: HashMap<rask_ast::NodeId, Vec<(Vec<rask_types::TypeBinding>, FnDecl)>>,
+    template_copies: HashMap<rask_ast::NodeId, Vec<(Vec<rask_types::TypeBinding>, Arc<FnDecl>)>>,
     /// The checker's table of copies: copy function id → (template id, the
     /// instance's arguments). `register_declarations` indexes it by template.
     copies_of: HashMap<rask_ast::NodeId, (rask_ast::NodeId, Vec<rask_types::TypeBinding>)>,
@@ -148,7 +148,7 @@ pub struct Interpreter {
     /// declaration. What a name calls is this, not how it's spelled.
     named_functions: HashMap<rask_ast::NodeId, rask_ast::NodeId>,
     /// Enum declarations by name.
-    pub(crate) enums: HashMap<String, EnumDecl>,
+    pub(crate) enums: HashMap<String, Arc<EnumDecl>>,
     /// Struct declarations by name (for @resource checking).
     pub(crate) struct_decls: HashMap<String, StructDecl>,
     /// Union declarations by name: a read of a member that isn't the live one
@@ -192,7 +192,7 @@ pub struct Interpreter {
     /// Monomorphized struct declarations (e.g., "Buffer<i32, 256>" -> concrete struct).
     monomorphized_structs: HashMap<String, StructDecl>,
     /// Methods from extend blocks (type_name -> method_name -> FnDecl).
-    pub(crate) methods: HashMap<String, HashMap<String, FnDecl>>,
+    pub(crate) methods: HashMap<String, HashMap<String, Arc<FnDecl>>>,
     /// Linear resource tracker.
     pub(crate) resource_tracker: ResourceTracker,
     /// Optional output buffer for capturing stdout (used in tests).
@@ -1249,14 +1249,15 @@ impl Interpreter {
         form: &str,
         closure: Value,
         block: &rask_ast::expr::Expr,
-    ) -> Result<(Interpreter, rask_ast::expr::Expr, crate::value::ClosureRet), RuntimeError> {
-        let Value::Closure { body, captured_env, task_bound, generics, ret, .. } = closure else {
+    ) -> Result<(Interpreter, Arc<rask_ast::expr::Expr>, crate::value::ClosureRet), RuntimeError> {
+        let mut closure = closure;
+        let Value::Closure { body, captured_env, task_bound, generics, ret, .. } = &mut closure else {
             return Err(RuntimeError::TypeError(format!(
                 "{form}: a task block evaluated to {}",
                 closure.type_name()
             )));
         };
-        if task_bound {
+        if *task_bound {
             return Err(RuntimeError::Panic(TASK_BOUND_SPAWN.to_string()));
         }
         let mut named = std::collections::HashSet::new();
@@ -1274,8 +1275,8 @@ impl Interpreter {
         if crossing_bound_closure {
             return Err(RuntimeError::Panic(TASK_BOUND_SPAWN.to_string()));
         }
-        let child = self.spawn_child(captured_env, &generics, &named);
-        Ok((child, body, ret))
+        let child = self.spawn_child(std::mem::take(captured_env), generics, &named);
+        Ok((child, Arc::clone(body), *ret))
     }
 
     /// Run a task's body on this thread, now, and hand back a handle whose
@@ -1305,8 +1306,9 @@ impl Interpreter {
         Ok(self.hand_out_handle(join_handle, cancel))
     }
 
-    fn borrowing_task(&mut self, closure: Value) -> Result<(Interpreter, rask_ast::expr::Expr, crate::value::ClosureRet), RuntimeError> {
-        let Value::Closure { body, captured_env, generics, ret, .. } = closure else {
+    fn borrowing_task(&mut self, closure: Value) -> Result<(Interpreter, Arc<rask_ast::expr::Expr>, crate::value::ClosureRet), RuntimeError> {
+        let mut closure = closure;
+        let Value::Closure { body, captured_env, generics, ret, .. } = &mut closure else {
             return Err(RuntimeError::TypeError(format!(
                 "a task block evaluated to {}",
                 closure.type_name()
@@ -1318,8 +1320,8 @@ impl Interpreter {
                 named.insert(n.clone());
             }
         });
-        let child = self.spawn_child(captured_env, &generics, &named);
-        Ok((child, body, ret))
+        let child = self.spawn_child(std::mem::take(captured_env), generics, &named);
+        Ok((child, Arc::clone(body), *ret))
     }
 
     /// Inside a `using ThreadPool` block.
@@ -1375,7 +1377,7 @@ impl Interpreter {
 
         // Check for thread pool context
         let pool = match self.env.get("__thread_pool") {
-            Some(Value::ThreadPool(p)) => p,
+            Some(Value::ThreadPool(ref p)) => Arc::clone(p),
             _ => {
                 return Err(RuntimeError::TypeError(
                     "ThreadPool.spawn requires `using ThreadPool` context".to_string(),
@@ -1699,7 +1701,7 @@ impl Interpreter {
             .collect();
         let value = crate::on_interp_stack(|| self.call_function(&func, args, None))?;
         match value {
-            Value::String(s) => Ok(s.lock().unwrap().clone()),
+            Value::String(ref s) => Ok(s.lock().unwrap().clone()),
             other => Err(RuntimeDiagnostic::new(
                 RuntimeError::Generic(format!("`{name}` returned {}, not a string", other.type_name())),
                 func.span,
@@ -1714,7 +1716,7 @@ impl Interpreter {
         call::result_sides(ret_ty?)?;
         match value {
             Value::Enum { name, variant, fields, .. } if name == "Result" => {
-                (variant == "Err").then(|| fields.first().unwrap_or(&Value::Unit))
+                (variant == "Err").then(|| fields.first().unwrap_or(&UNIT))
             }
             _ => None,
         }
@@ -1725,7 +1727,7 @@ impl Interpreter {
     /// type defines one, otherwise the value as printed.
     fn describe_error_value(&mut self, err: &Value) -> String {
         let owned = err.clone();
-        if let Ok(Value::String(s)) = self.call_method(owned.clone(), "message", vec![], None) {
+        if let Ok(Value::String(ref s)) = self.call_method(owned.clone(), "message", vec![], None) {
             return s.lock().unwrap().clone();
         }
         format!("{}", owned)
@@ -1747,7 +1749,7 @@ impl Interpreter {
 
         // Find func build — it's the entry point for build scripts
         let build_fn = registered.entry_fn
-            .or_else(|| self.functions.get("build").cloned())
+            .or_else(|| self.functions.get("build").map(|f| (**f).clone()))
             .ok_or_else(|| RuntimeDiagnostic::new(
                 RuntimeError::Generic("build.rk has no func build()".into()),
                 Span::new(0, 0),
@@ -2066,7 +2068,7 @@ impl std::error::Error for RuntimeDiagnostic {}
 /// The task's result, the way a closure call produces one: `return v` and a
 /// `try` that leaves both end the block with their value (conc.async/S7), and
 /// a value of type `T` filling a `T or E` result is its success side.
-fn run_task_body(mut interp: Interpreter, body: rask_ast::expr::Expr, ret: crate::value::ClosureRet) -> Result<Value, String> {
+fn run_task_body(mut interp: Interpreter, body: Arc<rask_ast::expr::Expr>, ret: crate::value::ClosureRet) -> Result<Value, String> {
     let ended = match interp.eval_expr(&body) {
         Ok(val) => Ok(val),
         Err(diag) if matches!(diag.error, RuntimeError::Return(_) | RuntimeError::TryError(_)) => Err(diag.error),
@@ -2076,3 +2078,6 @@ fn run_task_body(mut interp: Interpreter, body: rask_ast::expr::Expr, ret: crate
         .closure_outcome(&body, ended, ret)
         .map_err(|e| interp.panic_message(&RuntimeDiagnostic::new(e, body.span)))
 }
+
+/// A unit value to lend out where a reference is wanted and nothing is held.
+static UNIT: Value = Value::Unit;

@@ -432,6 +432,10 @@ impl Interpreter {
 
     /// Compare two runtime values for equality.
     pub(crate) fn value_eq(a: &Value, b: &Value) -> bool {
+        crate::with_stack_room(|| Self::value_eq_here(a, b))
+    }
+
+    fn value_eq_here(a: &Value, b: &Value) -> bool {
         match (a, b) {
             (Value::Unit, Value::Unit) => true,
             (Value::Bool(a), Value::Bool(b)) => a == b,
@@ -526,6 +530,10 @@ impl Interpreter {
 
     /// Compute a hash for a runtime value (for auto-derived Hashable).
     pub(crate) fn value_hash(value: &Value) -> u64 {
+        crate::with_stack_room(|| Self::value_hash_here(value))
+    }
+
+    fn value_hash_here(value: &Value) -> u64 {
         use std::hash::{Hash, Hasher};
         use std::collections::hash_map::DefaultHasher;
         let mut hasher = DefaultHasher::new();
