@@ -61,6 +61,7 @@ int   rask_closure_task_bound(const void *ptr);
 void  rask_closure_refuse_crossing(void *closure_base);
 void  rask_closure_free(void *ptr);
 void *rask_closure_clone(const void *ptr);
+void  rask_closure_retain_env(void *copy);
 
 // A trait object's block: `[refs | value...]`, with the fat pointer's data half
 // pointing at the value. See `rask_box_alloc` in alloc.c for why it counts.
@@ -300,6 +301,12 @@ void rask_handle_release(int64_t index, void *handle);
 // the same list — which is what lets a type that holds itself be described.
 void rask_heap_field_release(char *slot, const int32_t *entries, int64_t count);
 void rask_owned_retain_all(char *elem, const int32_t *entries, int64_t count);
+
+// A container a clone just made, whose contents still need references of their
+// own. They're taken from a work list on the heap, so cloning a value nested
+// as deep as you like uses no more C stack than a shallow one (#2084).
+typedef enum { RASK_CLONE_VEC, RASK_CLONE_MAP, RASK_CLONE_CLOSURE } RaskCloneKind;
+void rask_clone_contents(RaskCloneKind kind, void *copy);
 
 // Two maps the runtime needs constantly: a container of bare strings (one
 // string, at offset zero) and one of (string, string) pairs — `split`,
@@ -794,6 +801,7 @@ RaskVec *rask_map_take_all(RaskMap *m, int64_t voff, int64_t stride,
 void     rask_map_insert_pairs(RaskMap *m, const char *pairs, int64_t count,
                                int64_t voff, int64_t stride);
 RaskMap *rask_map_clone(const RaskMap *m);
+int64_t  rask_map_retain_from(RaskMap *m, int64_t slot);
 // mem.racks/RK3: drop every entry whose value is this link.
 int64_t  rask_map_drop_value_ptr(RaskMap *m, const void *target);
 // Rewrite every value in place through `f` (Rack.snapshot re-points links).

@@ -410,8 +410,16 @@ void *rask_closure_clone(const void *ptr) {
     void *copy = rask_closure_alloc(block_size, entries, base[2],
                                     (int64_t)(flags & RASK_CLOSURE_TASK_BOUND), align);
     memcpy(copy, ptr, (size_t)block_size);
-    if (entries) rask_owned_retain_all((char *)copy + 8, entries, base[2]);
+    if (entries) rask_clone_contents(RASK_CLONE_CLOSURE, copy);
     return copy;
+}
+
+// The copy's environment takes references of its own: a step of the clone
+// work list, so a closure holding a deeply nested value doesn't recurse.
+void rask_closure_retain_env(void *copy) {
+    int64_t *base = closure_header(copy);
+    const int32_t *entries = (const int32_t *)(intptr_t)base[1];
+    if (entries) rask_owned_retain_all((char *)copy + 8, entries, base[2]);
 }
 
 // ─── Trait object blocks ───────────────────────────────────

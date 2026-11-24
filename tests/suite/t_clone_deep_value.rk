@@ -1,0 +1,93 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Spec: specs/memory/stack.md ST3 — clone walks a value with a work list on
+// the heap natively, and on fresh stacks in the interpreter, so a value nested
+// far deeper than the stack clones (#2084). Before, a 20,000-deep value built
+// by a loop aborted in C, and the interpreter aborted dropping it.
+
+enum Expr {
+    Num(i64)
+    Neg(Vec<Expr>)
+}
+
+func build(n: i64) -> Expr {
+    mut e = Expr.Num(1)
+    mut i = 0
+    while i < n {
+        mut v: Vec<Expr> = Vec.new()
+        v.push(e)
+        e = Expr.Neg(v)
+        i += 1
+    }
+    return e
+}
+
+func is_neg(e: Expr) -> bool {
+    match e {
+        Expr.Neg(_) => return true,
+        Expr.Num(_) => return false,
+    }
+}
+
+test "a value nested 200,000 deep clones" {
+    let e0 = build(200000)
+    let e = e0.clone()
+    mut one = false
+    match e {
+        Expr.Neg(v) => {
+            one = v.len() == 1
+        }
+        Expr.Num(_) => {}
+    }
+    assert one
+}
+
+test "the clone of a nested vector owns its own inner vectors" {
+    mut a: Vec<Vec<Vec<i64>>> = Vec.new()
+    mut i = 0
+    while i < 40 {
+        mut mid: Vec<Vec<i64>> = Vec.new()
+        mut j = 0
+        while j < 3 {
+            mut inner: Vec<i64> = Vec.new()
+            inner.push(i * 10 + j)
+            mid.push(inner)
+            j += 1
+        }
+        a.push(mid)
+        i += 1
+    }
+    mut b = a.clone()
+    b[7][2].push(99)
+    b[39][0][0] = -1
+    assert a[7][2].len() == 1
+    assert b[7][2].len() == 2
+    assert a[39][0][0] == 390
+    assert b[39][0][0] == -1
+    assert b[21][1][0] == 211
+}
+
+test "the clone of a map of nested vectors owns its own" {
+    mut m: Map<string, Vec<Vec<i64>>> = Map.new()
+    mut i = 0
+    while i < 50 {
+        mut outer: Vec<Vec<i64>> = Vec.new()
+        mut inner: Vec<i64> = Vec.new()
+        inner.push(i)
+        outer.push(inner)
+        m.insert("k{i}", outer)
+        i += 1
+    }
+    mut c = m.clone()
+    c["k3"][0].push(7)
+    assert m["k3"][0].len() == 1
+    assert c["k3"][0].len() == 2
+    assert c["k49"][0][0] == 49
+}
+
+test "a closure holding a deep value clones" {
+    let e = build(50000)
+    let f = || is_neg(e)
+    let g = f.clone()
+    assert g()
+    assert f()
+}

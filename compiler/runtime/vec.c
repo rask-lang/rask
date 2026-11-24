@@ -209,10 +209,13 @@ static void release_nested(PendingRelease r) {
     queue_drop();
 }
 
+static void clone_work_drop(void);
+
 void rask_release_unwound(void) {
     if (drain_frame && (char *)__builtin_frame_address(0) > drain_frame) {
         queue_drop();
     }
+    clone_work_drop();
 }
 
 // One entry of an element map. Shared by every container's free and retain
@@ -423,6 +426,122 @@ void rask_heap_field_release(char *slot, const int32_t *entries, int64_t count) 
 
 void rask_owned_retain_all(char *elem, const int32_t *entries, int64_t count) {
     owned_walk(elem, entries, count, OWNED_RETAIN);
+}
+
+// ─── Copying what a copied container holds (#2084) ─────────
+//
+// Cloning a container copies its element bytes, and then every element has to
+// take references of its own: a nested vector, map or closure gets cloned in
+// turn. Done by recursion, that went as deep as the data, in C, where the
+// entry check can't see it: a value nested 20,000 deep built by a plain loop
+// ran through the reserve below the Rask frame and aborted.
+//
+// So a clone makes only the container itself and puts it on a work list; the
+// first clone on the thread drains the list. Each entry is a copy plus a
+// cursor into its elements. The drain takes one element of the entry on top,
+// whose retain may push more copies, so it goes depth first and the list holds
+// one entry per level plus the copies one element made, never a whole level.
+// A list that fits in `CLONE_LOCAL` entries lives in the draining frame.
+//
+// Nothing in a drain yields or runs Rask code, so the list is per thread and a
+// drain starts and ends on one. A panic can leave a drain (an over-aligned
+// element with an allocator that can't align); `rask_release_unwound` drops
+// the list then, and what was copied so far leaks.
+
+#define CLONE_LOCAL 32
+
+typedef struct CloneWork {
+    RaskCloneKind kind;
+    void *copy;
+    int64_t next;   // VEC: next element; MAP: next slot
+} CloneWork;
+
+static __thread CloneWork *clone_work;  // NULL when no drain is running
+static __thread int64_t clone_len, clone_cap;
+static __thread int clone_on_heap;
+
+static void clone_work_drop(void) {
+    if (!clone_work) return;
+    if (clone_on_heap) {
+        rask_realloc(clone_work, clone_cap * (int64_t)sizeof *clone_work, 0);
+    }
+    clone_work = NULL;
+    clone_len = clone_cap = 0;
+    clone_on_heap = 0;
+}
+
+static void clone_push(RaskCloneKind kind, void *copy) {
+    if (clone_len == clone_cap) {
+        int64_t cap = clone_cap * 2;
+        CloneWork *grown;
+        if (clone_on_heap) {
+            grown = rask_realloc(clone_work, clone_cap * (int64_t)sizeof *grown,
+                                 cap * (int64_t)sizeof *grown);
+        } else {
+            grown = rask_alloc(cap * (int64_t)sizeof *grown);
+            memcpy(grown, clone_work, (size_t)(clone_len * (int64_t)sizeof *grown));
+            clone_on_heap = 1;
+        }
+        clone_work = grown;
+        clone_cap = cap;
+    }
+    clone_work[clone_len++] = (CloneWork){ .kind = kind, .copy = copy, .next = 0 };
+}
+
+// One step on the entry on top. Its retain can push, which may move the list,
+// so the entry is found again by index rather than held by pointer.
+static void clone_step(void) {
+    int64_t top = clone_len - 1;
+    CloneWork w = clone_work[top];
+    switch (w.kind) {
+        case RASK_CLONE_VEC: {
+            RaskVec *v = (RaskVec *)w.copy;
+            if (!v->strs.offsets || v->strs.count <= 0 || !v->data || w.next >= v->len) {
+                clone_len--;
+                // The copy holds the same links as the source, and the rack
+                // has to hear about it or a delete leaves the copy naming a
+                // freed node. Every vector a deep clone makes comes through
+                // here, so each level is recorded once (#1972).
+                if (rask_vec_holds_struct_links(v) || rask_elem_strs_are_links(&v->strs)) {
+                    rask_link_register_vec(v);
+                }
+                return;
+            }
+            clone_work[top].next = w.next + 1;
+            rask_owned_retain_all(v->data + w.next * v->elem_size,
+                                  v->strs.offsets, v->strs.count);
+            return;
+        }
+        case RASK_CLONE_MAP: {
+            int64_t at = rask_map_retain_from((RaskMap *)w.copy, w.next);
+            if (at < 0) {
+                clone_len--;
+                return;
+            }
+            clone_work[top].next = at + 1;
+            return;
+        }
+        case RASK_CLONE_CLOSURE:
+            clone_len--;
+            rask_closure_retain_env(w.copy);
+            return;
+    }
+}
+
+void rask_clone_contents(RaskCloneKind kind, void *copy) {
+    if (!copy) return;
+    if (clone_work) {
+        clone_push(kind, copy);
+        return;
+    }
+    CloneWork local[CLONE_LOCAL];
+    clone_work = local;
+    clone_cap = CLONE_LOCAL;
+    clone_len = 0;
+    clone_on_heap = 0;
+    clone_push(kind, copy);
+    while (clone_len > 0) clone_step();
+    clone_work_drop();
 }
 
 // Take a reference to everything `count` elements starting at `from` own.
@@ -1092,7 +1211,8 @@ void rask_vec_iter_end(RaskVec *v, RaskVecCursor *c, int64_t forget) {
     }
 }
 
-// clone — deep copy of the Vec (copies element bytes, not deep-cloning elements).
+// clone: a copy of the Vec. Nested containers and closures are copied too;
+// strings and boxes are shared by reference.
 RaskVec *rask_vec_clone(const RaskVec *src) {
     if (!src) return rask_vec_new(8, NULL, 0, 0);
     RaskVec *dst = rask_vec_with_capacity(src->elem_size, src->len,
@@ -1101,14 +1221,9 @@ RaskVec *rask_vec_clone(const RaskVec *src) {
         memcpy(dst->data, src->data, (size_t)(src->len * src->elem_size));
     }
     dst->len = src->len;
-    vec_retain_elems(dst, 0, dst->len);
-    // The copy holds the same links as the source, and the rack has to hear
-    // about it or a delete leaves the copy naming a freed node. A deep clone
-    // gets here once per vector it makes, the ones inside elements included,
-    // so every level is recorded once (#1972).
-    if (rask_vec_holds_struct_links(dst) || rask_elem_strs_are_links(&dst->strs)) {
-        rask_link_register_vec(dst);
-    }
+    // The elements' references, and the rack's record of the copy, come from
+    // the clone work list, which doesn't recurse into nested containers.
+    rask_clone_contents(RASK_CLONE_VEC, dst);
     return dst;
 }
 
