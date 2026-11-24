@@ -10778,3 +10778,14 @@ fn a_huge_frame_is_not_inlined_into_its_caller() {
     assert_eq!(stdout, "5050\n", "{}", stderr);
     assert!(stderr.contains("huge_local_inlined.rk:11:"), "should name `huge`: {}", stderr);
 }
+
+// A recursive function's frame is paid at every level. Inlining a helper's
+// 4.8K array into it, though the helper only runs at the bottom, made each
+// level that much bigger and `rec(3000)` overflowed natively; the interpreter
+// finished it.
+#[test]
+fn a_helper_with_an_array_is_not_inlined_into_recursion() {
+    let (stdout, stderr, code) = run_capture("--native", "inlined_into_recursion.rk");
+    assert_eq!(code, 0, "{}", stderr);
+    assert_eq!(stdout, "start\n3007\n");
+}

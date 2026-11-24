@@ -15,6 +15,8 @@
 //! - A frame over `FRAME_CHECKED_IN_PLACE` → never inline: in the caller it
 //!   would make the caller's frame that big, and the stack check for it would
 //!   fire at the caller's entry, ahead of code that runs before the call
+//! - A callee with locals in memory → never into a recursive caller, which
+//!   would pay for them at every level
 
 use std::collections::HashMap;
 
@@ -332,6 +334,12 @@ fn inline_into_function(
         return;
     }
 
+    // A recursive function pays for its frame once per level, so its frame
+    // sets how deep it can go. A callee with locals in memory would add them
+    // to every level, even when it only runs at the bottom: a 4.8K array in
+    // a base-case helper overflowed `rec(3000)` natively.
+    let caller_recursive = cg.is_recursive(&func.name);
+
     // Process block by block. We may add new blocks during iteration,
     // but only process the original ones for inlining candidates.
     let mut block_idx = 0;
@@ -342,7 +350,10 @@ fn inline_into_function(
                 let stmt = &func.blocks[block_idx].statements[stmt_idx];
                 match &stmt.kind {
                     MirStmtKind::Call { func: callee_ref, .. } => {
-                        !callee_ref.is_extern && callee_bodies.contains_key(&callee_ref.name)
+                        !callee_ref.is_extern
+                            && callee_bodies.get(&callee_ref.name).is_some_and(|callee| {
+                                !caller_recursive || !callee.locals.iter().any(|l| l.ty.needs_slot())
+                            })
                     }
                     _ => false,
                 }
