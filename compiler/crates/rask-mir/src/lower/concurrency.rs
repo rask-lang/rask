@@ -121,8 +121,8 @@ impl BoxWithSyms {
     // access back and keeps nothing.
     pub(super) const MUTEX: Self = Self {
         acquire: Mint::like("Mutex_acquire", "Shared_read"),
-        data: Mint::like("Mutex_data", "Shared_read"),
-        release: Some(Mint::borrowing("Mutex_release")),
+        data: Mint::like("rask_mutex_data", "Shared_read"),
+        release: Some(Mint::borrowing("rask_mutex_release")),
     };
 
     /// `Cell_acquire` and `Cell_data` both land on `rask_cell_get` — the slot's
@@ -130,20 +130,20 @@ impl BoxWithSyms {
     /// the `cell.get()` path (CE6, which copies out) can't drift into each other.
     pub(super) const CELL: Self = Self {
         acquire: Mint::like("Cell_acquire", "Shared_read"),
-        data: Mint::like("Cell_data", "Shared_read"),
+        data: Mint::like("rask_cell_get", "Shared_read"),
         release: None,
     };
 
     pub(super) const SHARED_READ: Self = Self {
         acquire: Mint::like("Shared_read_acquire", "Shared_read"),
-        data: Mint::like("Shared_data", "Shared_read"),
-        release: Some(Mint::borrowing("Shared_release")),
+        data: Mint::like("rask_shared_data", "Shared_read"),
+        release: Some(Mint::borrowing("rask_shared_release")),
     };
 
     pub(super) const SHARED_WRITE: Self = Self {
         acquire: Mint::like("Shared_write_acquire", "Shared_write"),
-        data: Mint::like("Shared_data", "Shared_read"),
-        release: Some(Mint::borrowing("Shared_release")),
+        data: Mint::like("rask_shared_data", "Shared_read"),
+        release: Some(Mint::borrowing("rask_shared_release")),
     };
 
     /// ST1–ST3. `release` is the *commit*: it copies the working copy back and
@@ -152,14 +152,14 @@ impl BoxWithSyms {
     /// the discard the acquire registered instead (ST3).
     pub(super) const MUTEX_STAGED: Self = Self {
         acquire: Mint::like("Mutex_staged_acquire", "Shared_read"),
-        data: Mint::like("Mutex_staged_data", "Shared_read"),
-        release: Some(Mint::borrowing("Mutex_staged_commit")),
+        data: Mint::like("rask_mutex_staged_data", "Shared_read"),
+        release: Some(Mint::borrowing("rask_mutex_staged_commit")),
     };
 
     pub(super) const SHARED_STAGED: Self = Self {
         acquire: Mint::like("Shared_staged_acquire", "Shared_staged"),
-        data: Mint::like("Shared_staged_data", "Shared_staged"),
-        release: Some(Mint::borrowing("Shared_staged_commit")),
+        data: Mint::like("rask_shared_staged_data", "Shared_staged"),
+        release: Some(Mint::borrowing("rask_shared_staged_commit")),
     };
 }
 

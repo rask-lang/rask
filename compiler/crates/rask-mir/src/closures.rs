@@ -314,9 +314,9 @@ fn callee_keeps(callee_escapes: &HashMap<String, Vec<bool>>, callee: &crate::Fun
 
 /// A bodiless callee that is done with a closure it's handed before it
 /// returns: one written down as using its callback up, or a runtime call
-/// lowering made for itself, which only reads what it's handed (#1555).
+/// with no shape stated, which only reads what it's handed (#1555).
 fn uses_up_callback(callee: &crate::FunctionRef) -> bool {
-    callee.runtime || callee.shape.is_some_and(|s| s.is_eager_callback())
+    callee.shape.map_or(callee.runtime, |s| s.is_eager_callback())
 }
 
 /// The closures `func` hands to a task: the first argument of each task

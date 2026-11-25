@@ -2456,7 +2456,7 @@ impl<'a> MirLowerer<'a> {
 
         for (i, name) in names.iter().enumerate() {
             let elem_ty = if is_channel_create {
-                super::channel_half_ty(if i == 0 { "channel_tx" } else { "channel_rx" })
+                super::channel_half_ty(if i == 0 { "rask_channel_get_tx" } else { "rask_channel_get_rx" })
             } else {
                 mir_elem_types.as_ref()
                     .and_then(|elems| elems.get(i).cloned())
@@ -2468,7 +2468,7 @@ impl<'a> MirLowerer<'a> {
 
             if is_channel_create && names.len() == 2 {
                 // Extract tx (index 0) or rx (index 1) from the raw channel ptr.
-                let extract_fn = if i == 0 { "channel_tx" } else { "channel_rx" };
+                let extract_fn = if i == 0 { "rask_channel_get_tx" } else { "rask_channel_get_rx" };
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                     dst: Some(local_id),
                     func: super::channel_half(extract_fn),
@@ -2735,7 +2735,7 @@ impl<'a> MirLowerer<'a> {
             let args = self.map_entries_args(MirOperand::Local(map_tmp), &pair[0], &pair[1]);
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: Some(entries_vec),
-                func: FunctionRef::borrowing("Map_entries").handing_back("Vec_free"),
+                func: FunctionRef::borrowing("rask_map_entries").handing_back("rask_vec_free"),
                 args,
             }));
             (MirOperand::Local(entries_vec), MirType::I64)

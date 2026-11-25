@@ -266,9 +266,8 @@ pub struct FunctionRef {
     /// constant or calls a C function made for these argument types.
     pub c_macro: Option<Box<rask_c_parse::cexpr::MacroCall>>,
     /// A C runtime function called by its own symbol, a call lowering makes
-    /// for itself (#1555): every argument a word, a word back when the call
-    /// has a destination. Codegen declares it from the call, so it needs no
-    /// dispatch row.
+    /// for itself (#1555). Set when `rask_runtime.h` declares the name;
+    /// codegen declares it from that prototype, so it needs no dispatch row.
     pub runtime: bool,
     /// What the call does with its arguments and result, for the ownership
     /// passes. A stdlib method's is read off its declaration when the call is
@@ -280,9 +279,11 @@ pub struct FunctionRef {
 
 impl FunctionRef {
     /// A call by symbol. A stdlib symbol takes the shape its declaration gives.
+    /// A runtime symbol (one `rask_runtime.h` declares) is called directly.
     pub fn internal(name: String) -> Self {
         let shape = rask_stdlib::mir_metadata::declared_shape(&name);
-        Self { name, is_extern: false, elidable_clone: false, points_into_args: false, c_macro: None, runtime: false, shape }
+        let runtime = rask_stdlib::runtime_header::declares(&name);
+        Self { name, is_extern: false, elidable_clone: false, points_into_args: false, c_macro: None, runtime, shape }
     }
 
     /// Extern "C" call.
@@ -290,9 +291,11 @@ impl FunctionRef {
         Self { name, is_extern: true, elidable_clone: false, points_into_args: false, c_macro: None, runtime: false, shape: None }
     }
 
-    /// A runtime function by its C symbol (`runtime`).
+    /// A runtime function by its C symbol, which `rask_runtime.h` declares.
     pub fn runtime(name: String) -> Self {
-        Self { runtime: true, ..Self::internal(name) }
+        let f = Self::internal(name);
+        debug_assert!(f.runtime, "`{}` isn't declared in rask_runtime.h", f.name);
+        f
     }
 
     /// A call whose shape lowering states, because no declaration answers for it.

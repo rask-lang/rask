@@ -2549,7 +2549,7 @@ impl<'a> MirLowerer<'a> {
         if matches!(ty, MirType::Buffer) {
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: Some(less),
-                func: FunctionRef::borrowing("string_lt"),
+                func: FunctionRef::borrowing("rask_string_lt"),
                 args: vec![left, right],
             }));
             return less;
@@ -2788,7 +2788,7 @@ impl<'a> MirLowerer<'a> {
         if matches!(key_ty, MirType::Buffer) {
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: Some(less),
-                func: FunctionRef::borrowing("string_lt"),
+                func: FunctionRef::borrowing("rask_string_lt"),
                 args: vec![MirOperand::Local(left), MirOperand::Local(right)],
             }));
         } else {
@@ -2995,7 +2995,7 @@ impl<'a> MirLowerer<'a> {
         let cmp = self.emit_key_comparator(&key_ty);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: None,
-            func: FunctionRef::like("Vec_sort_by_keys", "Vec_sort_by"),
+            func: FunctionRef::like("rask_vec_sort_by_keys", "Vec_sort_by"),
             args: vec![
                 MirOperand::Local(vec_local),
                 MirOperand::Local(keys),
@@ -3006,7 +3006,7 @@ impl<'a> MirLowerer<'a> {
 
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: None,
-            func: FunctionRef::releasing("Vec_free"),
+            func: FunctionRef::releasing("rask_vec_free"),
             args: vec![MirOperand::Local(keys)],
         }));
 

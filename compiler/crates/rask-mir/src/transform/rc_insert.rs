@@ -278,12 +278,11 @@ fn own_joins_of_kept_values(
 /// Does the call keep its argument at `i`, rather than only read it?
 ///
 /// From the body when this pass can read one (`kept`), from the declaration
-/// when it can't. A runtime call lowering makes for itself
-/// (`FunctionRef::runtime`) reads what it's handed. Unknown is "keeps": the
-/// caller then releases nothing it passed, which leaks rather than
-/// double-frees.
+/// when it can't. A runtime call with no shape stated reads what it's
+/// handed. Unknown is "keeps": the caller then releases nothing it passed,
+/// which leaks rather than double-frees.
 fn call_keeps_arg(fref: &crate::FunctionRef, i: usize, kept: &HashMap<String, Vec<bool>>) -> bool {
-    if fref.runtime {
+    if fref.runtime && fref.shape.is_none() {
         return false;
     }
     match kept.get(fref.name.as_str()) {
@@ -798,7 +797,7 @@ fn filled_in_place(
                     let Some(id) = uses::operand_local(arg) else { continue };
                     let may_write = !own.contains(&fref.name)
                         || writes.get(&fref.name).is_some_and(|set| set.contains(&i));
-                    if !call_keeps_arg(fref, i, kept) && may_write && !fref.runtime {
+                    if !call_keeps_arg(fref, i, kept) && may_write && !(fref.runtime && fref.shape.is_none()) {
                         out.insert(id);
                     }
                 }
@@ -1299,7 +1298,7 @@ fn insert_aggregate_release(
             .flat_map(|b| b.statements.iter())
             .filter_map(|st| match &st.kind {
                 MirStmtKind::Call { func: fref, dst: Some(d), .. }
-                    if fref.name == "Vec_borrow_elem" || fref.name == "Map_borrow_elem" =>
+                    if fref.name == "rask_vec_borrow_elem" || fref.name == "Map_borrow_elem" =>
                 {
                     Some(*d)
                 }

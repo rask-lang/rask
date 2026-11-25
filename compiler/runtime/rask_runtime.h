@@ -13,6 +13,10 @@
 // Status codes, kind tags and encodings shared with the compiler.
 #include "rask_abi.h"
 
+/* Marks a function that can panic. Native codegen reads the mark from this
+ * header and records the caller's source location before the call. */
+#define RASK_PANICS
+
 // ─── Allocator ──────────────────────────────────────────────
 // Swappable allocator with optional stats tracking.
 // Default uses malloc/realloc/free. Call rask_allocator_set() before any
@@ -58,7 +62,7 @@ void *rask_closure_alloc(int64_t block_size, const int32_t *entries, int64_t cou
 #define RASK_CLOSURE_HEAP 2
 // Whether a heap closure captured a link or a `Local` box.
 int   rask_closure_task_bound(const void *ptr);
-void  rask_closure_refuse_crossing(void *closure_base);
+RASK_PANICS void rask_closure_refuse_crossing(void *closure_base);
 void  rask_closure_free(void *ptr);
 void *rask_closure_clone(const void *ptr);
 void  rask_closure_retain_env(void *copy);
@@ -353,11 +357,11 @@ int64_t  rask_vec_is_bounded(const RaskVec *v);
 int64_t  rask_vec_is_full(const RaskVec *v);
 int64_t  rask_vec_try_push(RaskVec *v, const void *elem);
 int64_t  rask_vec_push(RaskVec *v, const void *elem);
-void    *rask_vec_get(const RaskVec *v, int64_t index);
+RASK_PANICS void *rask_vec_get(const RaskVec *v, int64_t index);
 // Element pointer lent straight out of the buffer, so a `mutate` callee writes
 // the real element instead of a copy. Between borrow and release, anything that
 // would move the buffer panics rather than leave the pointer dangling.
-void    *rask_vec_borrow_elem(RaskVec *v, int64_t index);
+RASK_PANICS void *rask_vec_borrow_elem(RaskVec *v, int64_t index);
 void     rask_vec_release_elem(RaskVec *v);
 void    *rask_vec_get_unchecked(const RaskVec *v, int64_t index);
 void    *rask_vec_get_opt(const RaskVec *v, int64_t index);
@@ -503,7 +507,7 @@ int64_t     rask_string_le(const RaskStr *a, const RaskStr *b);
 int64_t     rask_string_ge(const RaskStr *a, const RaskStr *b);
 int64_t     rask_string_byte_at(const RaskStr *s, int64_t pos);
 int64_t     rask_string_char_at(const RaskStr *s, int64_t byte_offset);
-int64_t     rask_string_index(const RaskStr *s, int64_t index);
+RASK_PANICS int64_t rask_string_index(const RaskStr *s, int64_t index);
 int64_t     rask_string_contains(const RaskStr *haystack, const RaskStr *needle);
 int64_t     rask_string_starts_with(const RaskStr *s, const RaskStr *prefix);
 int64_t     rask_string_ends_with(const RaskStr *s, const RaskStr *suffix);
@@ -1476,7 +1480,7 @@ void      rask_task_set_current(RaskTask *t);
 void      rask_task_run_body(RaskTask *t, RaskTaskFn func, void *env);
 
 // `spawn`: a green task where there's a scheduler, a thread where there isn't.
-RaskTask *rask_green_closure_spawn(void *closure_ptr, int64_t result_owned);
+RASK_PANICS RaskTask *rask_green_closure_spawn(void *closure_ptr, int64_t result_owned);
 
 // ─── Threads ───────────────────────────────────────────────
 // Phase A concurrency: one OS thread per spawn (conc.strategy/A1).
@@ -1519,7 +1523,7 @@ int64_t rask_sleep_ns(int64_t ns);
 // Spawn a thread running a closure [func_ptr | captures...].
 RaskTask *rask_closure_spawn(void *closure_ptr, int64_t result_owned);
 // `Thread.spawn`: the same, refused under sim.
-RaskTask *rask_thread_spawn(void *closure_ptr, int64_t result_owned);
+RASK_PANICS RaskTask *rask_thread_spawn(void *closure_ptr, int64_t result_owned);
 
 // ─── Worker pool (threadpool.c) ────────────────────────────
 // `using ThreadPool(workers: n)` brackets its block with these. Workers are
@@ -1534,7 +1538,7 @@ void rask_threadpool_shutdown(void);
 
 // ThreadPool.spawn — enqueues a job. Outside a `using ThreadPool` block there
 // is no pool, so it falls back to one thread.
-RaskTask *rask_threadpool_spawn(void *closure_ptr, int64_t result_owned, int8_t requires_pool);
+RASK_PANICS RaskTask *rask_threadpool_spawn(void *closure_ptr, int64_t result_owned, int8_t requires_pool);
 // A pooled job not yet started; whoever claims it first runs it.
 void      rask_task_pool_queue(RaskTask *t, RaskTaskFn func, void *env);
 int       rask_task_pool_claim(RaskTask *t);

@@ -43,9 +43,9 @@ pub fn elem(ty: MirType) -> MirOperand {
 /// and a fourth kind would have had to find all of them.
 pub fn map_ctor_for(key_ty: &MirType) -> &'static str {
     match key_ty {
-        MirType::Buffer => "Map_new_string_keys",
-        MirType::Link(_) => "Map_new_link_keys",
-        MirType::Option(inner) if matches!(**inner, MirType::Link(_)) => "Map_new_link_keys",
+        MirType::Buffer => "rask_map_new_string_keys",
+        MirType::Link(_) => "rask_map_new_link_keys",
+        MirType::Option(inner) if matches!(**inner, MirType::Link(_)) => "rask_map_new_link_keys",
         _ => "Map_new",
     }
 }
@@ -57,8 +57,8 @@ pub fn map_ctor_for(key_ty: &MirType) -> &'static str {
 /// kind is added in one place and this follows.
 pub fn map_ctor_with_capacity(key_ty: &MirType) -> &'static str {
     match map_ctor_for(key_ty) {
-        "Map_new_string_keys" => "Map_with_capacity_string_keys",
-        "Map_new_link_keys" => "Map_with_capacity_link_keys",
+        "rask_map_new_string_keys" => "rask_map_new_string_keys_cap",
+        "rask_map_new_link_keys" => "rask_map_new_link_keys_cap",
         _ => "Map_with_capacity",
     }
 }
@@ -69,10 +69,10 @@ pub fn map_ctor_with_capacity(key_ty: &MirType) -> &'static str {
 pub fn map_ctor_ref(name: impl Into<String>) -> crate::FunctionRef {
     let name = name.into();
     let declared = match name.as_str() {
-        "Map_with_capacity_string_keys" | "Map_with_capacity_link_keys" | "Map_with_capacity_keyed" => {
+        "rask_map_new_string_keys_cap" | "rask_map_new_link_keys_cap" | "rask_map_new_keyed_cap" => {
             Some("Map_with_capacity")
         }
-        "Map_new_string_keys" | "Map_new_link_keys" | "Map_new_keyed" => Some("Map_new"),
+        "rask_map_new_string_keys" | "rask_map_new_link_keys" | "rask_map_new_keyed" => Some("Map_new"),
         _ => None,
     };
     match declared {

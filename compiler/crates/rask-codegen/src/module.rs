@@ -16,6 +16,14 @@ use crate::builder::FunctionBuilder;
 use crate::types::{mir_to_cranelift_type, extern_type_to_mir};
 use crate::{BuildMode, CodegenError, CodegenResult};
 
+/// Runtime symbols codegen calls itself rather than through a MIR call: a
+/// string comparison operator lowers to compare/eq, a string temporary codegen
+/// builds is released with free, and `ensure` and unwinding frames push and pop.
+const CODEGEN_RUNTIME_CALLS: &[&str] = &[
+    "rask_string_compare", "rask_string_eq", "rask_string_free",
+    "rask_ensure_push", "rask_ensure_pop", "rask_unwind_push", "rask_unwind_pop",
+];
+
 pub struct CodeGenerator {
     pub(crate) module: ObjectModule,
     pub(crate) ctx: codegen::Context,
@@ -1345,52 +1353,40 @@ impl CodeGenerator {
     ///
     /// Call this after `declare_runtime_functions()` and before `declare_functions()`.
     /// User-defined functions declared later will shadow any matching stdlib names.
-    /// The runtime functions lowering calls by symbol (`FunctionRef::runtime`):
-    /// each argument a word, a word back when the call has a destination. The
-    /// call states the shape, so there is no dispatch row to keep in step.
+    /// The runtime functions lowering calls by symbol (`FunctionRef::runtime`)
+    /// and the ones codegen calls on its own (`CODEGEN_RUNTIME_CALLS`),
+    /// declared with the prototype `rask_runtime.h` gives them. The header owns
+    /// the signature, so there is no dispatch row to keep in step.
     fn declare_runtime_calls(&mut self, mir_functions: &[MirFunction]) -> CodegenResult<()> {
-        let mut arity: HashMap<String, (usize, bool)> = HashMap::new();
-        for mir_fn in mir_functions {
-            for block in &mir_fn.blocks {
-                for stmt in &block.statements {
-                    let MirStmtKind::Call { dst, func, args } = &stmt.kind else { continue };
-                    if !func.runtime {
-                        continue;
-                    }
-                    let shape = (args.len(), dst.is_some());
-                    match arity.get(&func.name) {
-                        // Two calls disagreeing on the argument count is a
-                        // lowering bug; a call that drops the result is fine.
-                        Some((n, _)) if *n != shape.0 => {
-                            return Err(CodegenError::UnsupportedFeature(format!(
-                                "runtime call `{}` made with {} and {} arguments",
-                                func.name, n, shape.0
-                            )));
-                        }
-                        Some((_, ret)) if *ret || !shape.1 => {}
-                        _ => {
-                            arity.insert(func.name.clone(), shape);
-                        }
-                    }
-                }
-            }
-        }
-        for (name, (params, ret)) in arity {
-            if self.func_ids.contains_key(&name) {
+        let mut names: Vec<&str> = mir_functions
+            .iter()
+            .flat_map(|f| f.blocks.iter())
+            .flat_map(|b| b.statements.iter())
+            .filter_map(|stmt| match &stmt.kind {
+                MirStmtKind::Call { func, .. } if func.runtime => Some(func.name.as_str()),
+                _ => None,
+            })
+            .collect();
+        names.extend(CODEGEN_RUNTIME_CALLS);
+        names.sort_unstable();
+        names.dedup();
+        for name in names {
+            if self.func_ids.contains_key(name) {
                 continue;
             }
+            let proto = crate::c_header::prototype(name).ok_or_else(|| {
+                CodegenError::UnsupportedFeature(format!(
+                    "runtime call `{name}`: `rask_runtime.h` has no prototype for it that codegen can read"
+                ))
+            })?;
             let mut sig = self.module.make_signature();
-            for _ in 0..params {
-                sig.params.push(AbiParam::new(types::I64));
-            }
-            if ret {
-                sig.returns.push(AbiParam::new(types::I64));
-            }
+            sig.params.extend(proto.params.iter().map(|&t| AbiParam::new(t)));
+            sig.returns.extend(proto.ret.map(AbiParam::new));
             let id = self
                 .module
-                .declare_function(&name, Linkage::Import, &sig)
+                .declare_function(name, Linkage::Import, &sig)
                 .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
-            self.func_ids.insert(name, id);
+            self.func_ids.insert(name.to_string(), id);
         }
         Ok(())
     }

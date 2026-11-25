@@ -2908,7 +2908,7 @@ impl<'a> MirLowerer<'a> {
             func: if map {
                 FunctionRef::like("Map_slot", "Map_get")
             } else {
-                FunctionRef::like("Vec_slot", "Vec_get")
+                FunctionRef::like("rask_vec_get", "Vec_get")
             },
             args: vec![collection, at],
         }));
@@ -3112,7 +3112,7 @@ impl<'a> MirLowerer<'a> {
                 let vec_local = self.builder.alloc_temp(vec_ty.clone());
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                     dst: Some(vec_local),
-                    func: FunctionRef::keeping("rask_vec_from_static", &[0]).handing_back("Vec_free"),
+                    func: FunctionRef::keeping("rask_vec_from_static", &[0]).handing_back("rask_vec_free"),
                     args: vec![
                         MirOperand::Local(data),
                         MirOperand::Constant(MirConst::Int(meta.elem_count as i64)),
@@ -8413,7 +8413,7 @@ pub(crate) fn channel_half_ty(extract: &'static str) -> MirType {
 }
 
 fn channel_half_release(extract: &'static str) -> &'static str {
-    let end = if extract == "channel_tx" { "Sender" } else { "Receiver" };
+    let end = if extract == "rask_channel_get_tx" { "Sender" } else { "Receiver" };
     rask_stdlib::handles::declared_release(end)
         .unwrap_or_else(|| panic!("stdlib/async.rk declares no release for `{end}`"))
 }

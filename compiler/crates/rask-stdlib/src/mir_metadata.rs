@@ -551,9 +551,9 @@ impl CallShape {
 /// with it. `None` for anything that isn't `Vec`, `Map` or `Rack`.
 fn container_free(ty: &TypeExpr) -> Option<&'static str> {
     match ty.last_segment()? {
-        "Vec" => Some("Vec_free"),
-        "Map" => Some("Map_free"),
-        "Rack" => Some("Rack_free"),
+        "Vec" => Some("rask_vec_free"),
+        "Map" => Some("rask_map_free"),
+        "Rack" => Some("rask_rack_free"),
         _ => None,
     }
 }
@@ -956,9 +956,9 @@ mod tests {
     #[test]
     fn a_fresh_handle_names_its_release() {
         assert!(shape("Random_new").fresh_release().is_some());
-        assert_eq!(shape("Vec_new").fresh_release(), Some("Vec_free"), "the runtime made it for this call");
-        assert_eq!(shape("os_args").fresh_release(), Some("Vec_free"));
-        assert_eq!(shape("File_read_bytes_raw").fresh_wrapped(), Some("Vec_free"));
+        assert_eq!(shape("Vec_new").fresh_release(), Some("rask_vec_free"), "the runtime made it for this call");
+        assert_eq!(shape("os_args").fresh_release(), Some("rask_vec_free"));
+        assert_eq!(shape("File_read_bytes_raw").fresh_wrapped(), Some("rask_vec_free"));
         assert!(shape("Vec_get").fresh_release().is_none(), "a view into the receiver");
         assert!(shape("Vec_from").fresh_release().is_some());
     }

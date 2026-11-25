@@ -99,7 +99,7 @@ impl<'a> MirLowerer<'a> {
         let dst_size = if scalar_dst { 16 } else { rask_layout::size_of(&target_mir, self.ctx.target()) as i64 };
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: None,
-            func: FunctionRef::reading("json_decode_zero"),
+            func: FunctionRef::reading("rask_json_decode_zero"),
             args: vec![
                 MirOperand::Local(dst),
                 MirOperand::Constant(MirConst::Int(dst_size)),
@@ -109,12 +109,12 @@ impl<'a> MirLowerer<'a> {
         let status = self.builder.alloc_temp(MirType::I64);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(status),
-            func: FunctionRef::reading("json_decode_into"),
+            func: FunctionRef::reading("rask_json_decode_into"),
             args: vec![MirOperand::Local(dst), MirOperand::Local(shape), input],
         }));
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: None,
-            func: FunctionRef::releasing("json_shape_free"),
+            func: FunctionRef::releasing("rask_json_shape_free"),
             args: vec![MirOperand::Local(shape)],
         }));
 
@@ -292,7 +292,7 @@ impl<'a> MirLowerer<'a> {
 
     fn emit_shape_for(&mut self, ty: &Type, purpose: ShapeFor) -> Option<crate::LocalId> {
         if let Some(kind) = prim_shape_kind(ty, self.ctx.type_defs.target()) {
-            return Some(self.emit_shape_call("json_shape_prim", vec![
+            return Some(self.emit_shape_call("rask_json_shape_prim", vec![
                 MirOperand::Constant(MirConst::Int(kind)),
             ]));
         }
@@ -322,7 +322,7 @@ impl<'a> MirLowerer<'a> {
             if **err == Type::None {
                 let inner = self.emit_shape_for(ok, purpose)?;
                 let opt = self.ctx.type_to_mir(ty);
-                return Some(self.emit_shape_call("json_shape_opt", vec![
+                return Some(self.emit_shape_call("rask_json_shape_opt", vec![
                     MirOperand::Local(inner),
                     MirOperand::Constant(MirConst::Int(rask_layout::size_of(&opt, self.ctx.target()) as i64)),
                     MirOperand::Constant(MirConst::Int(rask_layout::payload_offset_of(&opt, self.ctx.target()) as i64)),
@@ -335,7 +335,7 @@ impl<'a> MirLowerer<'a> {
             let elem_shape = self.emit_shape_for(&elem, purpose)?;
             let slot = self.slot_size_for_type(&elem)?;
             let owned = crate::elem_strs::elem(self.ctx.type_to_mir(&elem));
-            return Some(self.emit_shape_call("json_shape_vec", vec![
+            return Some(self.emit_shape_call("rask_json_shape_vec", vec![
                 MirOperand::Local(elem_shape),
                 MirOperand::Constant(MirConst::Int(slot)),
                 owned,
@@ -352,7 +352,7 @@ impl<'a> MirLowerer<'a> {
             let val_shape = self.emit_shape_for(&val, purpose)?;
             let slot = self.slot_size_for_type(&val)?;
             let owned = crate::elem_strs::elem(self.ctx.type_to_mir(&val));
-            return Some(self.emit_shape_call("json_shape_map", vec![
+            return Some(self.emit_shape_call("rask_json_shape_map", vec![
                 MirOperand::Local(val_shape),
                 MirOperand::Constant(MirConst::Int(slot)),
                 owned,
@@ -364,7 +364,7 @@ impl<'a> MirLowerer<'a> {
     }
 
     fn emit_struct_shape(&mut self, layout: &StructLayout, purpose: ShapeFor) -> Option<crate::LocalId> {
-        let shape = self.emit_shape_call("json_shape_struct", vec![MirOperand::Constant(
+        let shape = self.emit_shape_call("rask_json_shape_struct", vec![MirOperand::Constant(
             MirConst::Int(layout.size as i64),
         )]);
         for field in &layout.fields {
@@ -384,7 +384,7 @@ impl<'a> MirLowerer<'a> {
             let key = field_attrs::serial_name(&field.attrs, &field.name);
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: None,
-                func: FunctionRef::reading("json_shape_field"),
+                func: FunctionRef::reading("rask_json_shape_field"),
                 args: vec![
                     MirOperand::Local(shape),
                     MirOperand::Constant(MirConst::String(key)),
@@ -452,13 +452,13 @@ impl<'a> MirLowerer<'a> {
         let int = |v: i64| MirOperand::Constant(MirConst::Int(v));
         let named = |want: &str| matches!(ty, Type::UnresolvedNamed(n) if n == want);
         if matches!(ty, Type::Char) || named("char") {
-            return Some(self.emit_shape_call("json_shape_prim", vec![int(JSHAPE_CHAR)]));
+            return Some(self.emit_shape_call("rask_json_shape_prim", vec![int(JSHAPE_CHAR)]));
         }
         if matches!(ty, Type::I128) || named("i128") {
-            return Some(self.emit_shape_call("json_shape_prim", vec![int(JSHAPE_I128)]));
+            return Some(self.emit_shape_call("rask_json_shape_prim", vec![int(JSHAPE_I128)]));
         }
         if matches!(ty, Type::U128) || named("u128") {
-            return Some(self.emit_shape_call("json_shape_prim", vec![int(JSHAPE_U128)]));
+            return Some(self.emit_shape_call("rask_json_shape_prim", vec![int(JSHAPE_U128)]));
         }
         // `T or E`, either side. (`T?` is a result with `none` for its error,
         // and JSON reads that one.)
@@ -485,7 +485,7 @@ impl<'a> MirLowerer<'a> {
                 let val_shape = self.emit_shape_for(&val, ShapeFor::Claims)?;
                 let slot = self.slot_size_for_type(&val)?;
                 let owned = crate::elem_strs::elem(self.ctx.type_to_mir(&val));
-                let map = self.emit_shape_call("json_shape_map", vec![
+                let map = self.emit_shape_call("rask_json_shape_map", vec![
                     MirOperand::Local(val_shape),
                     int(slot),
                     owned,
@@ -500,7 +500,7 @@ impl<'a> MirLowerer<'a> {
         }
         if let Type::Tuple(elems) = ty {
             let MirType::Tuple(fields) = self.ctx.type_to_mir(ty) else { return None };
-            let shape = self.emit_shape_call("json_shape_struct", vec![int(rask_layout::size_of(&self.ctx.type_to_mir(ty), self.ctx.target()) as i64)]);
+            let shape = self.emit_shape_call("rask_json_shape_struct", vec![int(rask_layout::size_of(&self.ctx.type_to_mir(ty), self.ctx.target()) as i64)]);
             // Tuple fields sit one after the other, as `debug_render_tuple`
             // and field access read them.
             let mut offset: i64 = 0;
@@ -522,7 +522,7 @@ impl<'a> MirLowerer<'a> {
             let payload = if variant.fields.is_empty() {
                 int(0)
             } else {
-                let payload = self.emit_shape_call("json_shape_struct", vec![int(layout.size as i64)]);
+                let payload = self.emit_shape_call("rask_json_shape_struct", vec![int(layout.size as i64)]);
                 for f in &variant.fields {
                     let field_shape = self.emit_shape_for(&f.ty, ShapeFor::Claims)?;
                     self.add_shape_field(payload, (variant.payload_offset + f.offset) as i64, field_shape);
@@ -794,7 +794,7 @@ impl<'a> MirLowerer<'a> {
     fn add_shape_field(&mut self, shape: crate::LocalId, offset: i64, field_shape: crate::LocalId) {
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: None,
-            func: FunctionRef::reading("json_shape_field"),
+            func: FunctionRef::reading("rask_json_shape_field"),
             args: vec![
                 MirOperand::Local(shape),
                 MirOperand::Constant(MirConst::String(String::new())),
@@ -851,9 +851,9 @@ impl<'a> MirLowerer<'a> {
         };
         let dst_size = if scalar_dst { 16 } else { rask_layout::size_of(&target_mir, self.ctx.target()) as i64 };
         for (func, args) in [
-            ("json_decode_zero", vec![MirOperand::Local(dst), MirOperand::Constant(MirConst::Int(dst_size))]),
+            ("rask_json_decode_zero", vec![MirOperand::Local(dst), MirOperand::Constant(MirConst::Int(dst_size))]),
             ("claims_fill", vec![MirOperand::Local(dst), MirOperand::Local(shape)]),
-            ("json_shape_free", vec![MirOperand::Local(shape)]),
+            ("rask_json_shape_free", vec![MirOperand::Local(shape)]),
         ] {
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: None,
@@ -978,7 +978,7 @@ impl<'a> MirLowerer<'a> {
         }));
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: None,
-            func: FunctionRef::releasing("json_shape_free"),
+            func: FunctionRef::releasing("rask_json_shape_free"),
             args: vec![MirOperand::Local(shape)],
         }));
         Some(out)

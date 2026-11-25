@@ -689,7 +689,7 @@ fn length_is_stable(func: &MirFunction, collection: LocalId) -> bool {
                 MirStmtKind::Call { func: fref, .. }
                     if matches!(
                         fref.name.as_str(),
-                        "Vec_len" | "Array_len" | "Vec_index" | "Vec_get_unchecked" | "Vec_free"
+                        "Vec_len" | "Array_len" | "Vec_index" | "Vec_get_unchecked" | "rask_vec_free"
                     ) => {}
                 _ => {
                     if stmt_uses(stmt).iter().any(|l| aliases.contains(l)) {

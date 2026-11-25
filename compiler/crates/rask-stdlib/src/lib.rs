@@ -13,6 +13,7 @@ pub mod forwarders;
 pub mod stubs;
 pub mod modules;
 pub mod mir_metadata;
+pub mod runtime_header;
 pub mod operators;
 pub mod interfaces;
 pub mod ordering;

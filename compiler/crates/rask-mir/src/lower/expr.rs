@@ -1035,8 +1035,8 @@ impl<'a> MirLowerer<'a> {
     /// is a handle a call builds on demand.
     fn channel_half_extractor(&self, object: &Expr, field: &str) -> Option<&'static str> {
         let which = match field {
-            "0" => "channel_tx",
-            "1" => "channel_rx",
+            "0" => "rask_channel_get_tx",
+            "1" => "rask_channel_get_rx",
             _ => return None,
         };
         let rask_types::Type::Tuple(elems) = &*self.ctx.lookup_raw_type(object.id)? else {
@@ -1162,13 +1162,13 @@ impl<'a> MirLowerer<'a> {
         };
         let (borrow, release) = if self.is_vec_expr(object) {
             (
-                crate::operand::Mint::like("Vec_borrow_elem", "Vec_get"),
-                crate::operand::Mint::borrowing("Vec_release_elem"),
+                crate::operand::Mint::like("rask_vec_borrow_elem", "Vec_get"),
+                crate::operand::Mint::borrowing("rask_vec_release_elem"),
             )
         } else if self.is_map_expr(object) {
             (
                 crate::operand::Mint::like("Map_borrow_elem", "Map_get"),
-                crate::operand::Mint::borrowing("Map_release_elem"),
+                crate::operand::Mint::borrowing("rask_map_release_elem"),
             )
         } else {
             return None;
@@ -3553,7 +3553,7 @@ impl<'a> MirLowerer<'a> {
                         "Vec" => ("Vec_index".to_string(), rask_stdlib::mir_metadata::declared_shape("Vec_get")),
                         // One byte read out of the text; nothing is kept.
                         "string" => (
-                            "string_index".to_string(),
+                            "rask_string_index".to_string(),
                             Some(rask_stdlib::mir_metadata::CallShape::borrows_receiver()),
                         ),
                         _ => (format!("{}_index", base), None),
@@ -5560,7 +5560,7 @@ impl<'a> MirLowerer<'a> {
         let vec_local = self.builder.alloc_temp(MirType::I64);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(vec_local),
-            func: FunctionRef::reading("rask_vec_view").handing_back("Vec_free_view"),
+            func: FunctionRef::reading("rask_vec_view").handing_back("rask_vec_free_view"),
             args: vec![
                 obj_op.clone(),
                 MirOperand::Constant(MirConst::Int(*len as i64)),
@@ -6700,7 +6700,7 @@ impl<'a> MirLowerer<'a> {
             args.push(MirOperand::Constant(MirConst::Int(kind)));
             args.push(MirOperand::Constant(MirConst::Int(size)));
             shape = rask_stdlib::mir_metadata::declared_shape("Vec_sort");
-            ("Vec_sort_scalar".to_string(), args)
+            ("rask_vec_sort_scalar".to_string(), args)
         } else if qualified_name == "Vec_sort" && sort_comparator.is_some() {
             // An aggregate with a `compare`: sort by it. The default runtime
             // comparator reads the first eight bytes, which for a struct is
@@ -6731,7 +6731,7 @@ impl<'a> MirLowerer<'a> {
             // The byte-compare runtime can't match two equal heap strings —
             // they hold different pointers. Route strings to a real compare.
             shape = rask_stdlib::mir_metadata::declared_shape("Vec_contains");
-            ("Vec_contains_str".to_string(), all_args)
+            ("rask_vec_contains_str".to_string(), all_args)
         } else {
             (qualified_name.clone(), all_args)
         };
@@ -6851,9 +6851,9 @@ impl<'a> MirLowerer<'a> {
             (SharedStrategy::Local, "take") => ("Cell_take", same_as("take")),
             // Every strategy's clone hands back another handle on the same
             // cell, so the receiver is borrowed and the result is the caller's.
-            (SharedStrategy::Local, "clone") => ("Cell_clone", Some(CallShape::borrows_receiver().handing_back(strategy.release()))),
-            (SharedStrategy::Mutex, "try_read" | "try_write") => ("Mutex_try_lock", same_as("read")),
-            (SharedStrategy::Mutex, "clone") => ("Mutex_clone", Some(CallShape::borrows_receiver().handing_back(strategy.release()))),
+            (SharedStrategy::Local, "clone") => ("rask_cell_clone", Some(CallShape::borrows_receiver().handing_back(strategy.release()))),
+            (SharedStrategy::Mutex, "try_read" | "try_write") => ("rask_mutex_try_lock_ptr", same_as("read")),
+            (SharedStrategy::Mutex, "clone") => ("rask_mutex_clone", Some(CallShape::borrows_receiver().handing_back(strategy.release()))),
             // `get`/`set`/`replace` exist under every strategy (CE6), not just
             // the one that needs no lock. Left unmapped, `Shared.new(5).get()`
             // type-checked and then failed to link on `Shared_get`.
@@ -6861,11 +6861,13 @@ impl<'a> MirLowerer<'a> {
             (SharedStrategy::Mutex, "set") => ("Mutex_set", same_as("set")),
             (SharedStrategy::Mutex, "replace") => ("Mutex_replace", same_as("replace")),
             (SharedStrategy::Mutex, "take") => ("Mutex_take", same_as("take")),
+            (SharedStrategy::Readers, "try_read") => ("rask_shared_try_read_ptr", same_as("read")),
+            (SharedStrategy::Readers, "try_write") => ("rask_shared_try_write_ptr", same_as("read")),
             (SharedStrategy::Readers, "get") => ("Shared_get", None),
             (SharedStrategy::Readers, "set") => ("Shared_set", None),
             (SharedStrategy::Readers, "replace") => ("Shared_replace", None),
             (SharedStrategy::Readers, "take") => ("Shared_take", None),
-            (SharedStrategy::Readers, "clone") => ("Shared_clone", Some(CallShape::borrows_receiver().handing_back(strategy.release()))),
+            (SharedStrategy::Readers, "clone") => ("rask_shared_clone_i64", Some(CallShape::borrows_receiver().handing_back(strategy.release()))),
             _ => return (qualified.to_string(), None),
         };
         (name.to_string(), shape)
@@ -8099,7 +8101,7 @@ impl<'a> MirLowerer<'a> {
         let out = self.builder.alloc_temp(MirType::U64);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(out),
-            func: FunctionRef::reading("int_hash"),
+            func: FunctionRef::reading("rask_int_hash"),
             args: vec![lo, hi, MirOperand::Constant(MirConst::Int(width))],
         }));
         Some((MirOperand::Local(out), MirType::U64))
@@ -8813,7 +8815,7 @@ impl<'a> MirLowerer<'a> {
             let result = self.builder.alloc_temp(MirType::I64);
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: Some(result),
-                func: FunctionRef::borrowing("f64_compare"),
+                func: FunctionRef::borrowing("rask_f64_compare_total"),
                 args: vec![obj_op.clone(), rhs],
             }));
             // `rask_f64_compare_total` already answers in tag values (0/1/2),
@@ -8935,7 +8937,7 @@ impl<'a> MirLowerer<'a> {
             let raw = self.builder.alloc_temp(MirType::I64);
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: Some(raw),
-                func: FunctionRef::borrowing("string_compare"),
+                func: FunctionRef::borrowing("rask_string_compare"),
                 args: vec![obj_op.clone(), rhs],
             }));
             let tag = self.builder.alloc_temp(MirType::I64);
@@ -8951,11 +8953,11 @@ impl<'a> MirLowerer<'a> {
         }
         if is_string_obj && args.len() == 1 {
             let string_cmp_fn = match method.as_str() {
-                "eq" => Some("string_eq"),
-                "lt" => Some("string_lt"),
-                "gt" => Some("string_gt"),
-                "le" => Some("string_le"),
-                "ge" => Some("string_ge"),
+                "eq" => Some("rask_string_eq"),
+                "lt" => Some("rask_string_lt"),
+                "gt" => Some("rask_string_gt"),
+                "le" => Some("rask_string_le"),
+                "ge" => Some("rask_string_ge"),
                 _ => None,
             };
             if let Some(func_name) = string_cmp_fn {
@@ -9596,7 +9598,7 @@ impl<'a> MirLowerer<'a> {
         let pairs = self.builder.alloc_temp(MirType::Ptr);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(pairs),
-            func: FunctionRef::keeping("rask_vec_from_static", &[0]).handing_back("Vec_free"),
+            func: FunctionRef::keeping("rask_vec_from_static", &[0]).handing_back("rask_vec_free"),
             args: vec![
                 MirOperand::Local(blob),
                 MirOperand::Constant(MirConst::Int(entries as i64)),
@@ -9694,7 +9696,7 @@ impl<'a> MirLowerer<'a> {
         self.builder.switch_to_block(exit);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: None,
-            func: FunctionRef::releasing("Vec_free"),
+            func: FunctionRef::releasing("rask_vec_free"),
             args: vec![MirOperand::Local(pairs)],
         }));
         Ok((MirOperand::Local(map), map_ty))
@@ -9742,7 +9744,7 @@ impl<'a> MirLowerer<'a> {
         let entries_args = self.map_entries_args(map_op.clone(), key_ty, val_ty);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(entries),
-            func: FunctionRef::borrowing("Map_entries").handing_back("Vec_free"),
+            func: FunctionRef::borrowing("rask_map_entries").handing_back("rask_vec_free"),
             args: entries_args,
         }));
 
@@ -9771,7 +9773,7 @@ impl<'a> MirLowerer<'a> {
         if let Some(kind) = key_kind {
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: None,
-                func: FunctionRef::like("Vec_sort_scalar", "Vec_sort"),
+                func: FunctionRef::like("rask_vec_sort_scalar", "Vec_sort"),
                 args: vec![
                     MirOperand::Local(entries),
                     MirOperand::Constant(MirConst::Int(kind)),
@@ -9865,7 +9867,7 @@ impl<'a> MirLowerer<'a> {
         if key_kind.is_none() {
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: None,
-                func: FunctionRef::like("Vec_sort_str", "Vec_sort"),
+                func: FunctionRef::like("rask_vec_sort_str", "Vec_sort"),
                 args: vec![MirOperand::Local(rendered)],
             }));
         }
@@ -9927,7 +9929,7 @@ impl<'a> MirLowerer<'a> {
         for v in [entries, rendered] {
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: None,
-                func: FunctionRef::releasing("Vec_free"),
+                func: FunctionRef::releasing("rask_vec_free"),
                 args: vec![MirOperand::Local(v)],
             }));
         }
@@ -10415,7 +10417,7 @@ impl<'a> MirLowerer<'a> {
         let vec_local = self.builder.alloc_temp(MirType::I64);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(vec_local),
-            func: FunctionRef::keeping("rask_vec_from_static", &[0]).handing_back("Vec_free"),
+            func: FunctionRef::keeping("rask_vec_from_static", &[0]).handing_back("rask_vec_free"),
             args: vec![
                 MirOperand::Local(arr),
                 MirOperand::Constant(MirConst::Int(len as i64)),
@@ -10558,7 +10560,7 @@ impl<'a> MirLowerer<'a> {
             let hit = self.builder.alloc_temp(MirType::Bool);
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: Some(hit),
-                func: FunctionRef::borrowing("string_eq"),
+                func: FunctionRef::borrowing("rask_string_eq"),
                 args: vec![op.clone(), MirOperand::Constant(MirConst::String(name.clone()))],
             }));
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {

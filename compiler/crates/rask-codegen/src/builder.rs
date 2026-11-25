@@ -4366,8 +4366,8 @@ impl<'a> FunctionBuilder<'a> {
         lhs: Value,
         rhs: Value,
     ) -> CodegenResult<Value> {
-        let fr = ctx.func_refs.get("string_compare")
-            .ok_or_else(|| CodegenError::FunctionNotFound("string_compare".into()))?;
+        let fr = ctx.func_refs.get("rask_string_compare")
+            .ok_or_else(|| CodegenError::FunctionNotFound("rask_string_compare".into()))?;
         let call = builder.ins().call(*fr, &[lhs, rhs]);
         Ok(builder.inst_results(call)[0])
     }
@@ -4379,8 +4379,8 @@ impl<'a> FunctionBuilder<'a> {
         lhs: Value,
         rhs: Value,
     ) -> CodegenResult<Value> {
-        let fr = ctx.func_refs.get("string_eq")
-            .ok_or_else(|| CodegenError::FunctionNotFound("string_eq".into()))?;
+        let fr = ctx.func_refs.get("rask_string_eq")
+            .ok_or_else(|| CodegenError::FunctionNotFound("rask_string_eq".into()))?;
         let call = builder.ins().call(*fr, &[lhs, rhs]);
         let res = builder.inst_results(call)[0];
         Ok(builder.ins().icmp_imm(IntCC::NotEqual, res, 0))

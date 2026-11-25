@@ -60,9 +60,9 @@ pub(crate) fn free_call(free: &str) -> FunctionRef {
 fn retain_for(free: &str) -> Option<&'static str> {
     match free {
         "rask_sender_drop_i64" => Some("Sender_clone"),
-        "rask_shared_drop_i64" => Some("Shared_clone"),
-        "rask_mutex_drop" => Some("Mutex_clone"),
-        "rask_cell_free" => Some("Cell_clone"),
+        "rask_shared_drop_i64" => Some("rask_shared_clone_i64"),
+        "rask_mutex_drop" => Some("rask_mutex_clone"),
+        "rask_cell_free" => Some("rask_cell_clone"),
         _ => None,
     }
 }
@@ -1984,9 +1984,9 @@ fn collect_fresh_containers_with(
 /// The free that gives back a container of this kind.
 fn container_free(kind: crate::ContainerKind) -> &'static str {
     match kind {
-        crate::ContainerKind::Vec => "Vec_free",
-        crate::ContainerKind::Map => "Map_free",
-        crate::ContainerKind::Rack => "Rack_free",
+        crate::ContainerKind::Vec => "rask_vec_free",
+        crate::ContainerKind::Map => "rask_map_free",
+        crate::ContainerKind::Rack => "rask_rack_free",
         crate::ContainerKind::Handle(release) => release,
     }
 }
