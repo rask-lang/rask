@@ -607,7 +607,6 @@ void        rask_print_i128(RaskI128 val);
 void        rask_print_u128(RaskU128 val);
 void        rask_eprint_i128(RaskI128 val);
 void        rask_eprint_u128(RaskU128 val);
-RaskI128    rask_i128_abs(RaskI128 v);
 void        rask_assert_fail_cmp_i128(RaskI128 left, RaskI128 right,
                                       const char *op, const char *file,
                                       int32_t line, int32_t col);

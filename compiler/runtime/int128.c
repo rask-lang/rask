@@ -230,19 +230,6 @@ void rask_check_fail_cmp_u128(rask_u128 left, rask_u128 right,
     rask_check_fail(buf);
 }
 
-// `abs` at 128 bits. `llabs` can't stand in: it takes a `long long`, so the
-// value would be truncated before it ever got negated (#762).
-//
-// `i128::MIN` has no positive counterpart, same as every other width — the
-// checked path panics there rather than handing back the negative value C's
-// `abs` family returns.
-rask_i128 rask_i128_abs(rask_i128 v) {
-    if (v == (rask_i128)1 << 127) {
-        rask_panic("integer overflow in abs");
-    }
-    return v < 0 ? -v : v;
-}
-
 void rask_eprint_i128(rask_i128 val) {
     char buf[RASK_I128_DIGITS];
     rask_u128 magnitude = val < 0 ? (rask_u128)0 - (rask_u128)val : (rask_u128)val;

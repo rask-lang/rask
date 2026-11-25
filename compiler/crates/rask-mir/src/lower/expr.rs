@@ -2193,6 +2193,47 @@ impl<'a> MirLowerer<'a> {
         self.builder.switch_to_block(done);
     }
 
+    /// A signed integer's magnitude: the value, negated when it's below zero.
+    /// The negation is the ordinary checked one, so the minimum of a width,
+    /// which has no positive counterpart, panics the way `-x` does (OV1).
+    fn emit_signed_abs(&mut self, value: MirOperand, ty: MirType) -> TypedOperand {
+        let result = self.builder.alloc_temp(ty.clone());
+        let negative = self.builder.alloc_temp(MirType::Bool);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: negative,
+            rvalue: MirRValue::BinaryOp {
+                op: crate::operand::BinOp::Lt,
+                left: value.clone(),
+                right: MirOperand::Constant(MirConst::Int(0)),
+            },
+        }));
+        let negate = self.builder.create_block();
+        let keep = self.builder.create_block();
+        let done = self.builder.create_block();
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
+            cond: MirOperand::Local(negative),
+            then_block: negate,
+            else_block: keep,
+        }));
+
+        self.builder.switch_to_block(negate);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: result,
+            rvalue: MirRValue::UnaryOp { op: crate::operand::UnaryOp::Neg, operand: value.clone() },
+        }));
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: done }));
+
+        self.builder.switch_to_block(keep);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: result,
+            rvalue: MirRValue::Use(value),
+        }));
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: done }));
+
+        self.builder.switch_to_block(done);
+        (MirOperand::Local(result), ty)
+    }
+
     fn lower_array_repeat(&mut self, value: &Expr, count: &Expr) -> Result<TypedOperand, LoweringError> {
             // Expand to a fixed-size array, the same as a literal.
             if let Some(len) = self.constant_array_length(count) {
@@ -6282,8 +6323,8 @@ impl<'a> MirLowerer<'a> {
         })
         // An integer method is declared once per width (stdlib/int.rk), and
         // the checker records the width it resolved on. The runtime has one
-        // entry per family — `i64_abs` serves every signed width up to 64 —
-        // so the name collapses the way an undeclared one always did.
+        // entry per family, so the name collapses the way an undeclared one
+        // always did.
         .map(|prefix| {
             if rask_ast::primitives::is_machine_integer(&prefix) {
                 super::builtin_method_prefix_for_name(&prefix)
@@ -6300,11 +6341,12 @@ impl<'a> MirLowerer<'a> {
         {
             return Ok(handled);
         }
-        // An unsigned value is its own magnitude. stdlib/int.rk declares `abs`
-        // for every width, and the runtime's `abs` entries are signed ones, so
-        // `u32.abs()` reached codegen as a `u64_abs` nothing answered.
+        // An unsigned value is its own magnitude.
         if method == "abs" && args.is_empty() && obj_ty.is_unsigned() {
             return Ok((obj_op, obj_ty));
+        }
+        if method == "abs" && args.is_empty() && obj_ty.is_int_like() {
+            return Ok(self.emit_signed_abs(obj_op, obj_ty));
         }
 
         // A function value is always a closure block, a named function

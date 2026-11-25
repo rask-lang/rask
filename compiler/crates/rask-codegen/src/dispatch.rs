@@ -93,12 +93,6 @@ pub(crate) fn internal_entries() -> Vec<StdlibEntry> {
 
         StdlibEntry::simple("Link_hash", "rask_link_hash", &[types::I64], Some(types::I64), false),
 
-        // ── Math operations ────────────────────────────────────
-        // i64.abs() (std.math/N2) — libc's llabs, no wrapper needed.
-        StdlibEntry::simple("i64_abs", "llabs", &[types::I64], Some(types::I64), false),
-        // `llabs` takes a `long long`, so a 128-bit value would be truncated
-        // before it was negated (#762).
-        StdlibEntry::simple("i128_abs", "rask_i128_abs", &[types::I128], Some(types::I128), true),
     ];
 
     // ── Atomic operations ──────────────────────────────────
