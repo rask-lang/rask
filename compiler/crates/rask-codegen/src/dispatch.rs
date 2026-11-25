@@ -84,44 +84,6 @@ fn leak_str(s: &str) -> &'static str {
 /// repeats one.
 pub(crate) fn internal_entries() -> Vec<StdlibEntry> {
     let mut entries = vec![
-        // ── Vec operations ─────────────────────────────────────
-        StdlibEntry {
-            mir_name: "rask_vec_from_static", c_name: "rask_vec_from_static",
-            params: &[types::I64, types::I64, types::I64, types::I64, types::I64, types::I64],
-            ret_ty: Some(types::I64), can_panic: false,
-            arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::None,
-        },
-        // A fixed array's receiver seen as a Vec, and the copy back after a
-        // `mutate self` method (#1405).
-        StdlibEntry {
-            mir_name: "rask_vec_view", c_name: "rask_vec_view",
-            params: &[types::I64, types::I64, types::I64, types::I64, types::I64, types::I64],
-            ret_ty: Some(types::I64), can_panic: false,
-            arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::None,
-        },
-        StdlibEntry {
-            mir_name: "Vec_get_unchecked", c_name: "rask_vec_get_unchecked",
-            params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
-            arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::DerefOrString,
-        },
-        // `let old = self.f` before a refill: the field's bytes, handed over.
-        StdlibEntry {
-            mir_name: "Field_take", c_name: "rask_field_take",
-            params: &[types::I64, types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
-            arg_adapt: ArgAdapt::AppendOutParam, ret_adapt: RetAdapt::FromArgAdapt,
-        },
-        StdlibEntry {
-            mir_name: "Vec_move_out", c_name: "rask_vec_move_out",
-            params: &[types::I64, types::I64, types::I64], ret_ty: Some(types::I64), can_panic: true,
-            arg_adapt: ArgAdapt::AppendOutParam, ret_adapt: RetAdapt::FromArgAdapt,
-        },
-
-        StdlibEntry {
-            mir_name: "Vec_index", c_name: "rask_vec_get",
-            params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: true,
-            arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::DerefOrString,
-        },
-
         // ── String operations ──────────────────────────────────
         StdlibEntry {
             mir_name: "string_clone", c_name: "rask_string_clone",
@@ -137,49 +99,6 @@ pub(crate) fn internal_entries() -> Vec<StdlibEntry> {
         // `llabs` takes a `long long`, so a 128-bit value would be truncated
         // before it was negated (#762).
         StdlibEntry::simple("i128_abs", "rask_i128_abs", &[types::I128], Some(types::I128), true),
-
-        // ── Map operations ─────────────────────────────────────
-        // `m[k] = v`: insert or replace, releasing the value it replaces.
-        StdlibEntry {
-            mir_name: "Map_set", c_name: "rask_map_insert",
-            params: &[types::I64, types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
-            arg_adapt: ArgAdapt::WrapArg1And2, ret_adapt: RetAdapt::None,
-        },
-        // The Map twin of `rask_vec_get`, by key: the value's address.
-        StdlibEntry {
-            mir_name: "Map_slot", c_name: "rask_map_get_unwrap",
-            params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: true,
-            arg_adapt: ArgAdapt::WrapArg1, ret_adapt: RetAdapt::None,
-        },
-        StdlibEntry {
-            mir_name: "Map_get_unwrap", c_name: "rask_map_get_unwrap",
-            params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: true,
-            arg_adapt: ArgAdapt::WrapArg1, ret_adapt: RetAdapt::DerefOrString,
-        },
-        // `mutate m[k]` — the Map twin of `rask_vec_borrow_elem`. `RetAdapt::None`
-        // keeps the pointer into the table instead of copying the value out.
-        StdlibEntry {
-            mir_name: "Map_borrow_elem", c_name: "rask_map_borrow_elem",
-            params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: true,
-            arg_adapt: ArgAdapt::WrapArg1, ret_adapt: RetAdapt::None,
-        },
-
-        // ── Rack + Link operations (mem.racks) ─────────────────
-        StdlibEntry {
-            mir_name: "rask_link_register_struct", c_name: "rask_link_register_struct",
-            params: &[types::I64, types::I64, types::I64], ret_ty: None, can_panic: false,
-            arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::None,
-        },
-        StdlibEntry {
-            mir_name: "rask_link_forget_struct", c_name: "rask_link_forget_struct",
-            params: &[types::I64, types::I64, types::I64], ret_ty: None, can_panic: false,
-            arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::None,
-        },
-        StdlibEntry {
-            mir_name: "rask_link_guarded", c_name: "rask_link_guarded",
-            params: &[types::I64, types::I64, types::I64, types::I64], ret_ty: None, can_panic: false,
-            arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::None,
-        },
 
         // ── Concurrency: Shared<T> ──────────────────────────────────
         StdlibEntry {
@@ -753,24 +672,22 @@ mod tests {
         );
     }
 
-    /// The internal table holds only names no declaration answers. A row for
-    /// a declared `@native` method is a second copy of the declaration — the
-    /// one that drifted before (`Map.insert` named `rask_map_insert` while the
-    /// row called `rask_map_insert_displaced`).
-    /// A call to a runtime symbol carries its own `CallAbi`, and codegen reads
-    /// that instead of the table. An entry adapting a runtime symbol by name
-    /// would be skipped without a word.
+    /// A call made by its C symbol carries its own `CallAbi` and is declared
+    /// from its prototype, so a row keyed by a runtime symbol is never read.
     #[test]
-    fn no_entry_adapts_a_runtime_symbol() {
-        let shadowed: Vec<&str> = stdlib_entries()
+    fn no_internal_row_names_a_runtime_symbol() {
+        let shadowed: Vec<&str> = internal_entries()
             .into_iter()
             .filter(|e| rask_stdlib::runtime_header::declares(e.mir_name))
-            .filter(|e| (e.arg_adapt, e.ret_adapt) != (ArgAdapt::None, RetAdapt::None))
             .map(|e| e.mir_name)
             .collect();
-        assert!(shadowed.is_empty(), "adapted by name, but called as runtime symbols: {shadowed:?}");
+        assert!(shadowed.is_empty(), "rows for calls made by their C symbol: {shadowed:?}");
     }
 
+    /// The internal table holds only names no declaration answers. A row for
+    /// a declared `@native` method is a second copy of the declaration, the
+    /// one that drifted before (`Map.insert` named `rask_map_insert` while the
+    /// row called `rask_map_insert_displaced`).
     #[test]
     fn internal_rows_are_not_declared() {
         let declared: HashSet<&str> = declared_entries()

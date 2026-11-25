@@ -319,7 +319,7 @@ impl FunctionRef {
     }
 
     /// A spelling lowering makes up for the stdlib operation `declared_as`
-    /// (`Vec_index` for `Vec.get`, a `Shared<T, Local>`'s `Cell_set` for
+    /// (`rask_vec_get` for `Vec.get`, a `Shared<T, Local>`'s `Cell_set` for
     /// `Shared.set`): the same operation, so the same shape.
     pub fn like(name: impl Into<String>, declared_as: &str) -> Self {
         let shape = rask_stdlib::mir_metadata::declared_shape(declared_as)

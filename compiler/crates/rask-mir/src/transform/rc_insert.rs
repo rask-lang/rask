@@ -1073,7 +1073,7 @@ fn insert_aggregate_release(
         lent
     };
 
-    // Where a `Field_take` reads from: `dst = base + offset`, handed to it as
+    // Where a `rask_field_take` reads from: `dst = base + offset`, handed to it as
     // the field's address. The take happens at the call, so the aggregate the
     // address points into has to stay alive until then, not just until the
     // addition that made the address.
@@ -1082,7 +1082,7 @@ fn insert_aggregate_release(
         .iter()
         .flat_map(|b| b.statements.iter())
         .filter_map(|st| match &st.kind {
-            MirStmtKind::Call { func: fref, args, .. } if fref.name == "Field_take" => {
+            MirStmtKind::Call { func: fref, args, .. } if fref.name == crate::runtime_ops::FIELD_TAKE => {
                 args.first().and_then(uses::operand_local)
             }
             _ => None,
@@ -1298,7 +1298,7 @@ fn insert_aggregate_release(
             .flat_map(|b| b.statements.iter())
             .filter_map(|st| match &st.kind {
                 MirStmtKind::Call { func: fref, dst: Some(d), .. }
-                    if fref.name == "rask_vec_borrow_elem" || fref.name == "Map_borrow_elem" =>
+                    if fref.name == "rask_vec_borrow_elem" || fref.name == crate::runtime_ops::MAP_BORROW_ELEM =>
                 {
                     Some(*d)
                 }
@@ -1558,7 +1558,7 @@ fn insert_aggregate_release(
                 MirStmtKind::Call { func: fref, args, dst } => {
                     // A take zeroes the field in the aggregate it was read
                     // from, so that copy is the value from here on.
-                    if fref.name == "Field_take" {
+                    if fref.name == crate::runtime_ops::FIELD_TAKE {
                         if let Some(base) = args
                             .first()
                             .and_then(uses::operand_local)

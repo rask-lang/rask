@@ -2906,9 +2906,9 @@ impl<'a> MirLowerer<'a> {
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(slot),
             func: if map {
-                FunctionRef::like("Map_slot", "Map_get")
+                crate::runtime_ops::map_slot()
             } else {
-                FunctionRef::like("rask_vec_get", "Vec_get")
+                crate::runtime_ops::vec_slot()
             },
             args: vec![collection, at],
         }));
@@ -2936,7 +2936,7 @@ impl<'a> MirLowerer<'a> {
 
     /// Read `array[at]` into `dst` for a walk over the array. An element that
     /// holds storage (a struct with a `Vec` in it) comes back lent, the way
-    /// `Vec_index` lends a vector's: read as a plain copy it looked like a
+    /// `rask_vec_get` lends a vector's: read as a plain copy it looked like a
     /// second owner, and releasing it freed what the array still holds. A
     /// plain number is just copied.
     pub(crate) fn read_array_element(&mut self, dst: LocalId, array: LocalId, at: LocalId, elem: &MirType) {

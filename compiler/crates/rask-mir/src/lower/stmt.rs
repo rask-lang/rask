@@ -1416,7 +1416,7 @@ impl<'a> MirLowerer<'a> {
                             if self.is_map_expr(object) {
                                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                                     dst: None,
-                                    func: FunctionRef::like("Map_set", "Map_insert"),
+                                    func: crate::runtime_ops::map_set(),
                                     args: vec![obj_op, idx_op, val_op],
                                 }));
                             } else {
@@ -2427,7 +2427,7 @@ impl<'a> MirLowerer<'a> {
         };
 
         // `let (name, list) = t` on a tuple that isn't Copy moves every part
-        // out of `t`. Each non-Copy part is taken (`Field_take`: the bytes go
+        // out of `t`. Each non-Copy part is taken (`rask_field_take`: the bytes go
         // to the new name, the slot is zeroed), so the name owns what the
         // tuple held and `t` is left holding nothing there to release. Read
         // as a plain field copy, `name` added a reference of its own and `t`
@@ -2506,7 +2506,7 @@ impl<'a> MirLowerer<'a> {
                     }));
                     self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                         dst: Some(local_id),
-                        func: FunctionRef::like("Field_take", "Vec_remove"),
+                        func: crate::runtime_ops::field_take(),
                         args: vec![
                             MirOperand::Local(addr),
                             MirOperand::Constant(MirConst::Int(rask_layout::size_of(&elem_ty, self.ctx.target()) as i64)),
@@ -2846,7 +2846,7 @@ impl<'a> MirLowerer<'a> {
             // binds the value below.
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: Some(elem_slot),
-                func: FunctionRef::like("Vec_index", "Vec_get"),
+                func: crate::runtime_ops::vec_index(),
                 args: vec![MirOperand::Local(collection), MirOperand::Local(idx)],
             }));
         }
@@ -3565,7 +3565,7 @@ impl<'a> MirLowerer<'a> {
         if consumes {
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: Some(elem_slot),
-                func: FunctionRef::like("Vec_move_out", "Vec_remove"),
+                func: crate::runtime_ops::vec_move_out(),
                 args: vec![MirOperand::Local(setup.collection), MirOperand::Local(setup.idx)],
             }));
         } else {

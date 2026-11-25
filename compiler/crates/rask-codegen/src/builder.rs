@@ -5344,7 +5344,7 @@ impl<'a> FunctionBuilder<'a> {
         // An index the bounds pass already proved in range needs no call:
         // the element is `data + index * elem_size`, read straight off the
         // vector's header.
-        let call_results: Vec<Value> = if func.name == "Vec_get_unchecked" {
+        let call_results: Vec<Value> = if func.name == rask_mir::runtime_ops::VEC_GET_UNCHECKED {
             vec![Self::vec_elem_addr(builder, arg_vals[0], arg_vals[1])]
         } else {
             let call_inst = builder.ins().call(*func_ref, &arg_vals);

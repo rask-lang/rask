@@ -209,7 +209,7 @@ impl<'a> MirLowerer<'a> {
             // key displaces, so the map has to release it.
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: None,
-                func: FunctionRef::like("Map_set", "Map_insert"),
+                func: crate::runtime_ops::map_set(),
                 args: vec![MirOperand::Local(map_local), key_op, val_op],
             }));
         }
@@ -814,7 +814,7 @@ impl<'a> MirLowerer<'a> {
         let elem = self.builder.alloc_temp(elem_local_ty);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(elem),
-            func: FunctionRef::like("Vec_index", "Vec_get"),
+            func: crate::runtime_ops::vec_index(),
             args: vec![MirOperand::Local(collection), MirOperand::Local(idx)],
         }));
 

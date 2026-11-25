@@ -1110,7 +1110,7 @@ impl<'a> MirLowerer<'a> {
     /// Borrow `v[i]` as a pointer into the buffer, for an element about to be
     /// handed to something that writes through it.
     ///
-    /// Lowering `v[i]` the ordinary way produces a *copy*: `Vec_index` returns a
+    /// Lowering `v[i]` the ordinary way produces a *copy*: `rask_vec_get` returns a
     /// pointer into the buffer, but codegen copies those bytes into the
     /// destination's own slot — it has to, because the same lowering serves
     /// `let e = v[i]`, which is a copy by definition. A callee handed that copy
@@ -1162,12 +1162,12 @@ impl<'a> MirLowerer<'a> {
         };
         let (borrow, release) = if self.is_vec_expr(object) {
             (
-                crate::operand::Mint::like("rask_vec_borrow_elem", "Vec_get"),
+                FunctionRef::like("rask_vec_borrow_elem", "Vec_get"),
                 crate::operand::Mint::borrowing("rask_vec_release_elem"),
             )
         } else if self.is_map_expr(object) {
             (
-                crate::operand::Mint::like("Map_borrow_elem", "Map_get"),
+                crate::runtime_ops::map_borrow_elem(),
                 crate::operand::Mint::borrowing("rask_map_release_elem"),
             )
         } else {
@@ -1201,7 +1201,7 @@ impl<'a> MirLowerer<'a> {
         let ptr = self.builder.alloc_temp(MirType::Ptr);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(ptr),
-            func: borrow.call(),
+            func: borrow,
             args: vec![coll_op.clone(), idx_op],
         }));
         self.elem_writebacks.push(super::ElemWriteback::ReleaseBorrow {
@@ -2390,7 +2390,7 @@ impl<'a> MirLowerer<'a> {
                         }));
                         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                             dst: Some(dst),
-                            func: FunctionRef::like("Field_take", "Vec_remove"),
+                            func: crate::runtime_ops::field_take(),
                             args: vec![
                                 MirOperand::Local(addr),
                                 MirOperand::Constant(MirConst::Int(rask_layout::size_of(&sty, self.ctx.target()) as i64)),
@@ -2439,7 +2439,7 @@ impl<'a> MirLowerer<'a> {
                     let dst = self.builder.alloc_temp(ty.clone());
                     self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                         dst: Some(dst),
-                        func: FunctionRef::like("Field_take", "Vec_remove"),
+                        func: crate::runtime_ops::field_take(),
                         args: vec![
                             MirOperand::Local(addr),
                             MirOperand::Constant(MirConst::Int(rask_layout::size_of(&ty, self.ctx.target()) as i64)),
@@ -3016,7 +3016,7 @@ impl<'a> MirLowerer<'a> {
     ///
     /// The ownership pass marks it (`field_reuses`), and marks the refill so
     /// the slot isn't released there. The read itself goes through
-    /// `Field_take`, which copies the bytes like any read but hands them over:
+    /// `rask_field_take`, which copies the bytes like any read but hands them over:
     /// the frame owns what came back and frees it, where a plain read would
     /// be a view of a slot that is about to hold something else.
     fn lower_field_move_out(&mut self, expr: &Expr) -> Result<TypedOperand, LoweringError> {
@@ -3045,7 +3045,7 @@ impl<'a> MirLowerer<'a> {
         let dst = self.builder.alloc_temp(ty);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(dst),
-            func: FunctionRef::like("Field_take", "Vec_remove"),
+            func: crate::runtime_ops::field_take(),
             args: vec![
                 MirOperand::Local(addr),
                 MirOperand::Constant(MirConst::Int(size as i64)),
@@ -3540,29 +3540,19 @@ impl<'a> MirLowerer<'a> {
             let result_ty = self.index_result_ty(expr, object);
             let type_prefix = self.type_base_of(object);
 
-            let (index_name, shape) = type_prefix
-                .map(|prefix| {
-                    // Strip generic parameters: "Vec<T>" → "Vec"
-                    let base = prefix.as_str();
-                    // Map indexing: `m[k]` panics on missing key — same shape
-                    // as `Map_get_unwrap` (the unwrapping form of Map_get).
-                    match base {
-                        "Map" => ("Map_get_unwrap".to_string(), rask_stdlib::mir_metadata::declared_shape("Map_get")),
-                        // A read that points into the vector's own buffer, as
-                        // `Vec.get` does; the caller never releases it.
-                        "Vec" => ("Vec_index".to_string(), rask_stdlib::mir_metadata::declared_shape("Vec_get")),
-                        // One byte read out of the text; nothing is kept.
-                        "string" => (
-                            "rask_string_index".to_string(),
-                            Some(rask_stdlib::mir_metadata::CallShape::borrows_receiver()),
-                        ),
-                        _ => (format!("{}_index", base), None),
-                    }
-                })
-                .unwrap_or_else(|| ("index".to_string(), None));
+            let func = match type_prefix.as_deref() {
+                Some("Map") => crate::runtime_ops::map_index(),
+                Some("Vec") => crate::runtime_ops::vec_index(),
+                // One byte read out of the text; nothing is kept.
+                Some("string") => FunctionRef::borrowing("rask_string_index"),
+                Some(base) => FunctionRef::internal(format!("{base}_index")),
+                None => {
+                    return Err(LoweringError::InvalidConstruct(
+                        "indexing a value whose type couldn't be worked out".into(),
+                    ))
+                }
+            };
             let result_local = self.builder.alloc_temp(result_ty.clone());
-            let mut func = FunctionRef::internal(index_name);
-            func.shape = shape.or(func.shape);
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: Some(result_local),
                 func,
@@ -6742,10 +6732,6 @@ impl<'a> MirLowerer<'a> {
 
         let result_local = self.builder.alloc_temp(ret_ty.clone());
         let container_edge = self.container_edge_call(&final_name, &final_args);
-        // `v[i]` reached through the method path is `Vec.get`'s read.
-        if final_name == "Vec_index" {
-            shape = rask_stdlib::mir_metadata::declared_shape("Vec_get");
-        }
         let mut func = FunctionRef::internal(final_name.clone()).with_abi(abi);
         func.shape = shape.or(func.shape);
         // A method the compiler provides for every type (`clone`, `hash`, `eq`,
@@ -9458,7 +9444,7 @@ impl<'a> MirLowerer<'a> {
     /// here, where the element type is known and `debug_render_value` is the
     /// same renderer a struct field goes through.
     ///
-    /// Elements are read with `Vec_index`, which hands back the address of the
+    /// Elements are read with `rask_vec_get`, which hands back the address of the
     /// element in place for anything that lives in its slot — nothing is copied
     /// out, so nothing needs releasing afterwards.
     fn debug_render_vec_loop(
@@ -9539,7 +9525,7 @@ impl<'a> MirLowerer<'a> {
         let elem = self.builder.alloc_temp(elem_ty.clone());
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(elem),
-            func: FunctionRef::like("Vec_index", "Vec_get"),
+            func: crate::runtime_ops::vec_index(),
             args: vec![vec_op.clone(), MirOperand::Local(idx)],
         }));
         let rendered = self.debug_render_value(
@@ -9654,7 +9640,7 @@ impl<'a> MirLowerer<'a> {
         let pair = self.builder.alloc_temp(pair_ty);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(pair),
-            func: FunctionRef::like("Vec_index", "Vec_get"),
+            func: crate::runtime_ops::vec_index(),
             args: vec![MirOperand::Local(pairs), MirOperand::Local(idx)],
         }));
         let key_local = self.builder.alloc_temp(key_ty.clone());
@@ -9680,7 +9666,7 @@ impl<'a> MirLowerer<'a> {
         // `Map_set`: nothing takes a displaced value, so the map releases it.
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: None,
-            func: FunctionRef::like("Map_set", "Map_insert"),
+            func: crate::runtime_ops::map_set(),
             args: vec![
                 MirOperand::Local(map),
                 MirOperand::Local(key_local),
@@ -9818,7 +9804,7 @@ impl<'a> MirLowerer<'a> {
         let pair = self.builder.alloc_temp(pair_ty);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(pair),
-            func: FunctionRef::like("Vec_index", "Vec_get"),
+            func: crate::runtime_ops::vec_index(),
             args: vec![MirOperand::Local(entries), MirOperand::Local(idx)],
         }));
 

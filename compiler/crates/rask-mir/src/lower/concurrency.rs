@@ -797,7 +797,7 @@ impl<'a> MirLowerer<'a> {
                 let bound = self.builder.alloc_local(binding.clone(), elem.clone());
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                     dst: Some(bound),
-                    func: FunctionRef::like("Field_take", "Vec_remove"),
+                    func: crate::runtime_ops::field_take(),
                     args: vec![
                         MirOperand::Local(addr),
                         MirOperand::Constant(MirConst::Int(rask_layout::size_of(elem, self.ctx.target()) as i64)),

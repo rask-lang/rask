@@ -380,7 +380,7 @@ RaskVec *rask_iter_take(const RaskVec *src, int64_t n);
 RaskVec *rask_vec_clone(const RaskVec *v);
 RaskVec *rask_vec_take_all(RaskVec *v);
 RaskVec *rask_vec_chunks(const RaskVec *src, int64_t chunk_size);
-int64_t  rask_vec_move_out(RaskVec *v, int64_t index, void *out);
+RASK_PANICS int64_t rask_vec_move_out(RaskVec *v, int64_t index, void *out);
 int64_t  rask_field_take(void *field, int64_t size, void *out);
 // Sort by the scalar at offset 0 of each element — the element itself, or the
 // key of a (key, value) pair. `key_kind` is one of the RASK_ELEM_KIND_* codes
@@ -758,7 +758,7 @@ typedef int      (*RaskEqFn)(const void *a, const void *b, int64_t key_size);
 // Value pointer lent straight out of the table, so a `mutate` callee writes the
 // real value. Between borrow and release, anything that would move or free the
 // value array panics rather than leave the pointer dangling.
-void    *rask_map_borrow_elem(RaskMap *m, const void *key);
+RASK_PANICS void *rask_map_borrow_elem(RaskMap *m, const void *key);
 void     rask_map_release_elem(RaskMap *m);
 
 // The two element maps are the keys' and the values'. See `RaskElemStrs`.
@@ -798,7 +798,7 @@ int64_t  rask_map_insert(RaskMap *m, const void *key, const void *val);
 // NULL if the key was fresh. Good until the next insert on this map.
 void    *rask_map_insert_displaced(RaskMap *m, const void *key, const void *val);
 void    *rask_map_get(const RaskMap *m, const void *key);
-void    *rask_map_get_unwrap(const RaskMap *m, const void *key);
+RASK_PANICS void *rask_map_get_unwrap(const RaskMap *m, const void *key);
 int64_t  rask_map_remove(RaskMap *m, const void *key);
 void    *rask_map_take(RaskMap *m, const void *key);
 int64_t  rask_map_contains(const RaskMap *m, const void *key);

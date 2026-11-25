@@ -91,7 +91,7 @@ fn elide_clones_with(func: &mut MirFunction, own: &HashSet<String>) {
 ///   dereference. `r.values.clone()` read the field into a temp that was never
 ///   read again, the clone was dropped, and `y` and `r.values` were one Vec: a
 ///   `push` through either grew both.
-/// - A call that lends: `items[i]` on a `Vec` is `Vec_get_unchecked`, whose
+/// - A call that lends: `items[i]` on a `Vec` is `rask_vec_get_unchecked`, whose
 ///   result points into the vector's buffer. `dst.push(items[i].clone())` left
 ///   `dst` and `items` owning one inner vector — a double free at exit. A `for r
 ///   in rows` binding is the same call one copy removed, and `out.push(r.clone())`
