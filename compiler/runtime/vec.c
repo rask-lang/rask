@@ -126,12 +126,19 @@ void rask_handle_release(int64_t index, void *handle) {
 // the shape of the value. Only the order of frees that deep changes, and
 // nothing observes it: what a release runs frees memory and drops counts.
 //
+// Stack room alone is not enough. A sanitizer can bound call depth in frames
+// rather than bytes (TSan keeps its own stack of about 64K entries), and a
+// 200,000-deep value overflowed that with 100 KB of real stack still free.
+// So a release also queues once it is RELEASE_DEPTH levels into the drain;
+// below that, plain recursion keeps the queue empty for ordinary values.
+//
 // A free can panic (a `Vec` freed while borrowed), and the longjmp leaves
 // the drain behind. `rask_release_unwound` runs at every catch and drops a
 // queue whose drain is gone; what was in it leaks, which a panic in the
 // middle of a free already does.
 
 #define RELEASE_ROOM (64 * 1024)
+#define RELEASE_DEPTH 512
 
 typedef enum {
     PENDING_HEAP, PENDING_VEC, PENDING_MAP, PENDING_CLOSURE, PENDING_BOX, PENDING_HANDLE,
@@ -153,6 +160,7 @@ typedef struct PendingRelease {
 static __thread PendingRelease *pending;
 static __thread int64_t pending_len, pending_cap;
 static __thread char *drain_frame;
+static __thread int64_t release_depth;
 
 typedef enum { OWNED_RELEASE, OWNED_RETAIN } RaskOwnedOp;
 
@@ -165,6 +173,7 @@ static void queue_drop(void) {
     pending = NULL;
     pending_len = pending_cap = 0;
     drain_frame = NULL;
+    release_depth = 0;
 }
 
 static void release_run(const PendingRelease *r) {
@@ -187,7 +196,8 @@ static void release_nested(PendingRelease r) {
     if (!r.p) return;
     char *here = (char *)__builtin_frame_address(0);
     if (drain_frame) {
-        if (rask_stack_limit && here < rask_stack_limit + RELEASE_ROOM) {
+        if (release_depth >= RELEASE_DEPTH
+            || (rask_stack_limit && here < rask_stack_limit + RELEASE_ROOM)) {
             if (pending_len == pending_cap) {
                 int64_t cap = pending_cap ? pending_cap * 2 : 64;
                 pending = rask_realloc(pending, pending_cap * (int64_t)sizeof *pending,
@@ -196,7 +206,9 @@ static void release_nested(PendingRelease r) {
             }
             pending[pending_len++] = r;
         } else {
+            release_depth++;
             release_run(&r);
+            release_depth--;
         }
         return;
     }
