@@ -246,20 +246,6 @@ pub(crate) fn internal_entries() -> Vec<StdlibEntry> {
             params: &[types::I64, types::I64, types::I64], ret_ty: None, can_panic: false,
             arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
         },
-        // Sort by the scalar at offset 0 of each element: `sort()` on a Vec
-        // of scalars, and `{m:debug}` ordering a map's (key, value) pairs.
-        // Args: (vec, RASK_ELEM_KIND_* kind, size in bytes).
-        StdlibEntry::simple(
-            "Vec_sort_scalar", "rask_vec_sort_scalar",
-            &[types::I64, types::I64, types::I64], None, false,
-        ),
-        // `sort_by_key`: the elements, the parallel keys, and a comparator over
-        // two keys. Panics only on a keys/elements length mismatch, which is
-        // lowering's own bug rather than the program's.
-        StdlibEntry::simple(
-            "Vec_sort_by_keys", "rask_vec_sort_by_keys",
-            &[types::I64, types::I64, types::I64, types::I64], None, true,
-        ),
 
         // ── String operations ──────────────────────────────────
         StdlibEntry {

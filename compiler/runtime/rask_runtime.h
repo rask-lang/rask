@@ -429,7 +429,8 @@ double math_powi(double x, int32_t n);
 void     rask_vec_sort_by(RaskVec *v, int64_t comparator, int64_t pass);
 // Order `v` by a parallel Vec of keys, stably. `comparator` is a closure block
 // over two keys — same shape sort_by takes. `keys` is read, not reordered.
-void     rask_vec_sort_by_keys(RaskVec *v, RaskVec *keys, int64_t comparator, int64_t pass);
+// Panics only on a keys/elements length mismatch: a lowering bug.
+RASK_PANICS void rask_vec_sort_by_keys(RaskVec *v, RaskVec *keys, int64_t comparator, int64_t pass);
 void     rask_vec_reverse(RaskVec *v);
 void     rask_vec_swap(RaskVec *v, int64_t i, int64_t j);
 int64_t  rask_vec_contains(const RaskVec *v, const void *elem);
