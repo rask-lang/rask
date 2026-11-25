@@ -1136,6 +1136,8 @@ void         rask_json_buf_finish(RaskStr *out, RaskJsonBuf *buf);
 
 void         rask_json_encode_string(RaskStr *out, const RaskStr *s);
 void         rask_json_encode_i64(RaskStr *out, int64_t val);
+// The compact encoding of a struct, indented the way `json.encode_pretty` prints.
+void         rask_json_pretty(RaskStr *out, const RaskStr *compact);
 
 // JSON array buffer — keyless element encoding for Vec serialization.
 RaskJsonBuf *rask_json_buf_new_array(void);
