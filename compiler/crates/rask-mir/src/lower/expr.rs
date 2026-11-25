@@ -3285,7 +3285,14 @@ impl<'a> MirLowerer<'a> {
 
                 // Strategy 1: Check type checker's node_types for the object
                 if let Some(raw_ty) = self.ctx.lookup_raw_type(object.id) {
-                    let obj_mir = self.ctx.type_to_mir(&raw_ty);
+                    // A `Heap` local reads its fields through the pointer it
+                    // holds. Not seen through, the lookup fell to the search
+                    // by field name below, which took the first struct with a
+                    // `name` field anywhere and read the wrong slot.
+                    let obj_mir = match self.ctx.type_to_mir(&raw_ty) {
+                        MirType::Heap(inner) => *inner,
+                        other => other,
+                    };
                     if let MirType::Struct(StructLayoutId { id: sid, .. }) = &obj_mir {
                         if let Some(layout) = self.ctx.struct_layouts.get(*sid as usize) {
                             if let Some((idx, fl)) = layout.fields.iter().enumerate()
@@ -3321,7 +3328,10 @@ impl<'a> MirLowerer<'a> {
                 if !resolved {
                     if let Some(var_name) = object.name() {
                         if let Some((local_id, _)) = self.locals.get(var_name) {
-                            let local_ty = self.builder.local_type(*local_id);
+                            let local_ty = self.builder.local_type(*local_id).map(|t| match t {
+                                MirType::Heap(inner) => *inner,
+                                other => other,
+                            });
                             if let Some(MirType::Struct(StructLayoutId { id: sid, .. })) = local_ty {
                                 if let Some(layout) = self.ctx.struct_layouts.get(sid as usize) {
                                     if let Some((idx, fl)) = layout.fields.iter().enumerate()

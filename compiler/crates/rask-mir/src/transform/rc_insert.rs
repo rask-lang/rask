@@ -1545,8 +1545,18 @@ fn insert_aggregate_release(
                 }
                 // An element bound where it sits reaches into the collection
                 // it sits in, which has to outlive the binding.
-                MirStmtKind::BindPlace { dst, addr } if is_tracked(dst) => {
-                    ev.push(ownership::Event::View { dst: *dst, base: *addr });
+                //
+                // Bound at a field or element inside an aggregate (`for
+                // mutate`, `with`), the name writes into the aggregate through
+                // stores this pass sees only as stores into a place, so the
+                // aggregate is the value from here on.
+                MirStmtKind::BindPlace { dst, addr } => {
+                    if let Some(root) = inline_roots.get(addr).filter(|r| is_tracked(r)) {
+                        ev.push(ownership::Event::WriteThrough(*root));
+                    }
+                    if is_tracked(dst) {
+                        ev.push(ownership::Event::View { dst: *dst, base: *addr });
+                    }
                 }
                 // `Ref` hands out the address.
                 MirStmtKind::Assign { dst, rvalue: MirRValue::Ref(src) } => {
@@ -1570,6 +1580,20 @@ fn insert_aggregate_release(
                     }
                     for (i, arg) in args.iter().enumerate() {
                         let Some(id) = uses::operand_local(arg) else { continue };
+                        // The address of a field or element inside an
+                        // aggregate (`rs[1].relabel()` passes `rs + 24`): a
+                        // callee that writes its parameter writes into the
+                        // aggregate, so that name is the value from here on.
+                        // Unmarked, the release stayed on the literal `rs`
+                        // was copied from, and freed the old string while
+                        // the new one leaked.
+                        if let Some(root) = inline_roots.get(&id).filter(|r| is_tracked(r)) {
+                            let writes_it = !own.contains(&fref.name)
+                                || writes.get(&fref.name).is_some_and(|set| set.contains(&i));
+                            if writes_it {
+                                ev.push(ownership::Event::WriteThrough(*root));
+                            }
+                        }
                         if !is_tracked(&id) {
                             continue;
                         }

@@ -1,0 +1,104 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Writing a string into a fixed-array element in place releases the right
+// strings (#2089).
+//
+//     mut rs: [Room; 2] = [Room(n: 1, name: mk(1)), Room(n: 2, name: mk(2))]
+//     rs[1].relabel()
+//
+// printed the right text natively, then freed the old name twice and leaked
+// the new one. `rs` starts as a copy of the array literal, and the release
+// stayed on the literal: a call given the address of `rs[1]` wasn't seen as
+// writing `rs`. The same went for `for mutate` and `with`.
+//
+// A function that writes its `mutate` array only through `for mutate` was
+// read as writing nothing, so it was inlined onto a copy and the writes were
+// lost; for strings the copy was then freed under the caller.
+
+import memory.Heap
+
+struct Room {
+    public n: i64
+    public name: string
+}
+
+extend Room {
+    func relabel(mutate self) {
+        self.name = mk(77)
+    }
+}
+
+struct Inner {
+    public x: i64
+}
+
+struct Outer {
+    public id: i64
+    public h: Heap<Inner>
+}
+
+struct Pt {
+    public x: i64
+    public y: i64
+}
+
+struct Box3 {
+    public pts: [Pt; 2]
+    public name: string
+}
+
+func mk(k: i64) -> string {
+    return "string number {k}, built at run time so it lives on the heap"
+}
+
+func redo(mutate r: Room) {
+    r.name = mk(88)
+}
+
+func rename(mutate s: string) {
+    s = "R({s})"
+}
+
+func mark(mutate a: [string; 3]) {
+    for mutate e in a {
+        e = "X{e}"
+    }
+}
+
+func bump_all(mutate a: [i64; 3], f: |mutate i64|) {
+    for mutate e in a {
+        f(mutate e)
+    }
+}
+
+func main() {
+    mut rs: [Room; 2] = [Room(n: 1, name: mk(1)), Room(n: 2, name: mk(2))]
+    rs[1].relabel()
+    println("receiver: {rs[0].name} | {rs[1].name}")
+    redo(mutate rs[0])
+    rename(mutate rs[1].name)
+    println("argument: {rs[0].name} | {rs[1].name}")
+    for mutate r in rs {
+        r.name = mk(5)
+    }
+    println("for mutate: {rs[0].name} | {rs[1].name}")
+    with rs[0] as r {
+        r.name = mk(6)
+    }
+    println("with: {rs[0].name} | {rs[1].name}")
+
+    mut ss: [string; 3] = [mk(1), mk(2), mk(3)]
+    mark(mutate ss)
+    println("callee for mutate: {ss[0]} | {ss[2]}")
+    mut ns: [i64; 3] = [1, 2, 3]
+    bump_all(mutate ns, |mutate c: i64| {
+        c += 100
+    })
+    println("closure: {ns[0]} {ns[1]} {ns[2]}")
+
+    mut o = Outer(id: 1, h: Heap(Inner(x: 1)))
+    o.h.x = 5
+    println("heap field: {o.h.x}")
+    mut h = Heap(Box3(pts: [Pt(x: 1, y: 2), Pt(x: 3, y: 4)], name: mk(9)))
+    ensure drop(h)
+    println("heap read: {h.name}")
+}

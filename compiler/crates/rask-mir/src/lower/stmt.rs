@@ -2122,13 +2122,12 @@ impl<'a> MirLowerer<'a> {
             }
             ExprKind::Field { object, field } => {
                 let Some((base, base_ty)) = self.place_addr(object)? else { return Ok(None) };
-                let (base, base_ty) = self.through_held_address(base, base_ty);
                 let Some((foff, fty, _)) = self.field_offset_ty_size(&base_ty, field) else { return Ok(None) };
-                Ok(Some((MirOperand::Local(self.offset_address(base, MirOperand::Constant(MirConst::Int(foff as i64)))), fty)))
+                let at = self.offset_address(base, MirOperand::Constant(MirConst::Int(foff as i64)));
+                Ok(Some(self.held_value(at, fty)))
             }
             ExprKind::Index { object, index } if self.is_fixed_array(object) => {
                 let Some((base, base_ty)) = self.place_addr(object)? else { return Ok(None) };
-                let (base, base_ty) = self.through_held_address(base, base_ty);
                 let MirType::Array { elem, .. } = base_ty else { return Ok(None) };
                 let (idx_op, _) = self.lower_expr(index)?;
                 let scaled = self.builder.alloc_temp(MirType::I64);
@@ -2140,7 +2139,8 @@ impl<'a> MirLowerer<'a> {
                         right: MirOperand::Constant(MirConst::Int(rask_layout::size_of(elem.as_ref(), self.ctx.target()) as i64)),
                     },
                 }));
-                Ok(Some((MirOperand::Local(self.offset_address(base, MirOperand::Local(scaled))), *elem)))
+                let at = self.offset_address(base, MirOperand::Local(scaled));
+                Ok(Some(self.held_value(at, *elem)))
             }
             ExprKind::Index { object, index } => {
                 let map = if self.is_vec_expr(object) {
@@ -2161,34 +2161,24 @@ impl<'a> MirLowerer<'a> {
                 let (coll_op, _) = self.lower_expr(object)?;
                 let (idx_op, _) = self.lower_expr(index)?;
                 let slot = self.emit_element_slot(coll_op, idx_op, map);
-                Ok(Some((MirOperand::Local(slot), elem_ty)))
+                Ok(Some(self.held_value(slot, elem_ty)))
             }
             _ => Ok(None),
         }
     }
 
-    /// A place whose storage holds an address rather than the value (a `Heap`
-    /// or a link stored in a field or element): the value is where that word
-    /// points.
-    fn through_held_address(&mut self, addr: MirOperand, ty: MirType) -> (MirOperand, MirType) {
-        let MirOperand::Local(id) = addr else { return (addr, ty) };
-        // A local of its own is already the address (`place_addr`'s Ident arm).
-        if self.builder.local_type(id).is_some_and(|t| matches!(t, MirType::Heap(_) | MirType::Link(_))) {
-            return (addr, ty);
-        }
-        match ty {
-            MirType::Heap(inner) => {
-                let word = self.builder.alloc_temp(MirType::Ptr);
-                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign { dst: word, rvalue: MirRValue::Deref(addr) }));
-                (MirOperand::Local(word), *inner)
-            }
-            MirType::Link(_) => {
-                let word = self.builder.alloc_temp(MirType::Ptr);
-                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign { dst: word, rvalue: MirRValue::Deref(addr) }));
-                (MirOperand::Local(word), ty)
-            }
-            _ => (addr, ty),
-        }
+    /// A `Heap` or link stored in a field or element is a word pointing at
+    /// the value, and the place names the value (`o.h.x = 5` writes the
+    /// `Inner` the field points at), the same as a `Heap` or link local does.
+    fn held_value(&mut self, slot: crate::LocalId, ty: MirType) -> (MirOperand, MirType) {
+        let ty = match ty {
+            MirType::Heap(inner) => *inner,
+            MirType::Link(_) => ty,
+            _ => return (MirOperand::Local(slot), ty),
+        };
+        let word = self.builder.alloc_temp(MirType::Ptr);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign { dst: word, rvalue: MirRValue::Deref(MirOperand::Local(slot)) }));
+        (MirOperand::Local(word), ty)
     }
 
     /// `base + by`, as a pointer.
