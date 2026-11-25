@@ -24,6 +24,9 @@ pub const FIELD_TAKE: &str = "rask_field_take";
 /// An element's bytes copied out and its slot zeroed.
 pub const VEC_MOVE_OUT: &str = "rask_vec_move_out";
 
+/// Bumps a string's count in place: `void rask_string_clone(const RaskStr *)`.
+pub const STRING_SHARE: &str = "rask_string_clone";
+
 /// The key goes by address; the result is the value's address.
 pub const KEY_BY_ADDRESS: CallAbi = CallAbi::new(ArgAdapt::WrapArg1, RetAdapt::None);
 
@@ -77,3 +80,16 @@ pub const BOX_SET: CallAbi = CallAbi::new(ArgAdapt::WrapArg1, RetAdapt::None);
 /// `replace`: the new payload goes in by address, the old one comes back out
 /// into the caller's destination.
 pub const BOX_REPLACE: CallAbi = CallAbi::new(ArgAdapt::WrapArg1AppendOutParam, RetAdapt::FromArgAdapt);
+
+/// A string's clone: its 16 bytes copied into the destination, then shared
+/// there.
+pub fn string_clone() -> FunctionRef {
+    FunctionRef::borrowing(STRING_SHARE)
+        .with_abi(CallAbi::new(ArgAdapt::ShareIntoDst, RetAdapt::FromArgAdapt))
+}
+
+/// A string already copied into place, shared where it lies: the argument is
+/// its address.
+pub fn string_share_in_place() -> FunctionRef {
+    FunctionRef::borrowing(STRING_SHARE)
+}

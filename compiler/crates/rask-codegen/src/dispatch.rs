@@ -83,17 +83,7 @@ fn leak_str(s: &str) -> &'static str {
 /// (`declared_entries`); `internal_rows_are_not_declared` fails on a row that
 /// repeats one.
 pub(crate) fn internal_entries() -> Vec<StdlibEntry> {
-    let mut entries = vec![
-        // ── String operations ──────────────────────────────────
-        StdlibEntry {
-            mir_name: "string_clone", c_name: "rask_string_clone",
-            params: &[types::I64], ret_ty: None, can_panic: false,
-            arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::None,
-        },
-
-        StdlibEntry::simple("Link_hash", "rask_link_hash", &[types::I64], Some(types::I64), false),
-
-    ];
+    let mut entries = Vec::new();
 
     // ── Atomic operations ──────────────────────────────────
     // mem.atomics/GA1: `Atomic<T>` is the only spelling, so there is one set of

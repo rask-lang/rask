@@ -322,7 +322,6 @@ enum HandAdapt {
     Receive,
     Parse,
     JoinOutcome,
-    ShareString,
     Unbuffered,
 }
 
@@ -344,7 +343,6 @@ fn hand_adaptation(name: &str) -> Option<HandAdapt> {
         "Receiver_receive" | "Receiver_try_receive" => HandAdapt::Receive,
         n if rask_mir::parse_runtime::writes(n).is_some() => HandAdapt::Parse,
         "Handle_join" | "Handle_cancel" => HandAdapt::JoinOutcome,
-        "string_clone" => HandAdapt::ShareString,
         "Channel_unbuffered" => HandAdapt::Unbuffered,
         _ => return None,
     })
@@ -8108,6 +8106,17 @@ impl<'a> FunctionBuilder<'a> {
         let call_adapt = match arg_adapt {
             ArgAdapt::None => CallAdapt::None,
 
+            ArgAdapt::ShareIntoDst => {
+                let Some((dst_ss, _)) = dst.and_then(|id| ctx.stack_slot_map.get(id)) else {
+                    return CallAdapt::None;
+                };
+                if !args.is_empty() {
+                    Self::copy_aggregate(builder, args[0], *dst_ss, 16);
+                }
+                args[0] = dst_ss.addr(builder, 0);
+                CallAdapt::StringOutParam(*dst_ss)
+            }
+
             ArgAdapt::WrapArg0 => {
                 Self::wrap_arg_as_ptr(builder, args, mir_args, 0, ctx.locals);
                 CallAdapt::None
@@ -8494,20 +8503,6 @@ impl<'a> FunctionBuilder<'a> {
                 args.push(value_ss.addr(builder, 0));
                 args.push(msg_ss.addr(builder, 0));
                 CallAdapt::JoinOutcome(value_ss, msg_ss)
-            }
-
-            // Another reference to the same string: the 16 bytes copied into
-            // the destination's slot, then the refcount bumped there.
-            HandAdapt::ShareString => {
-                let Some((dst_ss, _)) = dst.and_then(|id| ctx.stack_slot_map.get(id)) else {
-                    return CallAdapt::None;
-                };
-                if !args.is_empty() {
-                    Self::copy_aggregate(builder, args[0], *dst_ss, 16);
-                }
-                let dst_addr = dst_ss.addr(builder, 0);
-                args[0] = dst_addr;
-                CallAdapt::StringOutParam(*dst_ss)
             }
 
             // `Channel.unbuffered()` is a buffered channel of capacity zero.

@@ -6582,7 +6582,7 @@ impl<'a> MirLowerer<'a> {
                 let cloned = self.builder.alloc_temp(obj_ty.clone());
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                     dst: Some(cloned),
-                    func: FunctionRef::borrowing("string_clone"),
+                    func: crate::runtime_ops::string_clone(),
                     args: vec![all_args[0].clone()],
                 }));
                 return Ok((MirOperand::Local(cloned), obj_ty));
@@ -6645,7 +6645,7 @@ impl<'a> MirLowerer<'a> {
                             let cloned = self.builder.alloc_temp(field_mir_ty.clone());
                             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                                 dst: Some(cloned),
-                                func: FunctionRef::borrowing(cfn),
+                                func: Self::clone_call(cfn),
                                 args: vec![MirOperand::Local(field_val)],
                             }));
                             MirOperand::Local(cloned)
@@ -7954,6 +7954,16 @@ impl<'a> MirLowerer<'a> {
         if method == "hash" && args.is_empty() {
             if let Some(handled) = self.lower_scalar_hash(&obj_op, obj_ty) {
                 return Ok(Some(handled));
+            }
+            // A link hashes as its pointer, the way a map keyed on links does.
+            if matches!(obj_ty, MirType::Link(_)) {
+                let out = self.builder.alloc_temp(MirType::U64);
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                    dst: Some(out),
+                    func: FunctionRef::reading("rask_link_hash"),
+                    args: vec![obj_op.clone()],
+                }));
+                return Ok(Some((MirOperand::Local(out), MirType::U64)));
             }
         }
 

@@ -59,6 +59,10 @@ pub enum ArgAdapt {
     StringResultOutParam,
     /// Append 8-byte (or 16-byte for string dst) out-param
     AppendOutParam,
+    /// Copy args[0]'s 16 bytes into the destination and pass the
+    /// destination's address: the runtime shares the string in place
+    /// (`rask_string_clone`).
+    ShareIntoDst,
     /// WrapArg1, then AppendOutParam: a box's new value goes in by address
     /// and the one it held comes back out (`Shared.replace`).
     WrapArg1AppendOutParam,

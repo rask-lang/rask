@@ -332,12 +332,7 @@ pub fn is_method_symbol(name: &str) -> bool {
     cache().type_names.contains(head)
         || rask_ast::primitives::is_integer(head)
         || rask_ast::primitives::is_float(head)
-        || MIR_FAMILIES.contains(&head)
 }
-
-/// Heads of the symbols lowering makes up that name no stdlib type:
-/// `Link<T>` has no stdlib file to declare `Link_hash`.
-const MIR_FAMILIES: &[&str] = &["Link"];
 
 pub fn type_has_method(prefix: &str, method: &str) -> bool {
     cache().by_name.contains_key(&format!("{}_{}", prefix, method))
@@ -966,7 +961,6 @@ mod tests {
     #[test]
     fn the_stdlib_owns_its_symbol_namespace() {
         assert!(is_method_symbol("Vec_len"));
-        assert!(is_method_symbol("Link_hash"));
         assert!(is_method_symbol("i64_to_string"));
         assert!(!is_method_symbol("helper"));
         assert!(!is_method_symbol("render_table"));

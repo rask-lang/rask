@@ -18,9 +18,9 @@ use crate::{BuildMode, CodegenError, CodegenResult};
 
 /// Runtime symbols codegen calls itself rather than through a MIR call: a
 /// string comparison operator lowers to compare/eq, a string temporary codegen
-/// builds is released with free, and `ensure` and unwinding frames push and pop.
+/// builds is released with free, an `RcInc` shares a string with clone, and `ensure` and unwinding frames push and pop.
 const CODEGEN_RUNTIME_CALLS: &[&str] = &[
-    "rask_string_compare", "rask_string_eq", "rask_string_free",
+    "rask_string_compare", "rask_string_eq", "rask_string_free", "rask_string_clone",
     "rask_ensure_push", "rask_ensure_pop", "rask_unwind_push", "rask_unwind_pop",
 ];
 

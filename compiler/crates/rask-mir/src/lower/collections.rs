@@ -946,13 +946,23 @@ impl<'a> MirLowerer<'a> {
     /// Clone function name for a type, or None if the type is Copy.
     pub(super) fn clone_fn_for_type(ty: &rask_types::Type) -> Option<&'static str> {
         match ty {
-            rask_types::Type::String | rask_types::Type::Bytes => Some("string_clone"),
-            rask_types::Type::UnresolvedNamed(n) if n == "string" => Some("string_clone"),
+            rask_types::Type::String | rask_types::Type::Bytes => Some(crate::runtime_ops::STRING_SHARE),
+            rask_types::Type::UnresolvedNamed(n) if n == "string" => Some(crate::runtime_ops::STRING_SHARE),
             rask_types::Type::UnresolvedGeneric { name, .. } if name == "Vec" => Some("Vec_clone"),
             rask_types::Type::UnresolvedGeneric { name, .. } if name == "Map" => Some("Map_clone"),
             // A closure is one pointer, and its clone is a new environment.
             rask_types::Type::Fn { .. } => Some("rask_closure_clone"),
             _ => None,
+        }
+    }
+
+    /// The call that clones a value into a destination, for a name
+    /// `clone_fn_for_type` gave.
+    pub(super) fn clone_call(cfn: &str) -> FunctionRef {
+        if cfn == crate::runtime_ops::STRING_SHARE {
+            crate::runtime_ops::string_clone()
+        } else {
+            FunctionRef::borrowing(cfn)
         }
     }
 
@@ -1007,7 +1017,7 @@ impl<'a> MirLowerer<'a> {
                 for field in &variant.fields {
                     if let Some(cfn) = Self::clone_fn_for_type(&field.ty) {
                         let abs_offset = variant.payload_offset + field.offset;
-                        if cfn == "string_clone" {
+                        if cfn == crate::runtime_ops::STRING_SHARE {
                             // A string is 16 bytes and the shallow copy above
                             // already moved all of them; the only thing left is
                             // the refcount. Take the field's address and bump
@@ -1030,7 +1040,7 @@ impl<'a> MirLowerer<'a> {
                             }));
                             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                                 dst: None,
-                                func: FunctionRef::borrowing(cfn),
+                                func: crate::runtime_ops::string_share_in_place(),
                                 args: vec![MirOperand::Local(field_addr)],
                             }));
                             continue;

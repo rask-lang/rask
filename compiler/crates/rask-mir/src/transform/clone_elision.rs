@@ -212,7 +212,7 @@ mod tests {
     fn clone_call(dst: u32, src: u32) -> MirStmt {
         MirStmt::dummy(MirStmtKind::Call {
             dst: Some(local(dst)),
-            func: clone_fn("string_clone"),
+            func: clone_fn(crate::runtime_ops::STRING_SHARE),
             args: vec![MirOperand::Local(local(src))],
         })
     }
