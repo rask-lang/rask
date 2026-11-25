@@ -32,8 +32,8 @@ impl Interpreter {
         func: Value,
         args: Vec<Value>,
     ) -> (Result<Value, RuntimeError>, Option<Value>) {
-        if let Value::Closure { params, body, captured_env, lent, generics, ret, .. } = func {
-            self.enter_closure(&captured_env, &lent, &generics);
+        if let Value::Closure { params, body, captured_env, lent, generics, ret, .. } = &func {
+            self.enter_closure(captured_env, lent, generics);
             let first = params.first().cloned();
             for (param, arg) in params.iter().zip(args.into_iter()) {
                 self.env.define(param.clone(), arg.copy_on_bind());
@@ -45,7 +45,7 @@ impl Interpreter {
             let final_arg = first.and_then(|name| self.env.get(&name));
             // A `try` in the body leaves the closure, as a `return` does,
             // with the error as its result (#1781).
-            let value = self.closure_outcome(&body, result, ret);
+            let value = self.closure_outcome(&body, result, *ret);
             self.leave_closure();
             return (value, final_arg);
         }
@@ -113,10 +113,10 @@ impl Interpreter {
         args: Vec<Value>,
         places: Vec<Option<crate::env::Slot>>,
     ) -> Result<Value, RuntimeError> {
-        let Value::Closure { params, body, captured_env, lent, generics, ret, .. } = closure else {
+        let Value::Closure { params, body, captured_env, lent, generics, ret, .. } = &closure else {
             return self.call_value(closure, args);
         };
-        self.enter_closure(&captured_env, &lent, &generics);
+        self.enter_closure(captured_env, lent, generics);
         for (i, (param, arg)) in params.iter().zip(args.into_iter()).enumerate() {
             match places.get(i).cloned().flatten() {
                 Some(cell) => self.env.define_lent(param.clone(), cell),
@@ -134,21 +134,23 @@ impl Interpreter {
         // A `try` in the body leaves the closure, as a `return` does, with
         // the error as its result. Escaping it left the function that
         // called the closure instead (#1781).
-        let value = self.closure_outcome(&body, result, ret);
+        let value = self.closure_outcome(&body, result, *ret);
         self.leave_closure();
         value
     }
 
     pub(crate) fn call_value(&mut self, func: Value, args: Vec<Value>) -> Result<Value, RuntimeError> {
-        match func {
+        let mut func = func;
+        match &mut func {
             Value::Function { name, generics } => {
-                if let Some(decl) = self.functions.get(&name).cloned() {
-                    self.call_function(&decl, args, generics).map_err(|diag| diag.error)
+                if let Some(decl) = self.functions.get(name.as_str()).cloned() {
+                    self.call_function(&decl, args, generics.take()).map_err(|diag| diag.error)
                 } else {
-                    Err(RuntimeError::UndefinedFunction(name))
+                    Err(RuntimeError::UndefinedFunction(std::mem::take(name)))
                 }
             }
             Value::Builtin(kind) => {
+                let kind = *kind;
                 // Handle async builtins separately as they need mutable access
                 if kind == BuiltinKind::SequenceYield {
                     return Ok(self.run_yield_body(args));
@@ -159,7 +161,7 @@ impl Interpreter {
                 self.call_builtin(kind, args)
             }
             Value::ModuleFunction { module, function } => {
-                self.call_module_method(&module, &function, args)
+                self.call_module_method(module, function, args)
             }
             Value::EnumConstructor {
                 enum_name,
@@ -167,21 +169,24 @@ impl Interpreter {
                 field_count,
                 variant_index,
             } => {
-                if args.len() != field_count {
+                if args.len() != *field_count {
                     return Err(RuntimeError::ArityMismatch {
-                        expected: field_count,
+                        expected: *field_count,
                         got: args.len(),
                     });
                 }
                 Ok(Value::Enum {
-                    name: enum_name,
-                    variant: variant_name,
+                    name: std::mem::take(enum_name),
+                    variant: std::mem::take(variant_name),
                     fields: args,
-                    variant_index,
+                    variant_index: *variant_index,
                     origin: None,
                 })
             }
-            closure @ Value::Closure { .. } => self.call_closure(closure, args, Vec::new()),
+            closure @ Value::Closure { .. } => {
+                let closure = std::mem::replace(closure, Value::Unit);
+                self.call_closure(closure, args, Vec::new())
+            }
             Value::NominalConstructor { type_name } => {
                 if args.len() != 1 {
                     return Err(RuntimeError::ArityMismatch {
@@ -190,7 +195,7 @@ impl Interpreter {
                     });
                 }
                 Ok(Value::Nominal {
-                    type_name,
+                    type_name: std::mem::take(type_name),
                     inner: Box::new(args.into_iter().next().unwrap()),
                 })
             }

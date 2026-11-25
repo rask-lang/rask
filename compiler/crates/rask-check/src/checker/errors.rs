@@ -1621,7 +1621,7 @@ pub enum TypeError {
         span: Span,
     },
 
-    #[error("`{ty}` is over the 4 GiB a value can take")]
+    #[error("`{ty}` is over the 64 KiB a value can take")]
     ValueTooLarge {
         ty: Type,
         /// The exact size, for an array; layout holds anything else at the cap.

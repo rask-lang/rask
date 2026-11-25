@@ -529,15 +529,16 @@ Test suite should validate:
 
 ## Error Messages
 
-A type over the 4 GiB a value can hold ([mem.value/VS12](../memory/value-semantics.md)) is rejected by the checker, at the type that is too large:
+A type over the 64 KiB a value can hold ([mem.value/VS12](../memory/value-semantics.md)) is rejected by the checker, at the type that is too large:
 
 ```
-error[E0980]: `[u8; 5000000000]` is too large for a value
+error[E0980]: `[u8; 100000]` is too large for a value
   --> main.rk:2:5
    |
- 2 |     data: [u8; 5000000000]
-   |     ^^^^^^^^^^^^^^^^^^^^^^ 5000000000 bytes
-   = why: a value's size is a 32-bit count, so one value holds at most 4 GiB
+ 2 |     data: [u8; 100000]
+   |     ^^^^^^^^^^^^^^^^^^ 100000 bytes
+   = why: any value can land in a stack frame and a task's stack is 1 MiB, so
+          one value holds at most 64 KiB
 ```
 
 That many elements belong in a `Vec`.

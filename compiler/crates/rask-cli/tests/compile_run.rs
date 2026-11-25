@@ -10767,18 +10767,6 @@ fn an_overflow_caught_in_a_closure_says_where() {
     );
 }
 
-// A function whose frame is too big to check in place must keep its own
-// frame. Inlined into `main` (it's called once), its 16 MB array made `main`'s
-// frame that big, and the stack check fired at `main`'s entry, before the
-// first line printed (#2079).
-#[test]
-fn a_huge_frame_is_not_inlined_into_its_caller() {
-    let (stdout, stderr, code) = run_capture("--native", "huge_local_inlined.rk");
-    assert_eq!(code, 101, "{}", stderr);
-    assert_eq!(stdout, "5050\n", "{}", stderr);
-    assert!(stderr.contains("huge_local_inlined.rk:11:"), "should name `huge`: {}", stderr);
-}
-
 // A recursive function's frame is paid at every level. Inlining a helper's
 // 4.8K array into it, though the helper only runs at the bottom, made each
 // level that much bigger and `rec(3000)` overflowed natively; the interpreter
@@ -10788,4 +10776,22 @@ fn a_helper_with_an_array_is_not_inlined_into_recursion() {
     let (stdout, stderr, code) = run_capture("--native", "inlined_into_recursion.rk");
     assert_eq!(code, 0, "{}", stderr);
     assert_eq!(stdout, "start\n3007\n");
+}
+
+/// The value cap counts pointers as 8 bytes on every target (#2066),
+/// so a type over it on x86_64 is over it on wasm32 too. Measured with the
+/// target's own pointers, `[Vec<i64>; 8193]` fit in 32 KiB there and the same
+/// program compiled on one machine and not the other.
+#[test]
+fn the_value_cap_counts_the_same_on_a_32_bit_target() {
+    let out = Command::new(rask_binary())
+        .arg("compile")
+        .arg("--dump-mir")
+        .arg("--target")
+        .arg("wasm32-none")
+        .arg(fixture("value_cap_any_target.rk"))
+        .output()
+        .expect("failed to run rask compile");
+    let text = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    assert!(text.contains("E0980"), "wasm32 accepted a value over 64 KiB:\n{text}");
 }

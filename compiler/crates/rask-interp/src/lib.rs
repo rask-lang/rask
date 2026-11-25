@@ -498,6 +498,22 @@ where
     })
 }
 
+/// Run `f` here, or on a fresh stack segment when this one is nearly spent.
+///
+/// For the interpreter's own walks over a value: clone, `==`, hashing, drop,
+/// printing and the rack's link records. Each recurses once per level of
+/// nesting, and a value built by a loop can nest far deeper than one stack
+/// holds, so these walks used to abort the interpreter where native runs
+/// (#2084). Unlike a Rask call they don't count against the segment cap: the
+/// depth is the value's, and the value is already in memory.
+pub(crate) fn with_stack_room<T, F>(f: F) -> T
+where
+    F: FnOnce() -> T + Send,
+    T: Send,
+{
+    if stack_nearly_exhausted() { grow_interp_stack(f) } else { f() }
+}
+
 /// Run `f` on a thread with the interpreter's stack size, borrowing freely.
 ///
 /// `main` used to run on whatever thread called in — the process main thread and

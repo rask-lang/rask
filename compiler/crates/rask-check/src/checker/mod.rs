@@ -229,7 +229,7 @@ pub struct TypeChecker {
     /// Each range expression's bound type, checked once literals settle.
     pub(super) pending_range_bounds: Vec<(Type, rask_ast::Span)>,
     /// `[x; n]` sites, sized once literal defaults settle the element type.
-    /// Types to measure against the 4 GiB a value can take, once literal
+    /// Types to measure against the 64 KiB a value can take, once literal
     /// defaults have settled them: array repeats, tuple and struct literals,
     /// and declared types.
     pub(super) pending_value_sizes: Vec<(Type, rask_ast::Span)>,

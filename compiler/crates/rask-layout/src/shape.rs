@@ -79,11 +79,20 @@ pub fn tuple_layout(parts: impl IntoIterator<Item = (u32, u32)>) -> (Vec<u32>, u
     (offsets, align_up(offset, max_align), max_align)
 }
 
+/// The most bytes one value can take (`mem.value/VS12`). Any value can sit in
+/// a stack frame: a local, a temporary, an argument, the copy made when a
+/// `Vec` element is read out. A task runs on a 1 MiB stack, so a value has to
+/// leave room for several of itself and the calls below it; sixteen of these
+/// fill a task's stack. Anything bigger belongs on the heap, in a `Vec` or a
+/// `Heap`, and the checker says so (E0980) instead of the program overflowing
+/// natively while the interpreter runs it (#2066).
+pub const MAX_VALUE_SIZE: u32 = 64 * 1024;
+
 /// `[T; len]`: the elements back to back, so the stride is the element's size.
 ///
-/// Sizes are `u32`, so a value tops out at 4 GiB. An array over that comes
-/// back as `u32::MAX`, as does a struct, tuple or enum whose parts add up past
-/// it: the checker reports it (E0980), and the passes that
+/// Sizes are `u32`. An array over 4 GiB comes back as `u32::MAX`, as does a
+/// struct, tuple or enum whose parts add up past it. The checker reports
+/// anything over `MAX_VALUE_SIZE` (E0980), and the passes that
 /// still run on a program with errors, to find more of them, ask its layout
 /// too. `[0; 3000000000]` panicked the compiler in the ownership check's copy
 /// verdict when this panicked instead.

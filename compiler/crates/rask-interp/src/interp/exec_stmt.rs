@@ -454,7 +454,7 @@ impl Interpreter {
                         Ok(Value::Unit)
                     }
                     // Map iteration (non-mutating): yield (key, value) tuples
-                    Value::Map(m) => {
+                    Value::Map(ref m) => {
                         let pairs = map_entries_seeded(&m.lock().unwrap());
                         for (key, val) in pairs {
                             self.env.push_scope();
@@ -489,7 +489,7 @@ impl Interpreter {
                         }
                         Ok(Value::Unit)
                     }
-                    Value::Vec(v) => self.exec_vec_loop(iter, &v, binding, body, loop_label),
+                    Value::Vec(ref v) => self.exec_vec_loop(iter, &v, binding, body, loop_label),
                     // type.sequence/SEQ6: a Sequence is a function taking a
                     // yield. Iterating one is calling it — the loop hands over a
                     // yield that runs the body and answers whether to continue,

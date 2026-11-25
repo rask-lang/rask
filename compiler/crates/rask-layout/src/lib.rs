@@ -9,7 +9,7 @@ use std::collections::HashMap;
 
 mod shape;
 pub use shape::{
-    align_of, array_layout, fat_pointer, payload_offset_of, simd_layout, size_align_of, size_of, tuple_layout,
+    align_of, array_layout, MAX_VALUE_SIZE, fat_pointer, payload_offset_of, simd_layout, size_align_of, size_of, tuple_layout,
     tuple_offsets, widest, wrapper_of, Shape, Shaped, BUFFER_SIZE_ALIGN,
 };
 use shape::align_up;

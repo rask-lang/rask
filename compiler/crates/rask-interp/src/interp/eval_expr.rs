@@ -93,19 +93,11 @@ pub(super) fn cond_binds_pattern(cond: &Expr) -> bool {
 }
 
 /// Set origin on an error value (the inner payload of Err). Only sets if not already set (ER15).
-fn set_error_origin(val: Value, origin: &Arc<str>) -> Value {
-    match val {
-        Value::Enum { name, variant, fields, variant_index, origin: existing } => {
-            Value::Enum {
-                name,
-                variant,
-                fields,
-                variant_index,
-                origin: Some(existing.unwrap_or_else(|| origin.clone())),
-            }
-        }
-        other => other,
+fn set_error_origin(mut val: Value, origin: &Arc<str>) -> Value {
+    if let Value::Enum { origin: existing, .. } = &mut val {
+        existing.get_or_insert_with(|| origin.clone());
     }
+    val
 }
 
 /// The absent value an emptied optional slot is left holding (OPT32).
@@ -225,24 +217,16 @@ impl Interpreter {
 
 /// Set origin on a Result.Err or Option.None wrapper and its inner error value.
 /// Only sets if not already set (first propagation site wins, per ER15).
-fn set_result_origin(val: Value, origin: &Arc<str>) -> Value {
-    match val {
-        Value::Enum { name, variant, fields, variant_index, origin: existing }
-            if variant == "Err" || variant == "None" =>
-        {
-            let fields_with_origin: Vec<Value> = fields.into_iter()
-                .map(|f| set_error_origin(f, origin))
-                .collect();
-            Value::Enum {
-                name,
-                variant,
-                fields: fields_with_origin,
-                variant_index,
-                origin: Some(existing.unwrap_or_else(|| origin.clone())),
+fn set_result_origin(mut val: Value, origin: &Arc<str>) -> Value {
+    if let Value::Enum { variant, fields, origin: existing, .. } = &mut val {
+        if variant == "Err" || variant == "None" {
+            for f in fields.iter_mut() {
+                *f = set_error_origin(std::mem::replace(f, Value::Unit), origin);
             }
+            existing.get_or_insert_with(|| origin.clone());
         }
-        other => other,
     }
+    val
 }
 
 /// Map comparison method names back to operator symbols.
@@ -603,7 +587,7 @@ impl Interpreter {
                 // `t.1` where `t` is a place: a place of its own, so
                 // `mutate t.1` writes `t` (#1819).
                 if let Located::Place(parent) = &located {
-                    if let Some(Value::Tuple(items)) = parent.get() {
+                    if let Some(Value::Tuple(items)) = &parent.get() {
                         if let Some(i) = field.parse::<usize>().ok().filter(|i| *i < items.len()) {
                             return Ok(Located::Place(Slot::TupleElem(Box::new(parent.clone()), i)));
                         }
@@ -745,7 +729,7 @@ impl Interpreter {
                 let idx = field.parse::<usize>().unwrap();
                 Ok(items.get(idx).cloned().unwrap_or(Value::Unit))
             }
-            Value::Vec(v) if field.parse::<usize>().is_ok() => {
+            Value::Vec(ref v) if field.parse::<usize>().is_ok() => {
                 let idx = field.parse::<usize>().unwrap();
                 let vec = v.lock().unwrap();
                 Ok(vec.get(idx).cloned().unwrap_or(Value::Unit))
@@ -770,14 +754,14 @@ impl Interpreter {
                     span
                 ))
             }
-            Value::Package(pkg_name) => {
+            Value::Package(ref pkg_name) => {
                 // A stdlib module with no Rust side of its own (`bits`)
                 // is bound as a package, but its types are registered
                 // under their bare names, like every stdlib type. The
                 // prefixed lookup above never found `bits$BinaryBuilder`
                 // and the type was unreachable through its module
                 // (#1456). Same answer `Value::Module` gives.
-                if rask_stdlib::modules::exports_type(&pkg_name, field) {
+                if rask_stdlib::modules::exports_type(pkg_name, field) {
                     return Ok(Value::Type(field.to_string()));
                 }
                 Err(RuntimeDiagnostic::new(
@@ -787,20 +771,20 @@ impl Interpreter {
             }
             // Type-level field access: handles lib.Color.Red after
             // lib.Color resolved to Value::Type("lib$Color").
-            Value::Type(type_name) => {
-                if let Some(enum_decl) = self.enums.get(&type_name).cloned() {
+            Value::Type(ref type_name) => {
+                if let Some(enum_decl) = self.enums.get(type_name) {
                     if let Some((vidx, variant)) = enum_decl.variants.iter().enumerate().find(|(_, v)| v.name == *field) {
                         let field_count = variant.fields.len();
                         if field_count == 0 {
                             return Ok(Value::Enum {
-                                name: type_name,
+                                name: type_name.clone(),
                                 variant: field.to_string(),
                                 fields: vec![],
                                 variant_index: vidx as u32, origin: None,
                             });
                         } else {
                             return Ok(Value::EnumConstructor {
-                                enum_name: type_name,
+                                enum_name: type_name.clone(),
                                 variant_name: field.to_string(),
                                 field_count,
                                 variant_index: vidx as u32,
@@ -1116,7 +1100,7 @@ impl Interpreter {
     fn module_qualified_enum_receiver(&self, object: &Expr, method: &str) -> Option<String> {
         let ExprKind::Field { object: head, field: type_name } = &object.kind else { return None };
         let Some(head_name) = head.name() else { return None };
-        if let Some(Value::Struct(s)) = self.env.get(head_name) {
+        if let Some(Value::Struct(ref s)) = self.env.get(head_name) {
             if s.lock().unwrap().fields.contains_key(type_name.as_str()) {
                 return None;
             }
@@ -1570,36 +1554,36 @@ impl Interpreter {
                         }
                     }
 
-                    if let Some(type_methods) = self.methods.get(name).cloned() {
-                        if let Some(method_fn) = type_methods.get(method) {
-                            // Skip a declaration whose body lives in the
-                            // backend (e.g. `@native` fs.write_bytes): it falls
-                            // through to the built-in module dispatch.
-                            let has_body = !method_fn.body_lives_elsewhere();
-                            let is_static = method_fn
-                                .params
-                                .first()
-                                .map(|p| p.name != "self")
-                                .unwrap_or(true);
-                            // A stdlib module goes through module dispatch below,
-                            // which falls back to this same Rask body when it has
-                            // no implementation of its own. Jumping the queue here
-                            // took the Rask body even when the Rust one was the
-                            // only runnable version: `fs.read_text` is `extern "C"`
-                            // calls through raw pointers (#696), which a tree
-                            // walker can't execute, so it started failing with
-                            // `undefined function fopen` and took grep_clone and
-                            // markdown_renderer with it.
-                            let is_module = ModuleKind::from_name(name).is_some();
-                            if is_static && has_body && !is_module {
-                                let (arg_vals, places) = self.eval_call_args(args)?;
-                                let generics = self.static_call_generics(expr.id, object, method);
-                                let callee = method_fn.name.clone();
-                                self.lend_places(&callee, places);
-                                let result = self.call_function(method_fn, arg_vals, generics);
-                                self.lent_args = None;
-                                return result;
-                            }
+                    // One method, not the type's whole table: `Vec.new()` copied
+                    // every `Vec` method on each call.
+                    if let Some(method_fn) = self.methods.get(name).and_then(|m| m.get(method)).cloned() {
+                        // Skip a declaration whose body lives in the
+                        // backend (e.g. `@native` fs.write_bytes): it falls
+                        // through to the built-in module dispatch.
+                        let has_body = !method_fn.body_lives_elsewhere();
+                        let is_static = method_fn
+                            .params
+                            .first()
+                            .map(|p| p.name != "self")
+                            .unwrap_or(true);
+                        // A stdlib module goes through module dispatch below,
+                        // which falls back to this same Rask body when it has
+                        // no implementation of its own. Jumping the queue here
+                        // took the Rask body even when the Rust one was the
+                        // only runnable version: `fs.read_text` is `extern "C"`
+                        // calls through raw pointers (#696), which a tree
+                        // walker can't execute, so it started failing with
+                        // `undefined function fopen` and took grep_clone and
+                        // markdown_renderer with it.
+                        let is_module = ModuleKind::from_name(name).is_some();
+                        if is_static && has_body && !is_module {
+                            let (arg_vals, places) = self.eval_call_args(args)?;
+                            let generics = self.static_call_generics(expr.id, object, method);
+                            let callee = method_fn.name.clone();
+                            self.lend_places(&callee, places);
+                            let result = self.call_function(&method_fn, arg_vals, generics);
+                            self.lent_args = None;
+                            return result;
                         }
                     }
                 }
@@ -2310,7 +2294,7 @@ impl Interpreter {
                     // Written type arguments (`Holder<i64>.Full(4)`) have already
                     // done their work in the checker (#782).
                     let enum_name = &self.resolve_transparent_alias(ident);
-                    if let Some(enum_decl) = self.enums.get(enum_name).cloned() {
+                    if let Some(enum_decl) = self.enums.get(enum_name) {
                         if let Some((vidx, variant)) =
                             enum_decl.variants.iter().enumerate().find(|(_, v)| &v.name == field)
                         {
@@ -2380,8 +2364,8 @@ impl Interpreter {
             ExprKind::OptionalField { object, field } => {
                 let obj_val = self.eval_expr(object)?;
                 match obj_val {
-                    Value::Enum { variant, fields, .. } if variant == "Some" => {
-                        let inner = fields.into_iter().next().unwrap_or(Value::Unit);
+                    Value::Enum { ref variant, ref fields, .. } if variant == "Some" => {
+                        let inner = fields.first().cloned().unwrap_or(Value::Unit);
                         // Access field on the inner value
                         let field_val = match inner {
                             Value::Struct(ref s) => {
@@ -2406,7 +2390,7 @@ impl Interpreter {
                         // Wrap in Some
                         Ok(Value::some(field_val))
                     }
-                    Value::Enum { variant, .. } if variant == "None" => {
+                    Value::Enum { ref variant, .. } if variant == "None" => {
                         Ok(Value::none())
                     }
                     _ => {
@@ -2746,7 +2730,7 @@ impl Interpreter {
                 }
                 Ok(Value::Closure {
                     params: params.iter().map(|p| p.name.clone()).collect(),
-                    body: (**body).clone(),
+                    body: Arc::new((**body).clone()),
                     captured_env: captured,
                     lent: self.env.lent_names(),
                     carried,
@@ -2857,13 +2841,13 @@ impl Interpreter {
                         Ok(Value::Float(k.round(n), k))
                     }
                     // E18: fieldless enum to integer cast
-                    (Value::Enum { name, variant, fields, variant_index, .. }, target)
+                    (Value::Enum { ref name, ref variant, ref fields, variant_index, .. }, target)
                         if fields.is_empty()
                         && rask_ast::primitives::is_machine_integer(target) =>
                     {
-                        let disc = if let Some(enum_decl) = self.enums.get(&name) {
+                        let disc = if let Some(enum_decl) = self.enums.get(name) {
                             enum_decl.variants.iter()
-                                .find(|v| v.name == variant)
+                                .find(|v| v.name == *variant)
                                 .and_then(|v| v.discriminant)
                                 .unwrap_or(variant_index as i128)
                         } else {
@@ -3192,8 +3176,8 @@ impl Interpreter {
                     // Plain expression — evaluate and check type
                     let val = self.eval_expr(&binding.source)?;
                     match val {
-                        Value::RaskMutex(m) => WithSource::Mutex(m),
-                        Value::Cell(c) => WithSource::Cell(c),
+                        Value::RaskMutex(ref m) => WithSource::Mutex(Arc::clone(m)),
+                        Value::Cell(ref c) => WithSource::Cell(Arc::clone(c)),
                         _ => {
                             return Err(RuntimeDiagnostic::new(
                                 RuntimeError::TypeError(format!(
@@ -3418,10 +3402,10 @@ impl Interpreter {
                     SelectArmKind::Recv { channel, binding } => {
                         let ch_val = self.eval_expr(channel)?;
                         match ch_val {
-                            Value::Receiver(rx) => {
+                            Value::Receiver(ref rx) => {
                                 entries.push(SelectEntry {
                                     kind: EvalSelectKind::Recv {
-                                        rx,
+                                        rx: Arc::clone(rx),
                                         binding: binding.clone(),
                                     },
                                     arm_idx: i,
@@ -3442,10 +3426,10 @@ impl Interpreter {
                         let ch_val = self.eval_expr(channel)?;
                         let send_val = self.eval_expr(value)?;
                         match ch_val {
-                            Value::Sender(tx) => {
+                            Value::Sender(ref tx) => {
                                 entries.push(SelectEntry {
                                     kind: EvalSelectKind::Send {
-                                        tx,
+                                        tx: Arc::clone(tx),
                                         value: send_val,
                                     },
                                     arm_idx: i,

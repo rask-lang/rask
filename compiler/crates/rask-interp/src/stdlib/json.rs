@@ -485,6 +485,10 @@ fn parse_json(input: &str) -> Result<Value, String> {
 
 /// Stringify a JsonValue (or any Value) into JSON.
 fn stringify_value(value: &Value, pretty: bool, indent: usize) -> String {
+    // A value can nest deeper than one stack holds (#2084).
+    if crate::stack_nearly_exhausted() {
+        return crate::grow_interp_stack(|| stringify_value(value, pretty, indent));
+    }
     match value {
         Value::Enum { name, variant, fields, .. } if name == "JsonValue" => {
             stringify_json_variant(variant, fields, pretty, indent)
@@ -698,8 +702,12 @@ fn escape_json_string(s: &str) -> String {
 fn value_to_json(
     value: &Value,
     struct_decls: &HashMap<String, StructDecl>,
-    enums: &HashMap<String, rask_ast::decl::EnumDecl>,
+    enums: &HashMap<String, Arc<rask_ast::decl::EnumDecl>>,
 ) -> Result<Value, RuntimeError> {
+    // A value can nest deeper than one stack holds (#2084).
+    if crate::stack_nearly_exhausted() {
+        return crate::grow_interp_stack(|| value_to_json(value, struct_decls, enums));
+    }
     match value {
         Value::Unit => Ok(make_json_null()),
         Value::Bool(b) => Ok(make_json_bool(*b)),
@@ -1076,11 +1084,12 @@ fn json_to_typed(
                 });
             }
         };
-        return match answer {
-            Value::Enum { variant, mut fields, .. } if variant == "Ok" && fields.len() == 1 => Ok(fields.remove(0)),
-            Value::Enum { variant, mut fields, .. } if variant == "Err" && fields.len() == 1 => {
+        let mut answer = answer;
+        return match &mut answer {
+            Value::Enum { variant, fields, .. } if variant == "Ok" && fields.len() == 1 => Ok(fields.remove(0)),
+            Value::Enum { variant, fields, .. } if variant == "Err" && fields.len() == 1 => {
                 let why = match fields.remove(0) {
-                    Value::String(s) => s.lock().unwrap().clone(),
+                    Value::String(ref s) => s.lock().unwrap().clone(),
                     other => format!("{:?}", other),
                 };
                 let where_ = if path.is_empty() { "the value" } else { path };

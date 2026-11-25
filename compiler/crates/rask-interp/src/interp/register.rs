@@ -4,6 +4,7 @@
 use rask_ast::decl::{BenchmarkDecl, ConstDecl, DeclKind, Decl, EnumDecl, FnDecl, TestDecl, Variant};
 use rask_ast::stmt::Stmt;
 use rask_ast::stmt::StmtKind;
+use std::sync::Arc;
 
 use crate::value::{BuiltinKind, ModuleKind, Value};
 
@@ -77,13 +78,13 @@ impl Interpreter {
             let entry = self.enums.entry(name.clone()).or_insert_with(|| {
                 let mut implemented = decl.clone();
                 implemented.methods.retain(|m| !m.body_lives_elsewhere());
-                implemented
+                Arc::new(implemented)
             });
             let methods = entry.methods.clone();
             if !methods.is_empty() {
                 let type_methods = self.methods.entry(name.clone()).or_default();
                 for m in methods {
-                    type_methods.entry(m.name.clone()).or_insert(m);
+                    type_methods.entry(m.name.clone()).or_insert(Arc::new(m));
                 }
             }
         }
@@ -92,7 +93,7 @@ impl Interpreter {
         // their values are built by `Value::some`/`none`/`ok`/`err`.
         self.enums.insert(
             "Ordering".to_string(),
-            EnumDecl {
+            Arc::new(EnumDecl {
                 name: "Ordering".to_string(),
                 type_params: vec![],
                 variants: rask_stdlib::ORDERING_VARIANTS
@@ -110,14 +111,14 @@ impl Interpreter {
                 attrs: vec![],
                 doc: None,
                 backing_type: None,
-            },
+            }),
         );
         // Same rule for `extend` blocks — the body is where most of the
         // stdlib's real Rask code lives (`IoError.message`, `Method.to_string`).
         for (type_name, methods) in rask_stdlib::modules::impl_methods() {
             let type_methods = self.methods.entry(type_name.clone()).or_default();
             for m in methods {
-                type_methods.entry(m.name.clone()).or_insert_with(|| m.clone());
+                type_methods.entry(m.name.clone()).or_insert_with(|| Arc::new(m.clone()));
             }
         }
     }
@@ -145,7 +146,7 @@ impl Interpreter {
             };
             for f in fns {
                 if let Some((template, bound)) = self.copies_of.get(&f.id) {
-                    self.template_copies.entry(*template).or_default().push((bound.clone(), f.clone()));
+                    self.template_copies.entry(*template).or_default().push((bound.clone(), Arc::new(f.clone())));
                 }
             }
         }
@@ -182,16 +183,16 @@ impl Interpreter {
                         _ => f.name.clone(),
                     };
                     self.function_keys.insert(f.id, key.clone());
-                    self.functions.insert(key, f.clone());
+                    self.functions.insert(key, Arc::new(f.clone()));
                 }
                 DeclKind::Enum(e) => {
                     let base_name = e.name.clone();
-                    self.enums.insert(base_name.clone(), e.clone());
+                    self.enums.insert(base_name.clone(), Arc::new(e.clone()));
                     // Register enum methods (e.g., @message-generated message())
                     if !e.methods.is_empty() {
                         let type_methods = self.methods.entry(base_name).or_default();
                         for method in &e.methods {
-                            type_methods.insert(method.name.clone(), method.clone());
+                            type_methods.insert(method.name.clone(), Arc::new(method.clone()));
                         }
                     }
                 }
@@ -234,7 +235,7 @@ impl Interpreter {
                             Some(pkg) => rask_types::conformance_symbol(&name, pkg),
                             None => name,
                         };
-                        type_methods.insert(key, method.clone());
+                        type_methods.insert(key, Arc::new(method.clone()));
                     }
                 }
                 DeclKind::Import(import) => {
@@ -289,7 +290,7 @@ impl Interpreter {
                     if !s.methods.is_empty() {
                         let type_methods = self.methods.entry(base_name).or_default();
                         for method in &s.methods {
-                            type_methods.insert(method.name.clone(), method.clone());
+                            type_methods.insert(method.name.clone(), Arc::new(method.clone()));
                         }
                     }
                 }
@@ -447,7 +448,7 @@ impl Interpreter {
             self.env.define(c.name.clone(), value);
         }
 
-        let entry = entry_fn.or_else(|| self.functions.get("main").cloned());
+        let entry = entry_fn.or_else(|| self.functions.get("main").map(|f| (**f).clone()));
 
         Ok(RegisteredProgram {
             entry_fn: entry,

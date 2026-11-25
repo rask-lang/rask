@@ -625,13 +625,13 @@ pub(crate) fn option_depth(value: &Value) -> usize {
 impl Interpreter {
     /// The plain function a template instance was written out as: the copy
     /// of `func` whose instance arguments are what this call's frame binds.
-    fn template_copy(&self, func: &FnDecl, generics: Option<&std::collections::HashMap<String, rask_types::Type>>) -> Option<FnDecl> {
+    fn template_copy(&self, func: &FnDecl, generics: Option<&std::collections::HashMap<String, rask_types::Type>>) -> Option<std::sync::Arc<FnDecl>> {
         let copies = self.template_copies.get(&func.id)?;
         let frame = generics?;
         copies
             .iter()
             .find(|(bound, _)| bound.iter().all(|b| frame.get(&b.param) == Some(&b.ty)))
-            .map(|(_, copy)| copy.clone())
+            .map(|(_, copy)| std::sync::Arc::clone(copy))
     }
 }
 

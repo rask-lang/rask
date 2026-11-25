@@ -70,7 +70,7 @@ impl Slot {
             Slot::Field(s, field) => s.lock().unwrap().fields.get(field).cloned(),
             Slot::Elem(v, i) => v.lock().unwrap().items.get(*i).cloned(),
             Slot::Entry(m, i) => m.lock().unwrap().get_index(*i).map(|(_, v)| v.clone()),
-            Slot::TupleElem(parent, i) => match parent.get()? {
+            Slot::TupleElem(parent, i) => match &parent.get()? {
                 Value::Tuple(items) => items.get(*i).cloned(),
                 _ => None,
             },
@@ -111,8 +111,8 @@ impl Slot {
                 None => false,
             },
             Slot::TupleElem(parent, i) => {
-                let Some(Value::Tuple(items)) = parent.get() else { return false };
-                let mut items = (*items).clone();
+                let Some(Value::Tuple(items)) = &parent.get() else { return false };
+                let mut items = (**items).clone();
                 let Some(item) = items.get_mut(*i) else { return false };
                 *item = value;
                 parent.set(Value::tuple(items))
