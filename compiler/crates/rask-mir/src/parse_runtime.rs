@@ -73,4 +73,13 @@ mod tests {
             assert_eq!(w == ParseWrites::Float, matches!(ok, MirType::F32 | MirType::F64));
         }
     }
+
+    /// Lowering calls these by C symbol, so the header has to declare them:
+    /// otherwise the call isn't a runtime call and codegen never declares it.
+    #[test]
+    fn every_entry_is_a_runtime_symbol() {
+        for (name, _) in ENTRIES.iter().filter(|(n, _)| n.starts_with("rask_")) {
+            assert!(rask_stdlib::runtime_header::declares(name), "{name} is not in rask_runtime.h");
+        }
+    }
 }

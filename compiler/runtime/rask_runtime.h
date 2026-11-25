@@ -386,6 +386,7 @@ int64_t  rask_field_take(void *field, int64_t size, void *out);
 // key of a (key, value) pair. `key_kind` is one of the RASK_ELEM_KIND_* codes
 // (rask_abi.h).
 void     rask_vec_sort_scalar(RaskVec *v, int64_t key_kind, int64_t key_size);
+RASK_PANICS void rask_vec_sort_str(RaskVec *v);
 int64_t  rask_f64_compare_total(double a, double b);
 // A float's bit pattern at its own width, every NaN as the one quiet NaN.
 uint32_t rask_f32_to_bits(float f);
@@ -516,6 +517,14 @@ int64_t     rask_string_rfind(const RaskStr *haystack, const RaskStr *needle);
 int64_t     rask_string_parse_int(const RaskStr *s);
 double      rask_string_parse_float(const RaskStr *s);
 int64_t     rask_string_parse_int_into(const RaskStr *s, int64_t *out);
+int64_t     rask_string_parse_uint_into(const RaskStr *s, uint64_t *out);
+int64_t     rask_string_parse_i8_into(const RaskStr *s, int64_t *out);
+int64_t     rask_string_parse_i16_into(const RaskStr *s, int64_t *out);
+int64_t     rask_string_parse_i32_into(const RaskStr *s, int64_t *out);
+int64_t     rask_string_parse_u8_into(const RaskStr *s, uint64_t *out);
+int64_t     rask_string_parse_u16_into(const RaskStr *s, uint64_t *out);
+int64_t     rask_string_parse_u32_into(const RaskStr *s, uint64_t *out);
+int64_t     rask_string_parse_float_into(const RaskStr *s, double *out);
 
 // String-producing operations (out-param: RaskStr *out as first param)
 void        rask_string_concat(RaskStr *out, const RaskStr *a, const RaskStr *b);
