@@ -2,6 +2,7 @@
 
 //! Expression lowering.
 
+use crate::call_abi::CallAbi;
 use crate::FieldAccess;
 use super::{
     binop_result_type, is_type_constructor_name, is_widening_arithmetic, lower_binop,
@@ -6069,7 +6070,7 @@ impl<'a> MirLowerer<'a> {
                             // `Shared.new/mutex/local` settle the strategy, so
                             // the constructor call resolves to that strategy's
                             // runtime family (conc.sync/SH2).
-                            let (func_name, shape) =
+                            let (func_name, shape, abi) =
                                 self.resolve_shared_strategy_call(&func_name, object);
 
                             let ret_ty = self
@@ -6090,7 +6091,7 @@ impl<'a> MirLowerer<'a> {
                             let result_local = self.builder.alloc_temp(ret_ty.clone());
                             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                                 dst: Some(result_local),
-                                func: { let mut f = crate::elem_strs::map_ctor_ref(func_name); f.shape = shape.or(f.shape); f },
+                                func: { let mut f = crate::elem_strs::map_ctor_ref(func_name).with_abi(abi); f.shape = shape.or(f.shape); f },
                                 args: arg_operands,
                             }));
                             self.flush_elem_writebacks(wb_mark);
@@ -6413,10 +6414,9 @@ impl<'a> MirLowerer<'a> {
         // The strategy is a type argument, so which family a call lands in is
         // settled here and nothing about the choice survives into the emitted
         // code — a `Local` box calls the no-lock runtime directly.
-        let (qualified_name, mut shape) = self.resolve_shared_strategy_call(&qualified_name, object);
-        // How the C call lines up with this one, when a branch below picks a
-        // runtime symbol that needs it.
-        let mut abi = crate::call_abi::CallAbi::DIRECT;
+        // How the C call lines up with this one: the box's runtime call, or
+        // one a branch below picks.
+        let (qualified_name, mut shape, mut abi) = self.resolve_shared_strategy_call(&qualified_name, object);
 
         // A value going into a container's slot — an element, a key, a box's
         // payload — is an argument position, so it gains wrapper layers the
@@ -6810,11 +6810,12 @@ impl<'a> MirLowerer<'a> {
         &self,
         qualified: &str,
         object: &Expr,
-    ) -> (String, Option<rask_stdlib::mir_metadata::CallShape>) {
+    ) -> (String, Option<rask_stdlib::mir_metadata::CallShape>, CallAbi) {
         use super::concurrency::SharedStrategy;
+        use crate::runtime_ops::{BOX_NEW, BOX_REPLACE, BOX_SET};
         use rask_stdlib::mir_metadata::{declared_shape, CallShape};
         let Some(rest) = qualified.strip_prefix("Shared_") else {
-            return (qualified.to_string(), None);
+            return (qualified.to_string(), None, CallAbi::DIRECT);
         };
         let strategy = match rest {
             "new" => SharedStrategy::Readers,
@@ -6825,42 +6826,51 @@ impl<'a> MirLowerer<'a> {
         if matches!(rest, "new" | "mutex" | "local") {
             // The new box is the caller's, freed by its strategy's release.
             let shape = declared_shape(qualified).map(|s| s.handing_back(strategy.release()));
-            return (format!("{}_new", strategy.prefix()), shape);
+            let ctor = match strategy {
+                SharedStrategy::Local => "rask_cell_new",
+                SharedStrategy::Mutex => "rask_mutex_new_ptr",
+                SharedStrategy::Readers => "rask_shared_new_ptr",
+            };
+            return (ctor.to_string(), shape, BOX_NEW);
         }
         // Each strategy's spelling of a verb is the declared `Shared` verb: the
         // same operation over a different runtime object.
         let same_as = |verb: &str| declared_shape(&format!("Shared_{verb}"));
-        let (name, shape) = match (strategy, rest) {
+        let clone_shape = || Some(CallShape::borrows_receiver().handing_back(strategy.release()));
+        let (name, shape, abi) = match (strategy, rest) {
             // A `Local` box takes nothing, so both verbs are the same call: the
             // slot's address. `read` versus `write` is intent the reader can
             // see, not a different operation here.
-            (SharedStrategy::Local, "read" | "write" | "try_read" | "try_write") => ("Cell_acquire", same_as("read")),
-            (SharedStrategy::Local, "get") => ("Cell_get", same_as("get")),
-            (SharedStrategy::Local, "set") => ("Cell_set", same_as("set")),
-            (SharedStrategy::Local, "replace") => ("Cell_replace", same_as("replace")),
-            (SharedStrategy::Local, "take") => ("Cell_take", same_as("take")),
+            (SharedStrategy::Local, "read" | "write" | "try_read" | "try_write") => {
+                ("rask_cell_get", same_as("read"), CallAbi::BOX_PAYLOAD)
+            }
             // Every strategy's clone hands back another handle on the same
             // cell, so the receiver is borrowed and the result is the caller's.
-            (SharedStrategy::Local, "clone") => ("rask_cell_clone", Some(CallShape::borrows_receiver().handing_back(strategy.release()))),
-            (SharedStrategy::Mutex, "try_read" | "try_write") => ("rask_mutex_try_lock_ptr", same_as("read")),
-            (SharedStrategy::Mutex, "clone") => ("rask_mutex_clone", Some(CallShape::borrows_receiver().handing_back(strategy.release()))),
-            // `get`/`set`/`replace` exist under every strategy (CE6), not just
-            // the one that needs no lock. Left unmapped, `Shared.new(5).get()`
-            // type-checked and then failed to link on `Shared_get`.
-            (SharedStrategy::Mutex, "get") => ("Mutex_get", same_as("get")),
-            (SharedStrategy::Mutex, "set") => ("Mutex_set", same_as("set")),
-            (SharedStrategy::Mutex, "replace") => ("Mutex_replace", same_as("replace")),
-            (SharedStrategy::Mutex, "take") => ("Mutex_take", same_as("take")),
-            (SharedStrategy::Readers, "try_read") => ("rask_shared_try_read_ptr", same_as("read")),
-            (SharedStrategy::Readers, "try_write") => ("rask_shared_try_write_ptr", same_as("read")),
-            (SharedStrategy::Readers, "get") => ("Shared_get", None),
-            (SharedStrategy::Readers, "set") => ("Shared_set", None),
-            (SharedStrategy::Readers, "replace") => ("Shared_replace", None),
-            (SharedStrategy::Readers, "take") => ("Shared_take", None),
-            (SharedStrategy::Readers, "clone") => ("rask_shared_clone_i64", Some(CallShape::borrows_receiver().handing_back(strategy.release()))),
-            _ => return (qualified.to_string(), None),
+            (SharedStrategy::Local, "clone") => ("rask_cell_clone", clone_shape(), CallAbi::DIRECT),
+            (SharedStrategy::Mutex, "try_read" | "try_write") => ("rask_mutex_try_lock_ptr", same_as("read"), CallAbi::DIRECT),
+            (SharedStrategy::Mutex, "clone") => ("rask_mutex_clone", clone_shape(), CallAbi::DIRECT),
+            (SharedStrategy::Readers, "try_read") => ("rask_shared_try_read_ptr", same_as("read"), CallAbi::DIRECT),
+            (SharedStrategy::Readers, "try_write") => ("rask_shared_try_write_ptr", same_as("read"), CallAbi::DIRECT),
+            (SharedStrategy::Readers, "clone") => ("rask_shared_clone_i64", clone_shape(), CallAbi::DIRECT),
+            // `get`/`set`/`replace`/`take` exist under every strategy (CE6),
+            // each the declared `Shared` verb over that strategy's runtime.
+            (_, "get" | "set" | "replace" | "take") => {
+                let abi = match rest {
+                    "get" => CallAbi::DEREF,
+                    "set" => BOX_SET,
+                    "replace" => BOX_REPLACE,
+                    _ => CallAbi::APPEND_OUT,
+                };
+                let sym = match strategy {
+                    SharedStrategy::Local => "rask_cell_",
+                    SharedStrategy::Mutex => "rask_mutex_",
+                    SharedStrategy::Readers => "rask_shared_",
+                };
+                return (format!("{sym}{rest}"), same_as(rest), abi);
+            }
+            _ => return (qualified.to_string(), None, CallAbi::DIRECT),
         };
-        (name.to_string(), shape)
+        (name.to_string(), shape, abi)
     }
 
     /// The edge-registration call a container mutator needs, if its value is a

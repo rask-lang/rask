@@ -40,6 +40,8 @@ pub enum ArgAdapt {
     /// Pass args as-is
     #[default]
     None,
+    /// Wrap args[0] as pointer (skip if already by address)
+    WrapArg0,
     /// Wrap args[1] as pointer (skip if string)
     WrapArg1,
     /// Wrap args[2] as pointer (skip if string)
@@ -57,6 +59,9 @@ pub enum ArgAdapt {
     StringResultOutParam,
     /// Append 8-byte (or 16-byte for string dst) out-param
     AppendOutParam,
+    /// WrapArg1, then AppendOutParam: a box's new value goes in by address
+    /// and the one it held comes back out (`Shared.replace`).
+    WrapArg1AppendOutParam,
     /// WrapArg2, then AppendOutParam: a value goes in by address and the one
     /// it displaced comes back out (`Vec.replace`).
     WrapArg2AppendOutParam,

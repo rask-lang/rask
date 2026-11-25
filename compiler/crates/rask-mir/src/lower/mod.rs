@@ -6676,7 +6676,7 @@ fn stdlib_return_mir_type_known(func_name: &str, ctx: Option<&MirContext>) -> Op
     // type whose method happened to share a name with a string's.
     //
     // That is how `Shared<i32>.replace(7)` came back as a `string`: the strategy
-    // rewrite turns it into `Cell_replace`, which ends in `_replace`. The box
+    // rewrite used to turn it into `Cell_replace`, which ends in `_replace`. The box
     // arm in lower/expr.rs existed to shadow this, which is why it looked
     // redundant and wasn't.
     //

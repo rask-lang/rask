@@ -335,10 +335,9 @@ pub fn is_method_symbol(name: &str) -> bool {
         || MIR_FAMILIES.contains(&head)
 }
 
-/// Heads of the symbols lowering makes up that name no stdlib type: a
-/// `Shared<T, Local>` is called through `Cell_*`, and `Link<T>` has no stdlib
-/// file to declare `Link_hash`.
-const MIR_FAMILIES: &[&str] = &["Cell", "Mutex", "Link"];
+/// Heads of the symbols lowering makes up that name no stdlib type:
+/// `Link<T>` has no stdlib file to declare `Link_hash`.
+const MIR_FAMILIES: &[&str] = &["Link"];
 
 pub fn type_has_method(prefix: &str, method: &str) -> bool {
     cache().by_name.contains_key(&format!("{}_{}", prefix, method))
@@ -967,7 +966,7 @@ mod tests {
     #[test]
     fn the_stdlib_owns_its_symbol_namespace() {
         assert!(is_method_symbol("Vec_len"));
-        assert!(is_method_symbol("Cell_acquire"));
+        assert!(is_method_symbol("Link_hash"));
         assert!(is_method_symbol("i64_to_string"));
         assert!(!is_method_symbol("helper"));
         assert!(!is_method_symbol("render_table"));

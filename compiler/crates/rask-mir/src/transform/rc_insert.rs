@@ -1851,9 +1851,9 @@ fn insert_aggregate_release(
             }
 
             // Reads and writes, for liveness. A store through a pointer value
-            // (`Cell_data(c)`, an address into another value's storage) uses
+            // (`rask_cell_get(c)`, an address into another value's storage) uses
             // the pointer and keeps what it points into alive. Taken for a
-            // scratch slot's write, `*(Cell_data(c)) = n` as the last use of
+            // scratch slot's write, `*(rask_cell_get(c)) = n` as the last use of
             // a buffer released the buffer first and wrote into freed memory.
             let through_pointer = |addr: LocalId| matches!(ty_of.get(&addr), Some(MirType::Ptr));
             let store_into = match &stmt.kind {

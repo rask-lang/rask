@@ -319,7 +319,7 @@ impl FunctionRef {
     }
 
     /// A spelling lowering makes up for the stdlib operation `declared_as`
-    /// (`rask_vec_get` for `Vec.get`, a `Shared<T, Local>`'s `Cell_set` for
+    /// (`rask_vec_get` for `Vec.get`, a `Shared<T, Local>`'s `rask_cell_set` for
     /// `Shared.set`): the same operation, so the same shape.
     pub fn like(name: impl Into<String>, declared_as: &str) -> Self {
         let shape = rask_stdlib::mir_metadata::declared_shape(declared_as)
@@ -394,6 +394,7 @@ impl FunctionRef {
 pub(crate) struct Mint {
     name: &'static str,
     what: MintWhat,
+    abi: crate::call_abi::CallAbi,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -405,17 +406,23 @@ enum MintWhat {
 
 impl Mint {
     pub(crate) const fn like(name: &'static str, declared_as: &'static str) -> Self {
-        Self { name, what: MintWhat::Like(declared_as) }
+        Self { name, what: MintWhat::Like(declared_as), abi: crate::call_abi::CallAbi::DIRECT }
     }
 
     pub(crate) const fn borrowing(name: &'static str) -> Self {
-        Self { name, what: MintWhat::Borrowing }
+        Self { name, what: MintWhat::Borrowing, abi: crate::call_abi::CallAbi::DIRECT }
+    }
+
+    /// The access a sync box's acquire hands back: the payload's address.
+    pub(crate) const fn box_payload(self) -> Self {
+        Self { abi: crate::call_abi::CallAbi::BOX_PAYLOAD, ..self }
     }
 
     pub(crate) fn call(self) -> FunctionRef {
-        match self.what {
+        let f = match self.what {
             MintWhat::Like(declared_as) => FunctionRef::like(self.name, declared_as),
             MintWhat::Borrowing => FunctionRef::borrowing(self.name),
-        }
+        };
+        f.with_abi(self.abi)
     }
 }

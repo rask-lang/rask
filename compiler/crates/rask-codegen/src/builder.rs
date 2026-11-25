@@ -316,13 +316,6 @@ enum HandAdapt {
     LinkRegisterStruct,
     LinkGuarded,
     RackInsert,
-    /// A `Shared` strategy's `take`.
-    BoxTake,
-    /// A `Shared` strategy's `set` or `replace`. `replace` (true) also gives
-    /// the old value back.
-    BoxWrite { replace: bool },
-    /// A `Shared` strategy's constructor.
-    BoxNew,
     Atomic,
     Send,
     TrySend,
@@ -343,10 +336,6 @@ fn hand_adaptation(name: &str) -> Option<HandAdapt> {
         "Vec_contains" => HandAdapt::VecContains,
         "rask_link_register_struct" | "rask_link_forget_struct" => HandAdapt::LinkRegisterStruct,
         "rask_link_guarded" => HandAdapt::LinkGuarded,
-        "Cell_take" | "Shared_take" | "Mutex_take" => HandAdapt::BoxTake,
-        "Cell_set" | "Shared_set" | "Mutex_set" => HandAdapt::BoxWrite { replace: false },
-        "Cell_replace" | "Shared_replace" | "Mutex_replace" => HandAdapt::BoxWrite { replace: true },
-        "Shared_new" | "Mutex_new" | "Cell_new" => HandAdapt::BoxNew,
         n if rask_stdlib::mir_metadata::lookup(n).is_some_and(|m| m.owner.as_deref() == Some("Atomic")) => {
             HandAdapt::Atomic
         }
@@ -5368,12 +5357,12 @@ impl<'a> FunctionBuilder<'a> {
             // method/field access hits the real value and a `mutate` lands in
             // the box rather than a copied slot.
             //
-            // Any other payload is stored indirectly: Mutex_new/Shared_new take
+            // Any other payload is stored indirectly: each box constructor takes
             // an address to memcpy from, so a non-struct value gets spilled to a
             // slot first and the box ends up holding the value itself. Binding
             // the pointer there handed `self.counters.lock()` a pointer to the
             // map pointer, and rask_map_get crashed on it (#477) — that payload
-            // needs one load. The struct test mirrors the one Mutex_new uses, so
+            // needs one load. The struct test mirrors the constructor's, so
             // the two sides agree on which payloads are indirect.
             if matches!(adapt, CallAdapt::BoxPayloadPtr) {
                 let results = &call_results[..];
@@ -8119,6 +8108,11 @@ impl<'a> FunctionBuilder<'a> {
         let call_adapt = match arg_adapt {
             ArgAdapt::None => CallAdapt::None,
 
+            ArgAdapt::WrapArg0 => {
+                Self::wrap_arg_as_ptr(builder, args, mir_args, 0, ctx.locals);
+                CallAdapt::None
+            }
+
             ArgAdapt::WrapArg1 => {
                 Self::wrap_arg_as_ptr(builder, args, mir_args, 1, ctx.locals);
                 CallAdapt::None
@@ -8180,6 +8174,11 @@ impl<'a> FunctionBuilder<'a> {
             }
 
             ArgAdapt::AppendOutParam => {
+                return Self::append_out_param(builder, args, dst, ctx);
+            }
+
+            ArgAdapt::WrapArg1AppendOutParam => {
+                Self::wrap_arg_as_ptr(builder, args, mir_args, 1, ctx.locals);
                 return Self::append_out_param(builder, args, dst, ctx);
             }
 
@@ -8373,52 +8372,6 @@ impl<'a> FunctionBuilder<'a> {
                     .and_then(|op| Self::operand_mir_type(op, ctx.locals))
                     .map_or(0, |ty| rask_layout::align_of(&ty, ctx.target()) as i64);
                 args.push(builder.ins().iconst(types::I64, align));
-                CallAdapt::None
-            }
-
-            // `take` has no value argument, so it takes the out-param and
-            // nothing else.
-            HandAdapt::BoxTake => Self::append_out_param(builder, args, dst, ctx),
-            // `set` and `replace` both take the new value by pointer, so a
-            // scalar spills to a slot first. `replace` also gives the old value
-            // back, through an out-param of its own.
-            HandAdapt::BoxWrite { replace } => {
-                if args.len() >= 2 {
-                    let (_, is_aggregate) = Self::runtime_arg_slot(mir_args, 1, ctx);
-                    if !is_aggregate {
-                        Self::spill_arg(builder, args, mir_args, 1, ctx.locals);
-                    }
-                }
-                if replace {
-                    // The old value goes into the caller's own destination. It
-                    // used to come back by address, which meant the runtime
-                    // allocated a block for it so the pointer would outlive the
-                    // call — and nothing freed that block, so every `replace`
-                    // leaked its payload's width.
-                    //
-                    // An aggregate destination already has the slot to write
-                    // into, and marking it written skips the copy that would
-                    // otherwise be the slot onto itself. A scalar has no slot,
-                    // so it gets a word-sized one to be loaded back out of —
-                    // which is what a returned pointer was doing anyway, one
-                    // dereference later.
-                    Self::append_out_param(builder, args, dst, ctx)
-                } else {
-                    CallAdapt::None
-                }
-            }
-
-            // Each strategy's constructor takes the value by pointer, so a
-            // scalar spills to a slot first. The size, payload kind and
-            // alignment after it come from lowering (`@runtime_args` on
-            // `Shared.new`).
-            HandAdapt::BoxNew => {
-                if !args.is_empty() {
-                    let (_, is_struct) = Self::runtime_arg_slot(mir_args, 0, ctx);
-                    if !is_struct {
-                        Self::spill_arg(builder, args, mir_args, 0, ctx.locals);
-                    }
-                }
                 CallAdapt::None
             }
 

@@ -69,3 +69,11 @@ pub fn field_take() -> FunctionRef {
 pub fn vec_move_out() -> FunctionRef {
     FunctionRef::like(VEC_MOVE_OUT, "Vec_remove").with_abi(CallAbi::APPEND_OUT)
 }
+
+/// A sync box's constructor: the payload goes in by address.
+pub const BOX_NEW: CallAbi = CallAbi::new(ArgAdapt::WrapArg0, RetAdapt::None);
+/// `set`: the new payload goes in by address.
+pub const BOX_SET: CallAbi = CallAbi::new(ArgAdapt::WrapArg1, RetAdapt::None);
+/// `replace`: the new payload goes in by address, the old one comes back out
+/// into the caller's destination.
+pub const BOX_REPLACE: CallAbi = CallAbi::new(ArgAdapt::WrapArg1AppendOutParam, RetAdapt::FromArgAdapt);
