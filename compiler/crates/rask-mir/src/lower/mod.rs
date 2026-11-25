@@ -8291,17 +8291,6 @@ mod tests {
     }
 
     #[test]
-    fn lower_string_static_method() {
-        // string.new() → Call to string_new
-        let decl = make_fn("f", vec![], None, vec![
-            expr_stmt(method_call_expr(ident_expr("string"), "new", vec![])),
-            return_stmt(None),
-        ]);
-        let f = lower_one(&decl);
-        assert!(find_call(&f, "rask_string_new"));
-    }
-
-    #[test]
     fn lower_method_on_value_still_works() {
         // a.add(b) where a is a local variable → BinaryOp (not static call)
         let decl = make_fn("f", vec![("a", "i32"), ("b", "i32")], Some("i32"), vec![

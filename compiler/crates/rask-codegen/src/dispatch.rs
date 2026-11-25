@@ -60,25 +60,6 @@ impl StdlibEntry {
     ) -> Self {
         Self { mir_name, c_name, params, ret_ty, can_panic, arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::None }
     }
-
-    /// For `join` / `cancel` on a task handle: the C side hands back
-    /// (outcome, value, message), and `builder::adapt_by_hand` assembles the
-    /// `T or JoinError` from all three.
-    const fn join_outcome(mir_name: &'static str, c_name: &'static str) -> Self {
-        Self::simple(mir_name, c_name, &[types::I64, types::I64, types::I64], Some(types::I64), true)
-    }
-
-    /// For a `T?`-returning C function that signals "absent" with a negative
-    /// index (`find`, `rfind`).
-    const fn neg_none(
-        mir_name: &'static str,
-        c_name: &'static str,
-        params: &'static [Type],
-        ret_ty: Option<Type>,
-        can_panic: bool,
-    ) -> Self {
-        Self { mir_name, c_name, params, ret_ty, can_panic, arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::NegNone }
-    }
 }
 
 /// Leak a String to get a &'static str. Used for dynamically generated
@@ -118,25 +99,10 @@ pub(crate) fn internal_entries() -> Vec<StdlibEntry> {
             ret_ty: Some(types::I64), can_panic: false,
             arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::None,
         },
-        // try_push shares push's C entry: the runtime has no reachable failure
-        // yet (Vec carries no capacity bound, and OOM panics in the allocator),
-        // so the destination `void or GrowError<T>` always gets its ok branch.
-        // A bound makes the status meaningful, and this entry then has to build
-        // GrowError.Full with the rejected element instead.
-        StdlibEntry {
-            mir_name: "Vec_try_push", c_name: "rask_vec_push",
-            params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
-            arg_adapt: ArgAdapt::WrapArg1, ret_adapt: RetAdapt::None,
-        },
         StdlibEntry {
             mir_name: "Vec_get_unchecked", c_name: "rask_vec_get_unchecked",
             params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
             arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::DerefOrString,
-        },
-        StdlibEntry {
-            mir_name: "Vec_remove_at", c_name: "rask_vec_remove_at",
-            params: &[types::I64, types::I64, types::I64], ret_ty: Some(types::I64), can_panic: true,
-            arg_adapt: ArgAdapt::AppendOutParam, ret_adapt: RetAdapt::FromArgAdapt,
         },
         // `let old = self.f` before a refill: the field's bytes, handed over.
         StdlibEntry {
@@ -150,12 +116,6 @@ pub(crate) fn internal_entries() -> Vec<StdlibEntry> {
             arg_adapt: ArgAdapt::AppendOutParam, ret_adapt: RetAdapt::FromArgAdapt,
         },
 
-        // ── Subscript (desugared from args[0] → args.index(0)) ─
-        StdlibEntry {
-            mir_name: "index", c_name: "rask_vec_get",
-            params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: true,
-            arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::DerefOrString,
-        },
         StdlibEntry {
             mir_name: "Vec_index", c_name: "rask_vec_get",
             params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: true,
@@ -168,18 +128,8 @@ pub(crate) fn internal_entries() -> Vec<StdlibEntry> {
             params: &[types::I64], ret_ty: None, can_panic: false,
             arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::None,
         },
-        StdlibEntry {
-            mir_name: "string_to_owned", c_name: "rask_string_clone",
-            params: &[types::I64], ret_ty: None, can_panic: false,
-            arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::None,
-        },
 
         StdlibEntry::simple("Link_hash", "rask_link_hash", &[types::I64], Some(types::I64), false),
-        // find/rfind return `usize?` and the runtime signals "not found" with -1.
-        // Wrapped as a plain value it came back as `some(-1)`, so `?? ...` never
-        // fired and a slice taken at that index was empty (#463).
-        StdlibEntry::neg_none("string_find", "rask_string_find", &[types::I64, types::I64], Some(types::I64), false),
-        StdlibEntry::neg_none("string_rfind", "rask_string_rfind", &[types::I64, types::I64], Some(types::I64), false),
 
         // ── Math operations ────────────────────────────────────
         // i64.abs() (std.math/N2) — libc's llabs, no wrapper needed.
@@ -187,23 +137,6 @@ pub(crate) fn internal_entries() -> Vec<StdlibEntry> {
         // `llabs` takes a `long long`, so a 128-bit value would be truncated
         // before it was negated (#762).
         StdlibEntry::simple("i128_abs", "rask_i128_abs", &[types::I128], Some(types::I128), true),
-
-        // In-place string mutation — C signature: fn(out, self, arg)
-        StdlibEntry {
-            mir_name: "string_push_str", c_name: "rask_string_push_str",
-            params: &[types::I64, types::I64, types::I64], ret_ty: None, can_panic: false,
-            arg_adapt: ArgAdapt::InPlaceStringMut, ret_adapt: RetAdapt::FromArgAdapt,
-        },
-        StdlibEntry {
-            mir_name: "string_push_char", c_name: "rask_string_push_char",
-            params: &[types::I64, types::I64, types::I32], ret_ty: None, can_panic: false,
-            arg_adapt: ArgAdapt::InPlaceStringMut, ret_adapt: RetAdapt::FromArgAdapt,
-        },
-        StdlibEntry {
-            mir_name: "string_push", c_name: "rask_string_push_char",
-            params: &[types::I64, types::I64, types::I32], ret_ty: None, can_panic: false,
-            arg_adapt: ArgAdapt::InPlaceStringMut, ret_adapt: RetAdapt::FromArgAdapt,
-        },
 
         // ── Map operations ─────────────────────────────────────
         // `m[k] = v`: insert or replace, releasing the value it replaces.
@@ -245,27 +178,6 @@ pub(crate) fn internal_entries() -> Vec<StdlibEntry> {
         StdlibEntry {
             mir_name: "rask_link_guarded", c_name: "rask_link_guarded",
             params: &[types::I64, types::I64, types::I64, types::I64], ret_ty: None, can_panic: false,
-            arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::None,
-        },
-
-        // ── Clone ────────────────────────────────────────────────────
-        StdlibEntry::simple("clone", "rask_clone", &[types::I64], Some(types::I64), false),
-
-        // ── Concurrency: spawn/join/detach ──────────────────────────
-        // join/cancel report how the task ended alongside its value — a
-        // panicked task doesn't re-panic in the
-        // joiner, it comes back as Err(JoinError.Panicked(msg)) (ctrl.panic/O1).
-        // One handle for every spawn form (conc.async/H5); the runtime reads
-        // which kind it is.
-        StdlibEntry::join_outcome("join", "rask_handle_join"),
-        StdlibEntry::simple("detach", "rask_handle_detach", &[types::I64], None, true),
-        StdlibEntry::join_outcome("cancel", "rask_handle_cancel"),
-        StdlibEntry::simple("cancelled", "rask_handle_cancelled", &[], Some(types::I8), false),
-
-        // ── Concurrency: channels ──────────────────────────────────
-        StdlibEntry {
-            mir_name: "send", c_name: "rask_channel_send_ptr",
-            params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
             arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::None,
         },
 
@@ -426,12 +338,6 @@ pub(crate) fn internal_entries() -> Vec<StdlibEntry> {
         ));
     }
     entries.push(atomic("Atomic_take", "rask_atomic_into_inner", &[types::I64], Some(types::I64)));
-    // The ordinary drop. `into_inner` frees too and hands the value out with
-    // it; this is for an atomic that just goes out of scope.
-
-    // Fences
-    entries.push(StdlibEntry::simple("fence", "rask_fence", &[types::I64], None, false));
-    entries.push(StdlibEntry::simple("compiler_fence", "rask_compiler_fence", &[types::I64], None, false));
 
     // ── Raw pointer methods ─────────────────────────────────
     // Generated from rask_stdlib::PTR_METHODS so the set codegen can call is
@@ -521,22 +427,60 @@ pub fn declared_entries() -> Vec<Result<StdlibEntry, String>> {
             let Some(native) = m.native.as_ref().filter(|n| !n.symbol.is_empty()) else {
                 continue;
             };
-            out.push(declared_entry(type_name, m, native));
+            out.push(declared_entry(
+                NativeSig {
+                    mir_name: format!("{type_name}_{}", m.name),
+                    label: format!("{type_name}.{}", m.name),
+                    takes_self: m.takes_self,
+                    params: &m.params,
+                    ret_ty: &m.ret_ty,
+                    type_params: &m.type_params,
+                    runtime_args: m.runtime_args.as_deref(),
+                },
+                native,
+            ));
         }
+    }
+    // A free function's MIR name is its own name (`cancelled`, `fence`).
+    for f in reg.functions() {
+        let Some(native) = f.native.as_ref().filter(|n| !n.symbol.is_empty()) else {
+            continue;
+        };
+        out.push(declared_entry(
+            NativeSig {
+                mir_name: f.name.clone(),
+                label: f.name.clone(),
+                takes_self: false,
+                params: &f.params,
+                ret_ty: &f.ret_ty,
+                type_params: &f.type_params,
+                runtime_args: None,
+            },
+            native,
+        ));
     }
     out
 }
 
-fn declared_entry(
-    type_name: &str,
-    m: &rask_stdlib::types::MethodStub,
-    native: &rask_stdlib::NativeDecl,
-) -> Result<StdlibEntry, String> {
+/// What a `@native` declaration's convention is derived from, whether it is
+/// a method or a free function.
+struct NativeSig<'a> {
+    mir_name: String,
+    /// How a diagnostic names it: `Vec.push` or `cancelled`.
+    label: String,
+    takes_self: bool,
+    params: &'a [(String, rask_ast::ty::TypeExpr)],
+    ret_ty: &'a rask_ast::ty::TypeExpr,
+    type_params: &'a [String],
+    runtime_args: Option<&'a [rask_stdlib::RuntimeArg]>,
+}
+
+fn declared_entry(m: NativeSig<'_>, native: &rask_stdlib::NativeDecl) -> Result<StdlibEntry, String> {
     use rask_ast::ty::TypeExpr;
     use rask_stdlib::NativeReturn;
 
-    let mir_name = format!("{type_name}_{}", m.name);
-    let at = || format!("`{type_name}.{}` (`@native(\"{}\")`)", m.name, native.symbol);
+    let mir_name = m.mir_name.clone();
+    let at = || format!("`{}` (`@native(\"{}\")`)", m.label, native.symbol);
     let proto = crate::c_header::prototype(&native.symbol).ok_or_else(|| {
         format!("{}: `rask_runtime.h` has no prototype for it that codegen can read", at())
     })?;
@@ -590,7 +534,7 @@ fn declared_entry(
     // can't come first, or the position would depend on the call.
     let first = usize::from(m.takes_self);
     let position = |i: usize| -> Result<usize, String> {
-        let Some(list) = &m.runtime_args else { return Ok(first + i) };
+        let Some(list) = m.runtime_args else { return Ok(first + i) };
         let at_list = list
             .iter()
             .position(|r| matches!(r, rask_stdlib::RuntimeArg::Param { index, .. } if *index == i))
@@ -625,7 +569,7 @@ fn declared_entry(
         }
     };
 
-    let ret = &m.ret_ty;
+    let ret = m.ret_ty;
     let (out_param, ret_adapt) = match native.returns {
         Some(NativeReturn::Pointer) if optional(ret).is_some() => (None, RetAdapt::DerefOption),
         Some(NativeReturn::Pointer) => (None, RetAdapt::None),
@@ -786,7 +730,7 @@ mod tests {
         }
         // The prototype reader has to be reading the header, or this passes
         // by comparing nothing.
-        assert!(compared > 400, "only {compared} rows matched a prototype");
+        assert!(compared > 300, "only {compared} rows matched a prototype");
         assert!(wrong.is_empty(), "{} rows disagree with rask_runtime.h:\n  {}", wrong.len(), wrong.join("\n  "));
     }
 

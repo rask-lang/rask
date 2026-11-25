@@ -3596,7 +3596,7 @@ impl TypeChecker {
 
     pub(super) fn is_builtin_function(&self, name: &str) -> bool {
         matches!(name, "println" | "print" | "panic" | "todo" | "unreachable"
-            | "assert" | "debug" | "format" | "fence" | "compiler_fence"
+            | "assert" | "debug" | "format"
             | "skip" | "expect_fail" | "drop")
     }
 

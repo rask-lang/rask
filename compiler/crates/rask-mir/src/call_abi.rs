@@ -55,8 +55,6 @@ pub enum ArgAdapt {
     /// `string or E` tag. The string goes to a scratch slot rather than to
     /// dst, because dst is the Result and the string is only its payload.
     StringResultOutParam,
-    /// In-place string mutation: out-param IS the self string
-    InPlaceStringMut,
     /// Append 8-byte (or 16-byte for string dst) out-param
     AppendOutParam,
     /// WrapArg2, then AppendOutParam: a value goes in by address and the one

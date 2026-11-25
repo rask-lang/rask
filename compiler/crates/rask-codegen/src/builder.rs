@@ -350,14 +350,12 @@ fn hand_adaptation(name: &str) -> Option<HandAdapt> {
         n if rask_stdlib::mir_metadata::lookup(n).is_some_and(|m| m.owner.as_deref() == Some("Atomic")) => {
             HandAdapt::Atomic
         }
-        "Sender_send" | "send" => HandAdapt::Send,
+        "Sender_send" => HandAdapt::Send,
         "Sender_try_send" => HandAdapt::TrySend,
         "Receiver_receive" | "Receiver_try_receive" => HandAdapt::Receive,
         n if rask_mir::parse_runtime::writes(n).is_some() => HandAdapt::Parse,
-        "join" | "cancel" | "Handle_join" | "Handle_cancel" => HandAdapt::JoinOutcome,
-        "string_clone" | "string_to_owned" => {
-            HandAdapt::ShareString
-        }
+        "Handle_join" | "Handle_cancel" => HandAdapt::JoinOutcome,
+        "string_clone" => HandAdapt::ShareString,
         "Channel_unbuffered" => HandAdapt::Unbuffered,
         _ => return None,
     })
@@ -8179,20 +8177,6 @@ impl<'a> FunctionBuilder<'a> {
                 )));
                 args.push(err_ss.addr(builder, 0));
                 CallAdapt::StringResult(ss, err_ss)
-            }
-
-            ArgAdapt::InPlaceStringMut => {
-                let ss = mir_args.first()
-                    .and_then(|op| if let MirOperand::Local(id) = op { Some(id) } else { None })
-                    .and_then(|id| ctx.stack_slot_map.get(id))
-                    .map(|(ss, _)| *ss)
-                    .unwrap_or_else(|| LocalSlot::plain(builder.create_sized_stack_slot(StackSlotData::new(
-                        StackSlotKind::ExplicitSlot, 16, 0,
-                    ))));
-                // C signature: push_str(out, s, other) — prepend out-param address
-                let out_addr = ss.addr(builder, 0);
-                args.insert(0, out_addr);
-                CallAdapt::StringOutParam(ss)
             }
 
             ArgAdapt::AppendOutParam => {
