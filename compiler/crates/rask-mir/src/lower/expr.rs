@@ -1089,13 +1089,14 @@ impl<'a> MirLowerer<'a> {
         self.callee_sig(call.id).is_some_and(|s| s.take_self)
     }
 
-    /// Address of a field/index place, as `base` or `base + offset`. `None` when
-    /// the chain isn't a place this can take the address of.
-    fn place_address(&mut self, place: &Expr) -> Option<MirOperand> {
+    /// Address of a field/index place, as a `Ptr` holding `base + offset`.
+    /// `None` when the chain isn't a place this can take the address of.
+    ///
+    /// A pointer even at offset 0: handing back `base` itself typed the first
+    /// field as the whole aggregate, so `self.active.put(..)` inlined with its
+    /// `self` bound to the outer struct (#1555).
+    pub(super) fn place_address(&mut self, place: &Expr) -> Option<MirOperand> {
         let (base, offset, _, _) = self.lower_place_chain(place)?;
-        if offset == 0 {
-            return Some(MirOperand::Local(base));
-        }
         let tmp = self.builder.alloc_temp(MirType::Ptr);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
             dst: tmp,
@@ -1493,6 +1494,21 @@ impl<'a> MirLowerer<'a> {
         self.builder.set_span(parent_span);
         let (op, ty) = lowered?;
         self.mark_consumed_by(expr);
+        // `panic(…)`, `std.exit(…)`: control never comes back. Code after it
+        // (a `catch` arm's value flowing to the merge) goes in a block nothing
+        // reaches, so no pass reads it as a path that runs. Without this,
+        // `return f() catch _ => { panic(…) }` looked like it could return the
+        // panic's "value", and the container `f` built was nobody's to free.
+        // A method-style call (`std.exit(2)`) counts the same: missed, its
+        // `void` result was assigned into the arm's value as a struct.
+        if matches!(expr.kind, ExprKind::Call { .. } | ExprKind::MethodCall { .. })
+            && matches!(self.ctx.lookup_raw_type(expr.id).as_deref(), Some(rask_types::Type::Never))
+            && self.builder.current_block_unterminated()
+        {
+            self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Unreachable));
+            let dead = self.builder.create_block();
+            self.builder.switch_to_block(dead);
+        }
         // A call that answers a raw pointer answers one into its arguments
         // (mem.unsafe/PT1): `s.as_ptr()` points into `s`. Said on the call, so
         // liveness keeps `s` for as long as the pointer is in use. Without it
@@ -1608,23 +1624,7 @@ impl<'a> MirLowerer<'a> {
             ExprKind::Unary { op, operand } => self.lower_unary(*op, operand),
 
             // Function call — direct or through closure
-            ExprKind::Call { func, args } => {
-                let result = self.lower_call(expr, func, args)?;
-                // `panic(…)`, `todo()`: control never comes back. Code after
-                // it — a `catch` arm's value flowing to the merge — goes in a
-                // block nothing reaches, so no pass reads it as a path that
-                // runs. Without this, `return f() catch _ => { panic(…) }`
-                // looked like it could return the panic's "value", and the
-                // container `f` built was nobody's to free.
-                if matches!(self.ctx.lookup_raw_type(expr.id).as_deref(), Some(rask_types::Type::Never))
-                    && self.builder.current_block_unterminated()
-                {
-                    self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Unreachable));
-                    let dead = self.builder.create_block();
-                    self.builder.switch_to_block(dead);
-                }
-                Ok(result)
-            }
+            ExprKind::Call { func, args } => self.lower_call(expr, func, args),
 
             // If expression (spec L1)
             ExprKind::If {
@@ -2146,7 +2146,7 @@ impl<'a> MirLowerer<'a> {
     /// (#2055). Storing a value that is still needed afterwards is a copy to
     /// the release pass, so each turn takes a reference of its own, the way
     /// the unrolled stores do.
-    fn fill_in_a_loop(&mut self, array: crate::LocalId, val: MirOperand, elem_size: u32, len: u32) {
+    fn fill_in_a_loop(&mut self, array: crate::LocalId, val: MirOperand, elem_size: u32, inline: bool, len: u32) {
         let i = self.builder.alloc_temp(MirType::I64);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
             dst: i,
@@ -2178,6 +2178,7 @@ impl<'a> MirLowerer<'a> {
             base: array,
             index: MirOperand::Local(i),
             elem_size,
+            inline,
             value: val,
         }));
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
@@ -2239,6 +2240,7 @@ impl<'a> MirLowerer<'a> {
             if let Some(len) = self.constant_array_length(count) {
                 let (val, elem_ty) = self.lower_expr(value)?;
                 let elem_size = rask_layout::size_of(&elem_ty, self.ctx.target());
+                let inline = elem_ty.stored_inline_in_array();
                 let array_ty = MirType::Array { elem: Box::new(elem_ty), len };
                 let result_local = self.builder.alloc_temp(array_ty.clone());
                 // The array starts here, as a literal does. The loop's stores
@@ -2257,7 +2259,7 @@ impl<'a> MirLowerer<'a> {
                         }));
                     }
                 } else {
-                    self.fill_in_a_loop(result_local, val, elem_size, len);
+                    self.fill_in_a_loop(result_local, val, elem_size, inline, len);
                 }
                 return Ok((MirOperand::Local(result_local), array_ty));
             }

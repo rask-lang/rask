@@ -1318,7 +1318,14 @@ impl<'a> MirLowerer<'a> {
                         // element type with no field to write (#719). The field-path
                         // case above already routed pools correctly; a bare element
                         // never reached it.
-                        let (obj_op, obj_ty) = self.lower_expr(object)?;
+                        // An array inside other storage (`self.buf[i] = b`,
+                        // `grid[0][1] = 9`) is stored into at its own address.
+                        // Reading it gives a copy, and the store landed in the
+                        // copy, so `Blocks.push` in digest lost every byte.
+                        let (obj_op, obj_ty) = match self.nested_array_address(object)? {
+                            Some(found) => found,
+                            None => self.lower_expr(object)?,
+                        };
                         let (idx_op, _) = self.lower_expr(index)?;
 
                         if let MirType::Array { ref elem, .. } = obj_ty {
@@ -1405,6 +1412,7 @@ impl<'a> MirLowerer<'a> {
                                     base: base_id,
                                     index: idx_op,
                                     elem_size: rask_layout::size_of(elem.as_ref(), self.ctx.target()),
+                                    inline: elem.stored_inline_in_array(),
                                     value: val_op,
                                 }));
                             }
@@ -2064,6 +2072,54 @@ impl<'a> MirLowerer<'a> {
 
     /// A fixed array, whose elements sit in the value itself. A vector's
     /// element is read through a call, which hands back its own copy.
+    /// Address and type of an array that sits inside other storage: a field
+    /// (`self.buf`) or an element of a fixed array (`grid[0]`). `None` for a
+    /// bare local, which is its own address, and for anything not rooted in
+    /// a local.
+    fn nested_array_address(&mut self, expr: &Expr) -> Result<Option<(MirOperand, MirType)>, LoweringError> {
+        match &expr.kind {
+            ExprKind::Field { .. } => {
+                let Some((_, _, ty, _)) = self.lower_place_chain(expr) else { return Ok(None) };
+                if !matches!(ty, MirType::Array { .. }) {
+                    return Ok(None);
+                }
+                Ok(self.place_address(expr).map(|addr| (addr, ty)))
+            }
+            ExprKind::Index { object, index } if self.is_fixed_array(object) => {
+                let (outer, outer_ty) = match self.nested_array_address(object)? {
+                    Some(found) => found,
+                    None if matches!(object.kind, ExprKind::Ident(_)) => self.lower_expr(object)?,
+                    None => return Ok(None),
+                };
+                let MirType::Array { elem, .. } = outer_ty else { return Ok(None) };
+                if !matches!(*elem, MirType::Array { .. }) {
+                    return Ok(None);
+                }
+                let (idx_op, _) = self.lower_expr(index)?;
+                let scaled = self.builder.alloc_temp(MirType::I64);
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                    dst: scaled,
+                    rvalue: MirRValue::BinaryOp {
+                        op: crate::operand::BinOp::Mul,
+                        left: idx_op,
+                        right: MirOperand::Constant(MirConst::Int(rask_layout::size_of(elem.as_ref(), self.ctx.target()) as i64)),
+                    },
+                }));
+                let addr = self.builder.alloc_temp(MirType::Ptr);
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                    dst: addr,
+                    rvalue: MirRValue::BinaryOp {
+                        op: crate::operand::BinOp::Add,
+                        left: outer,
+                        right: MirOperand::Local(scaled),
+                    },
+                }));
+                Ok(Some((MirOperand::Local(addr), *elem)))
+            }
+            _ => Ok(None),
+        }
+    }
+
     fn is_fixed_array(&self, expr: &Expr) -> bool {
         self.ctx
             .lookup_raw_type(expr.id)

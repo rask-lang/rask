@@ -154,11 +154,16 @@ pub enum MirStmtKind {
         closure: LocalId,
         made: Option<LocalId>,
     },
-    /// Store into a fixed-size array element: base_ptr[index * elem_size] = value
+    /// Store into a fixed-size array element: base_ptr[index * elem_size] = value.
+    /// `base` holds the array's address: the array local itself, or a `Ptr`
+    /// to an array inside an aggregate (`self.buf[i] = b`).
     ArrayStore {
         base: LocalId,
         index: MirOperand,
         elem_size: u32,
+        /// The element lives in its slot (`stored_inline_in_array`), so
+        /// `value` is its address and the store copies `elem_size` bytes.
+        inline: bool,
         value: MirOperand,
     },
     /// Load the address of a comptime global data section.

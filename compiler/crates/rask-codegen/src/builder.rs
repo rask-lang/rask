@@ -1146,7 +1146,7 @@ impl<'a> FunctionBuilder<'a> {
             MirStmtKind::Store { addr, offset, value, store_size, .. } => Self::lower_store(builder, addr, offset, value, *store_size, ctx)?,
 
             // Array element store: base_ptr[index * elem_size] = value
-            MirStmtKind::ArrayStore { base, index, elem_size, value } => {
+            MirStmtKind::ArrayStore { base, index, elem_size, inline, value } => {
                 let base_val = builder.use_var(*ctx.var_map.get(base)
                     .ok_or_else(|| CodegenError::UnsupportedFeature("ArrayStore: base not found".to_string()))?);
                 let idx_val = Self::lower_operand_typed(builder, index, Some(types::I64), ctx)?;
@@ -1157,13 +1157,8 @@ impl<'a> FunctionBuilder<'a> {
                 // An element that lives *in* its slot is a value, and the operand
                 // is its address — copy the bytes. Storing the pointer put the
                 // constructing slot's address where the element belongs, so
-                // `a[1] = 5` on a `[i64?; 3]` read back as an address (#783). Same
-                // `stored_inline_in_array` rule the read and the literal's store
-                // use; the three only work as a set.
-                let elem_is_inline = ctx.locals.iter().find(|l| l.id == *base)
-                    .is_some_and(|l| matches!(&l.ty,
-                        MirType::Array { elem, .. } if elem.stored_inline_in_array()));
-                if elem_is_inline {
+                // `a[1] = 5` on a `[i64?; 3]` read back as an address (#783).
+                if *inline {
                     Self::copy_bytes(builder, val, 0, addr, 0, *elem_size);
                 } else if let 1 | 2 | 4 = *elem_size {
                     // The address above already accounts for `elem_size`; the
@@ -2493,58 +2488,17 @@ impl<'a> FunctionBuilder<'a> {
         // an optional is built around a plain value (`WrapSome`, #1555), so
         // every other assignment into an optional copies one.
 
-        // Aggregate assignment: when the destination has a stack slot and
-        // the rvalue produces a pointer to aggregate data, copy the data
-        // into the destination's stack slot rather than aliasing pointers.
-        // This covers String (always 16 bytes) and Field extractions from
-        // Struct/Tuple/Result/Option that return aggregate sub-fields.
+        // A destination that lives in memory takes a copy of the source's
+        // bytes; one that's a word takes the word. MIR says when an optional
+        // is built around a plain value (`WrapSome`), and `assign_shapes`
+        // rejects any other assignment whose two sides differ in shape, so
+        // the destination's type alone decides.
         //
-        // Whole-aggregate assignment (`p = q` where both are Struct/Tuple/etc.)
-        // also needs a memcpy: aliasing the pointers means a subsequent
-        // `mutate p` write would land in `q`'s storage. mem.borrowing/M-rules
-        // require `mutate` writes to flow back to the caller, which only
-        // works if `p = ...` copies bytes into `*p`'s slot.
-        let needs_copy = match (&dst_local.ty, rvalue) {
-            (MirType::Buffer, _) => true,
-            // Field on aggregate base returns pointer for aggregate elements.
-            // InterfaceObject belongs here: it's a 16-byte fat pointer, so reading one
-            // out of a `T?` payload as a scalar took the data half and left the
-            // vtable behind. The call through it then read the concrete value's
-            // first word as a vtable — for `Circle { r: 2.0 }` that meant
-            // jumping through 2.0 (#552).
-            (MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_) |
-             MirType::Result { .. } | MirType::Option(_) |
-             MirType::InterfaceObject { .. }, MirRValue::Field { .. }) => true,
-            // Whole-aggregate copy: rvalue produces a pointer to the source
-            // aggregate, dst has its own storage (either a stack slot or an
-            // external pointer for mutate-params).
-            //
-            // A box's fat pointer too. `c = mkn(i)` in a loop made `c` the
-            // address of the temporary's slot, the next iteration wrote the
-            // new box there, and the drop of `c`'s old box freed the new one:
-            // a use after free, and the old box leaked.
-            (MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_) | MirType::InterfaceObject { .. },
-             MirRValue::Use(MirOperand::Local(_))) => true,
-            // A whole wrapper from another of the same shape: a wrapper built
-            // around a plain value is `WrapSome`, and a result from anything
-            // else is rejected before codegen (`assign_shapes`).
-            (MirType::Result { .. } | MirType::Option(_), MirRValue::Use(MirOperand::Local(_))) => true,
-            // An array element that lives in its slot comes back as an address,
-            // and for a wrapper element that address *is* a whole wrapper. Copy
-            // it. Without this arm the wrap-as-Some path below claimed the
-            // assignment and built `Some(<element address>)`, so `a[0] ?? d` on a
-            // `[i64?; 3]` handed back the address (#783).
-            (MirType::Option(_) | MirType::Result { .. },
-             MirRValue::ArrayIndex { base, .. }) => {
-                Self::operand_mir_type(base, ctx.locals).is_some_and(|t| {
-                    matches!(t, MirType::Array { elem, .. } if elem.stored_inline_in_array())
-                })
-            }
-            // `try convert`/`try float to int` builds an Option slot and
-            // returns its pointer — copy the 16-byte struct into dst.
-            (MirType::Option(_), MirRValue::Convert { kind, .. }) => kind.is_optional(),
-            _ => false,
-        };
+        // Deciding from the pair of types instead left gaps, each one a bug:
+        // an interface object read out of a `T?` lost its vtable half (#552),
+        // `a[0] ?? d` handed back an address (#783), and a box assigned in a
+        // loop aliased the temporary the next iteration overwrote.
+        let needs_copy = dst_local.ty.passed_by_address() && !matches!(rvalue, MirRValue::WrapSome(_));
 
         // Option(T) assigned from a non-Option source: wrap as Some
         // in the stack slot. Scalars need this so `const x: i32? = 42`
@@ -2672,12 +2626,6 @@ impl<'a> FunctionBuilder<'a> {
                 }
                 (None, None) => {}
             }
-        } else if let Some(addr) = borrowed_addr {
-            // Aggregate to aggregate through the pointer — an `Option` assigned
-            // from another `Option`, say. `def_var` here would swap this
-            // frame's pointer and leave the borrowed storage untouched.
-            let size = rask_layout::size_of(&dst_local.ty, ctx.target());
-            Self::copy_bytes(builder, val, 0, addr, 0, size);
         } else {
             let var = ctx.var_map.get(dst)
                 .ok_or_else(|| CodegenError::UnsupportedFeature("Variable not found".to_string()))?;

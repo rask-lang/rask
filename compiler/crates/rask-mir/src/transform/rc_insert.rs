@@ -1152,7 +1152,7 @@ fn insert_aggregate_release(
                             left: MirOperand::Local(b),
                             ..
                         },
-                    } if roots.contains_key(b) => Some((*dst, *b)),
+                    } if roots.contains_key(b) || aggregates.contains(b) => Some((*dst, *b)),
                     _ => None,
                 };
                 let Some((dst, b)) = found else { continue };

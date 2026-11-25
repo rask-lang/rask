@@ -1100,10 +1100,21 @@ impl TypeChecker {
         // `RASK_TRACE_OPEN_NODES=1` counts and shapes them, which is how you
         // find the inference gaps behind them rather than assuming.
         self.type_hoisted_args();
+        // A call that never comes back is `!` to everything after the
+        // checker. Unification leaves its own type open (`!` fits any slot),
+        // so `if c { 1 } else { std.exit(2) }` typed the exit call `i64`, and
+        // MIR read on past it into the arm's value.
         let node_types: HashMap<_, _> = self
             .node_types
             .iter()
-            .map(|(id, ty)| (*id, self.ctx.apply(ty)))
+            .map(|(id, ty)| {
+                let ty = if self.call_targets.contains_key(id) && self.call_never_returns(*id) {
+                    Type::Never
+                } else {
+                    self.ctx.apply(ty)
+                };
+                (*id, ty)
+            })
             .collect();
 
         if resolved_types::tracing_open_nodes() {

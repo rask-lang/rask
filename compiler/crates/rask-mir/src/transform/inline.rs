@@ -815,11 +815,13 @@ fn remap_stmt(
             base,
             index,
             elem_size,
+            inline,
             value,
         } => MirStmtKind::ArrayStore {
             base: local_map.get(base).copied().unwrap_or(*base),
             index: remap_operand(index, local_map),
             elem_size: *elem_size,
+            inline: *inline,
             value: remap_operand(value, local_map),
         },
         MirStmtKind::GlobalRef { dst, name } => MirStmtKind::GlobalRef {
