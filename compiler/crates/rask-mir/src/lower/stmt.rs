@@ -2077,6 +2077,15 @@ impl<'a> MirLowerer<'a> {
     /// bare local, which is its own address, and for anything not rooted in
     /// a local.
     fn nested_array_address(&mut self, expr: &Expr) -> Result<Option<(MirOperand, MirType)>, LoweringError> {
+        // `p.data[2] = 30` on a raw pointer: the array sits where `p` points.
+        if self.through_pointer(expr) && self.is_fixed_array(expr) {
+            let (addr, ty) = self.pointer_place_address(expr)?;
+            if !matches!(ty, MirType::Array { .. }) {
+                return Ok(None);
+            }
+            self.emit_pointer_check(&addr, true, rask_layout::size_of(&ty, self.ctx.target()) as i64);
+            return Ok(Some((addr, ty)));
+        }
         match &expr.kind {
             ExprKind::Field { .. } => {
                 let Some((_, _, ty, _)) = self.lower_place_chain(expr) else { return Ok(None) };

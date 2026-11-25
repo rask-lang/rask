@@ -2118,6 +2118,25 @@ fn struct_field_parts(
             _ => None,
         })
         .collect();
+    // Struct and tuple parts read out of a struct or tuple, by name: the
+    // aggregate they were read from and their offset in it.
+    let nested: HashMap<LocalId, (LocalId, u32)> = func
+        .blocks
+        .iter()
+        .flat_map(|b| b.statements.iter())
+        .filter_map(|stmt| match &stmt.kind {
+            MirStmtKind::Assign {
+                dst,
+                rvalue: MirRValue::Field { base: MirOperand::Local(outer), byte_offset: Some(at), .. },
+            } if once(dst)
+                && matches!(ty_of.get(dst), Some(MirType::Struct(_) | MirType::Tuple(_)))
+                && matches!(ty_of.get(outer), Some(MirType::Struct(_) | MirType::Tuple(_))) =>
+            {
+                Some((*dst, (*outer, *at)))
+            }
+            _ => None,
+        })
+        .collect();
     let mut out: HashMap<LocalId, (LocalId, u32, u32)> = HashMap::new();
     for stmt in func.blocks.iter().flat_map(|b| b.statements.iter()) {
         let (dst, root, offset) = match &stmt.kind {
@@ -2137,6 +2156,22 @@ fn struct_field_parts(
                 (*dst, *root, *i as u32 * elem_size)
             }
             _ => continue,
+        };
+        // A part of a part (`_79 = _72.0; _80 = _79.0`) sits in the outer
+        // struct: the inner read is a copy, and emptying the copy left the
+        // outer slot full, so the struct released what had been handed on.
+        let (root, offset) = {
+            let (mut root, mut offset) = (root, offset);
+            let mut hops = 0;
+            while let Some(&(outer, at)) = nested.get(&origin(root)) {
+                root = outer;
+                offset += at;
+                hops += 1;
+                if hops > nested.len() {
+                    break;
+                }
+            }
+            (root, offset)
         };
         if !once(&dst) || held.contains(&origin(root)) {
             continue;

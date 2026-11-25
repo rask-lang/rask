@@ -212,6 +212,12 @@ fn writes_into_part_copies(func: &MirFunction, types: &HashMap<LocalId, MirType>
                 MirRValue::Field { .. } | MirRValue::ArrayIndex { .. } => {
                     temps.contains(dst) && types.get(dst).is_some_and(MirType::passed_by_address)
                 }
+                // Read out from behind an address (`p.data` through a raw pointer).
+                MirRValue::Use(MirOperand::Local(src))
+                    if matches!(types.get(src), Some(MirType::Ptr | MirType::RawPtr | MirType::Heap(_) | MirType::Link(_))) =>
+                {
+                    temps.contains(dst) && types.get(dst).is_some_and(MirType::passed_by_address)
+                }
                 MirRValue::BinaryOp { left: MirOperand::Local(b), .. } => copies.contains(b),
                 _ => false,
             };
