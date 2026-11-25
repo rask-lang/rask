@@ -21,7 +21,10 @@ use rask_ast::ty::TypeExpr;
 struct PlacedElement {
     collection: MirOperand,
     at: MirOperand,
-    map: bool,
+    /// Compare the slots themselves to find two names for one element (a
+    /// Map value or a fixed-array element), instead of the collection and
+    /// index (a Vec element).
+    by_slot: bool,
     slot: LocalId,
 }
 use rask_types::Type;
@@ -1341,14 +1344,14 @@ impl<'a> MirLowerer<'a> {
                     // container header. That was benign only while it landed on
                     // a zero field; real field widths moved it onto something
                     // else and `examples/game_loop` segfaulted (#1083).
-                    if matches!(&arg.kind, ExprKind::Field { .. }) {
+                    if matches!(&arg.kind, ExprKind::Field { .. } | ExprKind::Index { .. }) {
                         let field_ty = self
                             .ctx
                             .lookup_raw_type(arg.id)
                             .map(|t| self.ctx.type_to_mir(&t))
                             .unwrap_or(MirType::Ptr);
                         if field_ty.passed_by_address() {
-                            if let Some(addr) = self.place_address(arg) {
+                            if let Some((addr, _)) = self.place_addr(arg)? {
                                 return Ok((addr, field_ty));
                             }
                         }
@@ -1403,23 +1406,17 @@ impl<'a> MirLowerer<'a> {
         }
         // Field/index projection: pass the address of the place so the callee's
         // store lands in the caller's storage.
+        // A receiver lowered already is only re-pointed where that emits
+        // nothing that runs twice: a field chain off a local.
         if matches!(&arg.kind, ExprKind::Field { .. } | ExprKind::Index { .. }) {
-            if let Some((base, offset, _, _)) = self.lower_place_chain(arg) {
-                let addr = if offset == 0 {
-                    MirOperand::Local(base)
-                } else {
-                    let tmp = self.builder.alloc_temp(MirType::Ptr);
-                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                        dst: tmp,
-                        rvalue: MirRValue::BinaryOp {
-                            op: crate::operand::BinOp::Add,
-                            left: MirOperand::Local(base),
-                            right: MirOperand::Constant(MirConst::Int(offset as i64)),
-                        },
-                    }));
-                    MirOperand::Local(tmp)
-                };
-                return Ok((addr, MirType::Ptr));
+            if lowered.is_none() {
+                if let Some((addr, _)) = self.place_addr(arg)? {
+                    return Ok((addr, MirType::Ptr));
+                }
+            } else if self.lower_place_chain(arg).is_some() {
+                if let Some(addr) = self.place_address(arg) {
+                    return Ok((addr, MirType::Ptr));
+                }
             }
         }
         // A whole variable: point at the variable itself.
@@ -4951,14 +4948,32 @@ impl<'a> MirLowerer<'a> {
                     None
                 };
 
-                match element {
-                    Some((collection, at, map, elem_ty)) => {
+                // A fixed-array element (`with rs[1]`, `with h.rooms[0]`) is
+                // named where it sits too. Read as a value it was a copy, and
+                // the body's writes never reached the array.
+                let array_element = match &binding.source.kind {
+                    ExprKind::Index { object, .. } if element.is_none() && self.is_fixed_array(object) => {
+                        self.place_addr(&binding.source)?
+                    }
+                    _ => None,
+                };
+
+                match (element, array_element) {
+                    (Some((collection, at, map, elem_ty)), _) => {
                         let local = self.builder.alloc_local(binding.name.clone(), elem_ty.clone());
                         self.locals.insert(binding.name.clone(), (local, elem_ty));
                         let slot = self.bind_element_in_place(local, collection.clone(), at.clone(), map);
-                        placed.push(PlacedElement { collection, at, map, slot });
+                        placed.push(PlacedElement { collection, at, by_slot: map, slot });
                     }
-                    None => {
+                    (None, Some((addr, elem_ty))) => {
+                        let local = self.builder.alloc_local(binding.name.clone(), elem_ty.clone());
+                        self.locals.insert(binding.name.clone(), (local, elem_ty));
+                        let slot = self.offset_address(addr, MirOperand::Constant(MirConst::Int(0)));
+                        self.bind_place(local, slot);
+                        let none = MirOperand::Constant(MirConst::Int(0));
+                        placed.push(PlacedElement { collection: none.clone(), at: none, by_slot: true, slot });
+                    }
+                    (None, None) => {
                         let (val, val_ty) = self.lower_expr(&binding.source)?;
                         let local = self.builder.alloc_local(binding.name.clone(), val_ty.clone());
                         self.locals.insert(binding.name.clone(), (local, val_ty));
@@ -4984,10 +4999,10 @@ impl<'a> MirLowerer<'a> {
     fn emit_with_alias_check(&mut self, placed: &[PlacedElement]) {
         for (j, later) in placed.iter().enumerate() {
             for earlier in &placed[..j] {
-                if earlier.map != later.map {
+                if earlier.by_slot != later.by_slot {
                     continue;
                 }
-                let same = if later.map {
+                let same = if later.by_slot {
                     self.emit_eq(MirOperand::Local(earlier.slot), MirOperand::Local(later.slot))
                 } else {
                     let same_vec = self.emit_eq(earlier.collection.clone(), later.collection.clone());
@@ -5418,43 +5433,41 @@ impl<'a> MirLowerer<'a> {
         } else {
             None
         };
-        let (obj_op, obj_ty) = match elem_receiver {
-            Some(r) => r,
-            None => self.lower_expr(object)?,
-        };
-
         // A receiver reached through a field or index is a *place*, and lowering
         // it as an expression loads a copy of the aggregate:
         //
         //   _3 = _2.0                 // copy of o.inner
         //   _4 = Inner_bump(_3)       // mutates the copy
-        //   _5 = _2.0                 // reloads the original — unchanged
         //
-        // So `o.inner.bump()` and `self.lexer.next_token()` mutated something
-        // nobody could see afterwards (#702). Point the receiver at the field's
-        // real storage instead. An aggregate operand is already a pointer to its
-        // bytes, so this doesn't change the representation — only which bytes.
-        // Safe for read-only methods too, and it saves the copy.
-        // Only for methods that actually write through `self`. Doing it for every
-        // aggregate receiver also rewrote read-only calls like
-        // `.map(|r| r.view.clone())`, and clone's lowering wants the value it was
-        // handed, not an address into someone else's storage.
-        let obj_op = match (&object.kind, &obj_ty) {
-            (
-                ExprKind::Field { .. } | ExprKind::Index { .. },
-                MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_) | MirType::Array { .. },
-            // Not a `take self` method: that one is handed the value, which
-            // leaves the place. Handed the place's address instead, it was an
-            // interior pointer the frame didn't know about — `self.mt.take()`
-            // inside a `take self` body released the whole of `self` before the
-            // callee read `mt` out of it, and then released `mt` again (#1497).
-            ) if self.call_mutates_receiver(expr, object, method)
-                && !self.call_takes_receiver(expr) =>
-            {
-                self.place_address(object).unwrap_or(obj_op)
+        // So `o.inner.bump()` and `ps[1].bump()` mutated something nobody could
+        // see afterwards (#702). A method that writes through `self` gets the
+        // place's real storage instead. Not a `take self` method: that one is
+        // handed the value, which leaves the place. Handed the place's address
+        // instead, it was an interior pointer the frame didn't know about —
+        // `self.mt.take()` inside a `take self` body released the whole of
+        // `self` before the callee read `mt` out of it, and then released `mt`
+        // again (#1497). Read-only methods keep the value: clone's lowering in
+        // `.map(|r| r.view.clone())` wants the value it was handed, not an
+        // address into someone else's storage.
+        let placed_receiver = if elem_receiver.is_none()
+            && matches!(object.kind, ExprKind::Field { .. } | ExprKind::Index { .. })
+            && self.call_mutates_receiver(expr, object, method)
+            && !self.call_takes_receiver(expr)
+        {
+            match self.ctx.lookup_raw_type(object.id).map(|t| self.ctx.type_to_mir(&t)) {
+                Some(ty @ (MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_) | MirType::Array { .. })) => {
+                    self.place_addr(object)?.map(|(addr, _)| (addr, ty))
+                }
+                _ => None,
             }
-            _ => obj_op,
+        } else {
+            None
         };
+        let (obj_op, obj_ty) = match (elem_receiver, placed_receiver) {
+            (Some(r), _) | (None, Some(r)) => r,
+            (None, None) => self.lower_expr(object)?,
+        };
+
 
         // A `take self` method on a handle held in a field consumes it: `w.tx.close()`
         // drops the end. The struct still has the word in its slot and gives a

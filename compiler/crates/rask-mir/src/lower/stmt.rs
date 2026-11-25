@@ -1280,6 +1280,18 @@ impl<'a> MirLowerer<'a> {
                                 }
                             }
                         }
+                        // Anything else with storage of its own (`ps[1].x`,
+                        // `h.pts[1].y` through a Heap, `p.pts[1].y` through a
+                        // pointer) is stored into at its address. Reading
+                        // the object would give a copy to store into.
+                        if let Some((addr, oty)) = self.place_addr(object)? {
+                            if let (MirOperand::Local(base), Some((offset, fty, fsize))) =
+                                (&addr, self.field_offset_ty_size(&oty, field))
+                            {
+                                let slot = self.field_slot_of(&oty, field);
+                                return self.store_into_place(*base, offset, fty, fsize, slot, val_op, val_ty, target, reuses_old, None);
+                            }
+                        }
                         let (obj_op, obj_ty) = self.lower_expr(object)?;
                         let slot = self.field_slot_of(&obj_ty, field);
                         // A base with no layout to say where the field is gets
@@ -1322,7 +1334,8 @@ impl<'a> MirLowerer<'a> {
                         // `grid[0][1] = 9`) is stored into at its own address.
                         // Reading it gives a copy, and the store landed in the
                         // copy, so `Blocks.push` in digest lost every byte.
-                        let (obj_op, obj_ty) = match self.nested_array_address(object)? {
+                        let addressed = if self.is_fixed_array(object) { self.place_addr(object)? } else { None };
+                        let (obj_op, obj_ty) = match addressed {
                             Some(found) => found,
                             None => self.lower_expr(object)?,
                         };
@@ -2070,40 +2083,53 @@ impl<'a> MirLowerer<'a> {
         MirOperand::Local(copy)
     }
 
-    /// A fixed array, whose elements sit in the value itself. A vector's
-    /// element is read through a call, which hands back its own copy.
-    /// Address and type of an array that sits inside other storage: a field
-    /// (`self.buf`) or an element of a fixed array (`grid[0]`). `None` for a
-    /// bare local, which is its own address, and for anything not rooted in
-    /// a local.
-    fn nested_array_address(&mut self, expr: &Expr) -> Result<Option<(MirOperand, MirType)>, LoweringError> {
-        // `p.data[2] = 30` on a raw pointer: the array sits where `p` points.
-        if self.through_pointer(expr) && self.is_fixed_array(expr) {
+    /// The address of the storage a place names, and the place's type.
+    ///
+    /// Reading a field or an element gives a copy (`let p = ps[1]` is one by
+    /// definition), so anything that writes into a place has to write at its
+    /// address instead: a store, an element store, a `mutate` argument or
+    /// receiver, a `for mutate` or `with` binding. This is the one place that
+    /// works that address out, at any depth:
+    ///
+    /// - a local is its own storage; a `Heap` or link local holds the address
+    ///   of the value it names;
+    /// - `x.f` is `f`'s offset from `x`'s address;
+    /// - `a[i]` on a fixed array is `i` elements on from `a`'s address;
+    /// - `v[i]` and `m[k]` are the slot the runtime hands back;
+    /// - anything reached through a raw pointer is where the pointer says.
+    ///
+    /// `None` for a place with no storage of its own to write into (a call's
+    /// result, a temporary).
+    pub(crate) fn place_addr(&mut self, expr: &Expr) -> Result<Option<(MirOperand, MirType)>, LoweringError> {
+        if self.through_pointer(expr) {
             let (addr, ty) = self.pointer_place_address(expr)?;
-            if !matches!(ty, MirType::Array { .. }) {
-                return Ok(None);
-            }
             self.emit_pointer_check(&addr, true, rask_layout::size_of(&ty, self.ctx.target()) as i64);
             return Ok(Some((addr, ty)));
         }
+        let peeled = self.peel_owned_deref(expr);
+        if !std::ptr::eq(peeled, expr) {
+            return self.place_addr(peeled);
+        }
         match &expr.kind {
-            ExprKind::Field { .. } => {
-                let Some((_, _, ty, _)) = self.lower_place_chain(expr) else { return Ok(None) };
-                if !matches!(ty, MirType::Array { .. }) {
-                    return Ok(None);
-                }
-                Ok(self.place_address(expr).map(|addr| (addr, ty)))
+            ExprKind::Ident(name) => {
+                let Some((id, ty)) = self.locals.get(name).cloned() else { return Ok(None) };
+                Ok(match ty {
+                    MirType::Heap(inner) => Some((MirOperand::Local(id), *inner)),
+                    MirType::Link(_) => Some((MirOperand::Local(id), ty)),
+                    _ if ty.passed_by_address() => Some((MirOperand::Local(id), ty)),
+                    _ => None,
+                })
+            }
+            ExprKind::Field { object, field } => {
+                let Some((base, base_ty)) = self.place_addr(object)? else { return Ok(None) };
+                let (base, base_ty) = self.through_held_address(base, base_ty);
+                let Some((foff, fty, _)) = self.field_offset_ty_size(&base_ty, field) else { return Ok(None) };
+                Ok(Some((MirOperand::Local(self.offset_address(base, MirOperand::Constant(MirConst::Int(foff as i64)))), fty)))
             }
             ExprKind::Index { object, index } if self.is_fixed_array(object) => {
-                let (outer, outer_ty) = match self.nested_array_address(object)? {
-                    Some(found) => found,
-                    None if matches!(object.kind, ExprKind::Ident(_)) => self.lower_expr(object)?,
-                    None => return Ok(None),
-                };
-                let MirType::Array { elem, .. } = outer_ty else { return Ok(None) };
-                if !matches!(*elem, MirType::Array { .. }) {
-                    return Ok(None);
-                }
+                let Some((base, base_ty)) = self.place_addr(object)? else { return Ok(None) };
+                let (base, base_ty) = self.through_held_address(base, base_ty);
+                let MirType::Array { elem, .. } = base_ty else { return Ok(None) };
                 let (idx_op, _) = self.lower_expr(index)?;
                 let scaled = self.builder.alloc_temp(MirType::I64);
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
@@ -2114,22 +2140,68 @@ impl<'a> MirLowerer<'a> {
                         right: MirOperand::Constant(MirConst::Int(rask_layout::size_of(elem.as_ref(), self.ctx.target()) as i64)),
                     },
                 }));
-                let addr = self.builder.alloc_temp(MirType::Ptr);
-                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                    dst: addr,
-                    rvalue: MirRValue::BinaryOp {
-                        op: crate::operand::BinOp::Add,
-                        left: outer,
-                        right: MirOperand::Local(scaled),
-                    },
-                }));
-                Ok(Some((MirOperand::Local(addr), *elem)))
+                Ok(Some((MirOperand::Local(self.offset_address(base, MirOperand::Local(scaled))), *elem)))
+            }
+            ExprKind::Index { object, index } => {
+                let map = if self.is_vec_expr(object) {
+                    false
+                } else if self.is_map_expr(object) {
+                    true
+                } else {
+                    return Ok(None);
+                };
+                let Some(elem_ty) = self
+                    .ctx
+                    .lookup_raw_type(expr.id)
+                    .map(|t| self.ctx.type_to_mir(&t))
+                    .or_else(|| self.collection_elem_of_expr(object))
+                else {
+                    return Ok(None);
+                };
+                let (coll_op, _) = self.lower_expr(object)?;
+                let (idx_op, _) = self.lower_expr(index)?;
+                let slot = self.emit_element_slot(coll_op, idx_op, map);
+                Ok(Some((MirOperand::Local(slot), elem_ty)))
             }
             _ => Ok(None),
         }
     }
 
-    fn is_fixed_array(&self, expr: &Expr) -> bool {
+    /// A place whose storage holds an address rather than the value (a `Heap`
+    /// or a link stored in a field or element): the value is where that word
+    /// points.
+    fn through_held_address(&mut self, addr: MirOperand, ty: MirType) -> (MirOperand, MirType) {
+        let MirOperand::Local(id) = addr else { return (addr, ty) };
+        // A local of its own is already the address (`place_addr`'s Ident arm).
+        if self.builder.local_type(id).is_some_and(|t| matches!(t, MirType::Heap(_) | MirType::Link(_))) {
+            return (addr, ty);
+        }
+        match ty {
+            MirType::Heap(inner) => {
+                let word = self.builder.alloc_temp(MirType::Ptr);
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign { dst: word, rvalue: MirRValue::Deref(addr) }));
+                (MirOperand::Local(word), *inner)
+            }
+            MirType::Link(_) => {
+                let word = self.builder.alloc_temp(MirType::Ptr);
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign { dst: word, rvalue: MirRValue::Deref(addr) }));
+                (MirOperand::Local(word), ty)
+            }
+            _ => (addr, ty),
+        }
+    }
+
+    /// `base + by`, as a pointer.
+    pub(crate) fn offset_address(&mut self, base: MirOperand, by: MirOperand) -> crate::LocalId {
+        let dst = self.builder.alloc_temp(MirType::Ptr);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst,
+            rvalue: MirRValue::BinaryOp { op: crate::operand::BinOp::Add, left: base, right: by },
+        }));
+        dst
+    }
+
+    pub(crate) fn is_fixed_array(&self, expr: &Expr) -> bool {
         self.ctx
             .lookup_raw_type(expr.id)
             .is_some_and(|t| matches!(t.as_ref(), rask_types::Type::Array { .. }))
@@ -2776,7 +2848,19 @@ impl<'a> MirLowerer<'a> {
 
         // Index-based iteration: for item in collection { ... }
         // Desugars to: _i = 0; _len = collection.len(); while _i < _len { item = collection[_i]; ...; _i += 1 }
-        let (iter_op, iter_ty) = self.lower_expr(iter_expr)?;
+        // `for mutate` over a fixed array walks the array where it sits.
+        // Reading it gives a copy, and the body's writes went into the copy:
+        // `for mutate row in grid { row[0] = 0 }` left `grid` alone.
+        let placed_array = if mutate && self.is_fixed_array(iter_expr) {
+            self.place_addr(iter_expr)?
+        } else {
+            None
+        };
+        let in_place = placed_array.is_some();
+        let (iter_op, iter_ty) = match placed_array {
+            Some(found) => found,
+            None => self.lower_expr(iter_expr)?,
+        };
 
         // LP13: the map itself, kept aside because the loop goes on to walk a
         // snapshot of its entries. `for mutate` writes back into the map, not
@@ -2813,11 +2897,16 @@ impl<'a> MirLowerer<'a> {
             _ => None,
         };
 
-        let collection = self.builder.alloc_temp(iter_ty.clone());
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-            dst: collection,
-            rvalue: MirRValue::Use(iter_op),
-        }));
+        let collection = if in_place {
+            self.offset_address(iter_op, MirOperand::Constant(MirConst::Int(0)))
+        } else {
+            let collection = self.builder.alloc_temp(iter_ty.clone());
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                dst: collection,
+                rvalue: MirRValue::Use(iter_op),
+            }));
+            collection
+        };
 
         // _len = collection.len()
         let len_local = self.builder.alloc_temp(MirType::I64);
@@ -2899,7 +2988,20 @@ impl<'a> MirLowerer<'a> {
         };
         let (pair_tys, _binding_ty, binding_local, elem_slot) =
             self.alloc_destructure_slots(&elem_ty, binding, single_name);
-        if let MirType::Array { elem, .. } = &iter_ty {
+        if let (MirType::Array { elem, .. }, true) = (&iter_ty, in_place) {
+            // The binding is the element where it sits.
+            let at = self.builder.alloc_temp(MirType::I64);
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                dst: at,
+                rvalue: MirRValue::BinaryOp {
+                    op: crate::operand::BinOp::Mul,
+                    left: MirOperand::Local(idx),
+                    right: MirOperand::Constant(MirConst::Int(rask_layout::size_of(elem.as_ref(), self.ctx.target()) as i64)),
+                },
+            }));
+            let slot = self.offset_address(MirOperand::Local(collection), MirOperand::Local(at));
+            self.bind_place(elem_slot, slot);
+        } else if let MirType::Array { elem, .. } = &iter_ty {
             self.read_array_element(elem_slot, collection, idx, elem);
         } else if mutate && !is_map {
             // A `for mutate` binding is the element where it sits.

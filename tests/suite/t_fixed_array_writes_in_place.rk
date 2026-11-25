@@ -1,0 +1,78 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Writes through a fixed-array element land in the array (#2089).
+//
+//     mut grid: [[i64; 3]; 2] = [[1, 2, 3], [4, 5, 6]]
+//     for mutate row in grid { row[0] = 0 }
+//
+// printed `1 4` natively and `0 0` on the interpreter. Each way of reaching an
+// element (an index on the left of `=`, a `mutate self` receiver, `for
+// mutate`, `with`, a path through a Heap) read the element into a temporary
+// and wrote to that. They all take the element's address now.
+
+import memory.Heap
+
+struct Pt {
+    public x: i64
+    public y: i64
+}
+
+extend Pt {
+    func bump(mutate self) {
+        self.x += 10
+    }
+}
+
+struct Room {
+    public n: i64
+    public name: string
+    public pts: [i64; 3]
+}
+
+struct House {
+    public id: i64
+    public main: Room
+    public rooms: [Room; 2]
+}
+
+struct Node {
+    public id: i64
+    public arr: [i64; 3]
+}
+
+func mkr(k: i64) -> Room {
+    return Room(n: k, name: "room {k}, long enough to allocate a heap string", pts: [k, k, k])
+}
+
+func main() {
+    mut grid: [[i64; 3]; 2] = [[1, 2, 3], [4, 5, 6]]
+    for mutate row in grid {
+        row[0] = 0
+    }
+    println("for mutate: {grid[0][0]} {grid[1][0]}")
+
+    mut ps: [Pt; 2] = [Pt(x: 1, y: 2), Pt(x: 3, y: 4)]
+    ps[1].x = 44
+    ps[0].bump()
+    println("field and receiver: {ps[0].x} {ps[1].x}")
+
+    mut rs: [Room; 2] = [mkr(1), mkr(2)]
+    with rs[1] as r {
+        r.n = 20
+        r.name = "renamed, long enough to allocate a heap string"
+        r.pts[2] = 22
+    }
+    println("with: {rs[1].n} {rs[1].name} {rs[1].pts[2]}")
+
+    mut h = House(id: 0, main: mkr(3), rooms: [mkr(4), mkr(5)])
+    with h.rooms[0] as r {
+        r.n = 40
+    }
+    h.main.pts[0] = 30
+    h.rooms[1].pts[1] = 51
+    println("nested: {h.rooms[0].n} {h.main.pts[0]} {h.rooms[1].pts[1]}")
+
+    mut node = Heap(Node(id: 1, arr: [0, 0, 0]))
+    ensure drop(node)
+    node.arr[1] = 5
+    println("heap: {node.arr[1]}")
+}
