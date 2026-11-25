@@ -187,7 +187,7 @@ impl<'a> MirLowerer<'a> {
         let msg = self.builder.alloc_temp(MirType::Buffer);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(msg),
-            func: FunctionRef::reading("json_error_message"),
+            func: FunctionRef::reading("rask_json_error_message").writing_string(),
             args: vec![MirOperand::Constant(MirConst::Int(TEXT_MESSAGE))],
         }));
 
@@ -249,7 +249,7 @@ impl<'a> MirLowerer<'a> {
                 let path = self.builder.alloc_temp(MirType::Buffer);
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                     dst: Some(path),
-                    func: FunctionRef::reading("json_error_message"),
+                    func: FunctionRef::reading("rask_json_error_message").writing_string(),
                     args: vec![MirOperand::Constant(MirConst::Int(TEXT_PATH))],
                 }));
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
@@ -973,7 +973,7 @@ impl<'a> MirLowerer<'a> {
         let out = self.builder.alloc_temp(MirType::Buffer);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(out),
-            func: FunctionRef::reading("json_encode_shaped"),
+            func: FunctionRef::reading("rask_json_encode_shaped").writing_string(),
             args: vec![MirOperand::Local(slot), MirOperand::Local(shape)],
         }));
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {

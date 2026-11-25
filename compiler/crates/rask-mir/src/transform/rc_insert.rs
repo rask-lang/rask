@@ -3495,7 +3495,7 @@ mod tests {
                 id: BlockId(0),
                 statements: vec![MirStmt::dummy(MirStmtKind::Call {
                     dst: Some(local(0)),
-                    func: FunctionRef::reading("string_new"),
+                    func: FunctionRef::reading("rask_string_new").writing_string(),
                     args: vec![],
                 })],
                 terminator: MirTerminator::dummy(MirTerminatorKind::Return { value: None }),
@@ -3578,7 +3578,7 @@ mod tests {
             id: BlockId(2),
             statements: vec![MirStmt::dummy(MirStmtKind::Call {
                 dst: Some(local(1)),
-                func: FunctionRef::reading("string_new"),
+                func: FunctionRef::reading("rask_string_new").writing_string(),
                 args: vec![],
             })],
             terminator: MirTerminator::dummy(MirTerminatorKind::Goto { target: BlockId(1) }),

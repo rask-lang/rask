@@ -235,7 +235,7 @@ impl<'a> MirLowerer<'a> {
         let dst = self.builder.alloc_temp(MirType::Buffer);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(dst),
-            func: FunctionRef::reading("json_pretty"),
+            func: FunctionRef::reading("rask_json_pretty").writing_string(),
             args: vec![op],
         }));
         (MirOperand::Local(dst), MirType::Buffer)
@@ -285,7 +285,7 @@ impl<'a> MirLowerer<'a> {
         let result = self.builder.alloc_temp(MirType::Buffer);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(result),
-            func: FunctionRef::releasing("json_buf_finish"),
+            func: FunctionRef::releasing("rask_json_buf_finish").writing_string(),
             args: vec![MirOperand::Local(buf)],
         }));
 
@@ -476,7 +476,7 @@ impl<'a> MirLowerer<'a> {
                     None => {
                         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                             dst: Some(result),
-                            func: FunctionRef::reading("json_encode_string"),
+                            func: FunctionRef::reading("rask_json_encode_string").writing_string(),
                             args: vec![MirOperand::Constant(MirConst::String(variant_name))],
                         }));
                     }
@@ -569,7 +569,7 @@ impl<'a> MirLowerer<'a> {
     fn push_json_finish(&mut self, buf: crate::LocalId, dst: crate::LocalId) {
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(dst),
-            func: FunctionRef::releasing("json_buf_finish"),
+            func: FunctionRef::releasing("rask_json_buf_finish").writing_string(),
             args: vec![MirOperand::Local(buf)],
         }));
     }
@@ -886,7 +886,7 @@ impl<'a> MirLowerer<'a> {
         let result = self.builder.alloc_temp(MirType::Buffer);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(result),
-            func: FunctionRef::releasing("json_buf_finish_array"),
+            func: FunctionRef::releasing("rask_json_buf_finish_array").writing_string(),
             args: vec![MirOperand::Local(arr_buf)],
         }));
 

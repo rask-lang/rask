@@ -5061,9 +5061,7 @@ impl<'a> FunctionBuilder<'a> {
         // `i128_to_string(out: ptr, val: i128)` made it visible by truncating
         // the value to the out pointer's width (#762).
         let injects_out_param = param_types.len() == args.len() + 1
-            && ctx.adapt_table.get(func.name.as_str())
-                .map(|(a, _)| *a == ArgAdapt::StringOutParam)
-                .unwrap_or(false);
+            && Self::call_abi(func, ctx).is_some_and(|(a, _)| a == ArgAdapt::StringOutParam);
         // A struct passed by value doesn't reach C as a pointer: it goes in
         // registers, a copy on the stack, or the address of a copy, as
         // `rask_mir::c_call` decided for the target. The declared signature
@@ -5271,7 +5269,7 @@ impl<'a> FunctionBuilder<'a> {
         // Lower MIR args to Cranelift values
         let mut arg_vals = Vec::with_capacity(args.len());
         for (arg_idx, a) in args.iter().enumerate() {
-            // string_append_cstr: second arg is raw char*, skip RaskString wrapping
+            // rask_string_append_cstr: second arg is raw char*, skip RaskString wrapping
             // Everything reaches a runtime call as a word unless it's 128-bit,
             // which is the one scalar width that doesn't fit one. Forcing that
             // to `i64` here truncated the value before the signature loop below
@@ -5281,7 +5279,7 @@ impl<'a> FunctionBuilder<'a> {
             } else {
                 types::I64
             };
-            let val = if func.name == "string_append_cstr" && arg_idx == 1 {
+            let val = if func.name == "rask_string_append_cstr" && arg_idx == 1 {
                 Self::lower_string_const_as_cstr(builder, a, ctx)?
             } else {
                 Self::lower_operand_typed(builder, a, Some(want), ctx)?
@@ -5298,7 +5296,7 @@ impl<'a> FunctionBuilder<'a> {
         Self::spill_scalars_for_aggregate_params(builder, &func.name, &mut arg_vals, args, ctx);
 
         // Adapt args for typed runtime API
-        let adapt = Self::adapt_stdlib_call(builder, &func.name, &mut arg_vals, args, dst, ctx, ctx.adapt_table);
+        let adapt = Self::adapt_stdlib_call(builder, func, &mut arg_vals, args, dst, ctx);
 
         // Re-read signature after adaptation (arg count may have changed)
         let ext_func = &builder.func.dfg.ext_funcs[*func_ref];
@@ -5860,7 +5858,7 @@ impl<'a> FunctionBuilder<'a> {
                     // Store directly into our stack slot (value, not pointer).
                     Self::land_aggregate_result(builder, final_val, *ss, *size, dst_ptr.is_some());
                 } else if let Some(wrapper) = Self::dst_wrapper(ctx, dst_id) {
-                    let ret = ctx.adapt_table.get(&func.name).map(|(_, r)| *r);
+                    let ret = Self::call_abi(func, ctx).map(|(_, r)| r);
                     match (ret, &wrapper) {
                         // C function uses negative return = error convention
                         // (declared as RetAdapt::NegErr on the dispatch entry).
@@ -8072,18 +8070,28 @@ impl<'a> FunctionBuilder<'a> {
         }
     }
 
+    /// How the call's C arguments and result line up with its MIR operands:
+    /// a runtime call says so itself, a stdlib method's comes from its
+    /// declaration.
+    fn call_abi(func: &rask_mir::FunctionRef, ctx: &CodegenCtx) -> Option<(ArgAdapt, RetAdapt)> {
+        if func.runtime {
+            return Some((func.abi.args, func.abi.ret));
+        }
+        ctx.adapt_table.get(func.name.as_str()).copied()
+    }
+
     /// Adapt stdlib call args for the typed runtime API.
     /// Looks up adaptation from the dispatch table, applies mechanically.
     /// Custom entries fall through to hand-written code.
     fn adapt_stdlib_call(
         builder: &mut ClifFunctionBuilder,
-        func_name: &str,
+        func: &rask_mir::FunctionRef,
         args: &mut Vec<Value>,
         mir_args: &[MirOperand],
         dst: Option<&LocalId>,
         ctx: &CodegenCtx,
-        adapt_table: &HashMap<String, (ArgAdapt, RetAdapt)>,
     ) -> CallAdapt {
+        let func_name = func.name.as_str();
         // A name the program declares is its own function, never a stdlib one.
         //
         // MIR mints `<Type>_<method>` for a stdlib method and codegen resolves
@@ -8107,10 +8115,7 @@ impl<'a> FunctionBuilder<'a> {
         if let Some(how) = hand_adaptation(func_name) {
             return Self::adapt_by_hand(builder, how, func_name, args, mir_args, dst, ctx);
         }
-        let (arg_adapt, ret_adapt) = adapt_table
-            .get(func_name)
-            .copied()
-            .unwrap_or((ArgAdapt::None, RetAdapt::None));
+        let (arg_adapt, ret_adapt) = Self::call_abi(func, ctx).unwrap_or((ArgAdapt::None, RetAdapt::None));
 
         // Apply arg adaptation
         let call_adapt = match arg_adapt {
@@ -8585,7 +8590,7 @@ impl<'a> FunctionBuilder<'a> {
     }
 
     /// Lower a string constant as a raw `const char*` pointer (no RaskString wrapping).
-    /// Used by `string_append_cstr` to avoid allocating a temporary RaskString.
+    /// Used by `rask_string_append_cstr` to avoid allocating a temporary RaskString.
     fn lower_string_const_as_cstr(
         builder: &mut ClifFunctionBuilder,
         op: &MirOperand,

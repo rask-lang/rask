@@ -5902,12 +5902,12 @@ impl<'a> MirLowerer<'a> {
                                 arg_op = MirOperand::Local(wide);
                             }
                             let helper = if raw_ty.is_some_and(|t| self.ctx.is_text(&t)) {
-                                "json_encode_string"
+                                "rask_json_encode_string"
                             } else {
                                 match &arg_ty {
-                                    MirType::Bool => "bool_to_string",
-                                    MirType::F32 | MirType::F64 => "f64_to_string",
-                                    _ => "json_encode_i64",
+                                    MirType::Bool => "rask_bool_to_string",
+                                    MirType::F32 | MirType::F64 => "rask_f64_to_string",
+                                    _ => "rask_json_encode_i64",
                                 }
                             };
                             // Every helper here writes a string, so the result
@@ -5917,7 +5917,7 @@ impl<'a> MirLowerer<'a> {
                             let result_local = self.builder.alloc_temp(MirType::Buffer);
                             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                                 dst: Some(result_local),
-                                func: FunctionRef::borrowing(helper),
+                                func: FunctionRef::borrowing(helper).writing_string(),
                                 args: vec![arg_op],
                             }));
                             let encoded = (MirOperand::Local(result_local), MirType::Buffer);
@@ -6424,6 +6424,9 @@ impl<'a> MirLowerer<'a> {
         // settled here and nothing about the choice survives into the emitted
         // code — a `Local` box calls the no-lock runtime directly.
         let (qualified_name, mut shape) = self.resolve_shared_strategy_call(&qualified_name, object);
+        // How the C call lines up with this one, when a branch below picks a
+        // runtime symbol that needs it.
+        let mut abi = crate::call_abi::CallAbi::DIRECT;
 
         // A value going into a container's slot — an element, a key, a box's
         // payload — is an argument position, so it gains wrapper layers the
@@ -6688,7 +6691,8 @@ impl<'a> MirLowerer<'a> {
                 let mut args = all_args;
                 args.push(MirOperand::Constant(MirConst::Int(kind)));
                 shape = rask_stdlib::mir_metadata::declared_shape("Vec_join");
-                ("Vec_join_scalar".to_string(), args)
+                abi = crate::call_abi::CallAbi::STRING_OUT;
+                ("rask_vec_join_scalar".to_string(), args)
             }
         } else if let Some((kind, size)) = sort_scalar {
             // A scalar or a string: the runtime compares it as what it is.
@@ -6742,7 +6746,7 @@ impl<'a> MirLowerer<'a> {
         if final_name == "Vec_index" {
             shape = rask_stdlib::mir_metadata::declared_shape("Vec_get");
         }
-        let mut func = FunctionRef::internal(final_name.clone());
+        let mut func = FunctionRef::internal(final_name.clone()).with_abi(abi);
         func.shape = shape.or(func.shape);
         // A method the compiler provides for every type (`clone`, `hash`, `eq`,
         // `compare`, `to_string`, `debug`) on a receiver no declaration covers
@@ -7252,7 +7256,7 @@ impl<'a> MirLowerer<'a> {
                 let result_local = self.builder.alloc_temp(MirType::Buffer);
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                     dst: Some(result_local),
-                    func: crate::FunctionRef::internal("rask_result_origin".to_string()),
+                    func: crate::FunctionRef::runtime("rask_result_origin".to_string()).writing_string(),
                     args: vec![obj_op],
                 }));
                 return Ok(Some((MirOperand::Local(result_local), MirType::Buffer)));
@@ -8988,7 +8992,7 @@ impl<'a> MirLowerer<'a> {
             let result_local = self.builder.alloc_temp(MirType::Buffer);
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: Some(result_local),
-                func: FunctionRef::reading("concat"),
+                func: FunctionRef::reading("rask_string_concat").writing_string(),
                 args: vec![obj_op.clone(), arg_op],
             }));
             return Ok(Some((MirOperand::Local(result_local), MirType::Buffer)));
@@ -9173,11 +9177,11 @@ impl<'a> MirLowerer<'a> {
         depth: u32,
     ) -> Result<MirOperand, LoweringError> {
         const MAX_DEPTH: u32 = 4;
-        let call = |this: &mut Self, name: &str, args: Vec<MirOperand>| {
+        let call = |this: &mut Self, func: FunctionRef, args: Vec<MirOperand>| {
             let dst = this.builder.alloc_temp(MirType::Buffer);
             this.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: Some(dst),
-                func: FunctionRef::borrowing(name),
+                func,
                 args,
             }));
             MirOperand::Local(dst)
@@ -9190,10 +9194,10 @@ impl<'a> MirLowerer<'a> {
             // says which.
             MirType::Buffer => {
                 let text = decl.is_none_or(|d| self.ctx.is_text(d));
-                let render = if text { "string_debug" } else { "bytes_debug" };
-                Ok(call(self, render, vec![op.clone()]))
+                let render = if text { "rask_string_debug" } else { "rask_bytes_debug" };
+                Ok(call(self, FunctionRef::borrowing(render).writing_string(), vec![op.clone()]))
             }
-            MirType::Char => Ok(call(self, "char_debug", vec![op.clone()])),
+            MirType::Char => Ok(call(self, FunctionRef::borrowing("rask_char_debug").writing_string(), vec![op.clone()])),
             MirType::Struct(_) | MirType::Enum(_) if depth + 1 < MAX_DEPTH => {
                 Ok(self
                     .lower_derived_debug(op, ty, decl, depth + 1)?
@@ -9223,7 +9227,7 @@ impl<'a> MirLowerer<'a> {
             MirType::Ptr | MirType::Container(_) => match decl.and_then(|d| self.debug_vec_elem_kind(d)) {
                 Some(kind) => Ok(call(
                     self,
-                    "Vec_debug",
+                    FunctionRef::borrowing("rask_vec_debug").writing_string(),
                     vec![op.clone(), MirOperand::Constant(MirConst::Int(kind))],
                 )),
                 None => {
@@ -9284,16 +9288,16 @@ impl<'a> MirLowerer<'a> {
                 .unwrap_or_else(|| MirOperand::Constant(MirConst::String("…".to_string())))),
             MirType::Link(_) => Ok(elided(self)),
             MirType::I64 | MirType::I32 | MirType::I16 | MirType::I8 => {
-                Ok(call(self, "i64_to_string", vec![op.clone()]))
+                Ok(call(self, FunctionRef::borrowing("rask_i64_to_string").writing_string(), vec![op.clone()]))
             }
             MirType::U64 | MirType::U32 | MirType::U16 | MirType::U8 => {
-                Ok(call(self, "u64_to_string", vec![op.clone()]))
+                Ok(call(self, FunctionRef::borrowing("rask_u64_to_string").writing_string(), vec![op.clone()]))
             }
-            MirType::I128 => Ok(call(self, "i128_to_string", vec![op.clone()])),
-            MirType::U128 => Ok(call(self, "u128_to_string", vec![op.clone()])),
-            MirType::F64 => Ok(call(self, "f64_to_string", vec![op.clone()])),
-            MirType::F32 => Ok(call(self, "f32_to_string", vec![op.clone()])),
-            MirType::Bool => Ok(call(self, "bool_to_string", vec![op.clone()])),
+            MirType::I128 => Ok(call(self, FunctionRef::borrowing("rask_i128_to_string").writing_string(), vec![op.clone()])),
+            MirType::U128 => Ok(call(self, FunctionRef::borrowing("rask_u128_to_string").writing_string(), vec![op.clone()])),
+            MirType::F64 => Ok(call(self, FunctionRef::borrowing("rask_f64_to_string").writing_string(), vec![op.clone()])),
+            MirType::F32 => Ok(call(self, FunctionRef::borrowing("rask_f32_to_string").writing_string(), vec![op.clone()])),
+            MirType::Bool => Ok(call(self, FunctionRef::borrowing("rask_bool_to_string").writing_string(), vec![op.clone()])),
             // Handles, links, slices, interface objects, function pointers, SIMD
             // lanes. Each is a machine word or a fat pointer with no rendering
             // of its own; printing the word was the bug, so say nothing instead.
@@ -9562,7 +9566,7 @@ impl<'a> MirLowerer<'a> {
         let joined = self.builder.alloc_temp(MirType::Buffer);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(joined),
-            func: FunctionRef::reading("concat"),
+            func: FunctionRef::reading("rask_string_concat").writing_string(),
             args: vec![MirOperand::Local(acc), part],
         }));
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
@@ -10080,7 +10084,7 @@ impl<'a> MirLowerer<'a> {
             let dst = self.builder.alloc_temp(MirType::Buffer);
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: Some(dst),
-                func: FunctionRef::reading("concat"),
+                func: FunctionRef::reading("rask_string_concat").writing_string(),
                 args: vec![acc, part],
             }));
             acc = MirOperand::Local(dst);
@@ -10129,11 +10133,11 @@ impl<'a> MirLowerer<'a> {
         // Stage 1: render the value. An unsupported pairing (a hex spec on a
         // string, say) falls back to the plain rendering rather than failing —
         // same as the interpreter.
-        let call = |this: &mut Self, name: &str, args: Vec<MirOperand>| {
+        let call = |this: &mut Self, func: FunctionRef, args: Vec<MirOperand>| {
             let dst = this.builder.alloc_temp(MirType::Buffer);
             this.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: Some(dst),
-                func: FunctionRef::borrowing(name),
+                func,
                 args,
             }));
             MirOperand::Local(dst)
@@ -10145,12 +10149,12 @@ impl<'a> MirLowerer<'a> {
         // to a word. An unsigned value is zero-extended and needs no mask.
         let radix = |this: &mut Self, base: i64, upper: bool| {
             if is_unsigned {
-                call(this, "u64_to_base", vec![obj_op.clone(), int_const(base), int_const(upper as i64)])
+                call(this, FunctionRef::borrowing("rask_u64_to_base").writing_string(), vec![obj_op.clone(), int_const(base), int_const(upper as i64)])
             } else {
                 let bits = rask_layout::size_of(obj_ty, self.ctx.target()) as i64 * 8;
                 call(
                     this,
-                    "i64_to_base",
+                    FunctionRef::borrowing("rask_i64_to_base").writing_string(),
                     vec![obj_op.clone(), int_const(base), int_const(upper as i64), int_const(bits)],
                 )
             }
@@ -10175,7 +10179,7 @@ impl<'a> MirLowerer<'a> {
                 } else {
                     obj_op.clone()
                 };
-                call(self, "f64_to_exp", vec![value, int_const(prec)])
+                call(self, FunctionRef::borrowing("rask_f64_to_exp").writing_string(), vec![value, int_const(prec)])
             }
             // std.fmt/G2: every type derives Debug. A struct or enum has no
             // `to_string` unless it opted into Displayable, and falling through
@@ -10197,14 +10201,14 @@ impl<'a> MirLowerer<'a> {
             }
             SpecType::Display if is_float && spec.precision.is_some() => {
                 let prec = spec.precision.unwrap() as i64;
-                call(self, "f64_to_precision", vec![obj_op.clone(), int_const(prec)])
+                call(self, FunctionRef::borrowing("rask_f64_to_precision").writing_string(), vec![obj_op.clone(), int_const(prec)])
             }
             SpecType::Display
                 if self.ctx.node_is_text(object.id)
                     && spec.precision.is_some() =>
             {
                 let prec = spec.precision.unwrap() as i64;
-                call(self, "string_truncate_chars", vec![obj_op.clone(), int_const(prec)])
+                call(self, FunctionRef::borrowing("rask_string_truncate_chars").writing_string(), vec![obj_op.clone(), int_const(prec)])
             }
             // Everything else renders the ordinary way — including `debug` on
             // a struct or enum, which goes to the type's own to_string.
@@ -10214,7 +10218,7 @@ impl<'a> MirLowerer<'a> {
                 // settled during reachability; without that name the receiver
                 // would be handed to `string_pad` as if the pointer were text.
                 match self.ctx.method_call(expr.id).map(|c| c.symbol) {
-                    Some(renderer) => call(self, &renderer, vec![obj_op.clone()]),
+                    Some(renderer) => call(self, FunctionRef::borrowing(&renderer), vec![obj_op.clone()]),
                     None => {
                         let (op, _) = self
                             .try_lower_to_string(object, &"to_string".to_string(), &[], obj_op, obj_ty)?
@@ -10232,7 +10236,7 @@ impl<'a> MirLowerer<'a> {
         let align = spec.effective_align(numeric).as_code();
         let padded = call(
             self,
-            "string_pad",
+            FunctionRef::borrowing("rask_string_pad").writing_string(),
             vec![
                 base,
                 int_const(spec.width as i64),
@@ -10278,24 +10282,24 @@ impl<'a> MirLowerer<'a> {
             }
             if !has_own_to_string && !is_user_aggregate {
                 let func_name = match obj_ty {
-                    MirType::I64 | MirType::I32 | MirType::I16 | MirType::I8 => "i64_to_string",
+                    MirType::I64 | MirType::I32 | MirType::I16 | MirType::I8 => "rask_i64_to_string",
                     // Unsigned values print unsigned. Shared with the signed
                     // helper, `u8` 200 came out as -56 (#326).
-                    MirType::U64 | MirType::U32 | MirType::U16 | MirType::U8 => "u64_to_string",
+                    MirType::U64 | MirType::U32 | MirType::U16 | MirType::U8 => "rask_u64_to_string",
                     // 128-bit values need their own renderers: the 64-bit ones
                     // take the low half and print a different number (#762).
-                    MirType::I128 => "i128_to_string",
-                    MirType::U128 => "u128_to_string",
-                    MirType::F64 => "f64_to_string",
-                    MirType::F32 => "f32_to_string",
-                    MirType::Bool => "bool_to_string",
-                    MirType::Char => "char_to_string",
-                    _ => "i64_to_string",
+                    MirType::I128 => "rask_i128_to_string",
+                    MirType::U128 => "rask_u128_to_string",
+                    MirType::F64 => "rask_f64_to_string",
+                    MirType::F32 => "rask_f32_to_string",
+                    MirType::Bool => "rask_bool_to_string",
+                    MirType::Char => "rask_char_to_string",
+                    _ => "rask_i64_to_string",
                 };
                 let result_local = self.builder.alloc_temp(MirType::Buffer);
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                     dst: Some(result_local),
-                    func: FunctionRef::borrowing(func_name),
+                    func: FunctionRef::borrowing(func_name).writing_string(),
                     args: vec![obj_op.clone()],
                 }));
                 return Ok(Some((MirOperand::Local(result_local), MirType::Buffer)));

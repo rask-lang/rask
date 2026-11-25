@@ -275,6 +275,9 @@ pub struct FunctionRef {
     /// (`borrowing`, `releasing`, `reading`, `like`). `None` is an ordinary function: it
     /// reads its arguments and the passes ask its body, if there is one.
     pub shape: Option<CallShape>,
+    /// How the C arguments and result line up with this call's operands and
+    /// destination, for a runtime call (`crate::call_abi`).
+    pub abi: crate::call_abi::CallAbi,
 }
 
 impl FunctionRef {
@@ -283,12 +286,12 @@ impl FunctionRef {
     pub fn internal(name: String) -> Self {
         let shape = rask_stdlib::mir_metadata::declared_shape(&name);
         let runtime = rask_stdlib::runtime_header::declares(&name);
-        Self { name, is_extern: false, elidable_clone: false, points_into_args: false, c_macro: None, runtime, shape }
+        Self { name, is_extern: false, elidable_clone: false, points_into_args: false, c_macro: None, runtime, shape, abi: Default::default() }
     }
 
     /// Extern "C" call.
     pub fn extern_c(name: String) -> Self {
-        Self { name, is_extern: true, elidable_clone: false, points_into_args: false, c_macro: None, runtime: false, shape: None }
+        Self { name, is_extern: true, elidable_clone: false, points_into_args: false, c_macro: None, runtime: false, shape: None, abi: Default::default() }
     }
 
     /// A runtime function by its C symbol, which `rask_runtime.h` declares.
@@ -296,6 +299,18 @@ impl FunctionRef {
         let f = Self::internal(name);
         debug_assert!(f.runtime, "`{}` isn't declared in rask_runtime.h", f.name);
         f
+    }
+
+    /// This call, with its C arguments and result lined up as `abi` says.
+    pub fn with_abi(self, abi: crate::call_abi::CallAbi) -> Self {
+        Self { abi, ..self }
+    }
+
+    /// This runtime call, which writes the string it makes through a
+    /// `RaskStr *out` in front of its arguments.
+    pub fn writing_string(self) -> Self {
+        debug_assert!(self.runtime, "`{}` isn't declared in rask_runtime.h", self.name);
+        self.with_abi(crate::call_abi::CallAbi::STRING_OUT)
     }
 
     /// A call whose shape lowering states, because no declaration answers for it.

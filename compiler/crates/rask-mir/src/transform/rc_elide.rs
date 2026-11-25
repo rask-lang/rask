@@ -687,7 +687,7 @@ mod tests {
                     }),
                     MirStmt::dummy(MirStmtKind::Call {
                         dst: Some(local(0)),
-                        func: FunctionRef::borrowing("string_concat"),
+                        func: FunctionRef::borrowing("rask_string_concat"),
                         args: vec![],
                     }),
                     MirStmt::dummy(MirStmtKind::RcInc { local: local(0) }),

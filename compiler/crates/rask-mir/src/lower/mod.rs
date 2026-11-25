@@ -8298,7 +8298,7 @@ mod tests {
             return_stmt(None),
         ]);
         let f = lower_one(&decl);
-        assert!(find_call(&f, "string_new"));
+        assert!(find_call(&f, "rask_string_new"));
     }
 
     #[test]
