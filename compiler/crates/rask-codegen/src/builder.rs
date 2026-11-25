@@ -316,7 +316,6 @@ enum HandAdapt {
     LinkRegisterStruct,
     LinkGuarded,
     RackInsert,
-    Atomic,
     Send,
     TrySend,
     Receive,
@@ -335,9 +334,6 @@ fn hand_adaptation(name: &str) -> Option<HandAdapt> {
         "Vec_contains" => HandAdapt::VecContains,
         "rask_link_register_struct" | "rask_link_forget_struct" => HandAdapt::LinkRegisterStruct,
         "rask_link_guarded" => HandAdapt::LinkGuarded,
-        n if rask_stdlib::mir_metadata::lookup(n).is_some_and(|m| m.owner.as_deref() == Some("Atomic")) => {
-            HandAdapt::Atomic
-        }
         "Sender_send" => HandAdapt::Send,
         "Sender_try_send" => HandAdapt::TrySend,
         "Receiver_receive" | "Receiver_try_receive" => HandAdapt::Receive,
@@ -8197,6 +8193,22 @@ impl<'a> FunctionBuilder<'a> {
             }
 
 
+            ArgAdapt::AtomicPayload(payload) => {
+                Self::atomic_args(builder, payload, args, mir_args, ctx);
+                CallAdapt::None
+            }
+
+            ArgAdapt::AtomicCas(payload) => {
+                Self::atomic_args(builder, payload, args, mir_args, ctx);
+                // The observed value is the call's result; whether it swapped
+                // comes back through this slot.
+                let ss = LocalSlot::plain(builder.create_sized_stack_slot(StackSlotData::new(
+                    StackSlotKind::ExplicitSlot, 8, 0,
+                )));
+                args.push(ss.addr(builder, 0));
+                CallAdapt::CasResult(ss)
+            }
+
             ArgAdapt::OptionOutParam => {
                 // Hand the callee the destination's payload address so it can
                 // copy the element out while it's still live. The old shape —
@@ -8232,6 +8244,30 @@ impl<'a> FunctionBuilder<'a> {
             RetAdapt::NegErr | RetAdapt::NegNone => call_adapt,
             RetAdapt::BoxPayloadPtr => CallAdapt::BoxPayloadPtr,
             RetAdapt::Status => CallAdapt::Status,
+            RetAdapt::AtomicBits => CallAdapt::AtomicBits,
+        }
+    }
+
+    /// An atomic call's payload arguments as their bits, and a trailing
+    /// `MemoryOrder` as its tag. Passed as the enum, the order was the address
+    /// of a slot, which the runtime read as no order it knew and ran SeqCst:
+    /// every `Relaxed` was ignored.
+    fn atomic_args(
+        builder: &mut ClifFunctionBuilder,
+        payload: u8,
+        args: &mut [Value],
+        mir_args: &[MirOperand],
+        ctx: &CodegenCtx,
+    ) {
+        for i in (0..args.len()).filter(|&i| i < 8 && payload & (1 << i) != 0) {
+            let ty = mir_args.get(i).and_then(|op| Self::operand_mir_type(op, ctx.locals));
+            args[i] = Self::atomic_bits(builder, args[i], ty.as_ref(), ctx.target());
+        }
+        if let Some(last) = args.len().checked_sub(1) {
+            let ty = mir_args.get(last).and_then(|op| Self::operand_mir_type(op, ctx.locals));
+            if let Some(MirType::Enum(id)) = &ty {
+                args[last] = Self::load_enum_tag(builder, ctx, args[last], id.id as usize);
+            }
         }
     }
 
@@ -8388,44 +8424,6 @@ impl<'a> FunctionBuilder<'a> {
             // integer extended by its sign, a float or a word-sized struct
             // (GA2) as its raw bytes. A numeric conversion would hand the
             // runtime 1 for 1.5, and a struct is held by address.
-            HandAdapt::Atomic => {
-                // The payload arguments are the ones `sync.rk` declares as `T`.
-                let meta = rask_stdlib::mir_metadata::lookup(func_name);
-                let values: &[usize] = meta.map_or(&[], |m| m.payload_args.as_slice());
-                for &i in values {
-                    if i < args.len() {
-                        let ty = mir_args.get(i).and_then(|op| Self::operand_mir_type(op, ctx.locals));
-                        args[i] = Self::atomic_bits(builder, args[i], ty.as_ref(), ctx.target());
-                    }
-                }
-                // The `MemoryOrder` crosses as its tag. Passed as the enum, it
-                // was the address of a slot, which the runtime read as no order
-                // it knew and ran SeqCst: every `Relaxed` was ignored.
-                if let Some(last) = args.len().checked_sub(1) {
-                    let ty = mir_args.get(last).and_then(|op| Self::operand_mir_type(op, ctx.locals));
-                    if let Some(MirType::Enum(id)) = &ty {
-                        args[last] = Self::load_enum_tag(builder, ctx, args[last], id.id as usize);
-                    }
-                }
-                if matches!(
-                    func_name,
-                    "Atomic_compare_exchange" | "Atomic_compare_exchange_weak"
-                ) {
-                    // The observed value comes back through an out-param; the
-                    // call's own result is whether it succeeded.
-                    let ss = LocalSlot::plain(builder.create_sized_stack_slot(StackSlotData::new(
-                        StackSlotKind::ExplicitSlot, 8, 0,
-                    )));
-                    args.push(ss.addr(builder, 0));
-                    return CallAdapt::CasResult(ss);
-                }
-                // A declared `-> T` comes back as the payload's bits.
-                match meta.map(|m| &m.ret_category) {
-                    Some(rask_stdlib::mir_metadata::RetCategory::TypeParam(_)) => CallAdapt::AtomicBits,
-                    _ => CallAdapt::None,
-                }
-            }
-
             // Sender_send: wrap value as pointer (structs already are)
             HandAdapt::Send => {
                 if args.len() >= 2 {

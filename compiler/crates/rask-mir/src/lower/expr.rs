@@ -6838,7 +6838,8 @@ impl<'a> MirLowerer<'a> {
         Ok((MirOperand::Local(result_local), ret_ty))
     }
 
-    /// Rewrite a `Shared_*` call to the runtime family its strategy names.
+    /// Rewrite a `Shared_*` call to the runtime family its strategy names,
+    /// and an `Atomic_*` call to its runtime symbol.
     ///
     /// Constructors pick the strategy by their own name — `Shared.new` is
     /// `Shared.mutex` and `Shared.local` say which lock they want; `new` takes
@@ -6856,6 +6857,9 @@ impl<'a> MirLowerer<'a> {
         use super::concurrency::SharedStrategy;
         use crate::runtime_ops::{BOX_NEW, BOX_REPLACE, BOX_SET};
         use rask_stdlib::mir_metadata::{declared_shape, CallShape};
+        if let Some((symbol, abi)) = crate::runtime_ops::atomic(qualified) {
+            return (symbol, declared_shape(qualified), abi);
+        }
         let Some(rest) = qualified.strip_prefix("Shared_") else {
             return (qualified.to_string(), None, CallAbi::DIRECT);
         };
@@ -7691,7 +7695,7 @@ impl<'a> MirLowerer<'a> {
     }
 
     /// Raw-pointer methods (`.read()`, `.write()`, `.add()`, `.cast()`, ...)
-    /// dispatched to `RawPtr_*` C functions. Skips smart-pointer types.
+    /// dispatched to their `rask_ptr_*` C functions. Skips smart-pointer types.
     fn try_lower_raw_ptr_method(
         &mut self,
         object: &Expr,
@@ -7700,7 +7704,7 @@ impl<'a> MirLowerer<'a> {
         obj_op: &MirOperand,
         obj_ty: &MirType,
     ) -> Result<Option<TypedOperand>, LoweringError> {
-        // Raw-pointer methods dispatch straight to the `RawPtr_*` C functions,
+        // Raw-pointer methods dispatch straight to the `rask_ptr_*` C functions,
         // so the receiver has to actually be a `*T` — which only the checker
         // knows. `MirType::Ptr` is every value reached by address: a Pool, a
         // Rack, a Shared, a Channel, a box. The test used to be "Ptr, and not
@@ -7772,8 +7776,8 @@ impl<'a> MirLowerer<'a> {
                 }
             }
             let ptr_method = entry
-                .filter(|e| e.c_symbol.is_some())
-                .map(|e| rask_stdlib::ptr_methods::mir_name(e.name));
+                .and_then(|e| e.c_symbol)
+                .map(str::to_string);
             if let Some(func_name) = ptr_method {
                 let elem_size = self.pointee_size(object).unwrap_or(8);
                 if matches!(method.as_str(), "read" | "write") {

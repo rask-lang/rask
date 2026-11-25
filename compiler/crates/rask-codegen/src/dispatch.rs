@@ -10,8 +10,9 @@
 //!
 //! A stdlib method's entry is built from its `@native("symbol")` declaration
 //! in `stdlib/*.rk` and the symbol's prototype in `rask_runtime.h`
-//! (`declared_entries`). The rest — names MIR mints for itself, and the
-//! compiler-provided types with no stdlib file — are `internal_entries`.
+//! (`declared_entries`). Anything else lowering calls by its C symbol
+//! (`FunctionRef::runtime`), with its `CallAbi` on the call, and codegen
+//! declares it from the header.
 //!
 //! ## Calling convention
 //!
@@ -62,97 +63,14 @@ impl StdlibEntry {
     }
 }
 
-/// Leak a String to get a &'static str. Used for dynamically generated
-/// dispatch entry names (atomic types). Called once at startup, small and bounded.
+/// Leak a String to get a &'static str, for an entry built from a
+/// declaration. Called once per declaration at startup.
 fn leak_str(s: &str) -> &'static str {
     Box::leak(s.to_string().into_boxed_str())
 }
 
-/// The internal table: what a MIR name with no `@native` declaration behind
-/// it calls.
-///
-/// These are spellings MIR mints for itself — frees, element lends and
-/// write-backs, the pieces string interpolation and `json` encoding are built
-/// from, task and runtime hooks (`INTERNAL_SPELLINGS` in
-/// `rask_stdlib::mir_metadata` says what each stands for) — and the
-/// operations of compiler-provided types that have no stdlib file to declare
-/// them: the `Shared` strategies, `Atomic<T>`, SIMD vectors, raw pointers.
-///
-/// A method a program calls by name doesn't belong here. It belongs in
-/// `stdlib/*.rk` as `@native("symbol")`, which gives its entry
-/// (`declared_entries`); `internal_rows_are_not_declared` fails on a row that
-/// repeats one.
-pub(crate) fn internal_entries() -> Vec<StdlibEntry> {
-    let mut entries = Vec::new();
-
-    // ── Atomic operations ──────────────────────────────────
-    // mem.atomics/GA1: `Atomic<T>` is the only spelling, so there is one set of
-    // rows. The cell holds the payload at its own width and knows its kind
-    // (lowering passes both to `new`), and values cross the call as the
-    // payload's bits in an int64_t. Adapted by hand throughout
-    // (`builder::hand_adaptation`): codegen turns a float or a struct into
-    // those bits and back, which a numeric conversion would get wrong.
-    let atomic = |mir_name: &'static str, c_name: &'static str, params: &'static [types::Type], ret: Option<types::Type>| StdlibEntry {
-        mir_name, c_name, params, ret_ty: ret, can_panic: false,
-        arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::None,
-    };
-    entries.push(atomic("Atomic_new", "rask_atomic_new", &[types::I64, types::I64, types::I64], Some(types::I64)));
-    entries.push(StdlibEntry::simple("Atomic_default", "rask_atomic_default", &[types::I64, types::I64], Some(types::I64), false));
-    entries.push(atomic("Atomic_load", "rask_atomic_load", &[types::I64, types::I64], Some(types::I64)));
-    entries.push(atomic("Atomic_store", "rask_atomic_store", &[types::I64, types::I64, types::I64], None));
-    entries.push(atomic("Atomic_swap", "rask_atomic_swap", &[types::I64, types::I64, types::I64], Some(types::I64)));
-    entries.push(atomic(
-        "Atomic_compare_exchange", "rask_atomic_compare_exchange",
-        &[types::I64, types::I64, types::I64, types::I64, types::I64], Some(types::I64),
-    ));
-    entries.push(atomic(
-        "Atomic_compare_exchange_weak", "rask_atomic_compare_exchange_weak",
-        &[types::I64, types::I64, types::I64, types::I64, types::I64], Some(types::I64),
-    ));
-    for op in &["fetch_add", "fetch_sub", "fetch_and", "fetch_or", "fetch_xor", "fetch_nand", "fetch_max", "fetch_min"] {
-        entries.push(atomic(
-            leak_str(&format!("Atomic_{}", op)),
-            leak_str(&format!("rask_atomic_{}", op)),
-            &[types::I64, types::I64, types::I64], Some(types::I64),
-        ));
-    }
-    entries.push(atomic("Atomic_take", "rask_atomic_into_inner", &[types::I64], Some(types::I64)));
-
-    // ── Raw pointer methods ─────────────────────────────────
-    // Generated from rask_stdlib::PTR_METHODS so the set codegen can call is
-    // exactly the set the checker accepts. A pointer is an i64 address here;
-    // read/write/add/sub/offset take the pointee size as a trailing argument.
-    for m in rask_stdlib::PTR_METHODS {
-        use rask_stdlib::PtrSig;
-        let Some(c_symbol) = m.c_symbol else { continue };
-        let mir_name = leak_str(&rask_stdlib::ptr_methods::mir_name(m.name));
-        let entry = match m.sig {
-            PtrSig::Read => StdlibEntry::simple(
-                mir_name, c_symbol, &[types::I64, types::I64], Some(types::I64), false,
-            ),
-            PtrSig::Write => StdlibEntry::simple(
-                mir_name, c_symbol, &[types::I64, types::I64, types::I64], None, false,
-            ),
-            PtrSig::Arith => StdlibEntry::simple(
-                mir_name, c_symbol, &[types::I64, types::I64, types::I64], Some(types::I64), false,
-            ),
-            PtrSig::Predicate => StdlibEntry::simple(
-                mir_name, c_symbol, &[types::I64], Some(types::I64), false,
-            ),
-            PtrSig::PredicateInt | PtrSig::Comparison | PtrSig::ToInt => StdlibEntry::simple(
-                mir_name, c_symbol, &[types::I64, types::I64], Some(types::I64), false,
-            ),
-            // No C symbol, so unreachable — the `else` above skipped it.
-            PtrSig::Cast => continue,
-        };
-        entries.push(entry);
-    }
-
-    entries
-}
-
 /// Every call native codegen dispatches to the C runtime: one entry per
-/// `@native("symbol")` stdlib declaration, then the internal table.
+/// `@native("symbol")` stdlib declaration, then each handle's release.
 pub fn stdlib_entries() -> &'static [StdlibEntry] {
     static ENTRIES: std::sync::OnceLock<Vec<StdlibEntry>> = std::sync::OnceLock::new();
     ENTRIES.get_or_init(|| {
@@ -160,7 +78,6 @@ pub fn stdlib_entries() -> &'static [StdlibEntry] {
             .into_iter()
             .map(|r| r.unwrap_or_else(|e| panic!("{e}")))
             .collect();
-        entries.extend(internal_entries());
         // A handle's declared release, called by its own symbol when the frame
         // frees one (`@handle(release: "…")`): the handle's word in, nothing
         // back.
@@ -529,44 +446,6 @@ mod tests {
             "{} `@native` declarations don't give a dispatch entry:\n  {}",
             broken.len(),
             broken.join("\n  ")
-        );
-    }
-
-    /// A call made by its C symbol carries its own `CallAbi` and is declared
-    /// from its prototype, so a row keyed by a runtime symbol is never read.
-    #[test]
-    fn no_internal_row_names_a_runtime_symbol() {
-        let shadowed: Vec<&str> = internal_entries()
-            .into_iter()
-            .filter(|e| rask_stdlib::runtime_header::declares(e.mir_name))
-            .map(|e| e.mir_name)
-            .collect();
-        assert!(shadowed.is_empty(), "rows for calls made by their C symbol: {shadowed:?}");
-    }
-
-    /// The internal table holds only names no declaration answers. A row for
-    /// a declared `@native` method is a second copy of the declaration, the
-    /// one that drifted before (`Map.insert` named `rask_map_insert` while the
-    /// row called `rask_map_insert_displaced`).
-    #[test]
-    fn internal_rows_are_not_declared() {
-        let declared: HashSet<&str> = declared_entries()
-            .into_iter()
-            .filter_map(Result::ok)
-            .map(|e| e.mir_name)
-            .collect();
-        let mut doubled: Vec<&str> = internal_entries()
-            .iter()
-            .map(|e| e.mir_name)
-            .filter(|n| declared.contains(n))
-            .collect();
-        doubled.sort_unstable();
-        assert!(
-            doubled.is_empty(),
-            "{} internal rows repeat a `@native` declaration — delete the row, the \
-             declaration gives the entry:\n  {}",
-            doubled.len(),
-            doubled.join("\n  ")
         );
     }
 

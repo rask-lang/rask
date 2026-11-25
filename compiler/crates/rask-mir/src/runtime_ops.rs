@@ -93,3 +93,24 @@ pub fn string_clone() -> FunctionRef {
 pub fn string_share_in_place() -> FunctionRef {
     FunctionRef::borrowing(STRING_SHARE)
 }
+
+/// An `Atomic<T>` method's runtime call: the symbol, and how its payloads
+/// cross. `None` for anything that isn't one.
+pub fn atomic(qualified: &str) -> Option<(String, CallAbi)> {
+    let verb = qualified.strip_prefix("Atomic_")?;
+    let meta = rask_stdlib::mir_metadata::lookup(qualified)?;
+    let payload = meta.payload_args.iter().fold(0u8, |mask, &i| mask | 1 << i);
+    let symbol = match verb {
+        "take" => "rask_atomic_into_inner".to_string(),
+        _ => format!("rask_atomic_{verb}"),
+    };
+    let returns_payload = matches!(meta.ret_category, rask_stdlib::mir_metadata::RetCategory::TypeParam(_));
+    let abi = match verb {
+        "compare_exchange" | "compare_exchange_weak" => {
+            CallAbi::new(ArgAdapt::AtomicCas(payload), RetAdapt::FromArgAdapt)
+        }
+        _ if returns_payload => CallAbi::new(ArgAdapt::AtomicPayload(payload), RetAdapt::AtomicBits),
+        _ => CallAbi::new(ArgAdapt::AtomicPayload(payload), RetAdapt::None),
+    };
+    Some((symbol, abi))
+}

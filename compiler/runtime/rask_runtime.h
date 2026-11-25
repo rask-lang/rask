@@ -346,6 +346,18 @@ void     rask_vec_free(RaskVec *v);
 void     rask_vec_retain_all(RaskVec *v);
 int64_t  rask_vec_len(const RaskVec *v);
 int64_t  rask_ptr_in_vec(int64_t p, const RaskVec *v, int64_t access);
+// Raw pointer methods (`*T`). read/write/add/sub/offset step by whole
+// elements, so they take the pointee's size.
+int64_t  rask_ptr_add(int64_t ptr, int64_t n, int64_t elem_size);
+int64_t  rask_ptr_sub(int64_t ptr, int64_t n, int64_t elem_size);
+int64_t  rask_ptr_offset(int64_t ptr, int64_t n, int64_t elem_size);
+int64_t  rask_ptr_read(int64_t ptr, int64_t elem_size);
+void     rask_ptr_write(int64_t ptr, int64_t val, int64_t elem_size);
+int64_t  rask_ptr_eq(int64_t a, int64_t b);
+int64_t  rask_ptr_ne(int64_t a, int64_t b);
+int64_t  rask_ptr_is_aligned(int64_t ptr);
+int64_t  rask_ptr_is_aligned_to(int64_t ptr, int64_t n);
+int64_t  rask_ptr_align_offset(int64_t ptr, int64_t n);
 int64_t  rask_vec_as_ptr(const RaskVec *v);
 int64_t  rask_vec_capacity(const RaskVec *v);
 RaskVec *rask_vec_fixed(int64_t elem_size, int64_t n,
@@ -634,6 +646,25 @@ int64_t     rask_cstring_from_string(const RaskStr *s);
 int64_t     rask_cstring_as_ptr(int64_t cs);
 void        rask_cstring_free(int64_t cs);
 void        rask_atomic_free(int64_t ptr);
+// Atomic<T>: the payload crosses as its bits in an int64_t, the order as its tag.
+RASK_PANICS int64_t rask_atomic_new(int64_t bits, int64_t size, int64_t kind);
+RASK_PANICS int64_t rask_atomic_default(int64_t size, int64_t kind);
+int64_t     rask_atomic_load(int64_t ptr, int64_t ordering);
+void        rask_atomic_store(int64_t ptr, int64_t bits, int64_t ordering);
+int64_t     rask_atomic_swap(int64_t ptr, int64_t bits, int64_t ordering);
+int64_t     rask_atomic_compare_exchange(int64_t ptr, int64_t expected, int64_t desired,
+                                         int64_t ordering, int64_t *out_ok);
+int64_t     rask_atomic_compare_exchange_weak(int64_t ptr, int64_t expected, int64_t desired,
+                                              int64_t ordering, int64_t *out_ok);
+int64_t     rask_atomic_fetch_add(int64_t p, int64_t x, int64_t o);
+int64_t     rask_atomic_fetch_sub(int64_t p, int64_t x, int64_t o);
+int64_t     rask_atomic_fetch_and(int64_t p, int64_t x, int64_t o);
+int64_t     rask_atomic_fetch_or(int64_t p, int64_t x, int64_t o);
+int64_t     rask_atomic_fetch_xor(int64_t p, int64_t x, int64_t o);
+int64_t     rask_atomic_fetch_nand(int64_t p, int64_t x, int64_t o);
+int64_t     rask_atomic_fetch_max(int64_t p, int64_t x, int64_t o);
+int64_t     rask_atomic_fetch_min(int64_t p, int64_t x, int64_t o);
+int64_t     rask_atomic_into_inner(int64_t ptr);
 RaskVec    *rask_cstring_bytes(int64_t cs);
 void        rask_panic_str(const RaskStr *msg);
 void        rask_panic_str_at(const char *file, int32_t line, int32_t col,

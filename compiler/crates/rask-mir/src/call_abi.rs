@@ -69,6 +69,14 @@ pub enum ArgAdapt {
     /// WrapArg2, then AppendOutParam: a value goes in by address and the one
     /// it displaced comes back out (`Vec.replace`).
     WrapArg2AppendOutParam,
+    /// An `Atomic<T>` call: the arguments whose bits are set in the mask are
+    /// payloads, which cross as their bits in an int64_t; a trailing
+    /// `MemoryOrder` crosses as its tag.
+    AtomicPayload(u8),
+    /// The same, then the success flag's out-param a compare-exchange appends.
+    /// The call's result is the value it observed, and the destination is the
+    /// `T or CasFailed<T>` built from the two.
+    AtomicCas(u8),
     /// Append the destination `T?`'s payload address as an out-param. The call
     /// returns 1 (wrote a value) or 0 (nothing there), which becomes the tag.
     /// For anything that hands an element back out of a container it's about to
@@ -108,6 +116,8 @@ pub enum RetAdapt {
     /// belongs to the entry, and a name missing from a list four deep is how
     /// this went wrong the first time.
     BoxPayloadPtr,
+    /// The return is an `Atomic<T>` payload's bits, turned back into a `T`.
+    AtomicBits,
     /// The return is a status: 0 for Ok, or a `RASK_CHAN_*` failure the
     /// destination's error enum names a variant for (`Closed`, `Cancelled`).
     Status,
