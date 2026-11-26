@@ -1153,6 +1153,14 @@ fn insert_aggregate_release(
                             ..
                         },
                     } if roots.contains_key(b) || aggregates.contains(b) => Some((*dst, *b)),
+                    // A name bound where an element sits (`for mutate`,
+                    // `with`) is storage inside the aggregate too. Binding it
+                    // writes nothing: a read-only `for r in arr` binds this
+                    // way, and counting the binding as a write moved the
+                    // array's release onto a copy that a later walk replaced.
+                    MirStmtKind::BindPlace { dst, addr } if roots.contains_key(addr) || aggregates.contains(addr) => {
+                        Some((*dst, *addr))
+                    }
                     _ => None,
                 };
                 let Some((dst, b)) = found else { continue };
@@ -1544,16 +1552,9 @@ fn insert_aggregate_release(
                     ev.push(ownership::Event::View { dst: *dst, base: *base });
                 }
                 // An element bound where it sits reaches into the collection
-                // it sits in, which has to outlive the binding.
-                //
-                // Bound at a field or element inside an aggregate (`for
-                // mutate`, `with`), the name writes into the aggregate through
-                // stores this pass sees only as stores into a place, so the
-                // aggregate is the value from here on.
+                // it sits in, which has to outlive the binding. Writes
+                // through the name reach the aggregate by `inline_roots`.
                 MirStmtKind::BindPlace { dst, addr } => {
-                    if let Some(root) = inline_roots.get(addr).filter(|r| is_tracked(r)) {
-                        ev.push(ownership::Event::WriteThrough(*root));
-                    }
                     if is_tracked(dst) {
                         ev.push(ownership::Event::View { dst: *dst, base: *addr });
                     }
