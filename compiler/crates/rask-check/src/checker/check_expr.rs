@@ -2419,8 +2419,7 @@ impl TypeChecker {
             ExprKind::UsingBlock { name, args, body } => {
                 // Validate context name
                 match name.as_str() {
-                    "Multitasking" | "MultiTasking" | "multitasking"
-                    | "ThreadPool" | "threadpool" => {}
+                    "Multitasking" | "ThreadPool" => {}
                     _ => {
                         self.errors.push(TypeError::UnknownContext {
                             name: name.clone(),

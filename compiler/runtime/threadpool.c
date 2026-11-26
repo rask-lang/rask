@@ -214,15 +214,16 @@ void rask_threadpool_shutdown(void) {
 // ThreadPool.spawn (conc.async/S2). Outside a `using ThreadPool` block there
 // is no pool. A spawn that said `requires_pool: false` runs right here, now:
 // it may run beside what follows, and running it first is one of the orders
-// it may run in. Any other falls back to a dedicated thread rather than
-// enqueueing into a queue nothing drains.
+// it may run in. Any other panics (CC3): the checker rejects every pool spawn
+// it can see outside the block, so this is a call it couldn't see (a stored
+// closure, an interface call).
 RaskTask *rask_threadpool_spawn(void *closure_ptr, int64_t result_owned, int8_t requires_pool) {
     RaskTaskFn func = *(RaskTaskFn *)(closure_ptr);
     void *env = (char *)closure_ptr + 8;
 
     if (!g_pool.started) {
         if (requires_pool) {
-            return rask_closure_spawn(closure_ptr, result_owned);
+            rask_panic("ThreadPool.spawn requires `using ThreadPool` context");
         }
         RaskTask *task = rask_task_new();
         rask_task_adopt_closure(task, closure_ptr, result_owned);

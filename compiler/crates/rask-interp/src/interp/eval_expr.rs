@@ -2909,7 +2909,7 @@ impl Interpreter {
             }
 
             ExprKind::UsingBlock { name, args, body }
-                if name == "ThreadPool" || name == "threading" =>
+                if name == "ThreadPool" =>
             {
                 let num_threads = if args.is_empty() {
                     std::thread::available_parallelism()
@@ -2975,7 +2975,7 @@ impl Interpreter {
             }
 
             ExprKind::UsingBlock { name, args, body }
-                if name == "Multitasking" || name == "multitasking" =>
+                if name == "Multitasking" =>
             {
                 use crate::value::{MultitaskingRuntime, ACTIVE_RUNTIME};
 

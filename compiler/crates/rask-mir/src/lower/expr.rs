@@ -4857,9 +4857,9 @@ impl<'a> MirLowerer<'a> {
 
     fn lower_using_block(&mut self, name: &str, args: &[CallArg], body: &[Stmt]) -> Result<TypedOperand, LoweringError> {
             let ctx_fns = match name {
-                "Multitasking" | "MultiTasking" | "multitasking" =>
+                "Multitasking" =>
                     Some(("rask_runtime_init", "rask_runtime_shutdown")),
-                "ThreadPool" | "threadpool" =>
+                "ThreadPool" =>
                     Some(("rask_threadpool_init", "rask_threadpool_shutdown")),
                 _ => None,
             };

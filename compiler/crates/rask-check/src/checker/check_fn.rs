@@ -1037,7 +1037,7 @@ impl TypeChecker {
 }
 
 fn is_runtime_context(ty: &str) -> bool {
-    matches!(ty, "Multitasking" | "MultiTasking" | "multitasking" | "ThreadPool" | "threadpool")
+    matches!(ty, "Multitasking" | "ThreadPool")
 }
 
 /// Levenshtein distance, for type-name suggestions.

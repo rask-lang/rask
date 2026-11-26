@@ -13,7 +13,7 @@ use rask_ast::decl::{Decl, DeclKind, FnDecl};
 use rask_ast::expr::{Expr, ExprKind, SpawnTarget};
 use rask_ast::stmt::{Stmt, StmtKind};
 
-use crate::{Effects, EffectMap, MethodTargets};
+use crate::{Effects, EffectMap, MethodTargets, Runtimes};
 use crate::sources;
 
 /// Qualified function name (plain name or "Type.method").
@@ -67,10 +67,13 @@ struct InferPass<'t> {
     effects: EffectMap,
     /// Call graph: caller → callees.
     call_graph: HashMap<FuncName, HashSet<FuncName>>,
-    /// CC2: functions that call spawn or unguarded-call something with needs_runtime.
-    direct_needs_runtime: HashSet<FuncName>,
+    /// CC2: the runtimes each function's own task blocks need and it doesn't
+    /// install.
+    direct_needs_runtime: HashMap<FuncName, Runtimes>,
     /// CC2: callee names reached without an enclosing `using Multitasking {}` block.
     unguarded_callees: HashMap<FuncName, HashSet<FuncName>>,
+    /// CC2: callee names reached without an enclosing `using ThreadPool {}` block.
+    unguarded_pool_callees: HashMap<FuncName, HashSet<FuncName>>,
     /// CW2: callee names reached with no runtime installed.
     plain_callees: HashMap<FuncName, HashSet<FuncName>>,
     /// CW2: callee names reached with a runtime installed — inside that block,
@@ -91,8 +94,9 @@ impl<'t> InferPass<'t> {
             scan_reach: true,
             effects: HashMap::new(),
             call_graph: HashMap::new(),
-            direct_needs_runtime: HashSet::new(),
+            direct_needs_runtime: HashMap::new(),
             unguarded_callees: HashMap::new(),
+            unguarded_pool_callees: HashMap::new(),
             plain_callees: HashMap::new(),
             guarded_callees: HashMap::new(),
             reachable_from_outside: HashSet::new(),
@@ -116,10 +120,16 @@ impl<'t> InferPass<'t> {
         self.propagate();
 
         // Phase 4: CC2 — propagate needs_runtime via unguarded-call edges
-        let needs_runtime = self.propagate_needs_runtime();
-        for fname in needs_runtime {
+        let pick = |r: Runtimes| r.multitasking;
+        for fname in propagate_needs(&self.direct_needs_runtime, pick, &self.unguarded_callees) {
             if let Some(e) = self.effects.get_mut(&fname) {
-                e.needs_runtime = true;
+                e.needs_runtime.multitasking = true;
+            }
+        }
+        let pick = |r: Runtimes| r.pool;
+        for fname in propagate_needs(&self.direct_needs_runtime, pick, &self.unguarded_pool_callees) {
+            if let Some(e) = self.effects.get_mut(&fname) {
+                e.needs_runtime.pool = true;
             }
         }
     }
@@ -224,12 +234,15 @@ impl<'t> InferPass<'t> {
 
         // CC2: compute which functions call spawn (or runtime-needing callees) without a guard
         let mut scan = ReachScan::new(self.targets, &self.imports);
-        let direct_needs_rt = rt_scan_stmts(body, 0, &mut scan);
-        if direct_needs_rt {
-            self.direct_needs_runtime.insert(qname.to_string());
+        let direct_needs_rt = rt_scan_stmts(body, Runtimes::NONE, &mut scan);
+        if direct_needs_rt.any() {
+            self.direct_needs_runtime.insert(qname.to_string(), direct_needs_rt);
         }
         if !scan.unguarded.is_empty() {
             self.unguarded_callees.insert(qname.to_string(), scan.unguarded);
+        }
+        if !scan.unguarded_pool.is_empty() {
+            self.unguarded_pool_callees.insert(qname.to_string(), scan.unguarded_pool);
         }
         if !scan.plain.is_empty() {
             self.plain_callees.insert(qname.to_string(), scan.plain);
@@ -237,31 +250,6 @@ impl<'t> InferPass<'t> {
         if !scan.guarded.is_empty() {
             self.guarded_callees.insert(qname.to_string(), scan.guarded);
         }
-    }
-
-    // ── Phase 4: CC2 needs_runtime propagation ──────────────────────
-
-    fn propagate_needs_runtime(&self) -> HashSet<FuncName> {
-        let mut needs_runtime = self.direct_needs_runtime.clone();
-        loop {
-            let mut changed = false;
-            for (caller, callees) in &self.unguarded_callees {
-                if needs_runtime.contains(caller) {
-                    continue;
-                }
-                for callee in callees {
-                    if needs_runtime.contains(callee) {
-                        needs_runtime.insert(caller.clone());
-                        changed = true;
-                        break;
-                    }
-                }
-            }
-            if !changed {
-                break;
-            }
-        }
-        needs_runtime
     }
 
     // ── CW2: which functions can only run under a runtime ───────────
@@ -653,19 +641,40 @@ fn extract_callee_name(func: &Expr) -> Option<String> {
 
 // ── CC2: runtime-needs scanning ────────────────────────────────────────
 //
-// These functions walk the AST tracking `using Multitasking {}` nesting depth.
-// At depth 0, a direct `spawn { }` sets `needs_runtime = true`.
-// Function calls at depth 0 are collected into `unguarded` for transitive propagation.
-
-fn is_multitasking_block(name: &str) -> bool {
-    matches!(name, "Multitasking" | "MultiTasking" | "multitasking")
+/// CC2: the functions that need one runtime open at their call site — those
+/// whose own task blocks need it, and those that call one of them outside a
+/// block installing it.
+fn propagate_needs(
+    direct: &HashMap<FuncName, Runtimes>,
+    pick: impl Fn(Runtimes) -> bool,
+    unguarded: &HashMap<FuncName, HashSet<FuncName>>,
+) -> HashSet<FuncName> {
+    let mut needs: HashSet<FuncName> =
+        direct.iter().filter(|(_, r)| pick(**r)).map(|(f, _)| f.clone()).collect();
+    loop {
+        let mut changed = false;
+        for (caller, callees) in unguarded {
+            if !needs.contains(caller) && callees.iter().any(|c| needs.contains(c)) {
+                needs.insert(caller.clone());
+                changed = true;
+            }
+        }
+        if !changed {
+            return needs;
+        }
+    }
 }
+
+// These functions walk the AST tracking which runtimes are installed at each
+// point (`held`) and return the ones a task block needs and nothing installs.
+// Calls made without a runtime are collected into `unguarded` for transitive
+// propagation, one set per runtime.
 
 /// Callees of one function, split by whether a runtime was installed when the
 /// call was reached.
 ///
 /// `unguarded` feeds CC2 — a `spawn` under one of these needs the caller to
-/// supply the block. `plain`/`guarded` feed CW2, which asks the opposite
+/// supply the block; `unguarded_pool` is the same for `ThreadPool.spawn`. `plain`/`guarded` feed CW2, which asks the opposite
 /// question: can this function run with *no* runtime installed? A call inside
 /// `using Multitasking { }`, or inside the closure handed to `spawn`, can't.
 ///
@@ -677,9 +686,9 @@ struct ReachScan<'t> {
     targets: &'t MethodTargets,
     imports: &'t sources::ImportedNames,
     unguarded: HashSet<String>,
+    unguarded_pool: HashSet<String>,
     plain: HashSet<String>,
     guarded: HashSet<String>,
-    in_spawn: bool,
 }
 
 impl<'t> ReachScan<'t> {
@@ -688,23 +697,26 @@ impl<'t> ReachScan<'t> {
             targets,
             imports,
             unguarded: HashSet::new(),
+            unguarded_pool: HashSet::new(),
             plain: HashSet::new(),
             guarded: HashSet::new(),
-            in_spawn: false,
         }
     }
 
     /// A plain call: counts for both analyses.
-    fn record(&mut self, depth: u32, name: String) {
-        if depth == 0 && !self.in_spawn {
+    fn record(&mut self, held: Runtimes, name: String) {
+        if !held.multitasking {
             self.unguarded.insert(name.clone());
         }
-        self.reach(depth, name);
+        if !held.pool {
+            self.unguarded_pool.insert(name.clone());
+        }
+        self.reach(held, name);
     }
 
     /// A call CC2 doesn't follow — a method — recorded for reachability only.
-    fn reach(&mut self, depth: u32, name: String) {
-        if depth == 0 && !self.in_spawn {
+    fn reach(&mut self, held: Runtimes, name: String) {
+        if !held.multitasking {
             self.plain.insert(name);
         } else {
             self.guarded.insert(name);
@@ -712,191 +724,191 @@ impl<'t> ReachScan<'t> {
     }
 }
 
-fn rt_scan_stmts(stmts: &[Stmt], depth: u32, rs: &mut ReachScan<'_>) -> bool {
-    stmts.iter().fold(false, |acc, s| acc | rt_scan_stmt(s, depth, rs))
+fn rt_scan_stmts(stmts: &[Stmt], held: Runtimes, rs: &mut ReachScan<'_>) -> Runtimes {
+    stmts.iter().fold(Runtimes::NONE, |acc, s| acc | rt_scan_stmt(s, held, rs))
 }
 
-fn rt_scan_stmt(stmt: &Stmt, depth: u32, rs: &mut ReachScan<'_>) -> bool {
+fn rt_scan_stmt(stmt: &Stmt, held: Runtimes, rs: &mut ReachScan<'_>) -> Runtimes {
     match &stmt.kind {
-        StmtKind::Expr(e) => rt_scan_expr(e, depth, rs),
-        StmtKind::Mut { init, .. } | StmtKind::Let { init, .. } => rt_scan_expr(init, depth, rs),
+        StmtKind::Expr(e) => rt_scan_expr(e, held, rs),
+        StmtKind::Mut { init, .. } | StmtKind::Let { init, .. } => rt_scan_expr(init, held, rs),
         StmtKind::MutTuple { init, .. }
         | StmtKind::LetTuple { init, .. }
-        | StmtKind::LetStruct { init, .. } => rt_scan_expr(init, depth, rs),
+        | StmtKind::LetStruct { init, .. } => rt_scan_expr(init, held, rs),
         StmtKind::Assign { target, value, .. } => {
-            rt_scan_expr(target, depth, rs) | rt_scan_expr(value, depth, rs)
+            rt_scan_expr(target, held, rs) | rt_scan_expr(value, held, rs)
         }
-        StmtKind::Return(Some(e)) => rt_scan_expr(e, depth, rs),
+        StmtKind::Return(Some(e)) => rt_scan_expr(e, held, rs),
         StmtKind::Return(None) | StmtKind::Break { value: None, .. }
-        | StmtKind::Continue(_) | StmtKind::Discard { .. } => false,
-        StmtKind::Break { value: Some(v), .. } => rt_scan_expr(v, depth, rs),
+        | StmtKind::Continue(_) | StmtKind::Discard { .. } => Runtimes::NONE,
+        StmtKind::Break { value: Some(v), .. } => rt_scan_expr(v, held, rs),
         StmtKind::While { cond, body, .. } => {
-            rt_scan_expr(cond, depth, rs) | rt_scan_stmts(body, depth, rs)
+            rt_scan_expr(cond, held, rs) | rt_scan_stmts(body, held, rs)
         }
         StmtKind::WhileLet { expr, body, .. } => {
-            rt_scan_expr(expr, depth, rs) | rt_scan_stmts(body, depth, rs)
+            rt_scan_expr(expr, held, rs) | rt_scan_stmts(body, held, rs)
         }
         StmtKind::Loop { body, .. } | StmtKind::Comptime(body) | StmtKind::ComptimeFor { body, .. } => {
-            rt_scan_stmts(body, depth, rs)
+            rt_scan_stmts(body, held, rs)
         }
         StmtKind::For { iter, body, .. } => {
-            rt_scan_expr(iter, depth, rs) | rt_scan_stmts(body, depth, rs)
+            rt_scan_expr(iter, held, rs) | rt_scan_stmts(body, held, rs)
         }
         StmtKind::Ensure { body, else_handler } => {
-            let mut r = rt_scan_stmts(body, depth, rs);
+            let mut r = rt_scan_stmts(body, held, rs);
             if let Some((_, handler)) = else_handler {
-                r |= rt_scan_stmts(handler, depth, rs);
+                r |= rt_scan_stmts(handler, held, rs);
             }
             r
         }
     }
 }
 
-fn rt_scan_expr(expr: &Expr, depth: u32, rs: &mut ReachScan<'_>) -> bool {
+fn rt_scan_expr(expr: &Expr, held: Runtimes, rs: &mut ReachScan<'_>) -> Runtimes {
     match &expr.kind {
         ExprKind::Call { func, args } => {
             if let Some(name) = extract_callee_name(func) {
-                rs.record(depth, name);
+                rs.record(held, name);
             }
-            let mut r = rt_scan_expr(func, depth, rs);
+            let mut r = rt_scan_expr(func, held, rs);
             for arg in args {
-                r |= rt_scan_expr(&arg.expr, depth, rs);
+                r |= rt_scan_expr(&arg.expr, held, rs);
             }
             r
         }
 
-        // A green task runs on the scheduler, so a runtime is installed for
-        // everything its block reaches — the same thing `using Multitasking`
-        // means, arriving by a different route. An OS thread or a pool job
-        // needs no green runtime to start.
-        ExprKind::Spawn { target: SpawnTarget::Green, body, .. } => {
-            let was = rs.in_spawn;
-            rs.in_spawn = true;
-            rt_scan_expr(body, depth, rs);
-            rs.in_spawn = was;
-            depth == 0
-        }
-        ExprKind::Spawn { body, .. } => rt_scan_expr(body, depth, rs),
-
-        // `using Multitasking { }` guards the body — increase depth
-        ExprKind::UsingBlock { name, args, body } if is_multitasking_block(name) => {
-            for arg in args {
-                rt_scan_expr(&arg.expr, depth, rs);
-            }
-            rt_scan_stmts(body, depth + 1, rs);
-            false
+        // A task runs on the runtime that accepted it, so that runtime is
+        // installed for everything its block reaches — the same thing the
+        // `using` block means, arriving by a different route. An OS thread
+        // needs no runtime to start, and neither does a pool job that said
+        // `requires_pool: false`.
+        ExprKind::Spawn { target, args, body, .. } => {
+            let needs = match target {
+                SpawnTarget::Green => Runtimes::MULTITASKING,
+                SpawnTarget::Pool if !says_no_pool(args) => Runtimes::POOL,
+                SpawnTarget::Pool | SpawnTarget::Thread => Runtimes::NONE,
+            };
+            let inner = rt_scan_expr(body, held | needs, rs);
+            needs.missing_from(held) | inner
         }
 
-        // All other expressions: recurse with same depth
+        // A `using` block installs its runtime for the body.
+        ExprKind::UsingBlock { name, args, body } => {
+            let mut r = Runtimes::NONE;
+            for arg in args { r |= rt_scan_expr(&arg.expr, held, rs); }
+            r | rt_scan_stmts(body, held | Runtimes::of_block(name), rs)
+        }
+
+        // All other expressions: recurse with same held
         ExprKind::MethodCall { object, method, args, .. } => {
             for name in crate::method_callees(expr.id, object, method, rs.targets, rs.imports) {
-                rs.reach(depth, name);
+                rs.reach(held, name);
             }
-            let mut r = rt_scan_expr(object, depth, rs);
-            for arg in args { r |= rt_scan_expr(&arg.expr, depth, rs); }
-            r
-        }
-        ExprKind::UsingBlock { args, body, .. } => {
-            let mut r = false;
-            for arg in args { r |= rt_scan_expr(&arg.expr, depth, rs); }
-            r |= rt_scan_stmts(body, depth, rs);
+            let mut r = rt_scan_expr(object, held, rs);
+            for arg in args { r |= rt_scan_expr(&arg.expr, held, rs); }
             r
         }
         ExprKind::Binary { left, right, .. } => {
-            rt_scan_expr(left, depth, rs) | rt_scan_expr(right, depth, rs)
+            rt_scan_expr(left, held, rs) | rt_scan_expr(right, held, rs)
         }
-        ExprKind::Unary { operand, .. } => rt_scan_expr(operand, depth, rs),
-        ExprKind::Field { object, .. } | ExprKind::OptionalField { object, .. } => rt_scan_expr(object, depth, rs),
+        ExprKind::Unary { operand, .. } => rt_scan_expr(operand, held, rs),
+        ExprKind::Field { object, .. } | ExprKind::OptionalField { object, .. } => rt_scan_expr(object, held, rs),
         ExprKind::DynamicField { object, field_expr } => {
-            rt_scan_expr(object, depth, rs) | rt_scan_expr(field_expr, depth, rs)
+            rt_scan_expr(object, held, rs) | rt_scan_expr(field_expr, held, rs)
         }
         ExprKind::Index { object, index } => {
-            rt_scan_expr(object, depth, rs) | rt_scan_expr(index, depth, rs)
+            rt_scan_expr(object, held, rs) | rt_scan_expr(index, held, rs)
         }
-        ExprKind::Block(stmts) => rt_scan_stmts(stmts, depth, rs),
+        ExprKind::Block(stmts) => rt_scan_stmts(stmts, held, rs),
         ExprKind::If { cond, then_branch, else_branch, .. } => {
-            let mut r = rt_scan_expr(cond, depth, rs);
-            r |= rt_scan_expr(then_branch, depth, rs);
-            if let Some(e) = else_branch { r |= rt_scan_expr(e, depth, rs); }
+            let mut r = rt_scan_expr(cond, held, rs);
+            r |= rt_scan_expr(then_branch, held, rs);
+            if let Some(e) = else_branch { r |= rt_scan_expr(e, held, rs); }
             r
         }
         ExprKind::IfLet { expr, then_branch, else_branch, .. } => {
-            let mut r = rt_scan_expr(expr, depth, rs);
-            r |= rt_scan_expr(then_branch, depth, rs);
-            if let Some(e) = else_branch { r |= rt_scan_expr(e, depth, rs); }
+            let mut r = rt_scan_expr(expr, held, rs);
+            r |= rt_scan_expr(then_branch, held, rs);
+            if let Some(e) = else_branch { r |= rt_scan_expr(e, held, rs); }
             r
         }
         ExprKind::GuardPattern { expr, else_branch, .. } => {
-            rt_scan_expr(expr, depth, rs) | rt_scan_expr(else_branch, depth, rs)
+            rt_scan_expr(expr, held, rs) | rt_scan_expr(else_branch, held, rs)
         }
         ExprKind::IsPattern { expr, .. } | ExprKind::IsPresent { expr, .. }
-        | ExprKind::Unwrap { expr, .. } | ExprKind::Cast { expr, .. } | ExprKind::Convert { expr, .. } => rt_scan_expr(expr, depth, rs),
+        | ExprKind::Unwrap { expr, .. } | ExprKind::Cast { expr, .. } | ExprKind::Convert { expr, .. } => rt_scan_expr(expr, held, rs),
         ExprKind::Match { scrutinee, arms } => {
-            let mut r = rt_scan_expr(scrutinee, depth, rs);
+            let mut r = rt_scan_expr(scrutinee, held, rs);
             for arm in arms {
-                if let Some(g) = &arm.guard { r |= rt_scan_expr(g, depth, rs); }
-                r |= rt_scan_expr(&arm.body, depth, rs);
+                if let Some(g) = &arm.guard { r |= rt_scan_expr(g, held, rs); }
+                r |= rt_scan_expr(&arm.body, held, rs);
             }
             r
         }
-        ExprKind::Try { expr: e } | ExprKind::Take { place: e } => rt_scan_expr(e, depth, rs),
+        ExprKind::Try { expr: e } | ExprKind::Take { place: e } => rt_scan_expr(e, held, rs),
         ExprKind::Catch { value, clause } => {
-            rt_scan_expr(value, depth, rs) | rt_scan_expr(&clause.body, depth, rs)
+            rt_scan_expr(value, held, rs) | rt_scan_expr(&clause.body, held, rs)
         }
         ExprKind::NullCoalesce { value, default } => {
-            rt_scan_expr(value, depth, rs) | rt_scan_expr(default, depth, rs)
+            rt_scan_expr(value, held, rs) | rt_scan_expr(default, held, rs)
         }
         ExprKind::Range { start, end, .. } => {
-            let mut r = false;
-            if let Some(s) = start { r |= rt_scan_expr(s, depth, rs); }
-            if let Some(e) = end { r |= rt_scan_expr(e, depth, rs); }
+            let mut r = Runtimes::NONE;
+            if let Some(s) = start { r |= rt_scan_expr(s, held, rs); }
+            if let Some(e) = end { r |= rt_scan_expr(e, held, rs); }
             r
         }
         ExprKind::StructLit { fields, spread, .. } => {
-            let mut r = false;
-            for f in fields { r |= rt_scan_expr(&f.value, depth, rs); }
-            if let Some(s) = spread { r |= rt_scan_expr(s, depth, rs); }
+            let mut r = Runtimes::NONE;
+            for f in fields { r |= rt_scan_expr(&f.value, held, rs); }
+            if let Some(s) = spread { r |= rt_scan_expr(s, held, rs); }
             r
         }
         ExprKind::Array(elems) | ExprKind::Tuple(elems) => {
-            elems.iter().fold(false, |acc, e| acc | rt_scan_expr(e, depth, rs))
+            elems.iter().fold(Runtimes::NONE, |acc, e| acc | rt_scan_expr(e, held, rs))
         }
         ExprKind::ArrayRepeat { value, count } => {
-            rt_scan_expr(value, depth, rs) | rt_scan_expr(count, depth, rs)
+            rt_scan_expr(value, held, rs) | rt_scan_expr(count, held, rs)
         }
         ExprKind::WithAs { bindings, body } => {
-            let mut r = false;
-            for b in bindings { r |= rt_scan_expr(&b.source, depth, rs); }
-            r |= rt_scan_stmts(body, depth, rs);
+            let mut r = Runtimes::NONE;
+            for b in bindings { r |= rt_scan_expr(&b.source, held, rs); }
+            r |= rt_scan_stmts(body, held, rs);
             r
         }
-        ExprKind::Closure { body, .. } => rt_scan_expr(body, depth, rs),
+        ExprKind::Closure { body, .. } => rt_scan_expr(body, held, rs),
         ExprKind::Comptime { body }
-        | ExprKind::Loop { body, .. } | ExprKind::Unsafe { body } => rt_scan_stmts(body, depth, rs),
+        | ExprKind::Loop { body, .. } | ExprKind::Unsafe { body } => rt_scan_stmts(body, held, rs),
         ExprKind::Assert { condition, message } | ExprKind::Check { condition, message } => {
-            let mut r = rt_scan_expr(condition, depth, rs);
-            if let Some(m) = message { r |= rt_scan_expr(m, depth, rs); }
+            let mut r = rt_scan_expr(condition, held, rs);
+            if let Some(m) = message { r |= rt_scan_expr(m, held, rs); }
             r
         }
         ExprKind::Select { arms, .. } => {
-            let mut r = false;
+            let mut r = Runtimes::NONE;
             for arm in arms {
                 match &arm.kind {
-                    rask_ast::expr::SelectArmKind::Recv { channel, .. } => { r |= rt_scan_expr(channel, depth, rs); }
+                    rask_ast::expr::SelectArmKind::Recv { channel, .. } => { r |= rt_scan_expr(channel, held, rs); }
                     rask_ast::expr::SelectArmKind::Send { channel, value } => {
-                        r |= rt_scan_expr(channel, depth, rs);
-                        r |= rt_scan_expr(value, depth, rs);
+                        r |= rt_scan_expr(channel, held, rs);
+                        r |= rt_scan_expr(value, held, rs);
                     }
                     rask_ast::expr::SelectArmKind::Default => {}
                 }
-                r |= rt_scan_expr(&arm.body, depth, rs);
+                r |= rt_scan_expr(&arm.body, held, rs);
             }
             r
         }
         ExprKind::Int(_, _) | ExprKind::Float(_, _) | ExprKind::String(_)
         | ExprKind::StringInterp(_) | ExprKind::Bytes(_) | ExprKind::Char(_) | ExprKind::Bool(_) | ExprKind::None | ExprKind::Ident(_)
-        | ExprKind::GenericName { .. } => false,
+        | ExprKind::GenericName { .. } => Runtimes::NONE,
     }
+}
+
+/// `ThreadPool.spawn(requires_pool: false)`, written as a literal. Any other
+/// value is only known at run time, where the spawn checks for itself (CC3).
+pub(crate) fn says_no_pool(args: &[rask_ast::expr::CallArg]) -> bool {
+    args.first().is_some_and(|a| matches!(a.expr.kind, ExprKind::Bool(false)))
 }
 
 // ── Tests ────────────────────────────────────────────────────────────

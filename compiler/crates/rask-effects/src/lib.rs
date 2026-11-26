@@ -52,10 +52,11 @@ pub struct Effects {
     pub grow: bool,
     /// Shrink effect: remove, clear, drain (EF1).
     pub shrink: bool,
-    /// CC2: this function needs an active `using Multitasking` runtime at the call site.
-    /// Set when the function (or something it calls without an internal block) reaches `spawn`.
-    /// NOT propagated via the regular call graph — uses unguarded-call edges only.
-    pub needs_runtime: bool,
+    /// CC2: the runtimes this function needs open at the call site. Set when
+    /// the function, or something it calls outside a block of its own,
+    /// reaches `spawn` or `ThreadPool.spawn`. Propagated along unguarded-call
+    /// edges only, not the regular call graph.
+    pub needs_runtime: Runtimes,
     /// Runs C code: an extern, or a C macro that reads memory or calls C.
     /// Only the compiled program can, so it's outside comptime (CT7). Not
     /// an effect in PU1's sense: `strlen` is pure and still C.
@@ -106,6 +107,51 @@ impl Effects {
         } else {
             format!("[{}]", parts.join(", "))
         }
+    }
+}
+
+/// The two runtimes a block installs: `using Multitasking` for `spawn`,
+/// `using ThreadPool` for `ThreadPool.spawn` (conc.async/S1, S2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Runtimes {
+    pub multitasking: bool,
+    pub pool: bool,
+}
+
+impl Runtimes {
+    pub const NONE: Runtimes = Runtimes { multitasking: false, pool: false };
+    pub const MULTITASKING: Runtimes = Runtimes { multitasking: true, pool: false };
+    pub const POOL: Runtimes = Runtimes { multitasking: false, pool: true };
+
+    pub fn any(self) -> bool {
+        self.multitasking || self.pool
+    }
+
+    /// What `self` needs that `held` doesn't install.
+    pub fn missing_from(self, held: Runtimes) -> Runtimes {
+        Runtimes { multitasking: self.multitasking && !held.multitasking, pool: self.pool && !held.pool }
+    }
+
+    /// The runtime a `using` block of this name installs.
+    pub fn of_block(name: &str) -> Runtimes {
+        match name {
+            "Multitasking" => Runtimes::MULTITASKING,
+            "ThreadPool" => Runtimes::POOL,
+            _ => Runtimes::NONE,
+        }
+    }
+}
+
+impl std::ops::BitOr for Runtimes {
+    type Output = Runtimes;
+    fn bitor(self, o: Runtimes) -> Runtimes {
+        Runtimes { multitasking: self.multitasking || o.multitasking, pool: self.pool || o.pool }
+    }
+}
+
+impl std::ops::BitOrAssign for Runtimes {
+    fn bitor_assign(&mut self, o: Runtimes) {
+        *self = *self | o;
     }
 }
 
