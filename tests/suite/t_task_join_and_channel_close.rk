@@ -1,0 +1,80 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Tasks that end with an error, and receive loops that end when the channel
+// closes. A task whose `T or E` ended in the error joined as garbage read as a
+// `T` natively (#1878). A detached task kept its captured Sender alive on the
+// interpreter, so the receive loop never ended (#2037), and a worker never saw
+// an explicit close (#2040).
+
+import async.{Channel, JoinError, Receiver, Sender}
+
+struct Bad {
+    why: string
+}
+
+extend Bad {
+    func message(self) -> string {
+        return self.why
+    }
+}
+
+func parse(s: string) -> f64 or Bad {
+    if s == "bad" {
+        return Bad(why: "bad input")
+    }
+    return 1.5
+}
+
+func joined(s: string) -> string {
+    using Multitasking {
+        let r = spawn { return try parse(s) }.join()
+        return match r {
+            f64 as v => "f64 {v}",
+            Bad as e => "bad {e.why}",
+            JoinError as _ => "join",
+        }
+    }
+}
+
+func fan() -> i64 {
+    using Multitasking {
+        let (tx0, rx) = Channel<i64>.buffered(16)
+        spawn {
+            tx0.send(1) catch _ => panic("s")
+        }.detach()
+        mut total = 0
+        while rx.receive() is i64 as m {
+            total += m
+        }
+        return total
+    }
+}
+
+func until_closed() -> i64 {
+    using Multitasking {
+        let (tx, rx) = Channel<i64>.buffered(16)
+        let worker = spawn {
+            mut total = 0
+            while true {
+                let v = rx.receive() catch _ => break
+                total = total + v
+            }
+            return total
+        }
+        tx.send(3)!
+        tx.close()!
+        return worker.join()!
+    }
+}
+
+test "a task's own error joins as that error" {
+    assert joined("bad") == "bad bad input"
+    assert joined("1") == "f64 1.5"
+}
+
+test "a detached task's sender closes the channel when the task ends" {
+    assert fan() == 1
+}
+
+test "a worker sees an explicit close" {
+    assert until_closed() == 3
+}
