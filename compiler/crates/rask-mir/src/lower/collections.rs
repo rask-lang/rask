@@ -624,9 +624,11 @@ impl<'a> MirLowerer<'a> {
 
             self.builder.switch_to_block(miss);
         }
-        // No variant matched, which a well-formed value can't do. Fall through
-        // rather than writing something invented.
-        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: done }));
+        // No variant matched, which a well-formed value can't do. A jump to
+        // `done` here reached it with `result` unset: inside a Vec's loop the
+        // drop pass took that path as carrying last turn's string through, and
+        // freed it again — or, on the first turn, freed stack garbage.
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Unreachable));
         self.builder.switch_to_block(done);
         Ok((MirOperand::Local(result), MirType::Buffer))
     }

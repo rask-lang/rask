@@ -945,8 +945,10 @@ impl<'a> MirLowerer<'a> {
         ty: &Type,
     ) -> Option<crate::LocalId> {
         // The encoder reads through a pointer. An aggregate local already *is*
-        // its storage, so its address goes straight in; a word-sized value has
-        // to be parked in a buffer the call can point at.
+        // its storage, so its address goes straight in; a word-sized value is
+        // pointed at where it lives. Copying the handle into a scratch buffer
+        // instead read to the drop pass as the value moving into the buffer,
+        // so a `Map` passed to `json.encode` was never freed.
         let by_address = self
             .builder
             .local_type(value)
@@ -955,18 +957,12 @@ impl<'a> MirLowerer<'a> {
         let slot = if by_address {
             value
         } else {
-            let buf = self.builder.alloc_temp(MirType::Array {
-                elem: Box::new(MirType::U8),
-                len: 8,
-            });
-            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-                addr: buf,
-                offset: 0,
-                value: MirOperand::Local(value),
-                store_size: 8,
-                field: None,
+            let addr = self.builder.alloc_temp(MirType::Ptr);
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                dst: addr,
+                rvalue: MirRValue::Ref(value),
             }));
-            buf
+            addr
         };
         let shape = self.emit_shape_for(ty, ShapeFor::Encode)?;
         let out = self.builder.alloc_temp(MirType::Buffer);
