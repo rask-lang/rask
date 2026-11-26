@@ -2437,6 +2437,19 @@ fn main_union_error_reports_its_members_message() {
     }
 }
 
+/// A generic error type's `message()` is found natively, and an `ensure`
+/// still runs before it. Native looked the message up by the type's name,
+/// which a generic instance doesn't have.
+#[test]
+fn main_generic_error_reports_its_message() {
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "main_error_generic.rk");
+        assert_eq!(code, 1, "{mode}: expected exit 1, got {code}\n{stdout}{stderr}");
+        assert!(stdout.contains("cleaned up"), "{mode}: the ensure runs: {stdout}");
+        assert!(stderr.contains("gen 7"), "{mode}: should report `gen 7`: {stderr}");
+    }
+}
+
 /// `try` on a stdlib call whose error is one member of a union error keeps
 /// which member it is. Natively the value came out as the union's first
 /// member.

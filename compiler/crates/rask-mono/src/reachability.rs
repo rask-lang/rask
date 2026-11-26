@@ -121,6 +121,9 @@ pub struct Monomorphizer<'a> {
     /// entry, test runners, C exports, the error message main prints. Nothing
     /// in a body names them, so they are where liveness starts.
     pub roots: Vec<String>,
+    /// The `message()` an error out of the entry is printed with, one per
+    /// union member in member order; empty when it has none to call.
+    pub entry_error_messages: Vec<String>,
     /// The key `hash`/`eq` each map-building call needs (`note_map_key_fns`).
     pub map_key_fns: HashMap<NodeId, crate::MapKeyFns>,
     /// The field defaults each decoded struct calls (`note_decode_defaults`).
@@ -422,6 +425,7 @@ impl<'a> Monomorphizer<'a> {
             too_deep: None,
             results: Vec::new(),
             roots: Vec::new(),
+            entry_error_messages: Vec::new(),
             bound_symbols: HashMap::new(),
             map_key_fns: HashMap::new(),
             decode_defaults: HashMap::new(),
@@ -666,30 +670,22 @@ impl<'a> Monomorphizer<'a> {
     }
 
     /// struct.targets/EX4: an error out of main is printed before the process
-    /// exits 1, so `{ErrType}_message` is called from the entry's return path
-    /// even when nothing in the program calls it. Nothing in the call graph
-    /// says so, hence this root.
+    /// exits 1, so its `message()` is called from the entry's return path even
+    /// when nothing in the program calls it. Nothing in the call graph says
+    /// so, hence these roots. The symbols are kept, one per union member in
+    /// member order, for codegen to call: spelled from the type's name, a
+    /// generic error's `Gen<i64>_message` named no function at all.
     fn add_entry_error_message_roots(&mut self, entry: &str) {
+        let Some(typed) = self.typed else { return };
         let Some(decl) = self.fn_table.get(entry) else { return };
         let DeclKind::Fn(f) = &decl.kind else { return };
-        let Some(TypeExpr::Result { err, .. }) = &f.ret_ty else { return };
-        // `A | B` — every arm can be the one that reaches main.
-        let arms = match err.as_ref() {
-            TypeExpr::Union(arms) => arms.clone(),
-            one => vec![one.clone()],
-        };
-        for arm in arms {
-            // A module-qualified error, `cli.CliError`, has its methods under
-            // the type's own name: the module is how the program reached it.
-            let qualified = matches!(&arm, TypeExpr::Named { path, args } if path.len() > 1 && args.is_empty());
-            let name = match arm.last_segment() {
-                Some(last) if qualified => format!("{last}_message"),
-                _ => format!("{}_message", arm),
-            };
-            if self.method_table.contains_key(&name) {
-                self.enqueue_root(name);
-            }
+        let Some(sig) = typed.fn_sigs.get(&f.id) else { return };
+        let Some(calls) = self.symbols.error_messages(&sig.ret, &typed.types) else { return };
+        for call in &calls {
+            self.roots.push(call.symbol.clone());
+            self.enqueue(call.qualified.clone(), call.type_args.clone());
         }
+        self.entry_error_messages = calls.into_iter().map(|c| c.symbol).collect();
     }
 
     fn enqueue_root(&mut self, name: String) {

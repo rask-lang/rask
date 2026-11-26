@@ -204,6 +204,9 @@ struct CodegenCtx<'a> {
     type_names: &'a HashMap<rask_types::TypeId, String>,
     /// What frees each declared handle, by its id (`rask_mono::drop_names`).
     handle_releases: &'a rask_mono::drop_names::HandleReleases,
+    /// The `message()` an error out of `main` is printed with
+    /// (`MonoProgram::entry_error_messages`).
+    entry_error_messages: &'a [String],
     string_globals: &'a HashMap<String, GlobalValue>,
     string_header_globals: &'a HashMap<Vec<u8>, GlobalValue>,
     element_offset_globals: &'a HashMap<Vec<i32>, GlobalValue>,
@@ -363,6 +366,7 @@ pub struct FunctionBuilder<'a> {
     enum_layouts: &'a [EnumLayout],
     type_names: &'a HashMap<rask_types::TypeId, String>,
     handle_releases: &'a rask_mono::drop_names::HandleReleases,
+    entry_error_messages: &'a [String],
     /// String literal data (content → GlobalValue for the data address)
     string_globals: &'a HashMap<String, GlobalValue>,
     string_header_globals: &'a HashMap<Vec<u8>, GlobalValue>,
@@ -472,6 +476,7 @@ impl<'a> FunctionBuilder<'a> {
         enum_layouts: &'a [EnumLayout],
         type_names: &'a HashMap<rask_types::TypeId, String>,
         handle_releases: &'a rask_mono::drop_names::HandleReleases,
+        entry_error_messages: &'a [String],
         string_globals: &'a HashMap<String, GlobalValue>,
     string_header_globals: &'a HashMap<Vec<u8>, GlobalValue>,
     element_offset_globals: &'a HashMap<Vec<i32>, GlobalValue>,
@@ -491,6 +496,7 @@ impl<'a> FunctionBuilder<'a> {
             enum_layouts,
             type_names,
             handle_releases,
+            entry_error_messages,
             string_globals,
             string_header_globals,
             element_offset_globals,
@@ -827,6 +833,7 @@ impl<'a> FunctionBuilder<'a> {
             enum_layouts: self.enum_layouts,
             type_names: self.type_names,
             handle_releases: self.handle_releases,
+            entry_error_messages: self.entry_error_messages,
             string_globals: self.string_globals,
             string_header_globals: self.string_header_globals,
             element_offset_globals: self.element_offset_globals,
@@ -6392,7 +6399,7 @@ impl<'a> FunctionBuilder<'a> {
         builder.switch_to_block(err_block);
         builder.seal_block(err_block);
         let msg = match ctx.ret_ty {
-            MirType::Result { err, .. } => Self::error_message(builder, err, err_ptr, ctx),
+            MirType::Result { err, .. } => Self::error_message(builder, err, err_ptr, ctx.entry_error_messages, ctx),
             _ => builder.ins().iconst(types::I64, 0),
         };
         builder.ins().call(exit_fr, &[msg]);
@@ -6405,27 +6412,36 @@ impl<'a> FunctionBuilder<'a> {
     }
 
     /// The text of the error at `err_ptr`, or null when its type has no
-    /// `message()`: `{ErrType}_message(err)` for a struct or enum, and for a
-    /// union (`Afail | Bfail`) the message of whichever member it holds.
+    /// `message()`. `messages` is mono's symbol for each error the value can be
+    /// (`MonoProgram::entry_error_messages`): one for a struct or enum, one per
+    /// member for a union (`Afail | Bfail`), where the member index it holds
+    /// picks the call.
     fn error_message(
         builder: &mut ClifFunctionBuilder,
         err_ty: &MirType,
         err_ptr: Value,
+        messages: &[String],
         ctx: &CodegenCtx,
     ) -> Value {
+        let message_fr = |name: &String| ctx.func_refs.get(name).copied();
         let MirType::Union(members) = err_ty else {
-            let fr = Self::aggregate_type_name(err_ty, ctx)
-                .and_then(|name| ctx.func_refs.get(&format!("{}_message", name)).copied());
+            let fr = match messages {
+                [only] => message_fr(only),
+                _ => None,
+            };
             return Self::call_message(builder, fr, err_ptr);
         };
+        if members.len() != messages.len() {
+            return builder.ins().iconst(types::I64, 0);
+        }
         let tag = builder.ins().load(types::I8, MemFlags::new(), err_ptr, crate::layouts::TAG_OFFSET);
         let payload = builder.ins().iadd_imm(err_ptr, rask_layout::payload_offset_of(err_ty, ctx.target()) as i64);
         let merge = builder.create_block();
         builder.append_block_param(merge, types::I64);
         // A chain of tag tests; the last member takes whatever is left.
-        for (i, member) in members.iter().enumerate() {
+        for (i, message) in messages.iter().enumerate() {
             let arm = builder.create_block();
-            let next = (i + 1 < members.len()).then(|| builder.create_block());
+            let next = (i + 1 < messages.len()).then(|| builder.create_block());
             match next {
                 Some(next) => {
                     let is_arm = builder.ins().icmp_imm(IntCC::Equal, tag, i as i64);
@@ -6437,7 +6453,7 @@ impl<'a> FunctionBuilder<'a> {
             }
             builder.switch_to_block(arm);
             builder.seal_block(arm);
-            let msg = Self::error_message(builder, member, payload, ctx);
+            let msg = Self::call_message(builder, message_fr(message), payload);
             builder.ins().jump(merge, &[msg.into()]);
             if let Some(next) = next {
                 builder.switch_to_block(next);
@@ -6489,18 +6505,6 @@ impl<'a> FunctionBuilder<'a> {
             ss.store(builder, word, off);
         }
         dst
-    }
-
-    /// The declared name behind a struct or enum MIR type, for mangled-name
-    /// lookups like `{Type}_message`.
-    fn aggregate_type_name(ty: &MirType, ctx: &CodegenCtx) -> Option<String> {
-        match ty {
-            MirType::Struct(id) => {
-                ctx.struct_layouts.get(id.id as usize).map(|l| l.name.clone())
-            }
-            MirType::Enum(id) => ctx.enum_layouts.get(id.id as usize).map(|l| l.name.clone()),
-            _ => None,
-        }
     }
 
     /// The Cranelift value a non-`main` function hands back for `return v`.

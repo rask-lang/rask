@@ -34,6 +34,7 @@ pub struct CodeGenerator {
     type_names: HashMap<rask_types::TypeId, String>,
     /// What frees each declared handle, by its id; from mono.
     handle_releases: rask_mono::drop_names::HandleReleases,
+    entry_error_messages: Vec<String>,
     /// Enum layouts from monomorphization
     enum_layouts: Vec<EnumLayout>,
     /// String literal data (content → DataId in the object module)
@@ -160,6 +161,7 @@ impl CodeGenerator {
             enum_layouts: Vec::new(),
             type_names: HashMap::new(),
             handle_releases: HashMap::new(),
+            entry_error_messages: Vec::new(),
             string_data: HashMap::new(),
             string_header_data: HashMap::new(),
             element_offset_data: HashMap::new(),
@@ -255,6 +257,7 @@ impl CodeGenerator {
             enum_layouts: Vec::new(),
             type_names: HashMap::new(),
             handle_releases: HashMap::new(),
+            entry_error_messages: Vec::new(),
             string_data: HashMap::new(),
             string_header_data: HashMap::new(),
             element_offset_data: HashMap::new(),
@@ -1522,6 +1525,7 @@ impl CodeGenerator {
         self.struct_layouts = mono.struct_layouts.clone();
         self.type_names = mono.type_names.clone();
         self.handle_releases = mono.handle_releases.clone();
+        self.entry_error_messages = mono.entry_error_messages.clone();
         self.enum_layouts = mono.enum_layouts.clone();
         self.declare_runtime_calls(mir_functions)?;
 
@@ -2114,6 +2118,7 @@ impl CodeGenerator {
             &self.enum_layouts,
             &self.type_names,
             &self.handle_releases,
+            &self.entry_error_messages,
             &string_globals,
             &string_header_globals,
             &element_offset_globals,

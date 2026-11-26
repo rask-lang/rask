@@ -2131,6 +2131,7 @@ mod tests {
         vtables: Default::default(),
         symbols: Default::default(),
         roots: Vec::new(),
+        entry_error_messages: Vec::new(),
             functions: vec![],
             struct_layouts: vec![],
             enum_layouts: vec![],
@@ -2150,6 +2151,7 @@ mod tests {
         vtables: Default::default(),
         symbols: Default::default(),
         roots: Vec::new(),
+        entry_error_messages: Vec::new(),
             functions: vec![],
             struct_layouts: vec![
                 rask_layout::StructLayout {
@@ -2207,6 +2209,7 @@ mod tests {
         vtables: Default::default(),
         symbols: Default::default(),
         roots: Vec::new(),
+        entry_error_messages: Vec::new(),
             functions: vec![],
             struct_layouts: vec![],
             enum_layouts: vec![

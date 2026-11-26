@@ -99,6 +99,8 @@ pub struct MonoProgram {
     /// The functions run from outside the program's own calls
     /// (`Monomorphizer::roots`).
     pub roots: Vec<String>,
+    /// `Monomorphizer::entry_error_messages`.
+    pub entry_error_messages: Vec<String>,
 }
 
 /// Everything recorded per node, for the whole program: the checker's records
@@ -988,6 +990,7 @@ fn monomorphize_inner(
         vtables: mono.vtables,
         symbols: mono.symbols,
         roots: mono.roots,
+        entry_error_messages: mono.entry_error_messages,
     })
 }
 
