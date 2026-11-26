@@ -982,7 +982,6 @@ impl<'a> OwnershipChecker<'a> {
                     .iter()
                     .filter_map(|a| match a {
                         rask_types::GenericArg::Type(t) => Some((**t).clone()),
-                        _ => None,
                     })
                     .collect(),
                 _ => Vec::new(),
@@ -1297,7 +1296,6 @@ impl<'a> OwnershipChecker<'a> {
         };
         match args.first()? {
             rask_types::GenericArg::Type(t) => Some((**t).clone()),
-            _ => None,
         }
     }
 
@@ -1634,7 +1632,6 @@ impl<'a> OwnershipChecker<'a> {
                 .zip(args.iter())
                 .filter_map(|(p, a)| match a {
                     rask_types::GenericArg::Type(t) => Some((p.as_str(), t.as_ref())),
-                    _ => None,
                 })
                 .collect();
 
@@ -5830,7 +5827,6 @@ impl<'a> OwnershipChecker<'a> {
             rask_types::GenericArg::Type(t) => {
                 Some(format!("{}", self.program.types.resolve_type_names(t)))
             }
-            rask_types::GenericArg::ConstUsize(n) => Some(n.to_string()),
         }
     }
 
@@ -6390,7 +6386,6 @@ impl<'a> OwnershipChecker<'a> {
         };
         match args.first()? {
             rask_types::GenericArg::Type(t) => Some((**t).clone()),
-            rask_types::GenericArg::ConstUsize(_) => None,
         }
     }
 
@@ -6947,7 +6942,6 @@ impl<'a> OwnershipChecker<'a> {
                     .iter()
                     .map(|a| match a {
                         rask_types::GenericArg::Type(t) => self.lent_payload_display(t),
-                        other => other.to_string(),
                     })
                     .collect();
                 format!("{}<{}>", head, inner.join(", "))
@@ -7754,7 +7748,6 @@ impl<'a> OwnershipChecker<'a> {
             .zip(args)
             .filter_map(|(p, a)| match a {
                 rask_types::GenericArg::Type(t) => Some((p.clone(), (**t).clone())),
-                _ => None,
             })
             .collect()
     }
@@ -9678,7 +9671,6 @@ impl<'a> OwnershipChecker<'a> {
                     rask_types::GenericArg::Type(t) => {
                         format!("{}", self.program.types.resolve_type_names(t))
                     }
-                    _ => String::new(),
                 })
                 .collect(),
             _ => Vec::new(),
@@ -12111,7 +12103,6 @@ fn substitute_params(ty: &Type, subst: &HashMap<&str, &Type>) -> Type {
                     GenericArg::Type(t) => {
                         GenericArg::Type(Box::new(substitute_params(t, subst)))
                     }
-                    other => other.clone(),
                 })
                 .collect(),
         },

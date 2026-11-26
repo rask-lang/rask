@@ -1066,7 +1066,6 @@ impl TypeTable {
             .map(String::as_str)
             .zip(recv_args.iter().filter_map(|a| match a {
                 rask_types::GenericArg::Type(t) => Some((**t).clone()),
-                _ => None,
             }))
             .collect();
         entries.iter().find_map(|e| {
@@ -1176,7 +1175,6 @@ impl TypeTable {
             args.iter()
                 .map(|a| match a {
                     GenericArg::Type(t) => GenericArg::Type(Box::new(self.as_stdlib_reads(t))),
-                    other => other.clone(),
                 })
                 .collect()
         };
@@ -1338,7 +1336,6 @@ impl TypeTable {
             .zip(args)
             .filter_map(|(p, a)| match a {
                 GenericArg::Type(t) => Some((p.clone(), (**t).clone())),
-                _ => None,
             })
             .collect();
         crate::interfaces::substitute_type(binding, &map)
@@ -1943,7 +1940,6 @@ impl TypeTable {
                 }
                 args.iter().any(|a| match a {
                     rask_types::GenericArg::Type(t) => self.type_is_transitive_resource(t),
-                    _ => false,
                 })
             }
             Type::Tuple(elems) => elems.iter().any(|t| self.type_is_transitive_resource(t)),
@@ -1969,7 +1965,6 @@ impl TypeTable {
                 }
                 args.iter().any(|a| match a {
                     rask_types::GenericArg::Type(t) => self.type_is_transitive_resource(t),
-                    _ => false,
                 })
             }
             _ => false,
@@ -2056,7 +2051,6 @@ impl TypeTable {
     pub fn shared_payload<'t>(&self, ty: &'t Type) -> Option<&'t Type> {
         match self.shared_args(ty)?.first()? {
             GenericArg::Type(t) => Some(t),
-            _ => None,
         }
     }
 
@@ -2119,7 +2113,6 @@ impl TypeTable {
             // A container's clone copies its elements.
             return args.iter().find_map(|a| match a {
                 GenericArg::Type(t) => self.uncloneable_handle_in(t, seen, depth + 1),
-                _ => None,
             });
         }
         if seen.iter().any(|(i, a)| *i == id && a.as_slice() == args) {
@@ -2138,7 +2131,6 @@ impl TypeTable {
             .zip(args)
             .filter_map(|(p, a)| match a {
                 GenericArg::Type(t) => Some((p.clone(), (**t).clone())),
-                _ => None,
             })
             .collect();
         slots
@@ -2163,7 +2155,6 @@ impl TypeTable {
             .zip(args)
             .filter_map(|(p, a)| match a {
                 GenericArg::Type(t) => Some((p.clone(), (**t).clone())),
-                _ => None,
             })
             .collect();
         if !subst.values().any(|t| self.holds_linear_value(t)) {
@@ -2324,7 +2315,6 @@ impl TypeTable {
             "Staged" if mode != BoundMode::Task => None,
             _ => args.iter().find_map(|a| match a {
                 GenericArg::Type(t) => self.task_bound_inner(t, seen, mode),
-                _ => None,
             }),
         };
         match ty {
@@ -2705,7 +2695,6 @@ impl TypeTable {
         let in_args = |args: &[GenericArg]| {
             args.iter().find_map(|a| match a {
                 GenericArg::Type(t) => self.find_rack_of_non_struct(t),
-                _ => None,
             })
         };
         match ty {
@@ -2755,7 +2744,6 @@ impl TypeTable {
     fn first_container_in_args(&self, args: &[GenericArg]) -> Option<(String, Type)> {
         args.iter().find_map(|a| match a {
             GenericArg::Type(t) => self.find_linear_container(t),
-            _ => None,
         })
     }
 
@@ -3047,7 +3035,6 @@ impl TypeTable {
     fn named_arg(&self, arg: &GenericArg, written: bool) -> GenericArg {
         match arg {
             GenericArg::Type(ty) => GenericArg::Type(Box::new(self.named(ty, written))),
-            GenericArg::ConstUsize(n) => GenericArg::ConstUsize(*n),
         }
     }
 

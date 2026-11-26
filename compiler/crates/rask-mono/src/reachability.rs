@@ -567,7 +567,6 @@ impl<'a> Monomorphizer<'a> {
                             .zip(args.iter())
                             .filter_map(|(param, arg)| match arg {
                                 rask_types::GenericArg::Type(t) => Some(TypeBinding::new(param.clone(), t.as_ref().clone())),
-                                _ => None,
                             })
                             .collect(),
                         None => Vec::new(),
@@ -902,7 +901,7 @@ impl<'a> Monomorphizer<'a> {
         }
         let mut out = Vec::with_capacity(args.len());
         for arg in args {
-            let rask_types::GenericArg::Type(inner) = arg else { return None };
+            let rask_types::GenericArg::Type(inner) = arg;
             let named = Self::nameable_type(inner, types)?;
             out.push(rask_types::GenericArg::Type(Box::new(named)));
         }
@@ -943,7 +942,6 @@ impl<'a> Monomorphizer<'a> {
         };
         let elem = match args.first()? {
             rask_types::GenericArg::Type(inner) => inner,
-            _ => return None,
         };
         let name = rask_check::receiver_name(elem, &typed.types)?;
         let mangled = format!("{}_compare", name);
@@ -1754,13 +1752,18 @@ impl<'a> Monomorphizer<'a> {
 /// Every expression and statement node of a declaration's body: what an
 /// instance has records for.
 pub(crate) fn body_nodes(decl: &Decl) -> Vec<NodeId> {
-    struct Collect(Vec<NodeId>);
+    body_nodes_with_spans(decl).into_iter().map(|(id, _)| id).collect()
+}
+
+/// `body_nodes`, with where each is written.
+pub(crate) fn body_nodes_with_spans(decl: &Decl) -> Vec<(NodeId, rask_ast::Span)> {
+    struct Collect(Vec<(NodeId, rask_ast::Span)>);
     impl rask_ast::rewrite::Rewrite for Collect {
         fn expr(&mut self, e: &mut rask_ast::expr::Expr) {
-            self.0.push(e.id);
+            self.0.push((e.id, e.span));
         }
         fn body(&mut self, b: &mut Vec<rask_ast::stmt::Stmt>) {
-            self.0.extend(b.iter().map(|s| s.id));
+            self.0.extend(b.iter().map(|s| (s.id, s.span)));
         }
     }
     let mut c = Collect(Vec::new());

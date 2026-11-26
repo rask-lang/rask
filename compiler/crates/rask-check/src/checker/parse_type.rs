@@ -84,12 +84,25 @@ pub fn resolve_type_expr(ty: &TypeExpr, types: &TypeTable) -> Result<Type, TypeE
         }
         TypeExpr::Array { elem, len } => {
             let elem = resolve_type_expr(elem, types)?;
-            // A literal size, then a module-level `const` naming one. Any
-            // other name is a `comptime N` parameter, which stays `N` until a
-            // call binds it.
-            let len = match len.parse().ok().or_else(|| types.const_length(len)) {
-                Some(n) => ArrayLen::Known(n),
-                None => ArrayLen::Of(Box::new(Type::UnresolvedNamed(len.clone()))),
+            // A literal size, a `comptime N` parameter (which stays `N` until
+            // a call binds it), or a module-level `const`. The parameter
+            // shadows a const of the same name, as it would any other name.
+            // Whether a parameter used here is a length rather than a type is
+            // the declaration's check (`check_length_params`).
+            let len = if let Ok(n) = len.parse() {
+                ArrayLen::Known(n)
+            } else if types.is_type_param_in_scope(len) {
+                ArrayLen::Of(Box::new(Type::UnresolvedNamed(len.clone())))
+            } else if let Some(n) = types.const_length(len) {
+                ArrayLen::Known(n)
+            } else {
+                return Err(TypeError::GenericError(
+                    format!(
+                        "`{len}` isn't an array length: write a number, a module `const`, \
+                         or declare `comptime {len}: usize` on the function or type"
+                    ),
+                    Span::new(0, 0),
+                ));
             };
             let ty = Type::Array { elem: Box::new(elem), len };
             match types.too_large(&ty) {
@@ -202,9 +215,11 @@ fn resolve_named_expr(
 fn resolve_type_args(args: &[TypeExpr], types: &TypeTable) -> Result<Vec<GenericArg>, TypeError> {
     args.iter()
         .map(|a| match a {
+            // A length argument (`Buf<4>`) is a length type, the same as one
+            // a call infers.
             TypeExpr::Int(n) => n
                 .parse::<usize>()
-                .map(GenericArg::ConstUsize)
+                .map(|n| GenericArg::Type(Box::new(Type::Len(n))))
                 .map_err(|_| TypeError::GenericError(
                     format!("`{}` is not a size", n),
                     Span::new(0, 0),

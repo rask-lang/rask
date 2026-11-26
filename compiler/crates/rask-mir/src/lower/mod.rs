@@ -950,7 +950,6 @@ impl<'a> MirContext<'a> {
             // `|x| { return x + 1 }` compiled to pointer arithmetic (x + 8).
             rask_types::GenericArg::Type(inner) if matches!(**inner, Type::Var(_)) => None,
             rask_types::GenericArg::Type(inner) => Some(self.type_to_mir(inner)),
-            _ => None,
         }
     }
 
@@ -1293,7 +1292,6 @@ impl<'a> MirContext<'a> {
             .cloned()
             .zip(args.iter().filter_map(|a| match a {
                 rask_types::GenericArg::Type(t) => Some((**t).clone()),
-                rask_types::GenericArg::ConstUsize(_) => None,
             }))
             .collect();
         Some((declared, params))
@@ -1359,7 +1357,6 @@ impl<'a> MirContext<'a> {
             .cloned()
             .zip(args.iter().filter_map(|a| match a {
                 rask_types::GenericArg::Type(t) => Some((**t).clone()),
-                rask_types::GenericArg::ConstUsize(_) => None,
             }))
             .collect();
         Some(self.type_to_mir(&rask_check::substitute_type(underlying, &map)))
@@ -1422,14 +1419,17 @@ impl<'a> MirContext<'a> {
     /// doing it at every such assignment costs nothing where the pushes already
     /// did the work.
     pub(crate) fn container_link_registration(&self, ty: &Type) -> Option<&'static str> {
-        let head = self.generic_head(ty)?;
+        let register = match self.generic_head(ty)?.as_str() {
+            "Vec" => "rask_link_register_vec",
+            "Map" => "rask_link_register_map",
+            _ => return None,
+        };
         let args = match ty {
             Type::UnresolvedGeneric { args, .. } | Type::Generic { args, .. } => args,
             _ => return None,
         };
         let value = args.iter().rev().find_map(|a| match a {
             rask_types::GenericArg::Type(t) => Some(t),
-            _ => None,
         })?;
         // `Vec<Link<T>?>` holds edges the same as `Vec<Link<T>>`; its `none`
         // entries are skipped by the registration. So does a `Vec<Cursor>`,
@@ -1438,14 +1438,7 @@ impl<'a> MirContext<'a> {
         // Links an inner container holds are that container's to record: it
         // is a holder of its own. Asked of the outer one, the runtime would
         // read the inner handles as links (#1804 review).
-        if !self.type_holds_link_directly(value, 0) {
-            return None;
-        }
-        match head.as_str() {
-            "Vec" => Some("rask_link_register_vec"),
-            "Map" => Some("rask_link_register_map"),
-            _ => None,
-        }
+        self.type_holds_link_directly(value, 0).then_some(register)
     }
 
     /// Whether a value of `ty` holds a link anywhere inside it: itself, a
@@ -1498,7 +1491,6 @@ impl<'a> MirContext<'a> {
                 };
                 return args.iter().rev().find_map(|a| match a {
                     rask_types::GenericArg::Type(t) => Some(t),
-                    _ => None,
                 })
                 .is_some_and(|v| self.type_holds_link(v, depth + 1));
             }
@@ -2848,7 +2840,6 @@ impl<'a> MirLowerer<'a> {
             // An unresolved variable is not an answer — see below.
             rask_types::GenericArg::Type(inner) if matches!(**inner, Type::Var(_)) => None,
             rask_types::GenericArg::Type(inner) => Some((**inner).clone()),
-            _ => None,
         }
     }
 
@@ -3168,7 +3159,6 @@ impl<'a> MirLowerer<'a> {
         }
         match args.first()? {
             rask_types::GenericArg::Type(inner) => Some(inner.as_ref().clone()),
-            _ => None,
         }
     }
 
@@ -3384,7 +3374,6 @@ impl<'a> MirLowerer<'a> {
             }
             match args.get(1)? {
                 rask_types::GenericArg::Type(v) => Some(lower.ctx.type_to_mir(v)),
-                _ => None,
             }
         }
 
@@ -5147,7 +5136,6 @@ impl<'a> MirLowerer<'a> {
         };
         match args.first()? {
             rask_types::GenericArg::Type(t) => Some(t),
-            rask_types::GenericArg::ConstUsize(_) => None,
         }
     }
 
@@ -6612,7 +6600,6 @@ pub(crate) fn type_names_a_parameter(ty: &Type) -> Option<String> {
     fn arg_ty(arg: &rask_types::GenericArg) -> Option<&Type> {
         match arg {
             rask_types::GenericArg::Type(t) => Some(t),
-            _ => None,
         }
     }
     match ty {

@@ -369,6 +369,34 @@ impl TypeExpr {
         }
     }
 
+    /// Every array length written as a name, outermost first: `[[u8; C]; R]`
+    /// gives `R` then `C`.
+    pub fn walk_array_lengths(&self, f: &mut dyn FnMut(&str)) {
+        match self {
+            TypeExpr::Array { elem, len } => {
+                if len.parse::<usize>().is_err() {
+                    f(len);
+                }
+                elem.walk_array_lengths(f);
+            }
+            TypeExpr::Named { args, .. } => args.iter().for_each(|a| a.walk_array_lengths(f)),
+            TypeExpr::Int(_) | TypeExpr::Unit | TypeExpr::NoneType | TypeExpr::NoReturn => {}
+            TypeExpr::Optional(inner) | TypeExpr::RawPtr(inner) | TypeExpr::Any(inner) => {
+                inner.walk_array_lengths(f)
+            }
+            TypeExpr::Result { ok, err } => {
+                ok.walk_array_lengths(f);
+                err.walk_array_lengths(f);
+            }
+            TypeExpr::Union(ts) | TypeExpr::Tuple(ts) => ts.iter().for_each(|t| t.walk_array_lengths(f)),
+            TypeExpr::FixedCount { elem, .. } => elem.walk_array_lengths(f),
+            TypeExpr::Func { params, ret } => {
+                params.iter().for_each(|p| p.ty.walk_array_lengths(f));
+                ret.walk_array_lengths(f);
+            }
+        }
+    }
+
     /// Every bare name in this type, in written order, duplicates included.
     pub fn walk_names(&self, f: &mut dyn FnMut(&str)) {
         match self {

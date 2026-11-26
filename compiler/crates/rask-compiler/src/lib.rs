@@ -752,6 +752,30 @@ fn name_template_instances(diags: &mut [Diagnostic], instances: &[(Span, String)
     }
 }
 
+/// What a failed monomorphization tells the programmer.
+fn mono_error_diagnostic(e: &rask_mono::MonomorphizeError) -> Diagnostic {
+    match e {
+        rask_mono::MonomorphizeError::InstantiationTooDeep { .. } => Diagnostic::error(e.to_string())
+            .with_code("E0927")
+            .with_fix(
+                "give the recursion a type that stops changing: recurse at the same \
+                 `T`, or move the varying part into a value (a `Vec<T>` you pass along) \
+                 instead of a type argument",
+            )
+            .with_why(
+                "native code is one copy per set of type arguments, and here every \
+                 copy calls one with a bigger type, so there is no finite set to \
+                 compile [ctrl.comptime/CT68]. The interpreter runs it, because it \
+                 makes no copies",
+            ),
+        rask_mono::MonomorphizeError::ValueTooLarge { ty, bytes, span } => {
+            rask_check::TypeError::ValueTooLarge { ty: ty.clone(), bytes: Some(*bytes), span: *span }
+                .to_diagnostic()
+        }
+        _ => Diagnostic::error(e.to_string()),
+    }
+}
+
 /// One round of template expansion: the instances of a template this checked
 /// program reaches and hasn't written out yet, as plain functions. `None`
 /// when the program declares no template, so it pays nothing.
@@ -802,6 +826,18 @@ fn diag_key(d: &Diagnostic) -> (Option<String>, String) {
     (d.code.as_ref().map(|c| c.0.clone()), d.message.clone())
 }
 
+/// Does anything declare a `comptime N` length? Its instances are where a
+/// value can turn out too large, so check has to build them.
+fn has_comptime_length(decls: &[Decl]) -> bool {
+    let fn_has = |f: &rask_ast::decl::FnDecl| f.type_params.iter().any(|p| p.is_comptime);
+    decls.iter().any(|d| match &d.kind {
+        DeclKind::Fn(f) => fn_has(f),
+        DeclKind::Struct(s) => s.type_params.iter().any(|p| p.is_comptime),
+        DeclKind::Impl(i) => i.methods.iter().any(fn_has),
+        _ => false,
+    })
+}
+
 fn comptime_diagnostics_for(
     decls: &[Decl],
     typed: &rask_check::TypedProgram,
@@ -811,7 +847,7 @@ fn comptime_diagnostics_for(
     // interpreter runs them straight off the decls.
     let mut diags = evaluate_comptime_tests(decls, typed, Some(cfg));
 
-    if !comptime_eval::has_comptime(decls, typed) {
+    if !comptime_eval::has_comptime(decls, typed) && !has_comptime_length(decls) {
         return diags;
     }
     // `monomorphize_for_analysis`, not `monomorphize`: a file of `test` blocks
@@ -827,10 +863,17 @@ fn comptime_diagnostics_for(
     let mut stdlib = rask_stdlib::StubRegistry::compilable_decls();
     typed.rewrite_checked_nodes(&mut stdlib);
     layout_decls.extend(stdlib);
-    let Ok(mono) = rask_mono::monomorphize_for_analysis(typed, &layout_decls) else {
-        // Monomorphization has its own diagnostics on the compile path; check
+    let mono = match rask_mono::monomorphize_for_analysis(typed, &layout_decls) {
+        Ok(mono) => mono,
+        // A value too large at an instance is a compile error the checker
+        // can't see, so check and the interpreter report it here.
+        Err(e @ rask_mono::MonomorphizeError::ValueTooLarge { .. }) => {
+            diags.push(mono_error_diagnostic(&e));
+            return diags;
+        }
+        // The rest have their own diagnostics on the compile path; check
         // stays quiet about them rather than reporting them twice.
-        return diags;
+        Err(_) => return diags,
     };
     diags.extend(fold_comptime(decls, typed, &mono, Some(cfg)).1);
     diags
@@ -1434,25 +1477,7 @@ fn finalize_compile_inner(
     let mono = match mono {
         Ok(m) => m,
         Err(e) => {
-            let d = match &e {
-                rask_mono::MonomorphizeError::InstantiationTooDeep { .. } => {
-                    Diagnostic::error(e.to_string())
-                        .with_code("E0927")
-                        .with_fix(
-                            "give the recursion a type that stops changing: recurse at the same \
-                             `T`, or move the varying part into a value (a `Vec<T>` you pass along) \
-                             instead of a type argument",
-                        )
-                        .with_why(
-                            "native code is one copy per set of type arguments, and here every \
-                             copy calls one with a bigger type, so there is no finite set to \
-                             compile [ctrl.comptime/CT68]. The interpreter runs it, because it \
-                             makes no copies",
-                        )
-                }
-                _ => Diagnostic::error(e.to_string()),
-            };
-            diags.push(d);
+            diags.push(mono_error_diagnostic(&e));
             return PipelineOutput::fail_with_sources(diags, pkg_source_files);
         }
     };

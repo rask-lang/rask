@@ -289,13 +289,11 @@ impl TypeChecker {
             Type::Generic { base, args } if self.types.type_name(*base) == "Vec" => {
                 match args.first()? {
                     GenericArg::Type(t) => (**t).clone(),
-                    _ => return None,
                 }
             }
             Type::UnresolvedGeneric { name, args } if name == "Vec" => {
                 match args.first()? {
                     GenericArg::Type(t) => (**t).clone(),
-                    _ => return None,
                 }
             }
             _ => return None,
@@ -1485,7 +1483,6 @@ impl TypeChecker {
                                     args.into_iter()
                                         .filter_map(|a| match a {
                                             GenericArg::Type(t) => Some(*t),
-                                            GenericArg::ConstUsize(_) => None,
                                         })
                                         .collect(),
                                 ),
@@ -1587,7 +1584,7 @@ impl TypeChecker {
                 // A declared struct is measured at its declaration; a generic
                 // one only has a size once its arguments are known.
                 if matches!(built, Type::Generic { .. }) {
-                    self.pending_value_sizes.push((built.clone(), expr.span));
+                    self.pending_value_sizes.push((built.clone(), expr.span, self.types.type_params_in_scope()));
                 }
                 built
             }
@@ -1630,7 +1627,7 @@ impl TypeChecker {
                     Type::Unit
                 } else {
                     let ty = Type::Tuple(elem_types);
-                    self.pending_value_sizes.push((ty.clone(), expr.span));
+                    self.pending_value_sizes.push((ty.clone(), expr.span, self.types.type_params_in_scope()));
                     ty
                 }
             }
@@ -2714,7 +2711,7 @@ impl TypeChecker {
                     }
                 };
                 let ty = Type::Array { elem: Box::new(elem_ty), len };
-                self.pending_value_sizes.push((ty.clone(), expr.span));
+                self.pending_value_sizes.push((ty.clone(), expr.span, self.types.type_params_in_scope()));
                 ty
             }
 
@@ -4180,7 +4177,6 @@ impl TypeChecker {
             .map(|p| p.as_str())
             .zip(type_args.iter().filter_map(|a| match a {
                 GenericArg::Type(t) => Some((**t).clone()),
-                _ => None,
             }))
             .collect();
         let field_ty = Self::substitute_type_params(&field_ty, &subst);
@@ -4321,7 +4317,12 @@ impl TypeChecker {
         // parameter itself. Resolved like a method on a `T` value: through the
         // bounds here, and per instance once `T` is known.
         if let ExprKind::Ident(name) = &object.kind {
-            if self.lookup_local(name).is_none() && self.types.is_type_param_in_scope(name) {
+            // A `comptime N: usize` is a number, so `N.to_string()` and the
+            // `N + 1` that desugars to `N.add(1)` call the value's methods.
+            if self.lookup_local(name).is_none()
+                && self.types.is_type_param_in_scope(name)
+                && !self.current_comptime_params.contains(name)
+            {
                 self.type_param_static_calls.insert(call_id);
                 let arg_types: Vec<_> = args.iter().map(|a| self.infer_expr(&a.expr)).collect();
                 let ret_ty = self.ctx.fresh_var();
@@ -6773,7 +6774,6 @@ impl TypeChecker {
             .iter()
             .map(|a| match a {
                 GenericArg::Type(t) => GenericArg::Type(Box::new(self.resolve_named(t))),
-                other => other.clone(),
             })
             .collect();
         self.types.shared_strategy_name(&resolved)
@@ -7013,12 +7013,15 @@ impl TypeChecker {
     /// its declaration when it has one.
     pub(super) fn validate_pending_value_sizes(&mut self) {
         let mut seen = std::collections::HashSet::new();
-        for (ty, span) in std::mem::take(&mut self.pending_value_sizes) {
+        for (ty, span, params) in std::mem::take(&mut self.pending_value_sizes) {
             let ty = self.ctx.apply(&ty);
-            if !seen.insert(ty.clone()) {
+            if !seen.insert((ty.clone(), params.clone())) {
                 continue;
             }
-            if let Some(bytes) = self.types.too_large(&ty) {
+            let mark = self.types.push_implied_type_params(params);
+            let too_large = self.types.too_large(&ty);
+            self.types.pop_type_params(mark);
+            if let Some(bytes) = too_large {
                 self.errors.push(TypeError::ValueTooLarge { ty, bytes, span });
             }
         }

@@ -105,6 +105,5 @@ impl TypeTable {
 fn type_arg(arg: &GenericArg) -> Option<&Type> {
     match arg {
         GenericArg::Type(t) => Some(t),
-        GenericArg::ConstUsize(_) => None,
     }
 }

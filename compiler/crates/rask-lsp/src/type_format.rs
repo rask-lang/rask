@@ -24,7 +24,6 @@ impl<'a> TypeFormatter<'a> {
     pub fn format_generic_arg(&self, arg: &GenericArg) -> String {
         match arg {
             GenericArg::Type(ty) => self.format(ty),
-            GenericArg::ConstUsize(n) => n.to_string(),
         }
     }
 }

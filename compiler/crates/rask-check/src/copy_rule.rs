@@ -44,7 +44,6 @@ impl TypeTable {
     pub fn generic_field_subst(type_params: &[String], args: &[crate::GenericArg]) -> std::collections::HashMap<String, Type> {
         type_params.iter().zip(args.iter()).filter_map(|(name, arg)| match arg {
             crate::GenericArg::Type(t) => Some((name.clone(), (**t).clone())),
-            crate::GenericArg::ConstUsize(_) => None,
         }).collect()
     }
 
@@ -63,7 +62,6 @@ impl TypeTable {
                 base: *base,
                 args: args.iter().map(|a| match a {
                     crate::GenericArg::Type(t) => crate::GenericArg::Type(Box::new(Self::substitute_generic_field(t, subst))),
-                    other => other.clone(),
                 }).collect(),
             },
             _ => ty.clone(),

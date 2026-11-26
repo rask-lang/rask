@@ -1556,7 +1556,6 @@ impl TypeChecker {
                     .map(String::as_str)
                     .zip(generic_args.iter().filter_map(|a| match a {
                         GenericArg::Type(t) => Some((**t).clone()),
-                        _ => None,
                     }))
                     .collect();
                 let conformance_pick = match self.pick_conformance_method(*base, &methods, &method, &args, &receiver_subst) {
@@ -1610,7 +1609,6 @@ impl TypeChecker {
                     // they weren't (#2045).
                     let settled = generic_args.iter().all(|a| match a {
                         GenericArg::Type(t) => !self.ctx.apply(t).has_unsolved_var(),
-                        _ => true,
                     });
                     // Which block a `Sequence<?U>` fits waits on what `?U`
                     // turns out to be, often a closure's return type, which is
@@ -2589,7 +2587,6 @@ impl TypeChecker {
                 .iter()
                 .map(|a| match a {
                     GenericArg::Type(t) => (**t).clone(),
-                    GenericArg::ConstUsize(_) => self.ctx.fresh_var(),
                 })
                 .collect();
             let self_ty = Type::UnresolvedGeneric { name: type_name.to_string(), args: type_args.to_vec() };
@@ -3672,7 +3669,6 @@ impl TypeChecker {
             .iter()
             .map(|a| match a {
                 GenericArg::Type(t) => GenericArg::Type(Box::new(self.resolve_named(&self.ctx.apply(t)))),
-                other => other.clone(),
             })
             .collect();
         let Some(bound) = crate::bind_header_patterns(&self.types, &sig.owner_patterns, &applied) else {
@@ -3987,7 +3983,6 @@ fn mentions_param(ty: &Type, name: &str) -> bool {
         Type::UnresolvedNamed(n) => n == name,
         Type::Generic { args, .. } | Type::UnresolvedGeneric { args, .. } => args.iter().any(|a| match a {
             GenericArg::Type(t) => mentions_param(t, name),
-            _ => false,
         }),
         Type::Tuple(items) => items.iter().any(|t| mentions_param(t, name)),
         Type::Result { ok, err } => mentions_param(ok, name) || mentions_param(err, name),

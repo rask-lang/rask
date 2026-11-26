@@ -1231,6 +1231,16 @@ impl Interpreter {
                         generics: self.call_generics(expr.id),
                     });
                 }
+                // A `comptime N` parameter: the length this call bound it to.
+                // It shadows a module const of the same name, not a local.
+                if let Some(rask_types::Type::Len(n)) =
+                    self.generic_frames.last().and_then(|f| f.as_deref()).and_then(|f| f.get(name))
+                {
+                    if self.env.slot_of(name).is_none() || self.env.is_module_level(name) {
+                        let kind = crate::value::IntKind::from_type(&rask_types::Type::Usize, self.types.target());
+                        return Ok(Value::Int(*n as i64, kind));
+                    }
+                }
                 if let Some(val) = self.env.get(name) {
                     // Handed to a new owner: the old name holds nothing once
                     // the hand-over happens, so only the new owner keeps it
@@ -1241,13 +1251,6 @@ impl Interpreter {
                         }
                     }
                     return Ok(val);
-                }
-                // A `comptime N` parameter: the length this call bound it to.
-                if let Some(rask_types::Type::Len(n)) =
-                    self.generic_frames.last().and_then(|f| f.as_deref()).and_then(|f| f.get(name))
-                {
-                    let kind = crate::value::IntKind::from_type(&rask_types::Type::Usize, self.types.target());
-                    return Ok(Value::Int(*n as i64, kind));
                 }
                 if self.functions.contains_key(name) {
                     // Named as a value, a generic function carries the types

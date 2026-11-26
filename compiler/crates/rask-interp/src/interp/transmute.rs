@@ -112,7 +112,6 @@ impl Interpreter {
                 args.iter()
                     .filter_map(|a| match a {
                         rask_types::GenericArg::Type(t) => Some((**t).clone()),
-                        _ => None,
                     })
                     .collect(),
             ),

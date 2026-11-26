@@ -240,7 +240,6 @@ pub(crate) fn concretize(ty: &Type, type_args: &[Type], bindings: &HashMap<&str,
         args.iter()
             .map(|arg| match arg {
                 GenericArg::Type(inner) => concretize(inner, type_args, bindings).map(|t| GenericArg::Type(Box::new(t))),
-                other => Some(other.clone()),
             })
             .collect::<Option<Vec<_>>>()
     };

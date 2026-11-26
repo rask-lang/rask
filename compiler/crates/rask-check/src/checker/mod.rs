@@ -231,8 +231,10 @@ pub struct TypeChecker {
     /// `[x; n]` sites, sized once literal defaults settle the element type.
     /// Types to measure against the 64 KiB a value can take, once literal
     /// defaults have settled them: array repeats, tuple and struct literals,
-    /// and declared types.
-    pub(super) pending_value_sizes: Vec<(Type, rask_ast::Span)>,
+    /// and declared types. Each carries the type parameters in scope where it
+    /// was written: `Buf<N>` inside `Buf`'s own methods has no size, and read
+    /// after the scope closed, `N` looked like a length nobody had settled.
+    pub(super) pending_value_sizes: Vec<(Type, rask_ast::Span, Vec<String>)>,
     /// Current Self type (inside extend blocks).
     pub(super) current_self_type: Option<Type>,
     /// Interface bounds on the current function's type params (name → interface names).
@@ -1452,7 +1454,6 @@ impl TypeChecker {
             Type::Generic { args, .. } | Type::UnresolvedGeneric { args, .. } => {
                 args.iter().any(|a| match a {
                     crate::GenericArg::Type(t) => Self::contains_type_var(t),
-                    _ => false,
                 })
             }
             _ => false,
@@ -1474,7 +1475,6 @@ impl TypeChecker {
                     crate::GenericArg::Type(inner) => {
                         crate::GenericArg::Type(Box::new(Self::normalize_named_types(inner, id_to_name)))
                     }
-                    other => other.clone(),
                 }).collect(),
             },
             Type::Result { ok, err } if **err == Type::None => {

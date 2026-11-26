@@ -395,7 +395,6 @@ impl Fold<'_, '_> {
                 .iter()
                 .filter_map(|a| match a {
                     rask_types::GenericArg::Type(t) => Some(t.as_ref()),
-                    _ => None,
                 })
                 .collect(),
             _ => Vec::new(),

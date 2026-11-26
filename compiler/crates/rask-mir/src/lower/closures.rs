@@ -678,7 +678,6 @@ impl<'a> MirLowerer<'a> {
         };
         match args.first()? {
             rask_types::GenericArg::Type(t) => Some(self.ctx.type_to_mir(t)),
-            rask_types::GenericArg::ConstUsize(_) => None,
         }
     }
 

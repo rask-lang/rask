@@ -500,7 +500,6 @@ fn concrete<'t>(types: &'t TypeTable, ty: &TypeExpr, method: &str) -> Result<Con
             .iter()
             .filter_map(|a| match a {
                 GenericArg::Type(t) => Some((**t).clone()),
-                GenericArg::ConstUsize(_) => None,
             })
             .collect(),
         _ => Vec::new(),

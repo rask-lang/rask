@@ -2118,6 +2118,17 @@ impl<'a> MirLowerer<'a> {
             Ok((MirOperand::Local(result_local), payload_ty))
         }
 
+    /// What `name` reads as when it is a `comptime N` parameter here. The
+    /// parameter shadows a module const of its name (whose value every
+    /// function binds at entry), and a local shadows the parameter.
+    fn comptime_len_here(&self, name: &str) -> Option<usize> {
+        let n = self.ctx.comptime_len(name)?;
+        let shadowed = self.locals.get(name).is_some_and(|(l, _)| {
+            self.const_facts.get(name).is_none_or(|(own, _)| !own.contains(l))
+        });
+        (!shadowed).then_some(n)
+    }
+
     /// The length of `[x; count]` when `count` is known at compile time: a
     /// literal, a `comptime N` parameter at this instance, or a module const
     /// that folds to an integer (`[0; N]`). A local of the same name as the
@@ -2125,8 +2136,8 @@ impl<'a> MirLowerer<'a> {
     fn constant_array_length(&self, count: &Expr) -> Option<u32> {
         match &count.kind {
             ExprKind::Int(n, _) => u32::try_from(*n).ok(),
-            ExprKind::Ident(name) if self.ctx.comptime_len(name).is_some() => {
-                self.ctx.comptime_len(name).and_then(|n| u32::try_from(n).ok())
+            ExprKind::Ident(name) if self.comptime_len_here(name).is_some() => {
+                self.comptime_len_here(name).and_then(|n| u32::try_from(n).ok())
             }
             ExprKind::Ident(name) => {
                 let (own, fact) = self.const_facts.get(name)?;
@@ -2408,6 +2419,12 @@ impl<'a> MirLowerer<'a> {
     }
 
     fn lower_ident(&mut self, expr: &Expr, name: &str) -> Result<TypedOperand, LoweringError> {
+            // A `comptime N` parameter: the number this instance was made for.
+            // It shadows a module const of the same name, not a local.
+            if let Some(n) = self.comptime_len_here(name) {
+                let ty = MirType::usize_ty(self.ctx.target());
+                return Ok((MirOperand::Constant(MirConst::Int(n as i64)), ty));
+            }
             // A module-level const with a non-literal initializer is emitted
             // on first use, not at every function's entry — everything below
             // then finds it in `locals` like any other binding.
@@ -2493,11 +2510,6 @@ impl<'a> MirLowerer<'a> {
                     return Ok((MirOperand::Local(dst), ty));
                 }
                 Ok((MirOperand::Local(id), ty))
-            } else if let Some(n) = self.ctx.comptime_len(name) {
-                // A `comptime N` parameter: the number this instance was made
-                // for.
-                let ty = MirType::usize_ty(self.ctx.target());
-                Ok((MirOperand::Constant(MirConst::Int(n as i64)), ty))
             } else if name == "None" {
                 self.lower_none(expr)
             } else if let Some(folded) = self
@@ -5671,7 +5683,8 @@ impl<'a> MirLowerer<'a> {
                 Some(target) => target.as_str(),
                 None => self.ctx.type_defs.module_named(name).unwrap_or(name),
             };
-            if !self.locals.contains_key(name) {
+            // A `comptime N` is the number this instance binds, not a type.
+            if !self.locals.contains_key(name) && self.comptime_len_here(name).is_none() {
                         // Cross-package call: pkg.func() → direct call to func
                         // Skip builtin stdlib modules — they use prefixed names
                         // (e.g. net.tcp_listen → net_tcp_listen) handled by
@@ -5888,7 +5901,6 @@ impl<'a> MirLowerer<'a> {
                                     | rask_types::Type::Generic { args: ga, .. } => {
                                         ga.first().and_then(|a| match a {
                                             rask_types::GenericArg::Type(t) => Some(t.as_ref().clone()),
-                                            _ => None,
                                         })
                                     }
                                     _ => None,
@@ -9515,7 +9527,6 @@ impl<'a> MirLowerer<'a> {
         };
         match args.first()? {
             rask_types::GenericArg::Type(inner) => Some(inner),
-            _ => None,
         }
     }
 

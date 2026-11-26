@@ -903,7 +903,6 @@ impl<'a> MirLowerer<'a> {
         };
         match args.get(index)? {
             GenericArg::Type(t) => Some(t.as_ref().clone()),
-            _ => None,
         }
     }
 

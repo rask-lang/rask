@@ -4,7 +4,7 @@
 //! the checker's copy rule, monomorphization and the backends all read it.
 
 use rask_ast::ty::TypeExpr;
-use rask_types::{FnParam, GenericArg, Type, TypeDef, TypeId};
+use rask_types::{ArrayLen, FnParam, GenericArg, Type, TypeDef, TypeId};
 use std::collections::HashMap;
 
 mod shape;
@@ -73,7 +73,6 @@ pub fn settle(ty: &Type, unsolved: Unsolved, is_param: IsParam) -> Option<Type> 
         args.iter()
             .map(|a| match a {
                 GenericArg::Type(t) => Some(GenericArg::Type(Box::new(go(t)?))),
-                other => Some(other.clone()),
             })
             .collect::<Option<Vec<_>>>()
     };
@@ -212,7 +211,6 @@ fn index_for<L>(ty: &Type, layouts: &[L], key_of: impl Fn(&L) -> Option<&LayoutK
         args.iter()
             .filter_map(|a| match a {
                 GenericArg::Type(t) => Some((**t).clone()),
-                _ => None,
             })
             .collect()
     };
@@ -385,7 +383,6 @@ fn cached_generic_layout(base: TypeId, args: &[GenericArg], cache: &LayoutCache)
         .iter()
         .filter_map(|a| match a {
             GenericArg::Type(t) => Some((**t).clone()),
-            _ => None,
         })
         .collect();
     cache
@@ -778,7 +775,6 @@ pub fn substitute_inside(ty: &Type, subst: &std::collections::HashMap<&str, &Typ
                 .iter()
                 .map(|a| match a {
                     GenericArg::Type(t) => GenericArg::Type(Box::new(go(t))),
-                    other => other.clone(),
                 })
                 .collect(),
         },
@@ -788,7 +784,6 @@ pub fn substitute_inside(ty: &Type, subst: &std::collections::HashMap<&str, &Typ
                 .iter()
                 .map(|a| match a {
                     GenericArg::Type(t) => GenericArg::Type(Box::new(go(t))),
-                    other => other.clone(),
                 })
                 .collect(),
         },
@@ -852,13 +847,75 @@ pub fn compute_shared_enum_layout(def: &TypeDef, cache: &LayoutCache) -> EnumLay
     enum_layout(def, &stand_ins(def), cache, false)
 }
 
-/// A word per type parameter.
+/// A word per type parameter, and an empty length per `comptime` length
+/// parameter. A length-generic type has no one size: every value of it is an
+/// instance with a layout of its own, and a store through this one is refused
+/// for its zero-length slot instead of laid out with a word for a length.
 fn stand_ins(def: &TypeDef) -> Vec<Type> {
-    let n = match def {
-        TypeDef::Struct { type_params, .. } | TypeDef::Enum { type_params, .. } => type_params.len(),
-        _ => 0,
+    let params = match def {
+        TypeDef::Struct { type_params, .. } | TypeDef::Enum { type_params, .. } => type_params,
+        _ => return Vec::new(),
     };
-    vec![Type::I64; n]
+    let mut lengths = std::collections::HashSet::new();
+    for ty in def.held_types() {
+        array_length_params(ty, &mut lengths);
+    }
+    params
+        .iter()
+        .map(|p| if lengths.contains(p.as_str()) { Type::Len(0) } else { Type::I64 })
+        .collect()
+}
+
+/// `ty` with only its array-length parameters substituted.
+fn with_lengths(ty: &Type, subst: &HashMap<&str, &Type>) -> Type {
+    let go = |t: &Type| with_lengths(t, subst);
+    match ty {
+        Type::Array { elem, len } => Type::Array {
+            elem: Box::new(go(elem)),
+            len: len.map(|t| match t {
+                Type::UnresolvedNamed(name) => match subst.get(name.as_str()) {
+                    Some(n @ Type::Len(_)) => (*n).clone(),
+                    _ => t.clone(),
+                },
+                other => other.clone(),
+            }),
+        },
+        Type::Tuple(elems) => Type::Tuple(elems.iter().map(go).collect()),
+        Type::Union(members) => Type::Union(members.iter().map(go).collect()),
+        Type::Result { ok, err } => Type::Result { ok: Box::new(go(ok)), err: Box::new(go(err)) },
+        Type::Generic { base, args } => Type::Generic {
+            base: *base,
+            args: args.iter().map(|GenericArg::Type(t)| GenericArg::Type(Box::new(go(t)))).collect(),
+        },
+        Type::UnresolvedGeneric { name, args } => Type::UnresolvedGeneric {
+            name: name.clone(),
+            args: args.iter().map(|GenericArg::Type(t)| GenericArg::Type(Box::new(go(t)))).collect(),
+        },
+        other => other.clone(),
+    }
+}
+
+/// The parameter names `ty` uses as array lengths.
+fn array_length_params<'t>(ty: &'t Type, out: &mut std::collections::HashSet<&'t str>) {
+    match ty {
+        Type::Array { elem, len } => {
+            if let ArrayLen::Of(t) = len {
+                if let Type::UnresolvedNamed(name) = &**t {
+                    out.insert(name);
+                }
+            }
+            array_length_params(elem, out);
+        }
+        Type::Tuple(elems) | Type::Union(elems) => elems.iter().for_each(|e| array_length_params(e, out)),
+        Type::Generic { args, .. } | Type::UnresolvedGeneric { args, .. } => {
+            args.iter().for_each(|GenericArg::Type(t)| array_length_params(t, out))
+        }
+        Type::Result { ok, err } => {
+            array_length_params(ok, out);
+            array_length_params(err, out);
+        }
+        _ => {}
+    }
 }
 
 /// `record_arguments`: write the arguments into field types nested inside
@@ -888,7 +945,9 @@ fn struct_layout(
             let (field_ty, from_param) = resolve_field_type(field_ty, &subst);
             let sized = substitute_inside(&field_ty, &subst);
             let (field_size, field_align) = type_size_align(&sized, cache);
-            let field_ty = if record_arguments { sized } else { field_ty };
+            // A shared layout keeps its parameters in the field types, but a
+            // length has to be a number for the field to have a shape at all.
+            let field_ty = if record_arguments { sized } else { with_lengths(&field_ty, &subst) };
             (
                 field_name.clone(),
                 field_ty,
@@ -1244,7 +1303,7 @@ fn type_arg_key(
             let base = name.to_string();
             let mut parts = Vec::with_capacity(args.len());
             for arg in args {
-                let GenericArg::Type(inner) = arg else { return None };
+                let GenericArg::Type(inner) = arg;
                 parts.push(type_arg_key(inner, type_names)?);
             }
             format!("{}${}", base, parts.join("$"))
@@ -1268,6 +1327,8 @@ fn type_arg_key(
         // `[i64; 3]` and `[i64; 4]` are different instantiations, so the
         // length is part of the key.
         Type::Array { elem, len } => format!("arr{}${}", len, type_arg_key(elem, type_names)?),
+        // A `comptime N` argument: `Buf<4>` and `Buf<2>` are different instances.
+        Type::Len(n) => format!("len{n}"),
         // A closure argument. The arity goes in the key because the parameters
         // and the return run together otherwise, and `func(i64, i64) -> void`
         // would key the same as `func(i64) -> func(i64) -> void`.

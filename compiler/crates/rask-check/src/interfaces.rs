@@ -131,7 +131,6 @@ impl Collection {
             .iter()
             .filter_map(|a| match a {
                 GenericArg::Type(t) => Some((**t).clone()),
-                _ => None,
             })
             .collect();
         let arity = if kind == CollectionKind::Map { 2 } else { 1 };
@@ -671,7 +670,6 @@ impl<'a> InterfaceChecker<'a> {
                     .iter()
                     .filter_map(|a| match a {
                         GenericArg::Type(t) => Some((**t).clone()),
-                        _ => None,
                     })
                     .collect();
                 let name = self.types.get(*base).map(TypeDef::name);
@@ -682,7 +680,6 @@ impl<'a> InterfaceChecker<'a> {
                     .iter()
                     .filter_map(|a| match a {
                         GenericArg::Type(t) => Some((**t).clone()),
-                        _ => None,
                     })
                     .collect();
                 let id = self.types.get_type_id(name);
@@ -781,7 +778,6 @@ impl<'a> InterfaceChecker<'a> {
         args.iter()
             .filter_map(|a| match a {
                 GenericArg::Type(t) => Some((**t).clone()),
-                _ => None,
             })
             .collect()
     }
@@ -1010,7 +1006,6 @@ impl<'a> InterfaceChecker<'a> {
                     .iter()
                     .map(|a| match a {
                         GenericArg::Type(t) => GenericArg::Type(Box::new(Self::apply_subst(t, subst))),
-                        other => other.clone(),
                     })
                     .collect(),
             },
@@ -1020,7 +1015,6 @@ impl<'a> InterfaceChecker<'a> {
                     .iter()
                     .map(|a| match a {
                         GenericArg::Type(t) => GenericArg::Type(Box::new(Self::apply_subst(t, subst))),
-                        other => other.clone(),
                     })
                     .collect(),
             },
@@ -1060,7 +1054,6 @@ impl<'a> InterfaceChecker<'a> {
         let args: Vec<Type> = match ty {
             Type::Generic { args, .. } => args.iter().filter_map(|a| match a {
                 GenericArg::Type(t) => Some((**t).clone()),
-                _ => None,
             }).collect(),
             // Not instantiated with concrete type args — defer (checked at the
             // outermost concrete use).
@@ -1388,7 +1381,6 @@ impl<'a> InterfaceChecker<'a> {
     fn normalize_arg(&self, arg: &GenericArg) -> GenericArg {
         match arg {
             GenericArg::Type(t) => GenericArg::Type(Box::new(self.normalize(t))),
-            other => other.clone(),
         }
     }
 
@@ -1997,7 +1989,6 @@ pub fn substitute_type(ty: &Type, map: &HashMap<String, Type>) -> Type {
                 .iter()
                 .map(|a| match a {
                     GenericArg::Type(t) => GenericArg::Type(Box::new(substitute_type(t, map))),
-                    other => other.clone(),
                 })
                 .collect();
             match map.get(name) {
@@ -2013,7 +2004,6 @@ pub fn substitute_type(ty: &Type, map: &HashMap<String, Type>) -> Type {
                 .iter()
                 .map(|a| match a {
                     GenericArg::Type(t) => GenericArg::Type(Box::new(substitute_type(t, map))),
-                    other => other.clone(),
                 })
                 .collect(),
         },

@@ -172,7 +172,6 @@ impl<'a> MirLowerer<'a> {
         let (_, args) = self.generic_head(&ty)?;
         match args.get(i)? {
             rask_types::GenericArg::Type(t) => Some((**t).clone()),
-            _ => None,
         }
     }
 

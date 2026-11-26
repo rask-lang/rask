@@ -19,8 +19,6 @@ pub struct TypeVarId(pub u32);
 pub enum GenericArg {
     /// A type argument (regular generic)
     Type(Box<Type>),
-    /// A const usize argument (const generic)
-    ConstUsize(usize),
 }
 
 /// How long an array type is. A literal or a module `const` gives a number.
@@ -264,7 +262,6 @@ impl Type {
         }
         match args.first()? {
             GenericArg::Type(inner) => Some(inner),
-            _ => None,
         }
     }
 
@@ -456,7 +453,6 @@ impl fmt::Display for GenericArg {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             GenericArg::Type(ty) => write!(f, "{}", ty),
-            GenericArg::ConstUsize(n) => write!(f, "{}", n),
         }
     }
 }
@@ -469,7 +465,6 @@ impl Type {
     pub fn to_type_expr(&self) -> TypeExpr {
         let arg = |a: &GenericArg| match a {
             GenericArg::Type(t) => t.to_type_expr(),
-            GenericArg::ConstUsize(n) => TypeExpr::Int(n.to_string()),
         };
         match self {
             Type::Unit => TypeExpr::Unit,

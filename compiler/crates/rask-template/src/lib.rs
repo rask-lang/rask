@@ -64,7 +64,6 @@ pub fn field_facts(typed: &TypedProgram, mono: &MonoProgram, ty: &Type) -> Optio
                         .iter()
                         .filter_map(|a| match a {
                             rask_types::GenericArg::Type(t) => Some(rask_check::reflect::type_label(types, t)),
-                            _ => None,
                         })
                         .collect(),
                     _ => Vec::new(),
@@ -990,7 +989,6 @@ fn variant_facts(types: &rask_check::TypeTable, ty: &Type) -> Option<Vec<rask_mo
             args.iter()
                 .filter_map(|a| match a {
                     rask_types::GenericArg::Type(t) => Some((**t).clone()),
-                    _ => None,
                 })
                 .collect(),
         ),

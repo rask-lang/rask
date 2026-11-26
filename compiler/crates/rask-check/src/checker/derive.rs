@@ -1433,7 +1433,6 @@ fn is_concrete(ty: &Type) -> bool {
         Type::Var(_) | Type::UnresolvedNamed(_) | Type::UnresolvedGeneric { .. } | Type::Error => false,
         Type::Generic { args, .. } => args.iter().all(|a| match a {
             rask_types::GenericArg::Type(t) => is_concrete(t),
-            _ => true,
         }),
         Type::Tuple(elems) => elems.iter().all(is_concrete),
         Type::Result { ok, err } => is_concrete(ok) && is_concrete(err),

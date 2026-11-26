@@ -1042,7 +1042,6 @@ impl Interpreter {
                 .zip(args)
                 .filter_map(|(p, a)| match a {
                     rask_types::GenericArg::Type(t) => Some((p.name.clone(), (**t).clone())),
-                    _ => None,
                 })
                 .collect(),
         )
@@ -1100,7 +1099,6 @@ impl Interpreter {
             Type::Array { elem, .. } => self.option_layers(elem),
             Type::Generic { args, .. } | Type::UnresolvedGeneric { args, .. } => match args.first()? {
                 GenericArg::Type(inner) => self.option_layers(inner),
-                _ => None,
             },
             _ => None,
         }

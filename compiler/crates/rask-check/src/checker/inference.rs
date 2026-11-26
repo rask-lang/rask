@@ -454,7 +454,6 @@ impl InferenceContext {
     fn apply_generic_arg(&self, arg: &GenericArg) -> GenericArg {
         match arg {
             GenericArg::Type(ty) => GenericArg::Type(Box::new(self.apply(ty))),
-            GenericArg::ConstUsize(n) => GenericArg::ConstUsize(*n),
         }
     }
 
@@ -489,7 +488,6 @@ impl InferenceContext {
     fn occurs_in_generic_arg(&self, var: TypeVarId, arg: &GenericArg) -> bool {
         match arg {
             GenericArg::Type(ty) => self.occurs_in(var, ty),
-            GenericArg::ConstUsize(_) => false,
         }
     }
 }

@@ -244,7 +244,6 @@ fn type_args_of(args: &[rask_types::GenericArg]) -> Vec<Type> {
     args.iter()
         .filter_map(|a| match a {
             rask_types::GenericArg::Type(t) => Some((**t).clone()),
-            _ => None,
         })
         .collect()
 }
@@ -953,7 +952,7 @@ fn monomorphize_inner(
     // Declared and instance layouts in one dependency order, the declared ones
     // shared with the interpreter so both backends read one set of offsets
     // (#1104).
-    let (struct_layouts, mut enum_layouts, _) = compute_layouts(
+    let (struct_layouts, mut enum_layouts, layout_cache) = compute_layouts(
         decls,
         &program.types,
         Some(&Instantiations { reached, type_names: &type_names }),
@@ -969,6 +968,10 @@ fn monomorphize_inner(
         let mut layout = rask_layout::ordering_layout();
         layout.key = ordering;
         enum_layouts.push(layout);
+    }
+
+    if let Some(err) = oversized_value(&mono.results, program, &layout_cache) {
+        return Err(err);
     }
 
     Ok(MonoProgram {
@@ -1004,6 +1007,33 @@ pub enum MonomorphizeError {
     InstantiationTooDeep {
         chain: Vec<String>,
     },
+    /// An instance makes a value over `MAX_VALUE_SIZE` (E0980). The checker
+    /// sizes every type it can; `[0u8; N]` and `(T, T)` only have a size once
+    /// an instance fills `N` or `T` in.
+    ValueTooLarge {
+        ty: Type,
+        bytes: u64,
+        span: rask_ast::Span,
+    },
+}
+
+/// The first value a generic instance makes that is too large to be one.
+fn oversized_value(
+    functions: &[MonoFunction],
+    program: &TypedProgram,
+    cache: &rask_layout::LayoutCache,
+) -> Option<MonomorphizeError> {
+    for f in functions.iter().filter(|f| !f.type_args.is_empty()) {
+        let inst = Instance::new(&f.type_args, &f.projections, program);
+        for (id, span) in reachability::body_nodes_with_spans(&f.body) {
+            let Some(ty) = inst.node_type(id) else { continue };
+            let Some((size, _)) = rask_layout::known_size_align(&ty, cache) else { continue };
+            if size > rask_layout::MAX_VALUE_SIZE {
+                return Some(MonomorphizeError::ValueTooLarge { ty, bytes: u64::from(size), span });
+            }
+        }
+    }
+    None
 }
 
 impl std::fmt::Display for MonomorphizeError {
@@ -1030,6 +1060,9 @@ impl std::fmt::Display for MonomorphizeError {
                     ),
                     None => write!(f, "instantiating `{}` never ends", first),
                 }
+            }
+            Self::ValueTooLarge { ty, bytes, .. } => {
+                write!(f, "`{}` is too large for a value ({} bytes)", ty, bytes)
             }
         }
     }

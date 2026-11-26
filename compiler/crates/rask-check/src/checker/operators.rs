@@ -329,7 +329,6 @@ impl TypeChecker {
             .zip(args.iter())
             .filter_map(|(p, a)| match a {
                 rask_types::GenericArg::Type(t) => Some((p, (**t).clone())),
-                _ => None,
             })
             .collect()
     }

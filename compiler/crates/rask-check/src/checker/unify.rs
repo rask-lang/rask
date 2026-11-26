@@ -2448,7 +2448,6 @@ impl TypeChecker {
         }
         match &args[0] {
             GenericArg::Type(t) => Some(((**t).clone(), mode)),
-            GenericArg::ConstUsize(_) => None,
         }
     }
 
@@ -2493,28 +2492,6 @@ impl TypeChecker {
     pub(super) fn unify_generic_arg(&mut self, arg1: &GenericArg, arg2: &GenericArg, span: Span) -> Result<bool, TypeError> {
         match (arg1, arg2) {
             (GenericArg::Type(t1), GenericArg::Type(t2)) => self.unify(t1, t2, span),
-            (GenericArg::ConstUsize(n1), GenericArg::ConstUsize(n2)) => {
-                if n1 == n2 {
-                    Ok(false)
-                } else {
-                    Err(TypeError::GenericError(
-                        format!("const generic mismatch: {} vs {}", n1, n2),
-                        span,
-                    ))
-                }
-            }
-            (GenericArg::Type(_), GenericArg::ConstUsize(_)) => {
-                Err(TypeError::GenericError(
-                    "expected type argument, found const argument".to_string(),
-                    span,
-                ))
-            }
-            (GenericArg::ConstUsize(_), GenericArg::Type(_)) => {
-                Err(TypeError::GenericError(
-                    "expected const argument, found type argument".to_string(),
-                    span,
-                ))
-            }
         }
     }
 

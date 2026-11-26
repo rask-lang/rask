@@ -24,6 +24,29 @@ func both<comptime N: usize>(arr: [i64; N]) -> i64 {
     return total(arr) + total<N>(arr)
 }
 
+func plus_one<comptime N: usize>(arr: [i64; N]) -> usize {
+    return N + 1
+}
+
+func is_three<comptime N: usize>(arr: [i64; N]) -> bool {
+    return N == 3
+}
+
+func spelled<comptime N: usize>(arr: [i64; N]) -> string {
+    return "{N}/{N.to_string()}"
+}
+
+// The parameter shadows the module const of the same name.
+const LEN: usize = 5
+
+func count<comptime LEN: usize>(arr: [i64; LEN]) -> usize {
+    return LEN
+}
+
+struct Buf<comptime N: usize> {
+    data: [i64; N]
+}
+
 struct Bag<T> {
     items: Vec<T>
 }
@@ -69,4 +92,24 @@ test "N on a generic type's static method" {
     let b = Bag.from([4, 5, 6])
     assert b.items.len() == 3
     assert b.items[1] == 5
+}
+
+test "N on the left of an operator or as a receiver" {
+    assert plus_one([1, 2, 3]) == 4
+    assert is_three([1, 2, 3])
+    assert !is_three([1])
+    assert spelled([7, 8]) == "2/2"
+}
+
+test "a parameter beats a const of its name" {
+    assert count([1, 2]) == 2
+    assert count<2>([1, 2]) == 2
+}
+
+test "a struct holds an array of length N" {
+    let b = Buf(data: [1, 2, 3, 4])
+    assert b.data.len() == 4
+    assert b.data[3] == 4
+    let c = Buf<2>(data: [5, 6])
+    assert c.data[0] + c.data[1] == 11
 }

@@ -389,9 +389,10 @@ impl TypeChecker {
         match &decl.kind {
             DeclKind::Struct(s) => {
                 self.check_declared_type_name(&s.name, "struct", decl.span, s.fields.is_empty());
+                self.check_length_params(&s.type_params, s.fields.iter().map(|f| &f.ty), decl.span);
                 let id = self.register_struct(s);
                 if s.type_params.is_empty() {
-                    self.pending_value_sizes.push((Type::Named(id), decl.span));
+                    self.pending_value_sizes.push((Type::Named(id), decl.span, self.types.type_params_in_scope()));
                 }
                 self.types.record_declared_type(decl.id, id);
                 self.types.record_param_bounds(id, &s.type_params);
@@ -402,7 +403,7 @@ impl TypeChecker {
                 self.check_declared_type_name(&e.name, "enum", decl.span, false);
                 let id = self.register_enum(e, decl.span);
                 if e.type_params.is_empty() {
-                    self.pending_value_sizes.push((Type::Named(id), decl.span));
+                    self.pending_value_sizes.push((Type::Named(id), decl.span, self.types.type_params_in_scope()));
                 }
                 self.types.record_declared_type(decl.id, id);
                 self.types.record_param_bounds(id, &e.type_params);
@@ -423,7 +424,7 @@ impl TypeChecker {
             DeclKind::Union(u) => {
                 self.check_declared_type_name(&u.name, "union", decl.span, false);
                 let id = self.register_union(u);
-                self.pending_value_sizes.push((Type::Named(id), decl.span));
+                self.pending_value_sizes.push((Type::Named(id), decl.span, self.types.type_params_in_scope()));
                 self.types.record_declared_type(decl.id, id);
             }
             // AN6: annotations register as nominal struct types so
@@ -3144,7 +3145,6 @@ impl TypeChecker {
             {
                 args.iter().all(|a| match a {
                     rask_types::GenericArg::Type(t) => self.type_has_method_in(t, method, params),
-                    _ => false,
                 })
             }
             // Any other generic type clones when its own declaration does and
@@ -3158,7 +3158,6 @@ impl TypeChecker {
                 self.type_has_method_in(&Type::Named(*base), method, params)
                     && args.iter().all(|a| match a {
                         rask_types::GenericArg::Type(t) => self.type_has_method_in(t, method, params),
-                        _ => true,
                     })
             }
             Type::UnresolvedGeneric { name, args } if method == "clone" => {
@@ -3289,7 +3288,6 @@ impl TypeChecker {
                     .iter()
                     .filter_map(|a| match a {
                         rask_types::GenericArg::Type(t) => Some((**t).clone()),
-                        _ => None,
                     })
                     .collect();
                 self.reaches_inline_through(*base, &args, owner, seen, chain)
@@ -3301,7 +3299,6 @@ impl TypeChecker {
                     .iter()
                     .filter_map(|a| match a {
                         rask_types::GenericArg::Type(t) => Some((**t).clone()),
-                        _ => None,
                     })
                     .collect();
                 self.reaches_inline_through(base, &args, owner, seen, chain)
