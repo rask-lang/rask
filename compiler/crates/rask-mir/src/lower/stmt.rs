@@ -2865,14 +2865,8 @@ impl<'a> MirLowerer<'a> {
                 rvalue: MirRValue::Use(iter_op),
             }));
             map_local = Some(map_tmp);
-            let entries_vec = self.builder.alloc_temp(MirType::I64);
             let pair = self.map_entry_pair_types(iter_expr);
-            let args = self.map_entries_args(MirOperand::Local(map_tmp), &pair[0], &pair[1]);
-            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                dst: Some(entries_vec),
-                func: FunctionRef::borrowing("rask_map_entries").handing_back("rask_vec_free"),
-                args,
-            }));
+            let entries_vec = self.emit_map_entries(MirOperand::Local(map_tmp), &pair[0], &pair[1]);
             (MirOperand::Local(entries_vec), MirType::I64)
         } else {
             (iter_op, iter_ty)

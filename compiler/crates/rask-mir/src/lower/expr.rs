@@ -9721,13 +9721,7 @@ impl<'a> MirLowerer<'a> {
             None => (None, None),
         };
 
-        let entries = self.builder.alloc_temp(MirType::Ptr);
-        let entries_args = self.map_entries_args(map_op.clone(), key_ty, val_ty);
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-            dst: Some(entries),
-            func: FunctionRef::borrowing("rask_map_entries").handing_back("rask_vec_free"),
-            args: entries_args,
-        }));
+        let entries = self.emit_map_entries(map_op.clone(), key_ty, val_ty);
 
         // The rendered entries, one string each, so they can be sorted.
         let rendered = self.builder.alloc_temp(MirType::Ptr);

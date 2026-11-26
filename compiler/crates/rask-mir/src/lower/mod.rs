@@ -3772,6 +3772,27 @@ impl<'a> MirLowerer<'a> {
         ]
     }
 
+    /// The entries of a `Map<key, val>` as a fresh Vec of `(key, value)`
+    /// tuples. The Vec is the caller's to free, but its items are shallow
+    /// copies that point into the map's own keys and values, so the call is
+    /// marked as pointing into its argument: liveness keeps the map alive while
+    /// the entries are in use. Without that, a struct holding the map was
+    /// released at its last read, the `.lists` that fed this call, and walking
+    /// the entries read freed vectors.
+    pub(crate) fn emit_map_entries(&mut self, map: MirOperand, key: &MirType, val: &MirType) -> LocalId {
+        let entries = self.builder.alloc_temp(MirType::Ptr);
+        let args = self.map_entries_args(map, key, val);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+            dst: Some(entries),
+            func: FunctionRef {
+                points_into_args: true,
+                ..FunctionRef::borrowing("rask_map_entries").handing_back("rask_vec_free")
+            },
+            args,
+        }));
+        entries
+    }
+
     /// Fill `slot`, a local holding a `T?`, with a present `value`. A niche
     /// option is its payload, so the value is the whole of it.
     pub(crate) fn fill_present(&mut self, slot: LocalId, value: MirOperand) {

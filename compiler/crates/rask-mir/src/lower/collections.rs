@@ -773,13 +773,7 @@ impl<'a> MirLowerer<'a> {
         let key_mir = self.ctx.type_to_mir(key_ty);
         let val_mir = self.ctx.type_to_mir(val_ty);
         let buf = self.new_json_buf();
-        let entries = self.builder.alloc_temp(MirType::I64);
-        let args = self.map_entries_args(map_op, &key_mir, &val_mir);
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-            dst: Some(entries),
-            func: FunctionRef::borrowing("rask_map_entries").handing_back("rask_vec_free"),
-            args,
-        }));
+        let entries = self.emit_map_entries(map_op, &key_mir, &val_mir);
         let pair = vec![key_mir.clone(), val_mir.clone()];
         let offsets = rask_layout::tuple_offsets(&pair, self.ctx.target());
         let len = self.builder.alloc_temp(MirType::I64);
