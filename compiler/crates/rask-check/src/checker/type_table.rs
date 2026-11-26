@@ -2775,8 +2775,8 @@ impl TypeTable {
     /// only payload — the shape `try` can wrap into on the way out.
     ///
     /// Returns every match so the caller can tell "no wrap" from "more than one
-    /// variant would fit, say which". Both sides must be nominal: a union or
-    /// generic payload isn't a boundary-enum wrapper.
+    /// variant would fit, say which". The payload has to be the error's type,
+    /// whatever kind of type that is: `G(Gen<string>)` holds a `Gen<string>`.
     pub fn error_wrap_variants(&self, source: &Type, target: &Type) -> Vec<String> {
         let variants = match target {
             Type::Named(id) => match self.get(*id) {
@@ -2785,32 +2785,38 @@ impl TypeTable {
             },
             _ => return Vec::new(),
         };
-        let want = match self.nominal_key(source) {
-            Some(k) => k,
-            None => return Vec::new(),
-        };
         // Wrapping a type in itself isn't a widening — plain unification covers it.
-        if self.nominal_key(target).as_deref() == Some(want.as_str()) {
+        if self.same_type(source, target) {
             return Vec::new();
         }
         variants
             .iter()
-            .filter(|(_, payload)| {
-                payload.len() == 1 && self.nominal_key(&payload[0]).as_deref() == Some(want.as_str())
-            })
+            .filter(|(_, payload)| payload.len() == 1 && self.same_type(&payload[0], source))
             .map(|(name, _)| name.clone())
             .collect()
     }
 
-    /// The bare type name behind a nominal type, however the declaration order
-    /// left it spelled. `None` for anything structural.
-    fn nominal_key(&self, ty: &Type) -> Option<String> {
-        match ty {
-            Type::Named(id) => Some(self.type_name(*id)),
-            Type::UnresolvedNamed(name) => {
-                Some(name.trim().to_string())
-            }
+    /// The same type, however the declaration order left each side spelled: a
+    /// payload registered before its type is still `UnresolvedNamed`.
+    fn same_type(&self, a: &Type, b: &Type) -> bool {
+        let base = |t: &Type| match t {
+            Type::Named(id) | Type::Generic { base: id, .. } => Some(self.type_name(*id)),
+            Type::UnresolvedNamed(name) | Type::UnresolvedGeneric { name, .. } => Some(name.trim().to_string()),
             _ => None,
+        };
+        let args = |t: &Type| match t {
+            Type::Generic { args, .. } | Type::UnresolvedGeneric { args, .. } => args.clone(),
+            _ => Vec::new(),
+        };
+        match (base(a), base(b)) {
+            (Some(x), Some(y)) => {
+                let (xs, ys) = (args(a), args(b));
+                x == y
+                    && xs.len() == ys.len()
+                    && xs.iter().zip(&ys).all(|(GenericArg::Type(p), GenericArg::Type(q))| self.same_type(p, q))
+            }
+            (None, None) => a == b,
+            _ => false,
         }
     }
 

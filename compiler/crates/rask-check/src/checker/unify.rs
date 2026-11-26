@@ -2368,7 +2368,17 @@ impl TypeChecker {
             (single, Type::Union(types)) if !matches!(single, Type::Union(_)) => {
                 let single_r = self.resolve_named(single);
                 if types.iter().any(|t| self.resolve_named(t) == single_r) {
-                    Ok(false) // member of the union — compatible
+                    return Ok(false); // member of the union — compatible
+                }
+                // Still open somewhere (`Gen<Vec<_>>`): it meets the one member
+                // it can be, as members do between two unions.
+                let fits: Vec<Type> = types
+                    .iter()
+                    .map(|t| self.resolve_named(t))
+                    .filter(|t| self.fits_with_holes(&single_r, t))
+                    .collect();
+                if let [only] = fits.as_slice() {
+                    self.unify(&single_r, only, span)
                 } else if matches!(single_r, Type::UnresolvedNamed(_)) {
                     self.ctx.add_constraint(TypeConstraint::Equal(t1, t2, span));
                     Ok(false)
