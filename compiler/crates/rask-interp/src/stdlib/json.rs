@@ -579,6 +579,8 @@ fn stringify_value(value: &Value, pretty: bool, indent: usize) -> String {
                 format!("{{{}}}", pairs.join(","))
             }
         }
+        // A JSON object built by `value_to_json`, already in the order it
+        // is written: a struct's declaration, a Map's seeded order.
         Value::Map(m) => {
             let map = m.lock().unwrap();
             if map.is_empty() {
@@ -781,10 +783,11 @@ fn value_to_json(
             Ok(make_json_object(entries))
         }
         Value::Map(m) => {
-            let map = m.lock().unwrap();
-            let mut entries = Vec::with_capacity(map.len());
-            for (k, v) in map.iter() {
-                let key = match &k.value {
+            // In the order `for` visits it, as native writes it (#1938).
+            let seeded = crate::value::map_entries_seeded(&m.lock().unwrap());
+            let mut entries = Vec::with_capacity(seeded.len());
+            for (k, v) in seeded.iter() {
+                let key = match k {
                     Value::String(s) => s.lock().unwrap().clone(),
                     other => format!("{}", other),
                 };

@@ -243,6 +243,18 @@ pub struct StructLayout {
     pub is_resource: bool,
 }
 
+impl StructLayout {
+    /// The fields in the order the struct declares them, each with its index
+    /// in `fields` (its layout slot). `@layout(Rask)` reorders by alignment,
+    /// and anything a reader sees field by field (a serializer's keys,
+    /// `reflect.fields<T>()`) follows the declaration (#1083, #1961).
+    pub fn fields_in_declaration_order(&self) -> Vec<(usize, &FieldLayout)> {
+        let mut ordered: Vec<(usize, &FieldLayout)> = self.fields.iter().enumerate().collect();
+        ordered.sort_by_key(|(_, f)| f.decl_index);
+        ordered
+    }
+}
+
 /// Field layout within struct
 #[derive(Debug, Clone)]
 pub struct FieldLayout {

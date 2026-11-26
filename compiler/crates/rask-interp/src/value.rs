@@ -1041,11 +1041,9 @@ impl std::hash::Hash for MapKey {
 /// be insertion order per determinism/D7 — those call sites go through
 /// `map_entries_seeded` instead of iterating this directly.
 ///
-/// json.rs is the one exception, and it's narrower than it was: a JsonValue now
-/// goes to the Rask encoder in stdlib/json.rk, which iterates the Map as user
-/// code does and so gets seeded order. What's left on the Rust path is a struct
-/// encoded by reflection, where the fields must come out in declaration order —
-/// that's what #540 was about, and it isn't a Rask `Map` being iterated.
+/// json.rs's `value_to_json` reads a Rask Map through `map_entries_seeded`
+/// too, so `json.encode` writes entries in the order `for` visits them
+/// (#1938). The JSON object it builds keeps that order in a `MapData`.
 pub type MapData = IndexMap<MapKey, Value>;
 
 /// Per-process random value mixed into a key's hash to order a Map's

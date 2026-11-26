@@ -1840,12 +1840,8 @@ impl<'a> MirLowerer<'a> {
             )));
         };
 
-        // Declaration order, not layout order. `@layout(Rask)` reorders by
-        // alignment (S1/L4), and reflection reports what the author wrote —
-        // which is also what a serializer's key order follows. The two only
-        // agreed while every field had the same alignment (#1083).
-        let mut ordered: Vec<&rask_layout::FieldLayout> = layout.fields.iter().collect();
-        ordered.sort_by_key(|fl| fl.decl_index);
+        let ordered: Vec<&rask_layout::FieldLayout> =
+            layout.fields_in_declaration_order().into_iter().map(|(_, f)| f).collect();
 
         // The type each field was declared with. A shared layout — which an
         // instance keeps when its arguments fit it, `Holder<f64>` — holds a

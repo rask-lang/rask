@@ -5914,24 +5914,7 @@ impl<'a> MirLowerer<'a> {
                             // Monomorphization queued the same body
                             // (`Symbols::json_value_encoder`).
                             if self.ctx.lookup_raw_type(args[0].expr.id).is_some_and(|t| self.ctx.type_defs.is_lang(&t, rask_types::LangItem::JsonValue)) {
-                                let body = self
-                                    .ctx
-                                    .symbols
-                                    .json_value_encoder(pretty, self.ctx.type_defs)
-                                    .map(|c| c.symbol)
-                                    .ok_or_else(|| {
-                                        LoweringError::InvalidConstruct(
-                                            "json.encode on a JsonValue, but JsonValue has no \
-                                             encoder in Rask"
-                                                .to_string(),
-                                        )
-                                    })?;
-                                let dst = self.builder.alloc_temp(MirType::Buffer);
-                                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                                    dst: Some(dst),
-                                    func: FunctionRef::internal(body),
-                                    args: vec![arg_op],
-                                }));
+                                let dst = self.json_value_text(arg_op, pretty)?;
                                 return Ok(Some((MirOperand::Local(dst), MirType::Buffer)));
                             }
 

@@ -12,6 +12,21 @@ use crate::{
 use rask_ast::expr::{Expr, ExprKind};
 use rask_layout::StructLayout;
 
+/// Where `emit_json_value` puts what it encodes: under a key in an object
+/// being built, or as the next element of an array.
+pub(super) enum JsonSink {
+    Field { buf: crate::LocalId, key: String },
+    Element { arr: crate::LocalId },
+}
+
+#[derive(Clone, Copy)]
+enum JsonScalar {
+    String,
+    Bool,
+    F64,
+    I64,
+}
+
 impl<'a> MirLowerer<'a> {
     /// Vec.from([a, b, c]) → store elements into stack array, call rask_vec_from_static
     pub(super) fn lower_vec_from_array(
@@ -246,8 +261,6 @@ impl<'a> MirLowerer<'a> {
         struct_op: MirOperand,
         layout: StructLayout,
     ) -> Result<TypedOperand, LoweringError> {
-        
-
         let buf = self.builder.alloc_temp(MirType::I64);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(buf),
@@ -255,7 +268,7 @@ impl<'a> MirLowerer<'a> {
             args: vec![],
         }));
 
-        for (idx, field) in layout.fields.iter().enumerate() {
+        for (idx, field) in layout.fields_in_declaration_order() {
             // `@skip` keeps a field out of the serialized form (std.encoding/E19).
             if rask_ast::decl::field_attrs::is_skipped(&field.attrs) {
                 continue;
@@ -276,7 +289,7 @@ impl<'a> MirLowerer<'a> {
                 },
             }));
 
-            self.encode_field_into_buf(buf, &key, field_val, &field.ty)?;
+            self.emit_json_value(&JsonSink::Field { buf, key }, field_val, Some(&field.ty))?;
         }
 
         // The StringOutParam adapter writes a 16-byte RaskStr and hands back its
@@ -292,128 +305,198 @@ impl<'a> MirLowerer<'a> {
         Ok((MirOperand::Local(result), MirType::Buffer))
     }
 
-    /// Encode one already-loaded value into a json buffer under `key`.
+    /// Encode one already-loaded value into a json buffer slot.
     ///
-    /// Shared between struct fields (`lower_json_encode_struct`) and enum
-    /// variant payload fields (`lower_json_encode_enum`) — both are "a typed
-    /// slot with a name," and the encoding rules (Vec, Map, `T?`, nested
-    /// struct, nested enum, scalar) don't care which one it came from.
-    fn encode_field_into_buf(
+    /// The one place that decides how a value's type is written: struct
+    /// fields, enum payloads, a `T?`'s payload and Vec elements all come here.
+    /// They used to keep separate lists of shapes, and the Vec element's was
+    /// short: a `Vec<Vec<T>>`, `Vec<T?>` or `Vec<enum>` element fell to the
+    /// integer encoder and wrote its address (#1956).
+    ///
+    /// `ty` is the checker's type. Without one (a `Vec.new()` filled by
+    /// `push` can leave a variable), the local's lowered type decides.
+    pub(super) fn emit_json_value(
         &mut self,
-        buf: crate::LocalId,
-        key: &str,
-        field_val: crate::LocalId,
-        field_ty: &rask_types::Type,
+        sink: &JsonSink,
+        value: crate::LocalId,
+        ty: Option<&rask_types::Type>,
     ) -> Result<(), LoweringError> {
         use rask_types::Type;
+        let Some(ty) = ty.filter(|t| !matches!(t, Type::Var(_))) else {
+            return self.emit_json_value_by_mir(sink, value);
+        };
 
         // A type with its own `encode` is written as what that answers
         // (std.encoding/E12b), not as its fields.
-        if let Some(text) = self.custom_encode_text(MirOperand::Local(field_val), field_ty) {
-            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                dst: None,
-                func: FunctionRef::reading("rask_json_buf_add_raw"),
-                args: vec![
-                    MirOperand::Local(buf),
-                    MirOperand::Constant(MirConst::String(key.to_string())),
-                    MirOperand::Local(text),
-                ],
-            }));
+        if let Some(text) = self.custom_encode_text(MirOperand::Local(value), ty) {
+            self.emit_json_raw(sink, MirOperand::Local(text));
             return Ok(());
         }
 
-        // A `Vec<T>` field is an array, not a number. Without this the field
-        // went through json_buf_add_i64 and `{"items": [...]}` came out as
-        // `{"items":{}}`.
-        if let Some(elem) = self.collection_arg(field_ty, "Vec", 0) {
+        if self.ctx.type_defs.is_lang(ty, rask_types::LangItem::JsonValue) {
+            let text = self.json_value_text(MirOperand::Local(value), false)?;
+            self.emit_json_raw(sink, MirOperand::Local(text));
+            return Ok(());
+        }
+
+        if let Some(elem) = self.collection_arg(ty, "Vec", 0) {
             let elem_mir = self.ctx.type_to_mir(&elem);
-            let (arr_json, _) = self.lower_json_encode_vec(
-                MirOperand::Local(field_val),
-                Some(elem),
-                Some(elem_mir),
-            )?;
-            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                dst: None,
-                func: FunctionRef::reading("rask_json_buf_add_raw"),
-                args: vec![
-                    MirOperand::Local(buf),
-                    MirOperand::Constant(MirConst::String(key.to_string())),
-                    arr_json,
-                ],
-            }));
+            let (text, _) =
+                self.lower_json_encode_vec(MirOperand::Local(value), Some(elem), Some(elem_mir))?;
+            self.emit_json_raw(sink, text);
             return Ok(());
         }
 
-        // Two shapes can't be unrolled here and go to the runtime encoder
-        // instead: a `Map<string, V>`, whose keys aren't known until it's
-        // walked, and a `T?` around a collection, whose payload is a Vec or
-        // Map pointer. The map used to match the nested-struct branch below
-        // (find_struct finds the stdlib Map layout) and encode as `{}`; the
-        // optional collection went through json_buf_add_i64 and printed the
-        // pointer as a number.
-        if self.is_map_type(field_ty) || self.is_optional_collection(field_ty) {
-            if let Some(json) = self.lower_json_encode_shaped(field_val, field_ty) {
-                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                    dst: None,
-                    func: FunctionRef::reading("rask_json_buf_add_raw"),
-                    args: vec![
-                        MirOperand::Local(buf),
-                        MirOperand::Constant(MirConst::String(key.to_string())),
-                        MirOperand::Local(json),
-                    ],
-                }));
+        // A `Map<string, V>`, whose keys aren't known until it's walked, and a
+        // `T?` around a collection, whose payload is a Vec or Map pointer, go
+        // to the runtime encoder.
+        if self.is_map_type(ty) || self.is_optional_collection(ty) {
+            if let Some(text) = self.lower_json_encode_shaped(value, ty) {
+                self.emit_json_raw(sink, MirOperand::Local(text));
                 return Ok(());
             }
         }
 
-        // A `T?` field is the value or `null`. It used to go through
-        // json_buf_add_i64, which wrote the address of the option's storage —
-        // `"assignee":140204924960672` where the answer is `null`.
-        if let Type::Result { ok, err } = field_ty {
+        if let Type::Result { ok, err } = ty {
             if **err == Type::None {
-                self.emit_json_optional_field(buf, key, field_val, ok)?;
-                return Ok(());
+                return self.emit_json_optional(sink, value, ok);
             }
         }
 
-        if let Some(nested_layout) = self.struct_layout_of(field_ty) {
-            let (nested_json, _) = self.lower_json_encode_struct(
-                MirOperand::Local(field_val),
-                nested_layout,
-            )?;
-            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                dst: None,
-                func: FunctionRef::reading("rask_json_buf_add_raw"),
-                args: vec![
-                    MirOperand::Local(buf),
-                    MirOperand::Constant(MirConst::String(key.to_string())),
-                    nested_json,
-                ],
-            }));
+        if let Some(layout) = self.struct_layout_of(ty) {
+            let (text, _) = self.lower_json_encode_struct(MirOperand::Local(value), layout)?;
+            self.emit_json_raw(sink, text);
             return Ok(());
         }
 
-        // std.encoding/E22: a unit variant serializes as its own name.
-        // Without this an enum field fell through to the integer encoder
-        // and wrote the address of its slot as a number — valid JSON with a
-        // stack address in it, and no warning (#854).
-        let enum_layout = self.ctx.enum_of(field_ty).map(|(_, l)| l.clone());
-        if let Some(layout) = enum_layout {
-            let (nested_json, _) = self.lower_json_encode_enum(MirOperand::Local(field_val), &layout)?;
-            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                dst: None,
-                func: FunctionRef::reading("rask_json_buf_add_raw"),
-                args: vec![
-                    MirOperand::Local(buf),
-                    MirOperand::Constant(MirConst::String(key.to_string())),
-                    nested_json,
-                ],
-            }));
+        // E22: an enum is its variant's name, or an object keyed by it.
+        if let Some(layout) = self.ctx.enum_of(ty).map(|(_, l)| l.clone()) {
+            let (text, _) = self.lower_json_encode_enum(MirOperand::Local(value), &layout)?;
+            self.emit_json_raw(sink, text);
             return Ok(());
         }
 
-        self.emit_json_add_scalar(buf, key, field_val, field_ty);
+        let scalar = match ty {
+            _ if self.ctx.is_text(ty) => JsonScalar::String,
+            Type::Bool => JsonScalar::Bool,
+            Type::F32 | Type::F64 => JsonScalar::F64,
+            _ => JsonScalar::I64,
+        };
+        self.emit_json_scalar(sink, value, scalar);
         Ok(())
+    }
+
+    /// `emit_json_value` for a value whose checked type isn't known.
+    fn emit_json_value_by_mir(
+        &mut self,
+        sink: &JsonSink,
+        value: crate::LocalId,
+    ) -> Result<(), LoweringError> {
+        let mir = self.builder.local_type(value);
+        match &mir {
+            Some(MirType::Struct(crate::types::StructLayoutId { id, .. })) => {
+                if let Some(layout) = self.ctx.struct_layouts.get(*id as usize).cloned() {
+                    let (text, _) = self.lower_json_encode_struct(MirOperand::Local(value), layout)?;
+                    self.emit_json_raw(sink, text);
+                    return Ok(());
+                }
+            }
+            Some(MirType::Enum(crate::types::EnumLayoutId { id, .. })) => {
+                if let Some(layout) = self.ctx.enum_layouts.get(*id as usize).cloned() {
+                    let (text, _) = self.lower_json_encode_enum(MirOperand::Local(value), &layout)?;
+                    self.emit_json_raw(sink, text);
+                    return Ok(());
+                }
+            }
+            _ => {}
+        }
+        let scalar = match mir {
+            Some(MirType::Buffer) => JsonScalar::String,
+            Some(MirType::Bool) => JsonScalar::Bool,
+            Some(MirType::F32 | MirType::F64) => JsonScalar::F64,
+            _ => JsonScalar::I64,
+        };
+        self.emit_json_scalar(sink, value, scalar);
+        Ok(())
+    }
+
+    /// A JsonValue's text, from its Rask encoder (`stringify_value` in
+    /// stdlib/json.rk, reached through `JsonValue.to_string`).
+    pub(super) fn json_value_text(&mut self, value: MirOperand, pretty: bool) -> Result<crate::LocalId, LoweringError> {
+        let body = self
+            .ctx
+            .symbols
+            .json_value_encoder(pretty, self.ctx.type_defs)
+            .map(|c| c.symbol)
+            .ok_or_else(|| {
+                LoweringError::InvalidConstruct(
+                    "json.encode on a JsonValue, but JsonValue has no encoder in Rask".to_string(),
+                )
+            })?;
+        let text = self.builder.alloc_temp(MirType::Buffer);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+            dst: Some(text),
+            func: FunctionRef::internal(body),
+            args: vec![value],
+        }));
+        Ok(text)
+    }
+
+    /// Put already-encoded JSON text in the slot.
+    fn emit_json_raw(&mut self, sink: &JsonSink, text: MirOperand) {
+        let (func, args) = match sink {
+            JsonSink::Field { buf, key } => (
+                "rask_json_buf_add_raw",
+                vec![
+                    MirOperand::Local(*buf),
+                    MirOperand::Constant(MirConst::String(key.clone())),
+                    text,
+                ],
+            ),
+            JsonSink::Element { arr } => {
+                ("rask_json_buf_array_add_raw", vec![MirOperand::Local(*arr), text])
+            }
+        };
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+            dst: None,
+            func: FunctionRef::reading(func),
+            args,
+        }));
+    }
+
+    /// A string, bool or number, written by the runtime's own formatter for
+    /// the slot. A narrower number is converted by its own signedness, and an
+    /// f32 is written as the double it widens to.
+    fn emit_json_scalar(&mut self, sink: &JsonSink, value: crate::LocalId, scalar: JsonScalar) {
+        let value = match scalar {
+            JsonScalar::I64 => self.to_slot_width(MirOperand::Local(value), &MirType::I64),
+            JsonScalar::F64 => self.to_slot_width(MirOperand::Local(value), &MirType::F64),
+            JsonScalar::String | JsonScalar::Bool => MirOperand::Local(value),
+        };
+        let kind = match scalar {
+            JsonScalar::String => "string",
+            JsonScalar::Bool => "bool",
+            JsonScalar::F64 => "f64",
+            JsonScalar::I64 => "i64",
+        };
+        let (func, args) = match sink {
+            JsonSink::Field { buf, key } => (
+                format!("rask_json_buf_add_{kind}"),
+                vec![
+                    MirOperand::Local(*buf),
+                    MirOperand::Constant(MirConst::String(key.clone())),
+                    value,
+                ],
+            ),
+            JsonSink::Element { arr } => {
+                (format!("rask_json_buf_array_add_{kind}"), vec![MirOperand::Local(*arr), value])
+            }
+        };
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+            dst: None,
+            func: FunctionRef::reading(&func),
+            args,
+        }));
     }
 
     /// Encode an enum value as JSON (std.encoding/E22-E25).
@@ -492,7 +575,7 @@ impl<'a> MirLowerer<'a> {
                 let field = &variant.fields[0];
                 let field_val = self.load_variant_field(enum_op.clone(), variant, field, 0);
                 let buf = self.new_json_buf();
-                self.encode_field_into_buf(buf, &variant_name, field_val, &field.ty)?;
+                self.emit_json_value(&JsonSink::Field { buf, key: variant_name.clone() }, field_val, Some(&field.ty))?;
                 self.push_json_finish(buf, result);
                 self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: done }));
             } else if is_single_unnamed {
@@ -517,7 +600,7 @@ impl<'a> MirLowerer<'a> {
                 }
                 for (i, field) in variant.fields.iter().enumerate() {
                     let field_val = self.load_variant_field(enum_op.clone(), variant, field, i as u32);
-                    self.encode_field_into_buf(buf, &field.name, field_val, &field.ty)?;
+                    self.emit_json_value(&JsonSink::Field { buf, key: field.name.clone() }, field_val, Some(&field.ty))?;
                 }
                 if tag_field.is_none() {
                     let inner = self.builder.alloc_temp(MirType::Buffer);
@@ -599,18 +682,16 @@ impl<'a> MirLowerer<'a> {
         field_val
     }
 
-    /// Add a `T?` field to a json buffer: the payload when present, `null` when
-    /// not. Both arms call an existing `json_buf_add_*`, so every payload kind
-    /// (including bool, which has no raw literal to build) comes out right.
-    fn emit_json_optional_field(
+    /// A `T?`: the payload, encoded as its own type, when present; `null`
+    /// when not.
+    fn emit_json_optional(
         &mut self,
-        buf: crate::LocalId,
-        field_name: &str,
+        sink: &JsonSink,
         opt_local: crate::LocalId,
         payload_decl: &rask_types::Type,
     ) -> Result<(), LoweringError> {
-        let opt_ty = self.builder.local_type(opt_local).unwrap_or_else(|| crate::fallback::unknown_type("lower/collections:285"));
-        let payload_ty = Self::payload_of_mir(&opt_ty).unwrap_or_else(|| crate::fallback::unknown_type("lower/collections:286"));
+        let opt_ty = self.builder.local_type(opt_local).unwrap_or_else(|| crate::fallback::unknown_type("lower/collections:json_optional"));
+        let payload_ty = Self::payload_of_mir(&opt_ty).unwrap_or_else(|| crate::fallback::unknown_type("lower/collections:json_optional_payload"));
 
         let tag = self.builder.alloc_temp(MirType::U8);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
@@ -637,86 +718,16 @@ impl<'a> MirLowerer<'a> {
         }));
 
         self.builder.switch_to_block(some_block);
-        let payload = self.emit_option_payload(
-            MirOperand::Local(opt_local),
-            payload_ty.clone(),
-            false,
-        );
-        if let Some(text) = self.custom_encode_text(MirOperand::Local(payload), payload_decl) {
-            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                dst: None,
-                func: FunctionRef::reading("rask_json_buf_add_raw"),
-                args: vec![
-                    MirOperand::Local(buf),
-                    MirOperand::Constant(MirConst::String(field_name.to_string())),
-                    MirOperand::Local(text),
-                ],
-            }));
-        } else {
-            match &payload_ty {
-                MirType::Struct(crate::types::StructLayoutId { id, .. }) => {
-                    let layout = self.ctx.struct_layouts.get(*id as usize).cloned();
-                    match layout {
-                        Some(l) => {
-                            let (nested, _) =
-                                self.lower_json_encode_struct(MirOperand::Local(payload), l)?;
-                            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                                dst: None,
-                                func: FunctionRef::reading("rask_json_buf_add_raw"),
-                                args: vec![
-                                    MirOperand::Local(buf),
-                                    MirOperand::Constant(MirConst::String(field_name.to_string())),
-                                    nested,
-                                ],
-                            }));
-                        }
-                        None => self.emit_json_add_scalar(buf, field_name, payload, payload_decl),
-                    }
-                }
-                _ => self.emit_json_add_scalar(buf, field_name, payload, payload_decl),
-            }
-        }
+        let payload = self.emit_option_payload(MirOperand::Local(opt_local), payload_ty, false);
+        self.emit_json_value(sink, payload, Some(payload_decl))?;
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: done_block }));
 
         self.builder.switch_to_block(none_block);
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-            dst: None,
-            func: FunctionRef::reading("rask_json_buf_add_raw"),
-            args: vec![
-                MirOperand::Local(buf),
-                MirOperand::Constant(MirConst::String(field_name.to_string())),
-                MirOperand::Constant(MirConst::String("null".to_string())),
-            ],
-        }));
+        self.emit_json_raw(sink, MirOperand::Constant(MirConst::String("null".to_string())));
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: done_block }));
 
         self.builder.switch_to_block(done_block);
         Ok(())
-    }
-
-    fn emit_json_add_scalar(
-        &mut self,
-        buf: crate::LocalId,
-        field_name: &str,
-        value: crate::LocalId,
-        ty: &rask_types::Type,
-    ) {
-        use rask_types::Type;
-        let helper = match ty {
-            _ if self.ctx.is_text(ty) => "rask_json_buf_add_string",
-            Type::Bool => "rask_json_buf_add_bool",
-            Type::F32 | Type::F64 => "rask_json_buf_add_f64",
-            _ => "rask_json_buf_add_i64",
-        };
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-            dst: None,
-            func: FunctionRef::reading(helper),
-            args: vec![
-                MirOperand::Local(buf),
-                MirOperand::Constant(MirConst::String(field_name.to_string())),
-                MirOperand::Local(value),
-            ],
-        }));
     }
 
     /// Expand `json.encode(vec)` into a loop that encodes each element.
@@ -782,34 +793,14 @@ impl<'a> MirLowerer<'a> {
 
         self.builder.switch_to_block(body_block);
 
-        let elem_ref = &elem_ty;
-        // The index travels with the layout. Re-deriving it from the layout's
-        // *name* afterwards is what let this land on the wrong entry: a name
-        // shared by a user struct and a stdlib one resolves differently
-        // depending on which side asks, and a name that isn't in the table at
-        // all used to fall back to index 0 — whatever type happens to sit
-        // there (#1062).
-        let nested_struct: Option<(u32, StructLayout)> = elem_ref
-            .as_ref()
-            .and_then(|t| self.ctx.struct_of(t))
-            .map(|(i, l)| (i, l.clone()))
-            .or_else(|| match &elem_mir {
-                Some(MirType::Struct(crate::types::StructLayoutId { id, .. })) => {
-                    self.ctx.struct_layouts.get(*id as usize).map(|l| (*id, l.clone()))
-                }
-                _ => None,
-            });
-
         // The element's own type, so a struct element comes back as a pointer to
         // its storage, a string keeps all 16 bytes and a scalar is read at its
         // own width.
-        let elem_local_ty = match (&nested_struct, elem_ref, &elem_mir) {
-            (Some((idx, l)), _, _) => {
-                MirType::Struct(crate::types::StructLayoutId::new(*idx, l.size, l.align))
-            }
-            (None, Some(ty), _) if !matches!(ty, Type::Var(_)) => self.ctx.type_to_mir(ty),
-            (None, _, Some(m)) => m.clone(),
-            _ => MirType::I64,
+        let elem_ty = elem_ty.filter(|t| !matches!(t, Type::Var(_)));
+        let elem_local_ty = match (&elem_ty, &elem_mir) {
+            (Some(ty), _) => self.ctx.type_to_mir(ty),
+            (None, Some(m)) => m.clone(),
+            (None, None) => MirType::I64,
         };
         let elem = self.builder.alloc_temp(elem_local_ty);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
@@ -817,57 +808,7 @@ impl<'a> MirLowerer<'a> {
             func: crate::runtime_ops::vec_index(),
             args: vec![MirOperand::Local(collection), MirOperand::Local(idx)],
         }));
-
-        let custom = match elem_ref {
-            Some(t) => self.custom_encode_text(MirOperand::Local(elem), t),
-            None => None,
-        };
-        if let Some(text) = custom {
-            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                dst: None,
-                func: FunctionRef::reading("rask_json_buf_array_add_raw"),
-                args: vec![MirOperand::Local(arr_buf), MirOperand::Local(text)],
-            }));
-        } else if let Some((_, layout)) = nested_struct {
-            let (json_str, _) = self.lower_json_encode_struct(
-                MirOperand::Local(elem),
-                layout,
-            )?;
-            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                dst: None,
-                func: FunctionRef::reading("rask_json_buf_array_add_raw"),
-                args: vec![MirOperand::Local(arr_buf), json_str],
-            }));
-        } else {
-            let helper = match elem_ref {
-                Some(Type::String) => "rask_json_buf_array_add_string",
-                Some(Type::Bool) => "rask_json_buf_array_add_bool",
-                Some(Type::F32) | Some(Type::F64) => "rask_json_buf_array_add_f64",
-                Some(_) => "rask_json_buf_array_add_i64",
-                None => match &elem_mir {
-                    Some(MirType::Buffer) => "rask_json_buf_array_add_string",
-                    Some(MirType::Bool) => "rask_json_buf_array_add_bool",
-                    Some(MirType::F32) | Some(MirType::F64) => "rask_json_buf_array_add_f64",
-                    _ => "rask_json_buf_array_add_i64",
-                },
-            };
-            // The helpers take an i64, an f64 or a bool; a narrower element
-            // is converted by its own signedness.
-            let helper_ty = match helper {
-                "rask_json_buf_array_add_f64" => Some(MirType::F64),
-                "rask_json_buf_array_add_i64" => Some(MirType::I64),
-                _ => None,
-            };
-            let elem_op = match helper_ty {
-                Some(ty) => self.to_slot_width(MirOperand::Local(elem), &ty),
-                None => MirOperand::Local(elem),
-            };
-            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                dst: None,
-                func: FunctionRef::reading(helper),
-                args: vec![MirOperand::Local(arr_buf), elem_op],
-            }));
-        }
+        self.emit_json_value(&JsonSink::Element { arr: arr_buf }, elem, elem_ty.as_ref())?;
 
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
             dst: idx,

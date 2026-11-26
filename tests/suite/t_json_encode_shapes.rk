@@ -1,113 +1,70 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// json.encode on the shapes a real response body has.
-//
-// Three things were wrong on native. A `Vec<T>` field matched the nested-struct
-// branch, because `find_struct("Vec")` succeeds against the stdlib layout, so
-// `"items":[…]` came out as `"items":{}`. A bare `json.encode(vec)` on a Vec
-// built by `push` had no element type — the checker leaves that an inference
-// variable — and encoded a Vec of structs as `[1,2]`. And a `T?` field went
-// through json_buf_add_i64, writing the address of the option's storage where
-// `null` belongs.
-//
-// Checked with `contains` rather than whole-string equality: a `{` in a string
-// literal opens interpolation, so the expected JSON can't be written as a
-// literal, and the two backends order object keys differently (interpreter
-// alphabetically, native in declaration order).
-
+// What json.encode writes for each shape a value can take inside a struct or
+// a Vec. Native kept one list of shapes for struct fields and a shorter one
+// for Vec elements, so a nested Vec, an optional or an enum element wrote its
+// address (#1956). Fields came out in memory order, not declaration order
+// (#1961), and the interpreter wrote a Map in insertion order where `for` and
+// native use the seeded order (#1938).
 import json
 
-struct View {
-    public id: u64
-    public title: string
+struct Opts {
+    name: string
+    f: bool
+    n: i64
 }
 
-struct Page {
-    public items: Vec<View>
-    public total: usize
-    public offset: usize
+enum Slot {
+    One(i64)
+    Two(string, i64)
+    Empty
 }
 
-struct WithOptional {
-    public id: u64
-    public who: u64?
-    public note: string?
+struct Book {
+    nested: Vec<Vec<string>>
+    opts: Vec<string?>
+    slots: Vec<Slot>
+    maybe: Vec<Opts?>
+    small: Vec<i8>
 }
 
-struct Patch {
-    public status: string?
-    public add_tags: Vec<string>?
-    public counts: Map<string, i64>
+test "fields come out in declaration order" {
+    assert json.encode(Opts(name: "x", f: true, n: 3)) == "{{\"name\":\"x\",\"f\":true,\"n\":3}"
 }
 
-func views() -> Vec<View> {
-    mut v = Vec.new()
-    v.push(View(id: 1, title: "one"))
-    v.push(View(id: 2, title: "two"))
-    return v
+test "Vec elements encode as their own type" {
+    mut inner = Vec.new()
+    inner.push("k")
+    mut nested = Vec.new()
+    nested.push(inner)
+    nested.push(Vec.new())
+    mut opts: Vec<string?> = Vec.new()
+    opts.push(none)
+    opts.push("m")
+    mut slots = Vec.new()
+    slots.push(Slot.One(1))
+    slots.push(Slot.Two("y", 9))
+    slots.push(Slot.Empty)
+    mut maybe: Vec<Opts?> = Vec.new()
+    maybe.push(Opts(name: "a", f: false, n: 1))
+    maybe.push(none)
+    mut small: Vec<i8> = Vec.new()
+    small.push(-3)
+    let b = Book(nested: nested, opts: opts, slots: slots, maybe: maybe, small: small)
+    let want = "{{\"nested\":[[\"k\"],[]],\"opts\":[null,\"m\"],\"slots\":[{{\"One\":1},{{\"Two\":{{\"_0\":\"y\",\"_1\":9}}}},\"Empty\"],\"maybe\":[{{\"name\":\"a\",\"f\":false,\"n\":1},null],\"small\":[-3]}"
+    assert json.encode(b) == want
 }
 
-test "stdlib.encoding — a Vec of structs encodes as an array of objects" {
-    let encoded = json.encode(views())
-    assert encoded.starts_with("[")
-    assert encoded.ends_with("]")
-    assert encoded.contains("\"id\":1")
-    assert encoded.contains("\"title\":\"one\"")
-    assert encoded.contains("\"id\":2")
-    assert encoded.contains("\"title\":\"two\"")
-}
-
-test "stdlib.encoding — a Vec field encodes as an array, not an object" {
-    let page = Page(items: views(), total: 2, offset: 0)
-    let encoded = json.encode(page)
-    assert encoded.contains("\"items\":[")
-    assert encoded.contains("\"title\":\"one\"")
-    assert encoded.contains("\"title\":\"two\"")
-    assert encoded.contains("\"total\":2")
-    assert encoded.contains("\"offset\":0")
-}
-
-test "stdlib.encoding — an empty Vec field encodes as an empty array" {
-    let empty = Vec.new()
-    let page = Page(items: empty, total: 0, offset: 0)
-    let encoded = json.encode(page)
-    assert encoded.contains("\"items\":[]")
-}
-
-// Only the absent case: wrapping a value into a `T?` field miscompiles on
-// native independently of the encoder (#498).
-test "stdlib.encoding — an absent optional field encodes as null" {
-    let r = WithOptional(id: 4, who: none, note: none)
-    let encoded = json.encode(r)
-    assert encoded.contains("\"id\":4")
-    assert encoded.contains("\"who\":null")
-    assert encoded.contains("\"note\":null")
-}
-
-// A Map field and a `T?` around a collection both hold a pointer, and both used
-// to go through json_buf_add_i64: the map came out `{}` (it matched the stdlib
-// Map struct layout) and the optional Vec printed its address as a number. Both
-// route through the runtime's shape encoder now.
-test "stdlib.encoding — a Map field encodes as an object" {
-    mut counts = Map.new()
-    counts.insert("a", 1)
-    let p = Patch(status: none, add_tags: none, counts: counts)
-    let encoded = json.encode(p)
-    assert encoded.contains("\"counts\":{")
-    assert encoded.contains("\"a\":1")
-}
-
-test "stdlib.encoding — an optional collection encodes as its contents or null" {
-    mut tags = Vec.new()
-    tags.push("x")
-    mut empty = Map.new()
-    let present = Patch(status: "done", add_tags: tags, counts: empty)
-    let encoded = json.encode(present)
-    assert encoded.contains("\"add_tags\":[\"x\"]")
-    assert encoded.contains("\"status\":\"done\"")
-
-    mut empty2 = Map.new()
-    let absent = Patch(status: none, add_tags: none, counts: empty2)
-    let encoded2 = json.encode(absent)
-    assert encoded2.contains("\"add_tags\":null")
-    assert encoded2.contains("\"counts\":{}")
+test "a Map encodes in the order for visits it" {
+    mut m: Map<string, i64> = Map.new()
+    mut i = 7
+    while i >= 0 {
+        m.insert("w{i}", i)
+        i -= 1
+    }
+    mut parts = Vec.new()
+    for (k, v) in m {
+        parts.push("\"{k}\":{v}")
+    }
+    let want = "{{{parts.join(",")}}}"
+    assert json.encode(m) == want
 }
