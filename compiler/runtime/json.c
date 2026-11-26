@@ -642,10 +642,14 @@ RaskJsonShape *rask_json_shape_result(RaskJsonShape *ok, RaskJsonShape *err, int
 }
 
 RaskJsonShape *rask_json_shape_custom(int64_t size, RaskJsonShape *wire, int64_t wire_size,
-                                      void *decode) {
+                                      void *decode, const int32_t *owned, int64_t n_owned,
+                                      int64_t align) {
     RaskJsonShape *s = json_shape_new(RASK_JSHAPE_CUSTOM, size);
     s->elem = wire;
     s->wire_size = wire_size;
+    s->elem_owned = owned;
+    s->n_elem_owned = n_owned;
+    s->elem_align = align;
     s->custom = (RaskJsonCustom)decode;
     return s;
 }
@@ -791,6 +795,7 @@ static int json_decode_custom(void *dst, RaskJsonShape *shape, RaskJsonVal *v,
     void *wire = rask_alloc(size);
     memset(wire, 0, (size_t)size);
     if (!json_decode_into_slot(wire, shape->elem, v, path)) {
+        rask_owned_release_all(wire, shape->elem_owned, shape->n_elem_owned);
         rask_free(wire);
         return 0;
     }
@@ -873,6 +878,7 @@ static int json_decode_vec(void *dst, RaskJsonShape *shape, RaskJsonVal *v,
         char child[256];
         snprintf(child, sizeof(child), "%s[%d]", path[0] ? path : "the list", i);
         if (!json_decode_into_slot(cell, shape->elem, v->as.arr.items[i], child)) {
+            rask_owned_release_all(cell, shape->elem_owned, shape->n_elem_owned);
             if (cell != stack_slot) rask_free(cell);
             rask_vec_free(vec);
             return 0;
@@ -906,6 +912,7 @@ static int json_decode_map(void *dst, RaskJsonShape *shape, RaskJsonVal *v,
         snprintf(child, sizeof(child), "%s%s%s", path, path[0] ? "." : "key ",
                  rask_string_ptr(&v->as.obj.keys[i]));
         if (!json_decode_into_slot(cell, shape->elem, v->as.obj.vals[i], child)) {
+            rask_owned_release_all(cell, shape->elem_owned, shape->n_elem_owned);
             if (cell != stack_slot) rask_free(cell);
             rask_map_free(map);
             return 0;
@@ -1096,7 +1103,9 @@ static int json_decode_into_slot(void *dst, RaskJsonShape *shape,
     return 0;
 }
 
-int64_t rask_json_decode_into(void *dst, RaskJsonShape *shape, const RaskStr *input) {
+int64_t rask_json_decode_into(void *dst, RaskJsonShape *shape, const RaskStr *input,
+                              const int32_t *owned, int64_t n_owned, int64_t align) {
+    (void)align;
     json_err_kind = RASK_JSON_OK;
     json_err_msg[0] = '\0';
     json_err_path[0] = '\0';
@@ -1104,14 +1113,17 @@ int64_t rask_json_decode_into(void *dst, RaskJsonShape *shape, const RaskStr *in
     RaskJsonVal *tree = rask_json_tree_parse(input);
     if (!tree) return json_err_kind ? json_err_kind : RASK_JSON_ERR_PARSE;
 
-    // A failed decode leaves the destination untouched from the caller's point
-    // of view — the Err branch is what gets read, and the slot is scratch.
+    // A failed decode hands back only the Err, so the destination is scratch,
+    // but it may hold the containers and strings of the fields read before
+    // the one that failed. It was zeroed first, so what was never reached
+    // releases as nothing.
     int ok = json_decode_into_slot(dst, shape, tree, "");
     rask_json_tree_free(tree);
     if (ok) {
         json_err_kind = RASK_JSON_OK;
         return RASK_JSON_OK;
     }
+    rask_owned_release_all(dst, owned, n_owned);
     return json_err_kind ? json_err_kind : RASK_JSON_ERR_TYPE;
 }
 

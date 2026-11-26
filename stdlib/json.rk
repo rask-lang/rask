@@ -508,12 +508,6 @@ extend json {
     @native("rask_json_shape_generated")
     func shape_generated(size: i64, generate: i64) -> i64 {}
 
-    /// The shape of a type with its own `decode` (std.encoding/E12b): its size,
-    /// the shape of what `decode` reads, how many bytes that takes, and the
-    /// function that calls `decode`.
-    @native("rask_json_shape_custom")
-    func shape_custom(size: i64, wire: i64, wire_size: i64, decode: i64) -> i64 {}
-
     /// A custom decode's refusal: the message of the error it returned. The
     /// decoder puts it behind where in the input the value was.
     @native("rask_json_custom_reject")

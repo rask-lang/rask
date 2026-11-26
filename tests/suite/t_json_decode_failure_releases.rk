@@ -1,0 +1,56 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A decode that fails partway releases what it had already built. Native
+// decoding fills the destination as it reads, and on an error only the Err
+// came back: the strings, Vecs and Maps of the fields read before the bad
+// one stayed allocated, as did the elements of a list whose later item was
+// wrong and the wire value of a custom decode whose input was. The leak gate
+// runs this file.
+
+import json
+
+struct Label {
+    text: string
+}
+
+Label implements Decode {
+    func decode(raw: Vec<string>) -> Label or json.JsonError {
+        return Label(text: raw[0].clone())
+    }
+}
+
+struct Record {
+    public names: Vec<string>
+    public tags: Map<string, string>
+    public title: string
+    public count: i64
+}
+
+struct Labelled {
+    public label: Label
+}
+
+func failure<T: Decode>(text: string) -> string {
+    let _ = json.decode<T>(text) catch e => {
+        return e.message()
+    }
+    return "decoded"
+}
+
+test "fields read before the bad one are released" {
+    let msg = failure<Record>(
+        "{{\"names\":[\"a long name that lives on the heap\"],\"tags\":{{\"k\":\"a long value that lives on the heap\"}},\"title\":\"another long string on the heap\",\"count\":\"seven\"}}",
+    )
+    assert msg.contains("count")
+}
+
+test "a bad item releases the items before it" {
+    let msg = failure<Vec<Record>>(
+        "[{{\"names\":[\"first record, fully read\"],\"tags\":{{}},\"title\":\"a title long enough for the heap\",\"count\":1}},{{\"names\":[\"second\"],\"tags\":{{}},\"title\":\"t\",\"count\":true}}]",
+    )
+    assert msg.contains("count")
+}
+
+test "a custom decode's partial wire value is released" {
+    let msg = failure<Labelled>("{{\"label\":[\"a wire string long enough for the heap\",7]}}")
+    assert msg != "decoded"
+}

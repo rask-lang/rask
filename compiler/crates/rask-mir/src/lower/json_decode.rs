@@ -110,7 +110,12 @@ impl<'a> MirLowerer<'a> {
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(status),
             func: FunctionRef::reading("rask_json_decode_into"),
-            args: vec![MirOperand::Local(dst), MirOperand::Local(shape), input],
+            args: vec![
+                MirOperand::Local(dst),
+                MirOperand::Local(shape),
+                input,
+                crate::elem_strs::elem(target_mir.clone()),
+            ],
         }));
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: None,
@@ -712,11 +717,12 @@ impl<'a> MirLowerer<'a> {
             rvalue: MirRValue::FuncAddr(fn_name),
         }));
         let int = |v: i64| MirOperand::Constant(MirConst::Int(v));
-        Some(Some(self.emit_shape_call("json_shape_custom", vec![
+        Some(Some(self.emit_shape_call("rask_json_shape_custom", vec![
             int(rask_layout::size_of(&ty_mir, self.ctx.target()) as i64),
             MirOperand::Local(wire_shape),
             int(rask_layout::size_of(&wire_mir, self.ctx.target()) as i64),
             MirOperand::Local(addr),
+            crate::elem_strs::elem(wire_mir.clone()),
         ])))
     }
 

@@ -40,8 +40,10 @@ struct RaskJsonShape {
     RaskJsonFill generate;        // a generated type: writes one at its argument
     RaskJsonCustom custom;        // a custom decode: takes the wire value and the slot
     int64_t wire_size;            // a custom decode: bytes the wire value takes
-    // What a Vec element or Map value owns, in the form every container
-    // constructor takes, so the container the decoder builds frees it.
+    // What a Vec element, Map value or custom decode's wire value owns, in
+    // the form every container constructor takes: the container the decoder
+    // builds frees it, and a decode that fails partway releases what it had
+    // already built with it.
     const int32_t *elem_owned;
     int64_t n_elem_owned;
     int64_t elem_align;

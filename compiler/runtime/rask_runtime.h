@@ -1240,16 +1240,21 @@ void           rask_json_shape_map_key(RaskJsonShape *map, RaskJsonShape *key);
 // the slot it's given. Claims only.
 RaskJsonShape *rask_json_shape_generated(int64_t size, void *generate);
 // A type with its own `decode`: its size, the shape of what `decode` reads,
-// how many bytes that takes, and the function that calls `decode`.
+// how many bytes that takes, the function that calls `decode`, and what the
+// wire value owns.
 RaskJsonShape *rask_json_shape_custom(int64_t size, RaskJsonShape *wire, int64_t wire_size,
-                                      void *decode);
+                                      void *decode, const int32_t *owned, int64_t n_owned,
+                                      int64_t align);
 // A custom decode's refusal: the message of the error it returned.
 void           rask_json_custom_reject(const RaskStr *msg);
 // A type with its own `encode`: its size, and the function that gives its
 // value as JSON text. Encoding only.
 void           rask_json_shape_free(RaskJsonShape *s);
 
-int64_t rask_json_decode_into(void *dst, RaskJsonShape *shape, const RaskStr *input);
+// `owned` describes what a value of the destination type owns; a decode that
+// fails partway releases what it had built with it.
+int64_t rask_json_decode_into(void *dst, RaskJsonShape *shape, const RaskStr *input,
+                              const int32_t *owned, int64_t n_owned, int64_t align);
 void    rask_json_decode_zero(void *dst, int64_t size);
 int64_t rask_json_error_kind(void);
 void    rask_json_error_message(RaskStr *out, int64_t part);
