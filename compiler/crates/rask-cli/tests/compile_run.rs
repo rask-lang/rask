@@ -2423,6 +2423,20 @@ fn main_error_through_cleanup_exits_1() {
     }
 }
 
+/// An error out of main whose type is a union reports the message of the
+/// member it holds. Natively the union had no type name to look `message()`
+/// up by, so the run said only "main returned an error".
+#[test]
+fn main_union_error_reports_its_members_message() {
+    for (fixture, says) in [("main_error_union_first.rk", "afail 1"), ("main_error_union_second.rk", "bfail two")] {
+        for mode in ["--interp", "--native"] {
+            let (stdout, stderr, code) = run_capture(mode, fixture);
+            assert_eq!(code, 1, "{mode} {fixture}: expected exit 1, got {code}\n{stdout}{stderr}");
+            assert!(stderr.contains(says), "{mode} {fixture}: should report `{says}`: {stderr}");
+        }
+    }
+}
+
 #[test]
 fn main_error_whose_message_panics_exits_101() {
     for mode in ["--interp", "--native"] {

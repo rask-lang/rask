@@ -6391,14 +6391,10 @@ impl<'a> FunctionBuilder<'a> {
 
         builder.switch_to_block(err_block);
         builder.seal_block(err_block);
-        // `{ErrType}_message(err) -> string` when the error type defines one.
-        // Without it there's nothing to print but the fact, so pass null.
-        let msg_fr = match ctx.ret_ty {
-            MirType::Result { err, .. } => Self::aggregate_type_name(err, ctx)
-                .and_then(|name| ctx.func_refs.get(&format!("{}_message", name)).copied()),
-            _ => None,
+        let msg = match ctx.ret_ty {
+            MirType::Result { err, .. } => Self::error_message(builder, err, err_ptr, ctx),
+            _ => builder.ins().iconst(types::I64, 0),
         };
-        let msg = Self::call_message(builder, msg_fr, err_ptr);
         builder.ins().call(exit_fr, &[msg]);
         // rask_main_error_exit is _Noreturn, but the block still needs a
         // terminator for the verifier.
@@ -6406,6 +6402,51 @@ impl<'a> FunctionBuilder<'a> {
 
         builder.switch_to_block(ok_block);
         builder.seal_block(ok_block);
+    }
+
+    /// The text of the error at `err_ptr`, or null when its type has no
+    /// `message()`: `{ErrType}_message(err)` for a struct or enum, and for a
+    /// union (`Afail | Bfail`) the message of whichever member it holds.
+    fn error_message(
+        builder: &mut ClifFunctionBuilder,
+        err_ty: &MirType,
+        err_ptr: Value,
+        ctx: &CodegenCtx,
+    ) -> Value {
+        let MirType::Union(members) = err_ty else {
+            let fr = Self::aggregate_type_name(err_ty, ctx)
+                .and_then(|name| ctx.func_refs.get(&format!("{}_message", name)).copied());
+            return Self::call_message(builder, fr, err_ptr);
+        };
+        let tag = builder.ins().load(types::I8, MemFlags::new(), err_ptr, crate::layouts::TAG_OFFSET);
+        let payload = builder.ins().iadd_imm(err_ptr, rask_layout::payload_offset_of(err_ty, ctx.target()) as i64);
+        let merge = builder.create_block();
+        builder.append_block_param(merge, types::I64);
+        // A chain of tag tests; the last member takes whatever is left.
+        for (i, member) in members.iter().enumerate() {
+            let arm = builder.create_block();
+            let next = (i + 1 < members.len()).then(|| builder.create_block());
+            match next {
+                Some(next) => {
+                    let is_arm = builder.ins().icmp_imm(IntCC::Equal, tag, i as i64);
+                    builder.ins().brif(is_arm, arm, &[], next, &[]);
+                }
+                None => {
+                    builder.ins().jump(arm, &[]);
+                }
+            }
+            builder.switch_to_block(arm);
+            builder.seal_block(arm);
+            let msg = Self::error_message(builder, member, payload, ctx);
+            builder.ins().jump(merge, &[msg.into()]);
+            if let Some(next) = next {
+                builder.switch_to_block(next);
+                builder.seal_block(next);
+            }
+        }
+        builder.switch_to_block(merge);
+        builder.seal_block(merge);
+        builder.block_params(merge)[0]
     }
 
     /// Call `{ErrType}_message(err) -> string` and get the 16 bytes into a slot
