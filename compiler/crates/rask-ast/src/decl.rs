@@ -365,6 +365,21 @@ pub struct CallTargets {
     /// hands `work` to whatever `apply` calls it through, so naming it reaches
     /// it as surely as calling it does.
     pub function_refs: std::collections::HashSet<crate::NodeId>,
+    /// Method calls on a value whose type is a type parameter: `x.go()` with
+    /// `x: T` is `(T, go)`. Which body runs depends on the call that picked `T`.
+    pub param_methods: std::collections::HashMap<crate::NodeId, (String, String)>,
+    /// What each generic call binds its type parameters to, by parameter name.
+    pub type_args: std::collections::HashMap<crate::NodeId, Vec<(String, TypeArgTarget)>>,
+}
+
+/// A type argument as the effects pass needs it: a type whose methods have
+/// names, or the calling function's own type parameter handed on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TypeArgTarget {
+    /// The receiver name its methods are filed under (`Sx` for `Sx.go`).
+    Named(String),
+    /// A type parameter of the function making the call.
+    Param(String),
 }
 
 /// A function parameter.

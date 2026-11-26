@@ -13,7 +13,8 @@ use rask_ast::decl::{Decl, DeclKind, FnDecl};
 use rask_ast::expr::{Expr, ExprKind, SpawnTarget};
 use rask_ast::stmt::{Stmt, StmtKind};
 
-use crate::{Effects, EffectMap, CallTargets, Runtimes};
+use crate::{Effects, EffectMap, CallTargets, ParamNeeds, Runtimes};
+use rask_ast::decl::TypeArgTarget;
 use crate::sources;
 
 /// Qualified function name (plain name or "Type.method").
@@ -36,11 +37,24 @@ pub fn infer_with_reach(
     stdlib: &[Decl],
     targets: &CallTargets,
     c_macros: &crate::CMacros,
-) -> (EffectMap, HashSet<FuncName>) {
+) -> (EffectMap, HashSet<FuncName>, ParamNeeds) {
     let mut pass = InferPass::new(targets, c_macros);
     pass.run(program, stdlib);
     let runtime_only = pass.runtime_only();
-    (pass.effects, runtime_only)
+    (pass.effects, runtime_only, pass.param_needs)
+}
+
+/// A call that binds the callee's type parameters, and the runtimes installed
+/// around it.
+struct GenericCall {
+    callee: FuncName,
+    bindings: Vec<(String, TypeArgTarget)>,
+    held: Runtimes,
+}
+
+/// What a call binds a type parameter to.
+fn bound<'b>(bindings: &'b [(String, TypeArgTarget)], param: &str) -> Option<&'b TypeArgTarget> {
+    bindings.iter().find(|(p, _)| p == param).map(|(_, t)| t)
 }
 
 /// What classifying a body reads besides the body.
@@ -79,6 +93,13 @@ struct InferPass<'t> {
     /// with no runtime installed, so its local call sites don't settle the
     /// question.
     reachable_from_outside: HashSet<FuncName>,
+    /// Each function's own type parameters.
+    type_params: HashMap<FuncName, HashSet<String>>,
+    /// CC2: each generic function's method calls on a type parameter, direct
+    /// at first and then through the generic calls it makes.
+    param_needs: ParamNeeds,
+    /// CC2: the generic calls each function makes.
+    generic_calls: HashMap<FuncName, Vec<GenericCall>>,
 }
 
 impl<'t> InferPass<'t> {
@@ -95,6 +116,9 @@ impl<'t> InferPass<'t> {
             plain_callees: HashMap::new(),
             guarded_callees: HashMap::new(),
             reachable_from_outside: HashSet::new(),
+            type_params: HashMap::new(),
+            param_needs: HashMap::new(),
+            generic_calls: HashMap::new(),
         }
     }
 
@@ -113,7 +137,9 @@ impl<'t> InferPass<'t> {
         // Phase 3: Fixed-point propagation (FX2)
         self.propagate();
 
-        // Phase 4: CC2 — propagate needs_runtime via unguarded-call edges
+        // Phase 4: CC2 — propagate needs_runtime via unguarded-call edges,
+        // once each generic call has said which bodies its type picks.
+        self.resolve_generic_calls();
         let pick = |r: Runtimes| r.multitasking;
         for fname in propagate_needs(&self.direct_needs_runtime, pick, &self.unguarded_callees) {
             if let Some(e) = self.effects.get_mut(&fname) {
@@ -178,6 +204,9 @@ impl<'t> InferPass<'t> {
     }
 
     fn collect_fn(&mut self, qname: &str, f: &FnDecl) {
+        if !f.type_params.is_empty() {
+            self.type_params.insert(qname.to_string(), f.type_params.iter().map(|p| p.name.clone()).collect());
+        }
         self.collect_body(qname, &f.body, &f.attrs, f.is_pub);
         // A stdlib native has no body to read, so its declaration says what
         // it does (`@blocks`, `@prints`, `@ambient`, `@grows`, `@shrinks`).
@@ -223,7 +252,9 @@ impl<'t> InferPass<'t> {
         }
 
         // CC2: compute which functions call spawn (or runtime-needing callees) without a guard
-        let mut scan = ReachScan::new(self.targets, &self.imports);
+        let no_params = HashSet::new();
+        let params = self.type_params.get(qname).unwrap_or(&no_params);
+        let mut scan = ReachScan::new(self.targets, &self.imports, params);
         let direct_needs_rt = rt_scan_stmts(body, Runtimes::NONE, &mut scan);
         if direct_needs_rt.any() {
             self.direct_needs_runtime.insert(qname.to_string(), direct_needs_rt);
@@ -239,6 +270,68 @@ impl<'t> InferPass<'t> {
         }
         if !scan.guarded.is_empty() {
             self.guarded_callees.insert(qname.to_string(), scan.guarded);
+        }
+        if !scan.param_calls.is_empty() {
+            self.param_needs.insert(qname.to_string(), scan.param_calls);
+        }
+        if !scan.generic_calls.is_empty() {
+            self.generic_calls.insert(qname.to_string(), scan.generic_calls);
+        }
+    }
+
+    /// comp.effects/INF1 for CC2: a generic function's effects are those of
+    /// the instance a call picks. `run<T: Starter>(x: T) { x.go() }` spawns
+    /// when `T` is a type whose `go` spawns, and not otherwise, so the edge to
+    /// `Sx.go` belongs to the caller that picked `Sx`.
+    ///
+    /// First, a type parameter handed on to another generic call carries that
+    /// callee's method calls back to this function's own parameter, until
+    /// nothing changes. Then each call that names a type gets an edge to that
+    /// type's method, outside a block where neither function installs one.
+    fn resolve_generic_calls(&mut self) {
+        loop {
+            let mut changed = false;
+            for (caller, calls) in &self.generic_calls {
+                let Some(own) = self.type_params.get(caller) else { continue };
+                for call in calls {
+                    let Some(reached) = self.param_needs.get(&call.callee) else { continue };
+                    let mut add = Vec::new();
+                    for ((param, method), open) in reached {
+                        let open = open.missing_from(call.held);
+                        let Some(TypeArgTarget::Param(q)) = bound(&call.bindings, param) else { continue };
+                        if open.any() && own.contains(q) {
+                            add.push(((q.clone(), method.clone()), open));
+                        }
+                    }
+                    let mine = self.param_needs.entry(caller.clone()).or_default();
+                    for (key, open) in add {
+                        let slot = mine.entry(key).or_default();
+                        if (*slot | open) != *slot {
+                            *slot |= open;
+                            changed = true;
+                        }
+                    }
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+        for (caller, calls) in &self.generic_calls {
+            for call in calls {
+                let Some(reached) = self.param_needs.get(&call.callee) else { continue };
+                for ((param, method), open) in reached {
+                    let open = open.missing_from(call.held);
+                    let Some(TypeArgTarget::Named(ty)) = bound(&call.bindings, param) else { continue };
+                    let name = format!("{ty}.{method}");
+                    if open.multitasking {
+                        self.unguarded_callees.entry(caller.clone()).or_default().insert(name.clone());
+                    }
+                    if open.pool {
+                        self.unguarded_pool_callees.entry(caller.clone()).or_default().insert(name);
+                    }
+                }
+            }
         }
     }
 
@@ -661,21 +754,49 @@ fn propagate_needs(
 struct ReachScan<'t> {
     targets: &'t CallTargets,
     imports: &'t sources::ImportedNames,
+    /// The scanned function's own type parameters.
+    type_params: &'t HashSet<String>,
     unguarded: HashSet<String>,
     unguarded_pool: HashSet<String>,
     plain: HashSet<String>,
     guarded: HashSet<String>,
+    /// Method calls on one of `type_params`, with the runtimes not installed
+    /// around them.
+    param_calls: HashMap<(String, String), Runtimes>,
+    generic_calls: Vec<GenericCall>,
 }
 
 impl<'t> ReachScan<'t> {
-    fn new(targets: &'t CallTargets, imports: &'t sources::ImportedNames) -> Self {
+    fn new(targets: &'t CallTargets, imports: &'t sources::ImportedNames, type_params: &'t HashSet<String>) -> Self {
         Self {
             targets,
             imports,
+            type_params,
             unguarded: HashSet::new(),
             unguarded_pool: HashSet::new(),
             plain: HashSet::new(),
             guarded: HashSet::new(),
+            param_calls: HashMap::new(),
+            generic_calls: Vec::new(),
+        }
+    }
+
+    /// A call that binds type parameters, kept for `resolve_generic_calls`.
+    fn generic_call(&mut self, call: rask_ast::NodeId, held: Runtimes, callee: String) {
+        if let Some(bindings) = self.targets.type_args.get(&call) {
+            self.generic_calls.push(GenericCall { callee, bindings: bindings.clone(), held });
+        }
+    }
+
+    /// A method call on a value of the function's own type parameter.
+    fn param_call(&mut self, call: rask_ast::NodeId, held: Runtimes) {
+        let Some((param, method)) = self.targets.param_methods.get(&call) else { return };
+        if !self.type_params.contains(param) {
+            return;
+        }
+        let open = Runtimes { multitasking: true, pool: true }.missing_from(held);
+        if open.any() {
+            *self.param_calls.entry((param.clone(), method.clone())).or_default() |= open;
         }
     }
 
@@ -748,6 +869,7 @@ fn rt_scan_expr(expr: &Expr, held: Runtimes, rs: &mut ReachScan<'_>) -> Runtimes
     match &expr.kind {
         ExprKind::Call { func, args } => {
             if let Some(name) = crate::free_callee(expr.id, func, rs.targets, rs.imports) {
+                rs.generic_call(expr.id, held, name.clone());
                 rs.record(held, name);
             }
             let mut r = rt_scan_expr(func, held, rs);
@@ -785,7 +907,9 @@ fn rt_scan_expr(expr: &Expr, held: Runtimes, rs: &mut ReachScan<'_>) -> Runtimes
         // only a guess from the spelling, which can name methods the call
         // never reaches, so it counts for reachability alone.
         ExprKind::MethodCall { object, method, args, .. } => {
+            rs.param_call(expr.id, held);
             if let Some(name) = crate::resolved_method(expr.id, rs.targets) {
+                rs.generic_call(expr.id, held, name.clone());
                 rs.record(held, name);
             } else {
                 for name in crate::method_callees(expr.id, object, method, rs.targets, rs.imports) {

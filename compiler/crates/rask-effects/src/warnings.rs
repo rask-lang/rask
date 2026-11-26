@@ -12,7 +12,7 @@ use rask_ast::Span;
 
 use std::collections::HashSet;
 
-use crate::{EffectMap, EffectWarning, CallTargets, Runtimes};
+use crate::{EffectMap, EffectWarning, CallTargets, ParamNeeds, Runtimes};
 
 /// Detect CW1 and CW2 warnings from declarations.
 ///
@@ -26,6 +26,7 @@ pub fn detect(
     decls: &[Decl],
     effects: &EffectMap,
     runtime_only: &HashSet<String>,
+    param_needs: &ParamNeeds,
     targets: &CallTargets,
     warn_prints: bool,
 ) -> Vec<EffectWarning> {
@@ -38,6 +39,7 @@ pub fn detect(
     let mut ctx = WarnContext {
         borrowing_joins: &borrowing_joins,
         effects,
+        param_needs,
         targets,
         imports: &imports,
         runtime_only,
@@ -121,6 +123,8 @@ struct WarnContext<'a> {
     /// them, whose body is checked where it is spawned.
     borrowing_joins: &'a HashSet<rask_ast::NodeId>,
     effects: &'a EffectMap,
+    /// What each generic function's calls on a type parameter need.
+    param_needs: &'a ParamNeeds,
     /// The checker's name for each method call it resolved.
     targets: &'a CallTargets,
     /// The program's imports, for what a name at a call site means.
@@ -159,14 +163,38 @@ impl<'a> WarnContext<'a> {
     }
 
     /// CC2: a call reaching a task block whose runtime no block here installs.
-    fn check_runtime_needs(&self, callee: &str, span: Span, warnings: &mut Vec<EffectWarning>) {
+    fn check_runtime_needs(&self, call: rask_ast::NodeId, callee: &str, span: Span, warnings: &mut Vec<EffectWarning>) {
         let Some(callee_effects) = self.effects.get(callee) else { return };
-        let missing = callee_effects.needs_runtime.missing_from(self.held);
+        let needs = callee_effects.needs_runtime | self.instance_needs(call, callee);
+        let missing = needs.missing_from(self.held);
         for rt in [Runtime::Multitasking, Runtime::Pool] {
             if rt.is_in(missing) {
                 warnings.push(cc2_error(rt, callee, span));
             }
         }
+    }
+
+    /// What the instance this call picks needs beyond the generic body itself:
+    /// the methods it calls on a type parameter, on the type bound here. A
+    /// parameter bound to the caller's own parameter is the caller's callers'
+    /// question, and inference carried it there.
+    fn instance_needs(&self, call: rask_ast::NodeId, callee: &str) -> Runtimes {
+        let (Some(reached), Some(bindings)) = (self.param_needs.get(callee), self.targets.type_args.get(&call)) else {
+            return Runtimes::NONE;
+        };
+        let mut needs = Runtimes::NONE;
+        for ((param, method), open) in reached {
+            let Some((_, rask_ast::decl::TypeArgTarget::Named(ty))) = bindings.iter().find(|(p, _)| p == param) else {
+                continue;
+            };
+            if let Some(e) = self.effects.get(&format!("{ty}.{method}")) {
+                needs |= Runtimes {
+                    multitasking: e.needs_runtime.multitasking && open.multitasking,
+                    pool: e.needs_runtime.pool && open.pool,
+                };
+            }
+        }
+        needs
     }
 
     fn check_stmts(&mut self, stmts: &[Stmt], warnings: &mut Vec<EffectWarning>) {
@@ -242,7 +270,7 @@ impl<'a> WarnContext<'a> {
                 let callee_name = crate::free_callee(expr.id, func, self.targets, self.imports);
                 if let Some(ref name) = callee_name {
                     self.maybe_warn_blocking_call(name, expr.span, warnings);
-                    self.check_runtime_needs(name, expr.span, warnings);
+                    self.check_runtime_needs(expr.id, name, expr.span, warnings);
                 }
                 // The callee's name was handled as the call above.
                 if !self.targets.function_refs.contains(&func.id) {
@@ -323,7 +351,7 @@ impl<'a> WarnContext<'a> {
                 // CC2, as for a plain call, when the checker resolved the method.
                 if !self.borrowing_joins.contains(&expr.id) {
                     if let Some(name) = crate::resolved_method(expr.id, self.targets) {
-                        self.check_runtime_needs(&name, expr.span, warnings);
+                        self.check_runtime_needs(expr.id, &name, expr.span, warnings);
                     }
                 }
                 self.check_expr(object, warnings);
@@ -774,7 +802,7 @@ mod tests {
         })];
         let decls = vec![make_fn("worker", body)];
         let effects = effects_with_io("println");
-        let warnings = detect(&decls, &effects, &HashSet::new(), &Default::default(), false);
+        let warnings = detect(&decls, &effects, &HashSet::new(), &Default::default(), &Default::default(), false);
         assert_eq!(warnings.len(), 1);
         assert_eq!(warnings[0].code, "comp.effects/CW1");
         assert!(warnings[0].message.contains("println"));
@@ -795,7 +823,7 @@ mod tests {
         })];
         let decls = vec![make_fn("worker", body)];
         let effects = effects_with_io("println");
-        let warnings = detect(&decls, &effects, &HashSet::new(), &Default::default(), false);
+        let warnings = detect(&decls, &effects, &HashSet::new(), &Default::default(), &Default::default(), false);
         assert!(warnings.is_empty(), "CW1 should not fire for IO outside a spawn closure");
     }
 
@@ -815,7 +843,7 @@ mod tests {
         }];
         let decls = vec![make_fn("process", body)];
         let effects = effects_with_io_concurrent("println", "process");
-        let warnings = detect(&decls, &effects, &HashSet::new(), &Default::default(), false);
+        let warnings = detect(&decls, &effects, &HashSet::new(), &Default::default(), &Default::default(), false);
         assert_eq!(warnings.len(), 1);
         assert_eq!(warnings[0].code, "comp.effects/CW2");
     }
@@ -830,7 +858,7 @@ mod tests {
         body.extend(loop_calling("println"));
         let decls = vec![make_fn("accept_all", body)];
         let effects = effects_with_io_concurrent("println", "accept_all");
-        let warnings = detect(&decls, &effects, &HashSet::new(), &Default::default(), false);
+        let warnings = detect(&decls, &effects, &HashSet::new(), &Default::default(), &Default::default(), false);
         assert!(warnings.is_empty(), "no CW2 in a function that spawns: {:?}", warnings.iter().map(|w| &w.code).collect::<Vec<_>>());
     }
 
@@ -854,7 +882,7 @@ mod tests {
         let decls = vec![quiet, loud];
         let mut effects = effects_with_io_concurrent("println", "process");
         effects.insert("read_lines".into(), crate::Effects { async_: true, ..Default::default() });
-        let warnings = detect(&decls, &effects, &HashSet::new(), &Default::default(), false);
+        let warnings = detect(&decls, &effects, &HashSet::new(), &Default::default(), &Default::default(), false);
         assert_eq!(warnings.len(), 1, "only the function without the attribute warns");
     }
 
@@ -874,7 +902,7 @@ mod tests {
         body.extend(loop_calling("println"));
         let decls = vec![make_fn("f", body)];
         let effects = effects_with_io_concurrent("println", "f");
-        let warnings = detect(&decls, &effects, &HashSet::new(), &Default::default(), false);
+        let warnings = detect(&decls, &effects, &HashSet::new(), &Default::default(), &Default::default(), false);
         assert_eq!(warnings.len(), 1);
         assert_eq!(warnings[0].code, "comp.effects/CW2");
     }
@@ -906,7 +934,7 @@ mod tests {
         // print, and package_manager carried eight of them on every run.
         let decls = vec![make_fn("process", loop_calling("println"))];
         let effects = effects_printing_concurrent("println", "process");
-        let warnings = detect(&decls, &effects, &HashSet::new(), &Default::default(), false);
+        let warnings = detect(&decls, &effects, &HashSet::new(), &Default::default(), &Default::default(), false);
         assert!(warnings.is_empty(), "{:?}", warnings);
     }
 
@@ -914,7 +942,7 @@ mod tests {
     fn warn_blocking_print_counts_printing_for_cw2() {
         let decls = vec![make_fn("process", loop_calling("println"))];
         let effects = effects_printing_concurrent("println", "process");
-        let warnings = detect(&decls, &effects, &HashSet::new(), &Default::default(), true);
+        let warnings = detect(&decls, &effects, &HashSet::new(), &Default::default(), &Default::default(), true);
         assert_eq!(warnings.len(), 1);
         assert_eq!(warnings[0].code, "comp.effects/CW2");
     }
@@ -932,7 +960,7 @@ mod tests {
         })];
         let mut effects = HashMap::new();
         effects.insert("println".into(), crate::Effects { prints: true, ..Default::default() });
-        let warnings = detect(&[make_fn("worker", body)], &effects, &HashSet::new(), &Default::default(), false);
+        let warnings = detect(&[make_fn("worker", body)], &effects, &HashSet::new(), &Default::default(), &Default::default(), false);
         assert_eq!(warnings.len(), 1);
         assert_eq!(warnings[0].code, "comp.effects/CW1");
     }
@@ -953,7 +981,7 @@ mod tests {
         }];
         let decls = vec![make_fn("process", body)];
         let effects = effects_with_io("println"); // no async_ effect anywhere
-        let warnings = detect(&decls, &effects, &HashSet::new(), &Default::default(), false);
+        let warnings = detect(&decls, &effects, &HashSet::new(), &Default::default(), &Default::default(), false);
         assert!(warnings.is_empty(), "CW2 should not fire in single-threaded programs");
     }
 
@@ -982,7 +1010,7 @@ mod tests {
         })];
         let decls = vec![make_fn("process", body)];
         let effects = effects_with_io_concurrent("println", "process");
-        let warnings = detect(&decls, &effects, &HashSet::new(), &Default::default(), false);
+        let warnings = detect(&decls, &effects, &HashSet::new(), &Default::default(), &Default::default(), false);
         assert!(warnings.is_empty(), "No CW2 inside Multitasking context");
     }
 
@@ -1001,7 +1029,7 @@ mod tests {
         }];
         let decls = vec![make_fn("process", body)];
         let effects = HashMap::new(); // add has no effects
-        let warnings = detect(&decls, &effects, &HashSet::new(), &Default::default(), false);
+        let warnings = detect(&decls, &effects, &HashSet::new(), &Default::default(), &Default::default(), false);
         assert!(warnings.is_empty());
     }
 
@@ -1018,7 +1046,7 @@ mod tests {
         })];
         let decls = vec![make_fn("bad", body)];
         let effects = effects_with_io("fs.read_text");
-        let warnings = detect(&decls, &effects, &HashSet::new(), &Default::default(), false);
+        let warnings = detect(&decls, &effects, &HashSet::new(), &Default::default(), &Default::default(), false);
         assert_eq!(warnings.len(), 1);
         assert_eq!(warnings[0].code, "comp.effects/CW1");
     }

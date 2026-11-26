@@ -1,0 +1,91 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Rejects: a spawn reached through a generic function, with no block open
+// at the call that picks the type (conc.async/CC2, E0353).
+//
+// A generic function's effects are those of the instance a call picks
+// (comp.effects/INF1). `run(x)` with `x: T` calls `T.go`, so whether it spawns
+// depends on the type: the call that picks `Green` needs the block and the call
+// that picks `Quiet` doesn't. These calls used to pass the check and panic
+// when the task started.
+import thread.ThreadPool
+
+interface Starter {
+    func go(self) -> i64
+}
+
+struct Green {
+    n: i64
+}
+
+Green implements Starter {
+    func go(self) -> i64 {
+        let h = spawn { return 5 }
+        return h.join() catch _ => 0
+    }
+}
+
+struct Pooled {
+    n: i64
+}
+
+Pooled implements Starter {
+    func go(self) -> i64 {
+        let h = ThreadPool.spawn { return 6 }
+        return h.join() catch _ => 0
+    }
+}
+
+struct Quiet {
+    n: i64
+}
+
+Quiet implements Starter {
+    func go(self) -> i64 {
+        return self.n
+    }
+}
+
+func run<T: Starter>(x: T) -> i64 {
+    return x.go()
+}
+
+// Hands its own parameter on: the type is still picked by its caller.
+func relay<U: Starter>(x: U) -> i64 {
+    return run(x)
+}
+
+// Picks the type itself: the call here needs the block, and so does every
+// call to this function, the same as for a plain function that spawns.
+func green_inside() -> i64 {
+    // ERROR: calling `run` needs a `using Multitasking { }` scope [E0353]
+    return run(Green(n: 1))
+}
+
+// Opens the block around the call, so nothing is needed of its callers.
+func green_guarded() -> i64 {
+    using Multitasking {
+        return run(Green(n: 1))
+    }
+}
+
+func main() {
+    // ERROR: calling `run` needs a `using Multitasking { }` scope [E0353]
+    let a = run(Green(n: 1))
+    // ERROR: calling `run` needs a `using ThreadPool { }` scope [E0353]
+    let b = run(Pooled(n: 1))
+    // ERROR: calling `relay` needs a `using Multitasking { }` scope [E0353]
+    let c = relay(Green(n: 1))
+    // ERROR: calling `green_inside` needs a `using Multitasking { }` scope [E0353]
+    let d = green_inside()
+
+    // --- none of these need a block ---
+    let e = run(Quiet(n: 1))
+    let f = relay(Quiet(n: 2))
+    let g = green_guarded()
+    using Multitasking {
+        let h = relay(Green(n: 1))
+    }
+    using ThreadPool {
+        let i = run(Pooled(n: 1))
+    }
+}

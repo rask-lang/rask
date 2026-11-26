@@ -176,6 +176,9 @@ impl TypedProgram {
         for (node, callee) in &self.call_targets {
             match callee {
                 Callee::Method { recv, method, .. } => {
+                    if let Type::UnresolvedNamed(param) = recv {
+                        out.param_methods.insert(*node, (param.clone(), method.clone()));
+                    }
                     if let Some(ty) = receiver_name(recv, &self.types) {
                         out.methods.insert(*node, rask_ast::decl::MethodTarget {
                             name: format!("{ty}.{method}"),
@@ -192,6 +195,19 @@ impl TypedProgram {
                     }
                 }
             }
+        }
+        for (node, bindings) in &self.call_type_args {
+            let args = bindings
+                .iter()
+                .filter_map(|b| {
+                    let target = match &b.ty {
+                        Type::UnresolvedNamed(name) => rask_ast::decl::TypeArgTarget::Param(name.clone()),
+                        ty => rask_ast::decl::TypeArgTarget::Named(receiver_name(ty, &self.types)?),
+                    };
+                    Some((b.param.clone(), target))
+                })
+                .collect();
+            out.type_args.insert(*node, args);
         }
         for (node, sym) in &self.resolutions {
             let function = self.symbols.get(*sym).is_some_and(|s| {

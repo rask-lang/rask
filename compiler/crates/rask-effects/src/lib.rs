@@ -158,6 +158,12 @@ impl std::ops::BitOrAssign for Runtimes {
 /// Per-function effect results keyed by qualified function name.
 pub type EffectMap = HashMap<String, Effects>;
 
+/// CC2 through a type parameter (comp.effects/INF1). Per generic function, the
+/// methods it calls on a type parameter, each with the runtimes no block
+/// installs around that call. Whether the body spawns depends on the type a
+/// call picks, so the answer is worked out per call, not per function.
+pub type ParamNeeds = HashMap<String, HashMap<(String, String), Runtimes>>;
+
 /// A warning or error from effect analysis (CW1, CW2, CC1, CC2).
 #[derive(Debug, Clone)]
 pub struct EffectWarning {
@@ -198,9 +204,9 @@ pub fn infer_effects(
     c_macros: &CMacros,
     warn: &[String],
 ) -> (EffectMap, Vec<EffectWarning>) {
-    let (effects, runtime_only) = infer::infer_with_reach(program, stdlib, targets, c_macros);
+    let (effects, runtime_only, param_needs) = infer::infer_with_reach(program, stdlib, targets, c_macros);
     let warn_prints = warn.iter().any(|w| w == "blocking_print");
-    let warnings = warnings::detect(program, &effects, &runtime_only, targets, warn_prints);
+    let warnings = warnings::detect(program, &effects, &runtime_only, &param_needs, targets, warn_prints);
     (effects, warnings)
 }
 
