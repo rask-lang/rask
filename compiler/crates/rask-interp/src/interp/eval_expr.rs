@@ -464,20 +464,22 @@ impl Interpreter {
     /// a turbofish would have spelled it. `None` when the slot isn't a number
     /// the parse surface has a width for.
     /// What `json.decode<T>` builds, as the checker resolved `T`: the ok side
-    /// of the call's type, named the way struct declarations name types.
+    /// of the call's type, with this call's type parameters bound.
     ///
     /// The written argument is only a spelling. `json.JsonValue` and an
     /// imported `JsonValue` are the same type, and comparing the spelling
-    /// sent the qualified one down the struct-decoding path (#1435).
-    fn json_decode_target(&self, node_id: rask_ast::NodeId) -> Option<TypeExpr> {
+    /// sent the qualified one down the struct-decoding path (#1435). A
+    /// spelling also can't say what `[i64; SIZE]`'s length is or what a
+    /// generic's fields hold.
+    fn json_decode_target(&self, node_id: rask_ast::NodeId) -> Option<rask_types::Type> {
         let rask_types::Type::Result { ok, .. } = self.node_types.get(&node_id)? else {
             return None;
         };
-        if ok.has_unsolved_var() {
-            return None;
-        }
-        let named = rask_mono::Monomorphizer::nameable_type(ok, &self.types)?;
-        Some(self.resolve_type_param(&named.to_type_expr()))
+        let ok = match self.generic_frames.last().and_then(|f| f.as_deref()) {
+            Some(frame) => rask_check::substitute_type(ok, frame),
+            None => (**ok).clone(),
+        };
+        (!ok.has_unsolved_var()).then_some(ok)
     }
 
     fn parse_target_from_node(&self, node_id: rask_ast::NodeId) -> Option<&'static str> {
@@ -1713,7 +1715,12 @@ impl Interpreter {
                 {
                     match &receiver {
                         Value::Module(ModuleKind::Json) if method == "decode" => {
-                            let target = self.json_decode_target(expr.id).unwrap_or(first_type);
+                            let target = match self.json_decode_target(expr.id) {
+                                Some(t) => t,
+                                None => rask_check::resolve_type_expr(&first_type, &self.types).map_err(|e| {
+                                    RuntimeDiagnostic::new(RuntimeError::TypeError(e.to_string()), expr.span)
+                                })?,
+                            };
                             return self
                                 .json_decode(&target, arg_vals)
                                 .map_err(|e| RuntimeDiagnostic::new(e, expr.span));
