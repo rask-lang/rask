@@ -1133,37 +1133,7 @@ void rask_json_decode_zero(void *dst, int64_t size) {
     if (dst && size > 0) memset(dst, 0, (size_t)size);
 }
 
-// ─── Shape-driven encoding ────────────────────────────────────────
-//
-// The mirror of the decoder: given a value and the shape describing it, write
-// the JSON out. `json.encode` unrolls scalars and structs into json_buf_* calls
-// at the call site, but a Map has to be walked at runtime — there's no way to
-// unroll an unknown number of keys — so its field routes through here.
-
-static void json_write_escaped(JsonStrBuf *b, const char *s, int64_t len) {
-    jsb_push(b, "\"", 1);
-    for (int64_t i = 0; i < len; i++) {
-        unsigned char c = (unsigned char)s[i];
-        switch (c) {
-            case '"':  jsb_push(b, "\\\"", 2); break;
-            case '\\': jsb_push(b, "\\\\", 2); break;
-            case '\n': jsb_push(b, "\\n", 2); break;
-            case '\r': jsb_push(b, "\\r", 2); break;
-            case '\t': jsb_push(b, "\\t", 2); break;
-            case '\b': jsb_push(b, "\\b", 2); break;
-            case '\f': jsb_push(b, "\\f", 2); break;
-            default:
-                if (c < 0x20) {
-                    char esc[7];
-                    snprintf(esc, sizeof(esc), "\\u%04x", c);
-                    jsb_push(b, esc, 6);
-                } else {
-                    jsb_push(b, (const char *)&c, 1);
-                }
-        }
-    }
-    jsb_push(b, "\"", 1);
-}
+// ─── Pretty printing ──────────────────────────────────────────────
 
 // Re-indent compact JSON text into the form `JsonValue.to_string_pretty`
 // produces: two spaces per level, `": "` after a key, and `[]` / `{}` left
