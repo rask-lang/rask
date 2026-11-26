@@ -266,7 +266,12 @@ void rask_threadpool_shutdown(void) {
 
 // A panic in a test's body skips the block's end (see rask_scope_close_if_open).
 // The next test has to find the pool closed, however deep the panic left it.
+//
+// Most panics leave no block open. Checking first keeps those from taking the
+// lock, which under sim is a scheduling point: a claim whose input panicked
+// was reported as running under sampled schedules, and lost its full walk.
 void rask_threadpool_close_if_open(void) {
+    if (__atomic_load_n(&g_pool.depth, __ATOMIC_ACQUIRE) == 0) return;
     rask_task_mutex_lock(&g_life, "closing a ThreadPool block");
     int open = __atomic_load_n(&g_pool.depth, __ATOMIC_ACQUIRE) > 0;
     if (open) __atomic_store_n(&g_pool.depth, 1, __ATOMIC_RELEASE);
