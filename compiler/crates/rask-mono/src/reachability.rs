@@ -121,9 +121,6 @@ pub struct Monomorphizer<'a> {
     /// entry, test runners, C exports, the error message main prints. Nothing
     /// in a body names them, so they are where liveness starts.
     pub roots: Vec<String>,
-    /// The `message()` an error out of the entry is printed with, one per
-    /// union member in member order; empty when it has none to call.
-    pub entry_error_messages: Vec<String>,
     /// The key `hash`/`eq` each map-building call needs (`note_map_key_fns`).
     pub map_key_fns: HashMap<NodeId, crate::MapKeyFns>,
     /// The field defaults each decoded struct calls (`note_decode_defaults`).
@@ -425,7 +422,6 @@ impl<'a> Monomorphizer<'a> {
             too_deep: None,
             results: Vec::new(),
             roots: Vec::new(),
-            entry_error_messages: Vec::new(),
             bound_symbols: HashMap::new(),
             map_key_fns: HashMap::new(),
             decode_defaults: HashMap::new(),
@@ -670,22 +666,22 @@ impl<'a> Monomorphizer<'a> {
     }
 
     /// struct.targets/EX4: an error out of main is printed before the process
-    /// exits 1, so its `message()` is called from the entry's return path even
+    /// exits 1, so its `message()` is called from the entry's wrapper even
     /// when nothing in the program calls it. Nothing in the call graph says
-    /// so, hence these roots. The symbols are kept, one per union member in
-    /// member order, for codegen to call: spelled from the type's name, a
-    /// generic error's `Gen<i64>_message` named no function at all.
+    /// so, hence these roots. An `any Error` reaches its message through the
+    /// box's vtable, which boxing it already queued.
     fn add_entry_error_message_roots(&mut self, entry: &str) {
         let Some(typed) = self.typed else { return };
         let Some(decl) = self.fn_table.get(entry) else { return };
         let DeclKind::Fn(f) = &decl.kind else { return };
         let Some(sig) = typed.fn_sigs.get(&f.id) else { return };
         let Some(calls) = self.symbols.error_messages(&sig.ret, &typed.types) else { return };
-        for call in &calls {
-            self.roots.push(call.symbol.clone());
-            self.enqueue(call.qualified.clone(), call.type_args.clone());
+        for call in calls {
+            if let crate::MessageCall::Direct(call) = call {
+                self.roots.push(call.symbol);
+                self.enqueue(call.qualified, call.type_args);
+            }
         }
-        self.entry_error_messages = calls.into_iter().map(|c| c.symbol).collect();
     }
 
     fn enqueue_root(&mut self, name: String) {
@@ -911,7 +907,9 @@ impl<'a> Monomorphizer<'a> {
         let Some(typed) = self.typed else { return };
         let Some(result) = self.node_type(id) else { return };
         for call in self.symbols.error_messages(&result, &typed.types).unwrap_or_default() {
-            self.enqueue(call.qualified, call.type_args);
+            if let crate::MessageCall::Direct(call) = call {
+                self.enqueue(call.qualified, call.type_args);
+            }
         }
     }
 

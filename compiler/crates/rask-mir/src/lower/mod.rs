@@ -449,6 +449,10 @@ pub fn folded_symbol(node: NodeId) -> String {
 /// the two sides can't drift apart.
 pub const CONST_SLOT_PREFIX: &str = "__rask_const_slot__";
 
+/// The body of a `main` that can return an error; `main` itself is the
+/// wrapper that reports it (`MirLowerer::entry_wrapper`).
+pub const ENTRY_BODY_FN: &str = "main$body";
+
 /// Data-slot name for a module-level const.
 pub fn const_slot_name(const_name: &str) -> String {
     format!("{}{}", CONST_SLOT_PREFIX, const_name)
@@ -1012,12 +1016,11 @@ impl<'a> MirContext<'a> {
         Some(calls.into_iter().map(|c| c.symbol).collect())
     }
 
-    /// The `message()` symbol of each error the result at `node` can carry,
+    /// How to call `message()` on each error the result at `node` can carry,
     /// one per union member in member order (`Symbols::error_messages`).
-    pub fn error_messages(&self, node: NodeId) -> Option<Vec<String>> {
+    pub fn error_messages(&self, node: NodeId) -> Option<Vec<rask_mono::MessageCall>> {
         let result = self.lookup_raw_type(node)?;
-        let calls = self.symbols.error_messages(&result, self.type_defs)?;
-        Some(calls.into_iter().map(|c| c.symbol).collect())
+        self.symbols.error_messages(&result, self.type_defs)
     }
 
     /// The whole `if`/`match` type an arm widens to (`TypedProgram::arm_widenings`),
@@ -4821,6 +4824,19 @@ impl<'a> MirLowerer<'a> {
         let is_entry_point = func_name == "main" && const_init.is_none();
         let mut const_init_thunks: Vec<ConstDecl> = Vec::new();
 
+        // A `main` that can return an error is lowered as an ordinary function
+        // under another name, and `main` becomes a wrapper that calls it and
+        // reports the error (`entry_wrapper`). C calls `main` as `void
+        // rask_main(void)`, so the error has to be dealt with before it gets
+        // there, and by then the body's `ensure`s have run.
+        let fallible_entry = is_entry_point
+            && matches!(own_sig.as_ref().map(|s| &s.ret), Some(Type::Result { err, .. }) if **err != Type::None);
+        let entry_messages = own_sig
+            .as_ref()
+            .filter(|_| fallible_entry)
+            .and_then(|sig| ctx.symbols.error_messages(&sig.ret, ctx.type_defs));
+        let func_name = if fallible_entry { ENTRY_BODY_FN.to_string() } else { func_name };
+
         let mut lowerer = MirLowerer {
             builder: BlockBuilder::new(func_name.clone(), ret_ty.clone()),
             locals: HashMap::new(),
@@ -5060,11 +5076,23 @@ impl<'a> MirLowerer<'a> {
             lowerer.elem_writebacks.len(),
         );
 
+        let wrapper = if fallible_entry {
+            let body = std::mem::replace(&mut lowerer.builder, BlockBuilder::new("main".to_string(), MirType::Void));
+            lowerer.entry_wrapper(&ret_ty, entry_messages.as_deref());
+            Some(std::mem::replace(&mut lowerer.builder, body).finish())
+        } else {
+            None
+        };
+
         let mut main_fn = lowerer.builder.finish();
         main_fn.is_extern_c = fn_decl.abi.is_some();
         main_fn.span = decl.span;
         main_fn.inline_hint = fn_decl.attrs.iter().any(|a| a.is("inline"));
         let mut result = vec![main_fn];
+        if let Some(mut wrapper) = wrapper {
+            wrapper.span = decl.span;
+            result.push(wrapper);
+        }
         // A function lowering made up on the way (an ensure thunk, a wrapper
         // around a closure) has no declaration of its own; a stack overflow
         // caught at its entry is reported at the function it was made for.
@@ -5078,6 +5106,52 @@ impl<'a> MirLowerer<'a> {
             result.extend(Self::lower_const_init(c, all_decls, ctx)?);
         }
         Ok(result)
+    }
+
+    /// `main` for a `main` that can return an error: call the body, and on
+    /// the error side hand its `message()` to the runtime, which prints it
+    /// and exits 1 (struct.targets/EX4). `messages` is `None` when the error
+    /// has no message to call; the runtime then says only that main failed.
+    fn entry_wrapper(&mut self, result_ty: &MirType, messages: Option<&[rask_mono::MessageCall]>) {
+        let result = self.builder.alloc_temp(result_ty.clone());
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+            dst: Some(result),
+            func: FunctionRef::internal(ENTRY_BODY_FN.to_string()),
+            args: Vec::new(),
+        }));
+        let failed = self.emit_option_tag(&MirOperand::Local(result), None);
+        let err_block = self.builder.create_block();
+        let ok_block = self.builder.create_block();
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
+            cond: MirOperand::Local(failed),
+            then_block: err_block,
+            else_block: ok_block,
+        }));
+
+        self.builder.switch_to_block(err_block);
+        let text = match (result_ty, messages) {
+            (MirType::Result { err, .. }, Some(messages)) => {
+                let payload = self.builder.alloc_temp((**err).clone());
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                    dst: payload,
+                    rvalue: self.payload_field(MirOperand::Local(result), result_ty, err),
+                }));
+                self.emit_error_message_text(messages, payload, err)
+            }
+            _ => None,
+        };
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+            dst: None,
+            func: FunctionRef::reading("main_error_exit"),
+            args: vec![match text {
+                Some(text) => MirOperand::Local(text),
+                None => MirOperand::Constant(MirConst::Int(0)),
+            }],
+        }));
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Unreachable));
+
+        self.builder.switch_to_block(ok_block);
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Return { value: None }));
     }
 
     /// Evaluate a module-level constant initializer to a MIR constant.

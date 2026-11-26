@@ -187,7 +187,7 @@ __attribute__((noinline)) void rask_poison_stack(void) {
 _Noreturn void rask_main_error_exit(const RaskStr *msg) {
     fflush(stdout);
     if (msg && rask_string_len(msg) > 0) {
-        fprintf(stderr, "error: %.*s\n", (int)rask_string_len(msg), rask_string_ptr(msg));
+        fprintf(stderr, "error: main returned an error: %.*s\n", (int)rask_string_len(msg), rask_string_ptr(msg));
     } else {
         fprintf(stderr, "error: main returned an error\n");
     }

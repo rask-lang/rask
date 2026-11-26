@@ -803,71 +803,99 @@ impl<'a> MirLowerer<'a> {
 
     /// Call the error's `message()` and hand back the string local.
     ///
-    /// `messages` is one symbol per error the value can be
+    /// `messages` is how to reach it for each error the value can be
     /// (`MirContext::error_messages`): one for a concrete error type, one per
     /// member for a union, where which member is present isn't known until
     /// run time, so the calls sit behind a switch on the member index.
     pub(super) fn emit_error_message_text(
         &mut self,
-        messages: &[String],
+        messages: &[rask_mono::MessageCall],
         payload: crate::LocalId,
         err_ty: &MirType,
     ) -> Option<crate::LocalId> {
         let err_ty = err_ty.clone();
         let text = self.builder.alloc_temp(MirType::Buffer);
-        if let MirType::Union(members) = err_ty.clone() {
-            if members.len() != messages.len() {
+        let MirType::Union(members) = err_ty.clone() else {
+            let [only] = messages else { return None };
+            return self.emit_message_call(only, payload, text).then_some(text);
+        };
+        if members.len() != messages.len() {
+            return None;
+        }
+        // A union discriminates by the member index it carries at offset
+        // 0, not by a one-byte tag — the same read `match` does.
+        let idx = self.emit_enum_tag(MirOperand::Local(payload));
+        let merge = self.builder.create_block();
+        let blocks: Vec<crate::BlockId> = members.iter().map(|_| self.builder.create_block()).collect();
+        let cases: Vec<(u64, crate::BlockId)> = blocks.iter().enumerate().map(|(i, b)| (i as u64, *b)).collect();
+        let default = blocks.first().copied().unwrap_or(merge);
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Switch {
+            value: MirOperand::Local(idx),
+            cases,
+            default,
+        }));
+        for (i, (member_ty, call)) in members.into_iter().zip(messages.iter()).enumerate() {
+            self.builder.switch_to_block(blocks[i]);
+            let member_size = rask_layout::size_of(&member_ty, self.ctx.target());
+            let member = self.builder.alloc_temp(member_ty.clone());
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                dst: member,
+                rvalue: MirRValue::Field {
+                    base: MirOperand::Local(payload),
+                    field_index: 0,
+                    byte_offset: Some(rask_layout::payload_offset_of(&err_ty, self.ctx.target())),
+                    access: FieldAccess::for_field(&member_ty, member_size),
+                },
+            }));
+            if !self.emit_message_call(call, member, text) {
                 return None;
             }
-            // A union discriminates by the member index it carries at offset
-            // 0, not by a one-byte tag — the same read `match` does.
-            let idx = self.emit_enum_tag(MirOperand::Local(payload));
-            let merge = self.builder.create_block();
-            let blocks: Vec<crate::BlockId> =
-                members.iter().map(|_| self.builder.create_block()).collect();
-            let cases: Vec<(u64, crate::BlockId)> = blocks
-                .iter()
-                .enumerate()
-                .map(|(i, b)| (i as u64, *b))
-                .collect();
-            let default = blocks.first().copied().unwrap_or(merge);
-            self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Switch {
-                value: MirOperand::Local(idx),
-                cases,
-                default,
-            }));
-            for (i, (member_ty, fn_name)) in members.into_iter().zip(messages.iter()).enumerate() {
-                self.builder.switch_to_block(blocks[i]);
-                let member_size = rask_layout::size_of(&member_ty, self.ctx.target());
-                let member = self.builder.alloc_temp(member_ty.clone());
-                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                    dst: member,
-                    rvalue: MirRValue::Field {
-                        base: MirOperand::Local(payload),
-                        field_index: 0,
-                        byte_offset: Some(rask_layout::payload_offset_of(&err_ty, self.ctx.target())),
-                        access: FieldAccess::for_field(&member_ty, member_size),
-                    },
-                }));
+            self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: merge }));
+        }
+        self.builder.switch_to_block(merge);
+        Some(text)
+    }
+
+    /// `text = error.message()`, by symbol or through an `any I` box's vtable.
+    /// `false` when the interface has no `message` to call.
+    fn emit_message_call(
+        &mut self,
+        call: &rask_mono::MessageCall,
+        error: crate::LocalId,
+        text: crate::LocalId,
+    ) -> bool {
+        match call {
+            rask_mono::MessageCall::Direct(call) => {
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                     dst: Some(text),
-                    func: FunctionRef::internal(fn_name.clone()),
-                    args: vec![MirOperand::Local(member)],
-                }));
-                self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
-                    target: merge,
+                    func: FunctionRef::internal(call.symbol.clone()),
+                    args: vec![MirOperand::Local(error)],
                 }));
             }
-            self.builder.switch_to_block(merge);
-        } else {
-            let [only] = messages else { return None };
-            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                dst: Some(text),
-                func: FunctionRef::internal(only.clone()),
-                args: vec![MirOperand::Local(payload)],
-            }));
+            rask_mono::MessageCall::Vtable { interface } => {
+                let Some(idx) = self
+                    .ctx
+                    .interface_methods
+                    .get(interface)
+                    .and_then(|methods| methods.iter().position(|m| m == "message"))
+                else {
+                    return false;
+                };
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::InterfaceCall {
+                    dst: Some(text),
+                    interface_object: error,
+                    method_name: "message".to_string(),
+                    vtable_offset: crate::vtable_layout::method_offset(idx),
+                    args: Vec::new(),
+                    takes_receiver: self
+                        .ctx
+                        .interface_take_self
+                        .get(interface)
+                        .is_some_and(|methods| methods.contains("message")),
+                }));
+            }
         }
-        Some(text)
+        true
     }
 
     pub(super) fn mir_type_name(&self, ty: &MirType) -> Option<String> {

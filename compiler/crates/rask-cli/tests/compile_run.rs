@@ -2475,6 +2475,19 @@ fn try_generic_error_into_union_finds_its_member() {
     }
 }
 
+/// An `any Error` out of main reports the boxed value's message, asked through
+/// its vtable once the `ensure` has run (#2097).
+#[test]
+fn main_any_error_reports_its_message() {
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "main_error_any.rk");
+        assert_eq!(code, 1, "{mode}: expected exit 1, got {code}\n{stdout}{stderr}");
+        assert!(stderr.contains("main returned an error: bfail two"), "{mode}: {stderr}");
+        let order: Vec<&str> = stdout.lines().filter(|l| *l == "cleaned up" || *l == "message asked").collect();
+        assert_eq!(order, ["cleaned up", "message asked"], "{mode}: {stdout}");
+    }
+}
+
 #[test]
 fn main_error_whose_message_panics_exits_101() {
     for mode in ["--interp", "--native"] {

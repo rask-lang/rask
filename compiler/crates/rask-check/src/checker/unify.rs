@@ -1838,9 +1838,14 @@ impl TypeChecker {
                     }
                     let is_err_branch = match &resolved_err {
                         Type::Union(variants) => self.error_member_for(variants, &resolved_ret, span),
-                        // ER32: `any Interface` error — concrete types implementing the interface go to err
+                        // ER32: `any Interface` error. A concrete type implementing
+                        // the interface goes to err, and so does a value that is
+                        // already that `any Interface`: no type implements an
+                        // interface object, so `return pick()` with
+                        // `pick() -> any Error` was sent to the success side.
                         Type::InterfaceObject { interface_name, decl } => {
-                            crate::interfaces::implements_interface_object(&self.types, &resolved_ret, interface_name, *decl)
+                            resolved_ret == resolved_err
+                                || crate::interfaces::implements_interface_object(&self.types, &resolved_ret, interface_name, *decl)
                         }
                         other => self.error_member_for(std::slice::from_ref(other), &resolved_ret, span),
                     };
