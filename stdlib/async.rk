@@ -131,13 +131,16 @@ extend Handles<T> {
 
 extend Channel<T> {
     /// Create a buffered channel with the given capacity.
+    ///
+    /// The channel knows what an element owns, so a value nobody received is
+    /// dropped with the channel.
     @native("rask_channel_new_ptr")
-    @runtime_args(size(T), capacity)
+    @runtime_args(size(T), capacity, desc(T))
     public func buffered(capacity: u64) -> (Sender<T>, Receiver<T>) {}
 
     /// Create an unbuffered (synchronous) channel.
-    @native("rask_channel_new_ptr")
-    @runtime_args(size(T))
+    @native("rask_channel_new_unbuffered")
+    @runtime_args(size(T), desc(T))
     public func unbuffered() -> (Sender<T>, Receiver<T>) {}
 }
 

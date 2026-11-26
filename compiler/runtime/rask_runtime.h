@@ -1855,7 +1855,10 @@ int64_t rask_shared_try_read_ptr(int64_t shared, int64_t closure);
 int64_t rask_shared_try_write_ptr(int64_t shared, int64_t closure);
 
 // Pointer-based channel wrappers for aggregate element types.
-int64_t rask_channel_new_ptr(int64_t elem_size, int64_t capacity);
+int64_t rask_channel_new_ptr(int64_t elem_size, int64_t capacity,
+                             const int32_t *owned, int64_t n_owned, int64_t elem_align);
+int64_t rask_channel_new_unbuffered(int64_t elem_size,
+                                    const int32_t *owned, int64_t n_owned, int64_t elem_align);
 int64_t rask_channel_send_ptr(int64_t tx, int64_t data_ptr);
 int64_t rask_channel_try_send_ptr(int64_t tx, int64_t data_ptr);
 int64_t rask_channel_recv_ptr(int64_t rx, int64_t out_ptr);

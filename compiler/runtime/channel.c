@@ -37,6 +37,10 @@ struct RaskChannel {
     int64_t head;            // next read position
     int64_t tail;            // next write position
     int64_t count;           // items in buffer
+    // What one element owns, in the form containers take. A value still in
+    // the buffer when the channel goes is released through it (#2086).
+    const int32_t *owned;
+    int64_t n_owned;
 
     // Unbuffered handoff slot. A sender owns it from offering a value until it
     // has seen that value taken, so a second sender can't install its own in
@@ -94,6 +98,14 @@ static RaskChannel *channel_alloc(int64_t elem_size, int64_t capacity) {
 }
 
 static void channel_destroy(RaskChannel *ch) {
+    // An unbuffered value is only ever in the sender's frame, so the ring
+    // buffer is all a channel can be left holding.
+    if (ch->owned && ch->n_owned > 0) {
+        for (int64_t i = 0; i < ch->count; i++) {
+            int64_t at = (ch->head + i) % ch->capacity;
+            rask_owned_release_all((char *)ch->buffer + at * ch->elem_size, ch->owned, ch->n_owned);
+        }
+    }
     pthread_mutex_destroy(&ch->mutex);
     pthread_cond_destroy(&ch->not_full);
     pthread_cond_destroy(&ch->not_empty);
@@ -638,14 +650,24 @@ int64_t rask_select_rotate(int64_t num_arms) {
 // - send_ptr: sends elem_size bytes from data_ptr
 // - recv_ptr: receives elem_size bytes into out_ptr
 
-int64_t rask_channel_new_ptr(int64_t elem_size, int64_t capacity) {
+int64_t rask_channel_new_ptr(int64_t elem_size, int64_t capacity,
+                             const int32_t *owned, int64_t n_owned, int64_t elem_align) {
+    (void)elem_align;
     if (elem_size <= 0) {
         rask_panic("channel element size must be positive");
     }
     if (capacity < 0) {
         rask_panic("channel capacity must be non-negative");
     }
-    return (int64_t)(intptr_t)channel_alloc(elem_size, capacity);
+    RaskChannel *ch = channel_alloc(elem_size, capacity);
+    ch->owned = owned;
+    ch->n_owned = n_owned;
+    return (int64_t)(intptr_t)ch;
+}
+
+int64_t rask_channel_new_unbuffered(int64_t elem_size,
+                                    const int32_t *owned, int64_t n_owned, int64_t elem_align) {
+    return rask_channel_new_ptr(elem_size, 0, owned, n_owned, elem_align);
 }
 
 int64_t rask_channel_send_ptr(int64_t tx, int64_t data_ptr) {

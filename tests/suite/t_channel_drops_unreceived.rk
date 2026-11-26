@@ -1,0 +1,62 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A value sent and never received goes with the channel. Natively the buffer
+// was freed as bytes, so every string or Vec still in it leaked (#2086). The
+// leak gate runs this file.
+
+struct Node {
+    name: string
+    kids: Vec<string>
+}
+
+func long(n: i64) -> string {
+    return "a-string-long-enough-for-the-heap-{n}"
+}
+
+func left_in_buffer() -> usize {
+    let (tx, rx) = Channel<string>.buffered(2)
+    tx.send(long(1))!
+    tx.send(long(2))!
+    let got = rx.receive()!
+    return got.len()
+}
+
+// Three slots, the read position moved on and the writes wrapped past the
+// end: what's left sits at both ends of the ring.
+func wrapped() -> usize {
+    let (tx, rx) = Channel<Node>.buffered(3)
+    mut n = 0
+    for i in 0..3 {
+        tx.send(Node(name: long(i), kids: [long(i + 10)]))!
+    }
+    for _ in 0..2 {
+        let got = rx.receive()!
+        n += got.kids.len()
+    }
+    tx.send(Node(name: long(7), kids: [long(17), long(27)]))!
+    tx.send(Node(name: long(8), kids: Vec.new()))!
+    return n
+}
+
+func unbuffered_round_trip() -> string {
+    using Multitasking {
+        let (tx, rx) = Channel<string>.unbuffered()
+        let h = spawn {
+            tx.send(long(5))!
+        }
+        let got = rx.receive()!
+        h.join()!
+        return got
+    }
+}
+
+test "a value nobody received is dropped with the channel" {
+    assert left_in_buffer() > 0
+}
+
+test "the leftovers of a wrapped buffer are dropped too" {
+    assert wrapped() == 2
+}
+
+test "an unbuffered channel still hands its value over" {
+    assert unbuffered_round_trip() == long(5)
+}

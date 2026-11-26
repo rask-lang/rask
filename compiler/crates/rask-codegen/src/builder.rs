@@ -321,7 +321,6 @@ enum HandAdapt {
     Receive,
     Parse,
     JoinOutcome,
-    Unbuffered,
 }
 
 /// Which calls are adapted by hand, by MIR name. One list: it decides both
@@ -339,7 +338,6 @@ fn hand_adaptation(name: &str) -> Option<HandAdapt> {
         "Receiver_receive" | "Receiver_try_receive" => HandAdapt::Receive,
         n if rask_mir::parse_runtime::writes(n).is_some() => HandAdapt::Parse,
         "Handle_join" | "Handle_cancel" => HandAdapt::JoinOutcome,
-        "Channel_unbuffered" => HandAdapt::Unbuffered,
         _ => return None,
     })
 }
@@ -8530,12 +8528,6 @@ impl<'a> FunctionBuilder<'a> {
                 args.push(value_ss.addr(builder, 0));
                 args.push(msg_ss.addr(builder, 0));
                 CallAdapt::JoinOutcome(value_ss, msg_ss)
-            }
-
-            // `Channel.unbuffered()` is a buffered channel of capacity zero.
-            HandAdapt::Unbuffered => {
-                args.push(builder.ins().iconst(types::I64, 0));
-                CallAdapt::None
             }
         }
     }
