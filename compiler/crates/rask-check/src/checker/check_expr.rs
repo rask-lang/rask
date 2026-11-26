@@ -5217,10 +5217,12 @@ impl TypeChecker {
         // A union target waits too: unified with the union, a stdlib call's
         // `IoError` became the whole `A | IoError`, and lowering, which reads
         // the call's error to pick the member, found nothing to pick and left
-        // the union's member index unwritten.
+        // the union's member index unwritten. A partly settled error
+        // (`Gen<_>` from a generic call) waits as well: compared with the
+        // union before its argument is known, it matched no member.
         let erasing = matches!(target, Type::InterfaceObject { .. });
         let union = matches!(target, Type::Union(_));
-        if matches!(src, Type::Var(_)) && (erasing || union || self.wrap_candidate(&target)) {
+        if Self::contains_type_var(&src) && (erasing || union || self.wrap_candidate(&target)) {
             self.pending_try_errors.push((node, src, target, span));
             return;
         }

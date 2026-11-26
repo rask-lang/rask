@@ -1437,8 +1437,6 @@ impl TypeChecker {
         (program, errors)
     }
 
-    /// Replace Named(TypeId) with UnresolvedNamed(name) so the monomorphizer
-    /// sees consistent string-based type names regardless of resolution order.
     /// True when any part of the type is still an unbound inference variable.
     /// Such a type mangles to `_`, which is not a name that identifies anything.
     fn contains_type_var(ty: &Type) -> bool {
@@ -1462,6 +1460,8 @@ impl TypeChecker {
         }
     }
 
+    /// Replace Named(TypeId) with UnresolvedNamed(name) so the monomorphizer
+    /// sees consistent string-based type names regardless of resolution order.
     fn normalize_named_types(ty: &Type, id_to_name: &HashMap<crate::TypeId, String>) -> Type {
         match ty {
             Type::Named(id) => {

@@ -2465,6 +2465,17 @@ fn stdlib_error_into_union_keeps_its_member() {
 }
 
 #[test]
+fn try_generic_error_into_union_finds_its_member() {
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "try_generic_error_into_union.rk");
+        assert_eq!(code, 0, "{mode}: expected exit 0, got {code}\n{stdout}{stderr}");
+        assert!(stdout.contains("is Gen"), "{mode}: the error is the Gen<i64> member: {stdout}");
+        assert!(!stdout.contains("is Afail"), "{mode}: {stdout}");
+        assert!(stdout.contains("uni: gen 5"), "{mode}: {stdout}");
+    }
+}
+
+#[test]
 fn main_error_whose_message_panics_exits_101() {
     for mode in ["--interp", "--native"] {
         let (stdout, stderr, code) = run_capture(mode, "main_error_message_panics.rk");

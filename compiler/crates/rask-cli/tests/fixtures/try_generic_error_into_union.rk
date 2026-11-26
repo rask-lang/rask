@@ -1,0 +1,46 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// `try` on a generic call whose error is one member of a union error.
+// When the `try` was checked, the call's error was still `Gen<_>`, and
+// compared with `Afail | Gen<i64>` it matched no member, so check
+// rejected the program with E0355.
+
+struct Afail {
+    n: i64
+}
+
+extend Afail {
+    func message(self) -> string {
+        return "afail {self.n}"
+    }
+}
+
+struct Gen<T> {
+    v: T
+}
+
+extend Gen<T> {
+    func message(self) -> string {
+        return "gen {self.v}"
+    }
+}
+
+func give<T>(take x: T) -> T or Gen<T> {
+    return Gen<T>(v: x)
+}
+
+func uni() -> void or (Afail | Gen<i64>) {
+    let v: i64 = 5
+    let x = try give(v)
+    println("{x}")
+}
+
+func main() {
+    let r = uni()
+    if r is Afail {
+        println("is Afail")
+    }
+    if r is Gen<i64> {
+        println("is Gen")
+    }
+    r catch e => println("uni: {e.message()}")
+}
