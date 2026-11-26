@@ -4053,6 +4053,13 @@ impl<'a> OwnershipChecker<'a> {
                 }
                 let binding_names: Vec<String> = binding.names().iter().map(|s| s.to_string()).collect();
                 let saved_decls = self.enter_scope();
+                // A loop binding shadows any outer type for its name; with no
+                // entry of its own, lookups fall back to the checker's type of
+                // each use, which is the item's.
+                let saved_binding_types: Vec<(String, Option<Type>)> = binding_names
+                    .iter()
+                    .map(|n| (n.clone(), self.binding_types.remove(n)))
+                    .collect();
                 for name in &binding_names {
                     self.bindings.insert(name.clone(), BindingState::Owned);
                     self.lent_locals.remove(name);
@@ -4139,6 +4146,12 @@ impl<'a> OwnershipChecker<'a> {
                 self.check_loop_body(body, &binding_names, label.as_ref(), false);
                 self.borrowed_loop_items = saved_items;
                 self.parts = saved_parts;
+                for (name, ty) in saved_binding_types {
+                    match ty {
+                        Some(t) => self.binding_types.insert(name, t),
+                        None => self.binding_types.remove(&name),
+                    };
+                }
                 self.leave_scope(saved_decls);
                 if pushed {
                     self.active_for_mutates.pop();
@@ -5101,6 +5114,11 @@ impl<'a> OwnershipChecker<'a> {
                 // reached from here is a capture, which the capture rules cover.
                 let saved_closure_params = std::mem::take(&mut self.closure_params);
                 let saved_parts = self.parts.clone();
+                // The closure's parameters shadow outer names only inside it.
+                // Left behind, `|v|`'s `Vec` type answered for a later
+                // `for v in ...` whose items are `i64`, and pushing `v` read
+                // as giving away an owning value (#2093).
+                let saved_binding_types = self.binding_types.clone();
                 let saved_decls = self.enter_scope();
                 for p in params {
                     // A parameter is a new name, whatever an outer `n` was.
@@ -5286,6 +5304,7 @@ impl<'a> OwnershipChecker<'a> {
                 self.mutate_params = saved_mutate_params;
                 self.closure_params = saved_closure_params;
                 self.parts = saved_parts;
+                self.binding_types = saved_binding_types;
                 self.leave_scope(saved_decls);
 
                 // A carrying closure took the resource, so the outer scope
