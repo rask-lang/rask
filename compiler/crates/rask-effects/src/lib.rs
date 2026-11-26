@@ -30,7 +30,7 @@ use std::collections::HashMap;
 
 use rask_ast::{NodeId, Span};
 use rask_ast::decl::Decl;
-use rask_ast::expr::Expr;
+use rask_ast::expr::{Expr, ExprKind};
 use rask_ast::ty::TypeExpr;
 
 /// Effect mask per function (FX1, EF1).
@@ -179,9 +179,7 @@ pub struct EffectWarning {
     pub why: Option<String>,
 }
 
-/// The checker's answer for each method call it resolved, keyed by the
-/// call's node.
-pub type MethodTargets = HashMap<NodeId, rask_ast::decl::MethodTarget>;
+pub use rask_ast::decl::CallTargets;
 
 /// The checker's reading of each C macro's body, by the macro's name.
 pub type CMacros = HashMap<String, rask_ast::decl::CMacroBody>;
@@ -196,7 +194,7 @@ pub type CMacros = HashMap<String, rask_ast::decl::CMacroBody>;
 pub fn infer_effects(
     program: &[Decl],
     stdlib: &[Decl],
-    targets: &MethodTargets,
+    targets: &CallTargets,
     c_macros: &CMacros,
     warn: &[String],
 ) -> (EffectMap, Vec<EffectWarning>) {
@@ -275,10 +273,10 @@ pub(crate) fn method_callees(
     call: NodeId,
     object: &Expr,
     method: &str,
-    targets: &MethodTargets,
+    targets: &CallTargets,
     imports: &sources::ImportedNames,
 ) -> Vec<String> {
-    if let Some(target) = targets.get(&call) {
+    if let Some(target) = targets.methods.get(&call) {
         return vec![target.name.clone()];
     }
     let mut names = Vec::new();
@@ -287,6 +285,29 @@ pub(crate) fn method_callees(
     }
     names.push(method.to_string());
     names
+}
+
+/// The function a call `func(args)` counts as calling: its name or dotted
+/// path, read through the imports (`exists` is `fs.exists` only where the file
+/// imported it). A call through a local binding calls whatever value it holds,
+/// so it names no function even when a function shares the binding's name.
+pub(crate) fn free_callee(
+    call: NodeId,
+    func: &Expr,
+    targets: &CallTargets,
+    imports: &sources::ImportedNames,
+) -> Option<String> {
+    fn spelled(e: &Expr) -> Option<String> {
+        match &e.kind {
+            ExprKind::Ident(n) | ExprKind::GenericName { name: n, .. } => Some(n.clone()),
+            ExprKind::Field { object, field } => Some(format!("{}.{}", spelled(object)?, field)),
+            _ => None,
+        }
+    }
+    if targets.value_calls.contains(&call) {
+        return None;
+    }
+    Some(imports.qualify(&spelled(func)?))
 }
 
 #[cfg(test)]

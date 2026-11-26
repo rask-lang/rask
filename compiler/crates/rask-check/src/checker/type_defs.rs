@@ -166,22 +166,34 @@ impl TypedProgram {
             .unwrap_or_default()
     }
 
-    /// Each method call the checker resolved, keyed by the call's node: what
-    /// it calls and what the method declares it does to its receiver's size.
-    pub fn method_targets(&self) -> HashMap<NodeId, rask_ast::decl::MethodTarget> {
-        self.call_targets
-            .iter()
-            .filter_map(|(node, callee)| match callee {
+    /// What each call the checker resolved runs, keyed by the call's node:
+    /// the method a method call reaches and what it does to its receiver's
+    /// size, and which calls go through a local binding instead of naming a
+    /// function.
+    pub fn call_targets(&self) -> rask_ast::decl::CallTargets {
+        use rask_resolve::SymbolKind;
+        let mut out = rask_ast::decl::CallTargets::default();
+        for (node, callee) in &self.call_targets {
+            match callee {
                 Callee::Method { recv, method, .. } => {
-                    let ty = receiver_name(recv, &self.types)?;
-                    Some((*node, rask_ast::decl::MethodTarget {
-                        name: format!("{ty}.{method}"),
-                        effect: self.declared_effects(*node),
-                    }))
+                    if let Some(ty) = receiver_name(recv, &self.types) {
+                        out.methods.insert(*node, rask_ast::decl::MethodTarget {
+                            name: format!("{ty}.{method}"),
+                            effect: self.declared_effects(*node),
+                        });
+                    }
                 }
-                Callee::Free(_) => None,
-            })
-            .collect()
+                Callee::Free(sym) => {
+                    let local = self.symbols.get(*sym).is_some_and(|s| {
+                        matches!(s.kind, SymbolKind::Variable { .. } | SymbolKind::Parameter { .. })
+                    });
+                    if local {
+                        out.value_calls.insert(*node);
+                    }
+                }
+            }
+        }
+        out
     }
 
     /// Program functions whose name is already some method's symbol, each

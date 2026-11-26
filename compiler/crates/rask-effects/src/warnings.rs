@@ -12,7 +12,7 @@ use rask_ast::Span;
 
 use std::collections::HashSet;
 
-use crate::{EffectMap, EffectWarning, MethodTargets, Runtimes};
+use crate::{EffectMap, EffectWarning, CallTargets, Runtimes};
 
 /// Detect CW1 and CW2 warnings from declarations.
 ///
@@ -26,7 +26,7 @@ pub fn detect(
     decls: &[Decl],
     effects: &EffectMap,
     runtime_only: &HashSet<String>,
-    targets: &MethodTargets,
+    targets: &CallTargets,
     warn_prints: bool,
 ) -> Vec<EffectWarning> {
     let mut warnings = Vec::new();
@@ -110,7 +110,7 @@ struct WarnContext<'a> {
     borrowing_joins: &'a HashSet<rask_ast::NodeId>,
     effects: &'a EffectMap,
     /// The checker's name for each method call it resolved.
-    targets: &'a MethodTargets,
+    targets: &'a CallTargets,
     /// The program's imports, for what a name at a call site means.
     imports: &'a crate::sources::ImportedNames,
     /// Functions every path to which installs a runtime first — see
@@ -216,7 +216,7 @@ impl<'a> WarnContext<'a> {
     fn check_expr(&mut self, expr: &Expr, warnings: &mut Vec<EffectWarning>) {
         match &expr.kind {
             ExprKind::Call { func, args } => {
-                let callee_name = extract_callee_name(func);
+                let callee_name = crate::free_callee(expr.id, func, self.targets, self.imports);
                 if let Some(ref name) = callee_name {
                     self.maybe_warn_blocking_call(name, expr.span, warnings);
                     // CC2: a call reaching a task block whose runtime no
@@ -418,7 +418,7 @@ impl<'a> WarnContext<'a> {
         span: rask_ast::Span,
         warnings: &mut Vec<EffectWarning>,
     ) {
-        let Some(effects) = self.effects.get(&self.imports.qualify(callee)) else { return };
+        let Some(effects) = self.effects.get(callee) else { return };
         if !effects.can_block() {
             return;
         }
@@ -574,20 +574,6 @@ fn cc2_error(rt: Runtime, name: &str, span: Span) -> EffectWarning {
              installs. Without one there is nowhere to submit it, \
              and the call panics on the first task [conc.async/CC2]"
         )),
-    }
-}
-
-fn extract_callee_name(func: &Expr) -> Option<String> {
-    match &func.kind {
-        ExprKind::Ident(name) => Some(name.clone()),
-        ExprKind::Field { object, field } => {
-            if let Some(obj_name) = object.name() {
-                Some(format!("{}.{}", obj_name, field))
-            } else {
-                None
-            }
-        }
-        _ => None,
     }
 }
 

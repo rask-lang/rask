@@ -689,18 +689,18 @@ fn check_loaded_scoped(
     typed.field_reuses.extend(ownership_result.mutate_param_moves.iter().copied());
 
     // --- Effects (non-blocking metadata) ---
-    let method_targets = typed.method_targets();
+    let call_targets = typed.call_targets();
     let (effects, effect_warnings) =
-        rask_effects::infer_effects(&parse_result.decls, &stdlib_decls, &method_targets, &typed.c_macro_bodies, &config.warn);
+        rask_effects::infer_effects(&parse_result.decls, &stdlib_decls, &call_targets, &typed.c_macro_bodies, &config.warn);
     for w in &effect_warnings {
         diags.push(effect_warning_to_diagnostic(w));
     }
 
     // --- CT60: a `comptime func` keeps its promise where it is written ---
-    for e in rask_effects::comptime_purity::check(&parse_result.decls, &effects, &method_targets) {
+    for e in rask_effects::comptime_purity::check(&parse_result.decls, &effects, &call_targets) {
         diags.push(comptime_purity_to_diagnostic(&e));
     }
-    for e in rask_effects::comptime_purity::check_compile_time_values(&parse_result.decls, &effects, &method_targets) {
+    for e in rask_effects::comptime_purity::check_compile_time_values(&parse_result.decls, &effects, &call_targets) {
         diags.push(compile_time_value_to_diagnostic(&e));
     }
 
@@ -1265,18 +1265,18 @@ fn check_package_scoped(
     typed.field_reuses.extend(ownership_result.mutate_param_moves.iter().copied());
 
     // --- Effects ---
-    let method_targets = typed.method_targets();
+    let call_targets = typed.call_targets();
     let (effects, effect_warnings) =
-        rask_effects::infer_effects(&pkg_ctx.all_decls, &stdlib_decls, &method_targets, &typed.c_macro_bodies, &config.warn);
+        rask_effects::infer_effects(&pkg_ctx.all_decls, &stdlib_decls, &call_targets, &typed.c_macro_bodies, &config.warn);
     for w in &effect_warnings {
         diags.push(effect_warning_to_diagnostic(w));
     }
 
     // --- CT60: a `comptime func` keeps its promise where it is written ---
-    for e in rask_effects::comptime_purity::check(&pkg_ctx.all_decls, &effects, &method_targets) {
+    for e in rask_effects::comptime_purity::check(&pkg_ctx.all_decls, &effects, &call_targets) {
         diags.push(comptime_purity_to_diagnostic(&e));
     }
-    for e in rask_effects::comptime_purity::check_compile_time_values(&pkg_ctx.all_decls, &effects, &method_targets) {
+    for e in rask_effects::comptime_purity::check_compile_time_values(&pkg_ctx.all_decls, &effects, &call_targets) {
         diags.push(compile_time_value_to_diagnostic(&e));
     }
 

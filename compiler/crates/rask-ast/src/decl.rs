@@ -352,6 +352,17 @@ pub struct MethodTarget {
     pub effect: DeclaredEffects,
 }
 
+/// What the checker resolved at each call, keyed by the call's node.
+#[derive(Debug, Clone, Default)]
+pub struct CallTargets {
+    /// Each method call it resolved.
+    pub methods: std::collections::HashMap<crate::NodeId, MethodTarget>,
+    /// Calls through a local binding or parameter: `work(3)` where `work` holds
+    /// a closure. Such a call runs whatever the binding holds, never the
+    /// function its name happens to spell.
+    pub value_calls: std::collections::HashSet<crate::NodeId>,
+}
+
 /// A function parameter.
 #[derive(Debug, Clone)]
 pub struct Param {

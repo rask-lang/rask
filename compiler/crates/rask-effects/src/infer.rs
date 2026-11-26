@@ -13,14 +13,14 @@ use rask_ast::decl::{Decl, DeclKind, FnDecl};
 use rask_ast::expr::{Expr, ExprKind, SpawnTarget};
 use rask_ast::stmt::{Stmt, StmtKind};
 
-use crate::{Effects, EffectMap, MethodTargets, Runtimes};
+use crate::{Effects, EffectMap, CallTargets, Runtimes};
 use crate::sources;
 
 /// Qualified function name (plain name or "Type.method").
 type FuncName = String;
 
 /// Run effect inference on declarations.
-pub fn infer(decls: &[Decl], targets: &MethodTargets) -> EffectMap {
+pub fn infer(decls: &[Decl], targets: &CallTargets) -> EffectMap {
     infer_with_reach(decls, &[], targets, &Default::default()).0
 }
 
@@ -34,7 +34,7 @@ pub fn infer(decls: &[Decl], targets: &MethodTargets) -> EffectMap {
 pub fn infer_with_reach(
     program: &[Decl],
     stdlib: &[Decl],
-    targets: &MethodTargets,
+    targets: &CallTargets,
     c_macros: &crate::CMacros,
 ) -> (EffectMap, HashSet<FuncName>) {
     let mut pass = InferPass::new(targets, c_macros);
@@ -45,7 +45,7 @@ pub fn infer_with_reach(
 
 /// What classifying a body reads besides the body.
 struct Cx<'a> {
-    targets: &'a MethodTargets,
+    targets: &'a CallTargets,
     imports: &'a sources::ImportedNames,
     /// Joins of tasks that borrow their frame (`crate::borrowing_joins`).
     borrowing_joins: &'a HashSet<rask_ast::NodeId>,
@@ -53,7 +53,7 @@ struct Cx<'a> {
 
 struct InferPass<'t> {
     /// The checker's name for each method call it resolved.
-    targets: &'t MethodTargets,
+    targets: &'t CallTargets,
     /// What each C macro's body does, by the checker's reading.
     c_macros: &'t crate::CMacros,
     /// The imports of the unit being collected, for what a name at a call
@@ -86,7 +86,7 @@ struct InferPass<'t> {
 }
 
 impl<'t> InferPass<'t> {
-    fn new(targets: &'t MethodTargets, c_macros: &'t crate::CMacros) -> Self {
+    fn new(targets: &'t CallTargets, c_macros: &'t crate::CMacros) -> Self {
         Self {
             targets,
             c_macros,
@@ -450,10 +450,8 @@ fn classify_stmt(stmt: &Stmt, effects: &mut Effects, callees: &mut HashSet<Strin
 fn classify_expr(expr: &Expr, effects: &mut Effects, callees: &mut HashSet<String>, t: &Cx) {
     match &expr.kind {
         ExprKind::Call { func, args } => {
-            if let Some(name) = extract_callee_name(func) {
-                // By what the name means here: `exists` is `fs.exists` only
-                // where the file imported it.
-                callees.insert(t.imports.qualify(&name));
+            if let Some(name) = crate::free_callee(expr.id, func, t.targets, t.imports) {
+                callees.insert(name);
             }
             classify_expr(func, effects, callees, t);
             for arg in args {
@@ -462,7 +460,7 @@ fn classify_expr(expr: &Expr, effects: &mut Effects, callees: &mut HashSet<Strin
         }
 
         ExprKind::MethodCall { object, method, args, .. } => {
-            let effect = t.targets.get(&expr.id).map(|target| target.effect).unwrap_or_default();
+            let effect = t.targets.methods.get(&expr.id).map(|target| target.effect).unwrap_or_default();
             effects.union(sources::size_effects(effect));
             if !t.borrowing_joins.contains(&expr.id) {
                 for name in crate::method_callees(expr.id, object, method, t.targets, t.imports) {
@@ -624,21 +622,6 @@ fn classify_expr(expr: &Expr, effects: &mut Effects, callees: &mut HashSet<Strin
     }
 }
 
-/// Extract callee name from a Call expression's func field.
-fn extract_callee_name(func: &Expr) -> Option<String> {
-    match &func.kind {
-        ExprKind::Ident(name) | ExprKind::GenericName { name, .. } => Some(name.clone()),
-        ExprKind::Field { object, field } => {
-            if let Some(obj_name) = object.name() {
-                Some(format!("{}.{}", obj_name, field))
-            } else {
-                None
-            }
-        }
-        _ => None,
-    }
-}
-
 // ── CC2: runtime-needs scanning ────────────────────────────────────────
 //
 /// CC2: the functions that need one runtime open at their call site — those
@@ -683,7 +666,7 @@ fn propagate_needs(
 /// methods — a handler that does its I/O in `room.broadcast()` is exactly the
 /// shape #1263 is about.
 struct ReachScan<'t> {
-    targets: &'t MethodTargets,
+    targets: &'t CallTargets,
     imports: &'t sources::ImportedNames,
     unguarded: HashSet<String>,
     unguarded_pool: HashSet<String>,
@@ -692,7 +675,7 @@ struct ReachScan<'t> {
 }
 
 impl<'t> ReachScan<'t> {
-    fn new(targets: &'t MethodTargets, imports: &'t sources::ImportedNames) -> Self {
+    fn new(targets: &'t CallTargets, imports: &'t sources::ImportedNames) -> Self {
         Self {
             targets,
             imports,
@@ -767,7 +750,7 @@ fn rt_scan_stmt(stmt: &Stmt, held: Runtimes, rs: &mut ReachScan<'_>) -> Runtimes
 fn rt_scan_expr(expr: &Expr, held: Runtimes, rs: &mut ReachScan<'_>) -> Runtimes {
     match &expr.kind {
         ExprKind::Call { func, args } => {
-            if let Some(name) = extract_callee_name(func) {
+            if let Some(name) = crate::free_callee(expr.id, func, rs.targets, rs.imports) {
                 rs.record(held, name);
             }
             let mut r = rt_scan_expr(func, held, rs);
@@ -923,7 +906,7 @@ mod tests {
 
     /// Inference over `decls` as the program, with the real stdlib beside it,
     /// the way the compiler runs it.
-    fn infer_std(decls: &[Decl], targets: &MethodTargets) -> EffectMap {
+    fn infer_std(decls: &[Decl], targets: &CallTargets) -> EffectMap {
         let stdlib = rask_stdlib::StubRegistry::typecheck_decls();
         infer_with_reach(decls, &stdlib, targets, &Default::default()).0
     }
@@ -1114,13 +1097,13 @@ mod tests {
     #[test]
     fn method_call_classed_by_resolved_receiver() {
         let decls = vec![make_fn("wait", vec![expr_stmt(method_call("t", "join"))])];
-        let targets: MethodTargets = [(NodeId(0), target("Handle.join"))].into();
+        let targets = CallTargets { methods: [(NodeId(0), target("Handle.join"))].into(), ..Default::default() };
         let effects = infer_std(&decls, &targets);
         assert!(effects["wait"].blocks);
 
         // A variable spelled like a source type, holding something else.
         let decls = vec![make_fn("words", vec![expr_stmt(method_call("Handle", "join"))])];
-        let targets: MethodTargets = [(NodeId(0), target("Vec.join"))].into();
+        let targets = CallTargets { methods: [(NodeId(0), target("Vec.join"))].into(), ..Default::default() };
         assert!(infer_std(&decls, &targets)["words"].is_pure());
     }
 
@@ -1257,9 +1240,9 @@ mod tests {
     }
 
     /// The checker resolved `insert` to a method declared `@grows`.
-    fn growing(node: u32) -> MethodTargets {
+    fn growing(node: u32) -> CallTargets {
         let effect = rask_ast::decl::DeclaredEffects { grows: true, ..Default::default() };
-        [(NodeId(node), rask_ast::decl::MethodTarget { name: "Rack.insert".to_string(), effect })].into()
+        CallTargets { methods: [(NodeId(node), rask_ast::decl::MethodTarget { name: "Rack.insert".to_string(), effect })].into(), ..Default::default() }
     }
 
     #[test]
