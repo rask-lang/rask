@@ -207,7 +207,7 @@ impl TypeChecker {
             },
             Type::Array { elem, len } => Type::Array {
                 elem: Box::new(Self::substitute_type_params(elem, subst)),
-                len: *len,
+                len: len.map(|t| Self::substitute_type_params(t, subst)),
             },
             // Every other compound type recursed; pointers didn't, so a method
             // returning `*T` — `Vec<T>.as_ptr()` — kept a literal `T` here. The
@@ -282,7 +282,7 @@ impl TypeChecker {
                 err: Box::new(Self::map_projections(err, f)),
             },
             Type::RawPtr(inner) => Type::RawPtr(Box::new(Self::map_projections(inner, f))),
-            Type::Array { elem, len } => Type::Array { elem: Box::new(Self::map_projections(elem, f)), len: *len },
+            Type::Array { elem, len } => Type::Array { elem: Box::new(Self::map_projections(elem, f)), len: len.map(|t| Self::map_projections(t, f)), },
             Type::Tuple(elems) => Type::Tuple(elems.iter().map(|e| Self::map_projections(e, f)).collect()),
             Type::Union(elems) => Type::Union(elems.iter().map(|e| Self::map_projections(e, f)).collect()),
             Type::Fn { params, ret } => Type::Fn {
@@ -538,7 +538,7 @@ impl TypeChecker {
             ),
             Type::Array { elem, len } => Type::Array {
                 elem: Box::new(self.freshen_free_type_params(elem, seen)),
-                len: *len,
+                len: len.map(|t| self.freshen_free_type_params(t, seen)),
             },
             Type::RawPtr(inner) => Type::RawPtr(Box::new(self.freshen_free_type_params(inner, seen))),
             Type::UnresolvedGeneric { name, args } => Type::UnresolvedGeneric {
@@ -631,7 +631,7 @@ impl TypeChecker {
             ),
             Type::Array { elem, len } => Type::Array {
                 elem: Box::new(self.apply_type_var_substitution(elem, substitution)),
-                len: *len,
+                len: len.map(|t| self.apply_type_var_substitution(t, substitution)),
             },
             Type::Result { ok, err } if **err == Type::None => {
                 Type::option(self.apply_type_var_substitution(ok, substitution))

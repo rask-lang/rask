@@ -66,7 +66,7 @@ pub(super) fn normalize_type(ty: &Type, types: &TypeTable) -> Type {
         Type::Tuple(elems) => Type::Tuple(elems.iter().map(|e| normalize_type(e, types)).collect()),
         Type::Array { elem, len } => Type::Array {
             elem: Box::new(normalize_type(elem, types)),
-            len: *len,
+            len: len.map(|t| normalize_type(t, types)),
         },
         Type::Fn { params, ret } => Type::Fn {
             params: params.iter().map(|p| p.map(|p| normalize_type(p, types))).collect(),

@@ -88,7 +88,7 @@ pub fn settle(ty: &Type, unsolved: Unsolved, is_param: IsParam) -> Option<Type> 
         Type::UnresolvedGeneric { name, args } => Type::UnresolvedGeneric { name: name.clone(), args: args_of(args)? },
         Type::Tuple(elems) => Type::Tuple(each(elems)?),
         Type::Union(members) => Type::Union(each(members)?),
-        Type::Array { elem, len } => Type::Array { elem: Box::new(go(elem)?), len: *len },
+        Type::Array { elem, len } => Type::Array { elem: Box::new(go(elem)?), len: len.map_opt(|t| go(t))? },
         Type::Result { ok, err } => Type::Result { ok: Box::new(go(ok)?), err: Box::new(go(err)?) },
         Type::RawPtr(inner) => Type::RawPtr(Box::new(go(inner)?)),
         Type::SimdVector { elem, lanes } => Type::SimdVector { elem: Box::new(go(elem)?), lanes: *lanes },
@@ -505,7 +505,11 @@ fn size_align_in(ty: &Type, cache: &LayoutCache, on_unknown: &mut dyn Unknown) -
             let (_, size, align) = tuple_layout(parts);
             (size, align)
         }
-        Type::Array { elem, len } => array_layout(size_align_in(elem, cache, on_unknown)?, *len),
+        Type::Array { elem, len } => match len.known() {
+            Some(n) => array_layout(size_align_in(elem, cache, on_unknown)?, n),
+            // A `comptime N` length, which only an instance has a number for.
+            None => return on_unknown.unknown(format_args!("array length `{len}` is not known yet"), w),
+        },
         Type::Fn { .. } => (w, w), // Function pointer
         Type::Named(id) => match cache.get(&LayoutKey::of(*id)) {
             Some(found) => found,
@@ -592,6 +596,8 @@ fn size_align_in(ty: &Type, cache: &LayoutCache, on_unknown: &mut dyn Unknown) -
         Type::InterfaceObject { .. } => fat_pointer(w),
         Type::RawPtr(_) => (w, w),
         Type::Error => return on_unknown.unknown(format_args!("Error type in layout computation"), w),
+        // A length is a type argument, never a value's type.
+        Type::Len(_) => return on_unknown.unknown(format_args!("a length has no layout"), w),
     })
 }
 
@@ -633,7 +639,7 @@ pub fn field_type(ty: &TypeExpr) -> Type {
         // table in this pass. Keeping it a name keeps its warning rather than
         // sizing the field at zero (#906).
         TypeExpr::Array { elem, len } => match len.parse::<usize>() {
-            Ok(len) => Type::Array { elem: Box::new(field_type(elem)), len },
+            Ok(len) => Type::Array { elem: Box::new(field_type(elem)), len: len.into() },
             Err(_) => Type::UnresolvedNamed(ty.to_string()),
         },
         TypeExpr::Tuple(elems) => Type::Tuple(elems.iter().map(field_type).collect()),
@@ -778,7 +784,7 @@ pub fn substitute_inside(ty: &Type, subst: &std::collections::HashMap<&str, &Typ
         Type::Result { ok, err } => Type::Result { ok: Box::new(go(ok)), err: Box::new(go(err)) },
         Type::Tuple(elems) => Type::Tuple(elems.iter().map(go).collect()),
         Type::Union(members) => Type::Union(members.iter().map(go).collect()),
-        Type::Array { elem, len } => Type::Array { elem: Box::new(go(elem)), len: *len },
+        Type::Array { elem, len } => Type::Array { elem: Box::new(go(elem)), len: len.map(go) },
         _ => ty.clone(),
     }
 }
@@ -1297,7 +1303,7 @@ fn type_arg_key(
 pub fn held_type(spec: &rask_ast::binary::FieldSpec) -> Type {
     use rask_ast::binary::Held;
     match spec.held {
-        Held::Bytes(len) => Type::Array { elem: Box::new(Type::U8), len },
+        Held::Bytes(len) => Type::Array { elem: Box::new(Type::U8), len: len.into() },
         Held::Int(name) | Held::Float(name) => match name {
             "u8" => Type::U8,
             "i8" => Type::I8,
@@ -1576,7 +1582,7 @@ mod tests {
         // [i32; 5] → 4 * 5
         let (size, align) = tsa(&Type::Array {
             elem: Box::new(Type::I32),
-            len: 5,
+            len: 5.into(),
         });
         assert_eq!(size, 20);
         assert_eq!(align, 4);

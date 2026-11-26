@@ -14,7 +14,7 @@ pub mod abi;
 pub use lang::LangItem;
 pub use handle::RuntimeHandle;
 
-pub use types::{FnParam, GenericArg, Type, TypeId, TypeVarId};
+pub use types::{ArrayLen, FnParam, GenericArg, Type, TypeId, TypeVarId};
 
 /// ctrl.comptime/CT68: an instantiation chain longer than this is an error.
 /// Polymorphic recursion (`nest<T>` calling `nest<Vec<T>>`, a struct holding a

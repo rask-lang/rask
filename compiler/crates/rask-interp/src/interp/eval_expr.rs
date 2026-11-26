@@ -1242,6 +1242,13 @@ impl Interpreter {
                     }
                     return Ok(val);
                 }
+                // A `comptime N` parameter: the length this call bound it to.
+                if let Some(rask_types::Type::Len(n)) =
+                    self.generic_frames.last().and_then(|f| f.as_deref()).and_then(|f| f.get(name))
+                {
+                    let kind = crate::value::IntKind::from_type(&rask_types::Type::Usize, self.types.target());
+                    return Ok(Value::Int(*n as i64, kind));
+                }
                 if self.functions.contains_key(name) {
                     // Named as a value, a generic function carries the types
                     // the checker gave this use; in call position the call

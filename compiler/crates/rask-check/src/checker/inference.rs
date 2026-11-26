@@ -417,7 +417,7 @@ impl InferenceContext {
             },
             Type::Array { elem, len } => Type::Array {
                 elem: Box::new(self.apply(elem)),
-                len: *len,
+                len: len.map(|t| self.apply(t)),
             },
             // These three carry a type and used to fall through to the clone,
             // so a variable inside one stayed spelled as a variable even after

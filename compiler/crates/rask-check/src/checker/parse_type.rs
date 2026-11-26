@@ -9,7 +9,7 @@ use super::type_table::TypeTable;
 use super::errors::{TypeArgSite, TypeError};
 use super::TypeChecker;
 
-use rask_types::{FnParam, GenericArg, Type, TypeId};
+use rask_types::{ArrayLen, FnParam, GenericArg, Type, TypeId};
 
 impl TypeChecker {
     /// A type the program wrote, resolved, with anything wrong with it
@@ -84,11 +84,13 @@ pub fn resolve_type_expr(ty: &TypeExpr, types: &TypeTable) -> Result<Type, TypeE
         }
         TypeExpr::Array { elem, len } => {
             let elem = resolve_type_expr(elem, types)?;
-            // A literal size, then a module-level `const` naming one. Anything
-            // still symbolic (a comptime parameter, a computed const) keeps the
-            // 0 placeholder so element checking can proceed — the length then
-            // resolves at comptime.
-            let len: usize = len.parse().ok().or_else(|| types.const_length(len)).unwrap_or(0);
+            // A literal size, then a module-level `const` naming one. Any
+            // other name is a `comptime N` parameter, which stays `N` until a
+            // call binds it.
+            let len = match len.parse().ok().or_else(|| types.const_length(len)) {
+                Some(n) => ArrayLen::Known(n),
+                None => ArrayLen::Of(Box::new(Type::UnresolvedNamed(len.clone()))),
+            };
             let ty = Type::Array { elem: Box::new(elem), len };
             match types.too_large(&ty) {
                 Some(bytes) => Err(TypeError::ValueTooLarge { ty, bytes, span: Span::new(0, 0) }),

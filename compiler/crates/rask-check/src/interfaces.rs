@@ -1030,7 +1030,7 @@ impl<'a> InterfaceChecker<'a> {
             },
             Type::Array { elem, len } => Type::Array {
                 elem: Box::new(Self::apply_subst(elem, subst)),
-                len: *len,
+                len: len.map(|t| Self::apply_subst(t, subst)),
             },
             Type::Tuple(elems) => {
                 Type::Tuple(elems.iter().map(|e| Self::apply_subst(e, subst)).collect())
@@ -1378,7 +1378,7 @@ impl<'a> InterfaceChecker<'a> {
             Type::RawPtr(inner) => Type::RawPtr(Box::new(self.normalize(inner))),
             Type::Array { elem, len } => Type::Array {
                 elem: Box::new(self.normalize(elem)),
-                len: *len,
+                len: len.map(|t| self.normalize(t)),
             },
             Type::Union(parts) => Type::Union(parts.iter().map(|p| self.normalize(p)).collect()),
             other => other.clone(),
@@ -2020,7 +2020,7 @@ pub fn substitute_type(ty: &Type, map: &HashMap<String, Type>) -> Type {
         Type::Tuple(elems) => Type::Tuple(elems.iter().map(|e| substitute_type(e, map)).collect()),
         Type::Array { elem, len } => Type::Array {
             elem: Box::new(substitute_type(elem, map)),
-            len: *len,
+            len: len.map(|t| substitute_type(t, map)),
         },
         Type::Result { ok, err } => Type::Result {
             ok: Box::new(substitute_type(ok, map)),

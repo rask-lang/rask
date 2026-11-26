@@ -368,6 +368,9 @@ pub struct TypeChecker {
     /// Keyed by SymbolId (not name) to avoid collisions between
     /// same-named functions in different scopes.
     pub(super) fn_type_params: HashMap<SymbolId, Vec<String>>,
+    /// The ones among them declared `comptime N: usize`: bound to a length
+    /// (`f<3>()`, or the length of an array argument), never to a type.
+    pub(super) fn_comptime_params: HashMap<SymbolId, Vec<String>>,
     /// Each declared function's parameter defaults, in parameter order, for
     /// the ones that have any. Placed into a call that leaves them out.
     pub(super) fn_defaults: HashMap<SymbolId, Vec<Option<rask_ast::expr::Expr>>>,
@@ -764,6 +767,7 @@ impl TypeChecker {
             waiting_conformance_calls: HashMap::new(),
             operator_calls: std::collections::HashSet::new(),
             fn_type_params: HashMap::new(),
+            fn_comptime_params: HashMap::new(),
             fn_defaults: HashMap::new(),
             fn_type_param_bounds: HashMap::new(),
             annotation_types: std::collections::HashSet::new(),

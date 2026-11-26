@@ -12097,7 +12097,7 @@ fn substitute_params(ty: &Type, subst: &HashMap<&str, &Type>) -> Type {
         },
         Type::Array { elem, len } => Type::Array {
             elem: Box::new(substitute_params(elem, subst)),
-            len: *len,
+            len: len.map(|t| substitute_params(t, subst)),
         },
         Type::RawPtr(inner) => Type::RawPtr(Box::new(substitute_params(inner, subst))),
         Type::Tuple(elems) => {

@@ -11,7 +11,7 @@ use super::check_expr::ContainerElem;
 use super::TypeChecker;
 use rask_types::TypeDef;
 
-use rask_types::{FnParam, GenericArg, Type, TypeId};
+use rask_types::{ArrayLen, FnParam, GenericArg, Type, TypeId};
 use rask_ast::ty::ParamMode;
 
 /// Can a bare literal of this kind stand in for `ty`? An integer literal takes
@@ -755,7 +755,14 @@ impl TypeChecker {
                 return Ok(false);
             }
             Type::Error => return Ok(false),
-            Type::Array { elem, len } if *len == elems.len() => (**elem).clone(),
+            Type::Array { elem, len } if len.known() == Some(elems.len()) => (**elem).clone(),
+            // `[i64; N]` at a call: the literal says what `N` is.
+            Type::Array { elem, len: ArrayLen::Of(n) } => {
+                if self.unify(n, &Type::Len(elems.len()), span).is_err() {
+                    return Err(self.literal_mismatch(shape.clone(), &elems, span));
+                }
+                (**elem).clone()
+            }
             Type::Generic { base, args } if self.types.type_name(*base) == "Vec" => {
                 match args.first() {
                     Some(GenericArg::Type(t)) => (**t).clone(),
@@ -798,7 +805,7 @@ impl TypeChecker {
         };
         TypeError::Mismatch {
             expected,
-            found: Type::Array { elem: Box::new(elem), len: elems.len() },
+            found: Type::Array { elem: Box::new(elem), len: elems.len().into() },
             span,
             convert: Vec::new(),
         }
@@ -834,7 +841,7 @@ impl TypeChecker {
                     self.errors.push(err);
                 }
             }
-            let own = Type::Array { elem: Box::new(elem), len: elems.len() };
+            let own = Type::Array { elem: Box::new(elem), len: elems.len().into() };
             if let Err(err) = self.unify(&literal, &own, span) {
                 self.errors.push(err);
             }
@@ -2127,16 +2134,24 @@ impl TypeChecker {
                     len: l2,
                 },
             ) => {
-                // len 0 is a placeholder for comptime-dependent sizes
-                if l1 != l2 && *l1 != 0 && *l2 != 0 {
-                    return Err(TypeError::Mismatch {
-                        expected: t1,
-                        found: t2,
-                        span,
-                        convert: Vec::new(),
-                    });
-                }
-                self.unify(e1, e2, span)
+                // Two numbers agree or don't. A `comptime N` length unifies
+                // the way a type parameter does: at a call it is a variable,
+                // and meeting `[i64; 3]` binds it to 3.
+                let mismatch = || TypeError::Mismatch {
+                    expected: t1.clone(),
+                    found: t2.clone(),
+                    span,
+                    convert: Vec::new(),
+                };
+                let lens = match (l1, l2) {
+                    (ArrayLen::Known(a), ArrayLen::Known(b)) if a == b => false,
+                    (ArrayLen::Known(_), ArrayLen::Known(_)) => return Err(mismatch()),
+                    (ArrayLen::Known(n), ArrayLen::Of(t)) | (ArrayLen::Of(t), ArrayLen::Known(n)) => {
+                        self.unify(t, &Type::Len(*n), span).map_err(|_| mismatch())?
+                    }
+                    (ArrayLen::Of(a), ArrayLen::Of(b)) => self.unify(a, b, span).map_err(|_| mismatch())?,
+                };
+                Ok(self.unify(e1, e2, span)? || lens)
             }
 
             // `*void` is the untyped pointer — an address with no element type,

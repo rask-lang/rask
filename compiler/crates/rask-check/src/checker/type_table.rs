@@ -3023,7 +3023,7 @@ impl TypeTable {
             Type::Tuple(elems) => Type::Tuple(elems.iter().map(|e| self.named(e, written)).collect()),
             Type::Array { elem, len } => Type::Array {
                 elem: Box::new(self.named(elem, written)),
-                len: *len,
+                len: len.map(|t| self.named(t, written)),
             },
             Type::UnresolvedGeneric { name, args } => Type::UnresolvedGeneric {
                 name: name.clone(),

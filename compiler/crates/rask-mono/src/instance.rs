@@ -272,7 +272,10 @@ pub(crate) fn concretize(ty: &Type, type_args: &[Type], bindings: &HashMap<&str,
         Type::Generic { base, args } => Some(Type::Generic { base: *base, args: args_of(args)? }),
         Type::Tuple(elems) => Some(Type::Tuple(all(elems)?)),
         Type::Union(elems) => Some(Type::Union(all(elems)?)),
-        Type::Array { elem, len } => Some(Type::Array { elem: Box::new(concretize(elem, type_args, bindings)?), len: *len }),
+        Type::Array { elem, len } => Some(Type::Array {
+            elem: Box::new(concretize(elem, type_args, bindings)?),
+            len: len.map_opt(|t| concretize(t, type_args, bindings))?,
+        }),
         Type::RawPtr(inner) => Some(Type::RawPtr(Box::new(concretize(inner, type_args, bindings)?))),
         Type::Result { ok, err } => Some(Type::Result {
             ok: Box::new(concretize(ok, type_args, bindings)?),

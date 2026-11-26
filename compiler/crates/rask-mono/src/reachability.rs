@@ -885,7 +885,7 @@ impl<'a> Monomorphizer<'a> {
             // for a word read past the value.
             Type::Array { elem, len } => Some(Type::Array {
                 elem: Box::new(Self::nameable_type(elem, types)?),
-                len: *len,
+                len: len.map_opt(|t| Self::nameable_type(t, types))?,
             }),
             Type::None | Type::Unit => Some(ty.clone()),
             _ => None,

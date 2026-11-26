@@ -954,6 +954,16 @@ impl<'a> MirContext<'a> {
         }
     }
 
+    /// The number this instance binds a `comptime N: usize` parameter to,
+    /// when `name` is one.
+    pub fn comptime_len(&self, name: &str) -> Option<usize> {
+        let (inst, _) = self.node_types.instance.as_ref()?;
+        inst.type_args.iter().find(|b| b.param == name).and_then(|b| match b.ty {
+            Type::Len(n) => Some(n),
+            _ => None,
+        })
+    }
+
     /// What a method call runs, at this instance: the body's symbol and the
     /// type arguments it was made for. `None` when no body in Rask is behind
     /// the call (a native, a primitive's operation, a builtin).
@@ -1864,6 +1874,7 @@ impl<'a> MirContext<'a> {
             Type::Char => MirType::Char,
             Type::String | Type::Bytes => MirType::Buffer,
             Type::Never => MirType::Void,
+            Type::Len(_) => unreachable!("a length is a type argument, never a value's type"),
             Type::InterfaceObject { interface_name, decl } => MirType::InterfaceObject {
                 interface_name: self.type_defs.interface_symbol(interface_name, *decl),
             },
@@ -1939,7 +1950,7 @@ impl<'a> MirContext<'a> {
             // element keeps its kind, the same as a tuple part (#1403).
             Type::Array { elem, len } => MirType::Array {
                 elem: Box::new(self.type_to_mir(elem)),
-                len: *len as u32,
+                len: len.known().expect("an instance has a number for every array length") as u32,
             },
             // Option (T or none): niche-optimized handle, or a tagged union.
             //

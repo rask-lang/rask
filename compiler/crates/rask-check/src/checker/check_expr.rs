@@ -14,7 +14,7 @@ use super::parse_type::resolve_type_expr;
 use rask_ast::ty::TypeExpr;
 use super::TypeChecker;
 
-use rask_types::{FnParam, GenericArg, Type};
+use rask_types::{ArrayLen, FnParam, GenericArg, Type};
 use rask_ast::ty::ParamMode;
 
 
@@ -223,7 +223,7 @@ impl TypeChecker {
                     let ty = match expected {
                         Type::Array { .. } => Type::Array {
                             elem: Box::new(want_elem),
-                            len: elements.len(),
+                            len: elements.len().into(),
                         },
                         other => other.clone(),
                     };
@@ -1597,7 +1597,7 @@ impl TypeChecker {
                     let elem_ty = self.ctx.fresh_var();
                     Type::Array {
                         elem: Box::new(elem_ty),
-                        len: 0,
+                        len: 0.into(),
                     }
                 } else {
                     let elem_types: Vec<Type> =
@@ -1618,7 +1618,7 @@ impl TypeChecker {
                     }
                     Type::Array {
                         elem: Box::new(first_ty),
-                        len: elements.len(),
+                        len: elements.len().into(),
                     }
                 }
             }
@@ -2701,13 +2701,17 @@ impl TypeChecker {
                     ExprKind::Ident(name) if self.names_module_const(name) => self.types.const_length(name),
                     _ => None,
                 };
-                let Some(len) = known else {
-                    let comptime_param = match &count.kind {
-                        ExprKind::Ident(name) if self.current_comptime_params.contains(name) => Some(name.clone()),
-                        _ => None,
-                    };
-                    self.errors.push(TypeError::ArrayRepeatCount { comptime_param, span: count.span });
-                    return Type::Error;
+                // A `comptime N` parameter sizes it as `N`, which each instance
+                // has a number for.
+                let len = match (known, &count.kind) {
+                    (Some(n), _) => ArrayLen::Known(n),
+                    (None, ExprKind::Ident(name)) if self.current_comptime_params.contains(name) => {
+                        ArrayLen::Of(Box::new(Type::UnresolvedNamed(name.clone())))
+                    }
+                    (None, _) => {
+                        self.errors.push(TypeError::ArrayRepeatCount { span: count.span });
+                        return Type::Error;
+                    }
                 };
                 let ty = Type::Array { elem: Box::new(elem_ty), len };
                 self.pending_value_sizes.push((ty.clone(), expr.span));
@@ -3336,6 +3340,7 @@ impl TypeChecker {
                 .and_then(|sym_id| self.fn_type_params.get(&sym_id).cloned().map(|tp| (sym_id, tp)))
                 .map(|(sym_id, type_params)| {
                     let bounds = self.fn_type_param_bounds.get(&sym_id).cloned();
+                    let comptime = self.fn_comptime_params.get(&sym_id).cloned().unwrap_or_default();
                     let pairs: Vec<(String, Type)> = type_params.into_iter()
                         .enumerate()
                         .map(|(i, name)| {
@@ -3346,7 +3351,22 @@ impl TypeChecker {
                             // which is the message that names both sides.
                             if let Some(written) = written_type_args.get(i) {
                                 let resolved = self.resolve_named(written);
-                                if !matches!(resolved, Type::Error) {
+                                // A number for a type parameter, or a type
+                                // for a `comptime N`, has nothing to bind.
+                                let wants_len = comptime.contains(&name);
+                                let is_len = match &resolved {
+                                    Type::Len(_) => true,
+                                    Type::UnresolvedNamed(n) => self.current_comptime_params.contains(n),
+                                    _ => false,
+                                };
+                                if !matches!(resolved, Type::Error) && wants_len != is_len {
+                                    let msg = if wants_len {
+                                        format!("`{name}` is a `comptime` length, and `{}` is a type", self.fmt_ty(&resolved))
+                                    } else {
+                                        format!("`{name}` is a type parameter, and `{}` is a number", self.fmt_ty(&resolved))
+                                    };
+                                    self.errors.push(TypeError::GenericError(msg, span));
+                                } else if !matches!(resolved, Type::Error) {
                                     let _ = self.unify(&fresh, &resolved, span);
                                 }
                             }
@@ -5083,8 +5103,9 @@ impl TypeChecker {
     /// What's wrong with it is reported at `span`. A number there is a
     /// comptime argument, not a type, and isn't this function's to judge.
     fn resolve_type_arg(&mut self, ty: &TypeExpr, span: Span) -> Type {
-        if matches!(ty, TypeExpr::Int(_)) {
-            return Type::Error;
+        // `f<3>()`: a length, for a `comptime N: usize` parameter.
+        if let TypeExpr::Int(n) = ty {
+            return n.parse().map_or(Type::Error, Type::Len);
         }
         let resolved = self.resolve_written(ty, span).unwrap_or(Type::Error);
         match &resolved {

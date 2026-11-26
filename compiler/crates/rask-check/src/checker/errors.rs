@@ -1615,11 +1615,7 @@ pub enum TypeError {
     /// `[x; n]` whose count isn't known at compile time. The length is part
     /// of the array's type, so a run-time count has no type to give it.
     #[error("the count of an array repeat isn't known at compile time")]
-    ArrayRepeatCount {
-        /// A `comptime` parameter named as the count, which can't size one yet.
-        comptime_param: Option<String>,
-        span: Span,
-    },
+    ArrayRepeatCount { span: Span },
 
     #[error("`{ty}` is over the 64 KiB a value can take")]
     ValueTooLarge {

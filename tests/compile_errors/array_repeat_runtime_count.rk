@@ -9,11 +9,6 @@
 
 const N = 4
 
-func repeat_param<comptime K: usize>() -> [i64; K] {
-    // ERROR: `K` is a `comptime` parameter [E0984]
-    return [0; K]
-}
-
 func main() {
     let n = 3
     // ERROR: known only when the program runs [E0984]

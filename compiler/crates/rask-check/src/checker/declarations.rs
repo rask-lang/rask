@@ -475,6 +475,11 @@ impl TypeChecker {
                 if !type_param_names.is_empty() {
                     if let Some(&sym_id) = self.resolved.decl_symbols.get(&decl.id) {
                         self.fn_type_params.insert(sym_id, type_param_names);
+                        let comptime: Vec<String> =
+                            f.type_params.iter().filter(|p| p.is_comptime).map(|p| p.name.clone()).collect();
+                        if !comptime.is_empty() {
+                            self.fn_comptime_params.insert(sym_id, comptime);
+                        }
                         // #314: record bounds so call sites can verify the
                         // type arg satisfies the declared interface bounds.
                         let bounds: std::collections::HashMap<String, Vec<TypeExpr>> = f.type_params.iter()

@@ -149,10 +149,11 @@ fn flatten_struct(layout: &StructLayout, base: u32, layouts: &[StructLayout], ou
 fn flatten_field(ty: &rask_types::Type, offset: u32, size: u32, layouts: &[StructLayout], out: &mut Vec<AbiField>) {
     use rask_types::Type as T;
     match ty {
-        T::Array { len: 0, .. } => {}
+        T::Array { len: rask_types::ArrayLen::Known(0), .. } => {}
         T::Array { elem, len } => {
-            let stride = size / *len as u32;
-            for i in 0..*len as u32 {
+            let len = len.known().expect("a C struct field has a numbered length") as u32;
+            let stride = size / len;
+            for i in 0..len {
                 flatten_field(elem, offset + i * stride, stride, layouts, out);
             }
         }
@@ -443,7 +444,7 @@ mod tests {
     #[test]
     fn floats_behind_an_array_are_still_floats() {
         use rask_types::Type as T;
-        let arr = T::Array { elem: Box::new(T::F32), len: 2 };
+        let arr = T::Array { elem: Box::new(T::F32), len: 2.into() };
         let layouts = [layout("Tri", 12, &[("v", arr, 0, 8), ("w", T::F32, 8, 4)])];
         let tri = named("Tri");
         assert_eq!(classify(CallConv::SysV64, &tri, &layouts), regs(&[(0, Vector), (8, Vector)]));

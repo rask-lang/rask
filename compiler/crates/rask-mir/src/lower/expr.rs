@@ -2119,11 +2119,15 @@ impl<'a> MirLowerer<'a> {
         }
 
     /// The length of `[x; count]` when `count` is known at compile time: a
-    /// literal, or a module const that folds to an integer (`[0; N]`). A local
-    /// of the same name as the const is not the const.
+    /// literal, a `comptime N` parameter at this instance, or a module const
+    /// that folds to an integer (`[0; N]`). A local of the same name as the
+    /// const is not the const.
     fn constant_array_length(&self, count: &Expr) -> Option<u32> {
         match &count.kind {
             ExprKind::Int(n, _) => u32::try_from(*n).ok(),
+            ExprKind::Ident(name) if self.ctx.comptime_len(name).is_some() => {
+                self.ctx.comptime_len(name).and_then(|n| u32::try_from(n).ok())
+            }
             ExprKind::Ident(name) => {
                 let (own, fact) = self.const_facts.get(name)?;
                 let still_the_const = self.locals.get(name).is_none_or(|(l, _)| own.contains(l));
@@ -2489,6 +2493,11 @@ impl<'a> MirLowerer<'a> {
                     return Ok((MirOperand::Local(dst), ty));
                 }
                 Ok((MirOperand::Local(id), ty))
+            } else if let Some(n) = self.ctx.comptime_len(name) {
+                // A `comptime N` parameter: the number this instance was made
+                // for.
+                let ty = MirType::usize_ty(self.ctx.target());
+                Ok((MirOperand::Constant(MirConst::Int(n as i64)), ty))
             } else if name == "None" {
                 self.lower_none(expr)
             } else if let Some(folded) = self

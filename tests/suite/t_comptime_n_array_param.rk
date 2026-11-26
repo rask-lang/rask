@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// A `comptime N` parameter inferred from an array argument. Natively the call
-// records nothing for `N`, so the copy is `total$_` over a `[i64; 0]` and the
-// loop runs zero times — a wrong answer with no error (#1623).
+// `comptime N: usize` parameters (type.generics, ctrl.comptime/CT4). The
+// checker used to write `[T; N]` as `[T; 0]`, so a call bound nothing for `N`:
+// native summed a zero-length copy and printed 0, and `N` read as a value was
+// an undefined variable on both backends (#1623).
 
 func total<comptime N: usize>(arr: [i64; N]) -> i64 {
     mut t = 0
@@ -11,8 +12,61 @@ func total<comptime N: usize>(arr: [i64; N]) -> i64 {
     return t
 }
 
+func len_of<comptime N: usize>(arr: [i64; N]) -> usize {
+    return N
+}
+
+func zeros<comptime N: usize>() -> [u8; N] {
+    return [0u8; N]
+}
+
+func both<comptime N: usize>(arr: [i64; N]) -> i64 {
+    return total(arr) + total<N>(arr)
+}
+
+struct Bag<T> {
+    items: Vec<T>
+}
+
+extend Bag<T> {
+    func from<comptime N: usize>(arr: [T; N]) -> Bag<T> {
+        mut v = Vec.new()
+        for x in arr {
+            v.push(x.clone())
+        }
+        return Bag(items: v)
+    }
+}
+
 test "N comes from the array's length" {
     assert total([1, 2, 3]) == 6
     let four: [i64; 4] = [1, 1, 1, 1]
     assert total(four) == 4
+}
+
+test "N reads as a value" {
+    assert len_of([5, 6, 7]) == 3
+    let two: [i64; 2] = [0, 0]
+    assert len_of(two) == 2
+}
+
+test "N written at the call" {
+    assert total<3>([1, 2, 3]) == 6
+    let z = zeros<5>()
+    assert z.len() == 5
+}
+
+test "N from the type the result goes into" {
+    let w: [u8; 2] = zeros()
+    assert w.len() == 2
+}
+
+test "N passed on to another call" {
+    assert both([10, 20]) == 60
+}
+
+test "N on a generic type's static method" {
+    let b = Bag.from([4, 5, 6])
+    assert b.items.len() == 3
+    assert b.items[1] == 5
 }

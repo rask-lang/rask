@@ -7,7 +7,7 @@
 //! natively and padding is zero.
 
 use indexmap::IndexMap;
-use rask_types::Type;
+use rask_types::{ArrayLen, Type};
 
 use super::{Interpreter, RuntimeError};
 use crate::value::{FloatKind, IntKind, Value};
@@ -193,7 +193,7 @@ impl Interpreter {
                 let v = if signed { ((raw << shift) as i64) >> shift } else { raw as i64 };
                 Value::Int(v, IntKind::from_type(ty, self.types.target()))
             }
-            Type::Array { elem, len } => {
+            Type::Array { elem, len: ArrayLen::Known(len) } => {
                 let (elem_size, _) = self.byte_layout(elem)?;
                 let items = (0..*len)
                     .map(|i| self.read_bytes(elem, bytes, at + i * elem_size as usize))

@@ -2121,7 +2121,7 @@ impl TypeChecker {
             },
             Type::Array { elem, len } => Type::Array {
                 elem: Box::new(Self::substitute_self_placeholder(elem, receiver)),
-                len: *len,
+                len: len.map(|t| Self::substitute_self_placeholder(t, receiver)),
             },
             Type::RawPtr(elem) => Type::RawPtr(Box::new(Self::substitute_self_placeholder(elem, receiver))),
             Type::Tuple(elems) => Type::Tuple(

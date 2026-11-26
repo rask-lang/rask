@@ -17,8 +17,10 @@ extend Vec<T> {
 
     /// A Vec holding each of an array's elements.
     ///
-    /// Lowered by the compiler: a Rask body needs `N` bound at the call, and
-    /// native monomorphization doesn't bind a comptime parameter yet (#1623).
+    /// Lowered by the compiler. A literal's elements move straight into the
+    /// Vec, built from the array's storage in one call; a Rask body would have
+    /// to clone each one, and couldn't take a type without `clone` at all. A
+    /// held array keeps its elements and the Vec gets copies.
     @builtin
     public func from<comptime N: usize>(arr: [T; N]) -> Vec<T> {}
 

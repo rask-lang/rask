@@ -9,7 +9,7 @@ use rask_layout::{
     compute_union_layout, generic_is_one_word, MAX_VALUE_SIZE, known_size_align, settle, substitute_inside, type_size_align,
     EnumLayout, FieldLayout, IsParam, LayoutCache, LayoutKey, StructLayout, Unsolved,
 };
-use rask_types::{GenericArg, Type, TypeDef, TypeId};
+use rask_types::{ArrayLen, GenericArg, Type, TypeDef, TypeId};
 
 impl crate::TypeTable {
     /// Record a struct, enum or union for laying out.
@@ -58,7 +58,7 @@ impl crate::TypeTable {
         // declaration that isn't there.
         let in_scope = |n: &str| self.is_type_param_in_scope(n);
         let is_param: IsParam = &in_scope;
-        if let Type::Array { elem, len } = ty {
+        if let Type::Array { elem, len: ArrayLen::Known(len) } = ty {
             let size = self.rule_size(elem, Unsolved::Refuse, is_param)?;
             let bytes = u64::from(size).saturating_mul(*len as u64);
             return (bytes > u64::from(MAX_VALUE_SIZE) && size <= MAX_VALUE_SIZE).then_some(Some(bytes));
