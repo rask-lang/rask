@@ -640,6 +640,14 @@ pub enum TypeError {
         op: &'static str,
         span: Span,
     },
+    /// The body used a loop's item as one type, and the source it walks,
+    /// which settled only after the body was checked, yields another.
+    #[error("loop yields `{yields}`, but its item is used as `{used_as}`")]
+    LoopItemMismatch {
+        yields: Type,
+        used_as: Type,
+        span: Span,
+    },
     #[error("`{found}` can't be iterated")]
     NotIterable {
         found: Type,
@@ -1977,6 +1985,11 @@ impl TypeError {
             IncomparableOperands { left, right, .. } => {
                 *left = f(left);
                 *right = f(right);
+            }
+
+            LoopItemMismatch { yields, used_as, .. } => {
+                *yields = f(yields);
+                *used_as = f(used_as);
             }
 
             AtomicPayload { ty, .. } => *ty = f(ty),

@@ -120,7 +120,7 @@ impl TypeChecker {
                     // at all: four open nodes per `sort_by` (#1026). Retry it
                     // once everything else has settled.
                     if matches!(resolved, Type::Var(_)) {
-                        self.deferred_fields.push(TypeConstraint::HasField {
+                        self.deferred_shapes.push(TypeConstraint::HasField {
                             ty, field, expected, span, self_type, through_chain,
                         });
                         continue;
@@ -211,6 +211,13 @@ impl TypeChecker {
                         });
                     }
                 }
+                // A `for` item whose source is still open. The source is often
+                // a call that deferred itself and resolves in the retry after
+                // literal defaults: `for r in rows.as_sequence().map(|v|
+                // v.as_sequence()).flatten()` settles `flatten` only there.
+                // Dropped here, `r` took any type at all, and native lowering
+                // found no receiver type for `r.len()` (#2045).
+                c @ TypeConstraint::ElementOf { .. } => self.deferred_shapes.push(c),
                 // A widening into `T?` whose value never settled. The coercion
                 // re-defers while the value is a variable, waiting to find out
                 // whether it's already optional — and if nothing ever tells it,
@@ -351,21 +358,32 @@ impl TypeChecker {
     /// method that doesn't exist on the type the literal defaulted to was
     /// accepted here and failed later — in MIR lowering, in codegen, or not at
     /// all.
-    /// Field accesses whose receiver was still a variable when the leftovers
-    /// pass ran. Same shape as the deferred methods next door: one pass, and
-    /// anything still open after it had nothing to wait for.
-    fn retry_deferred_fields(&mut self) {
-        let deferred = std::mem::take(&mut self.deferred_fields);
+    /// Field accesses and `for` items whose receiver or source was still a
+    /// variable when the leftovers pass ran. One still open stays queued for
+    /// the next round; true when any was solved.
+    fn retry_deferred_shapes(&mut self) -> bool {
+        let deferred = std::mem::take(&mut self.deferred_shapes);
+        let mut solved = false;
         for constraint in deferred {
-            let TypeConstraint::HasField { ref ty, .. } = constraint else { continue };
-            if matches!(self.ctx.apply(ty), Type::Var(_) | Type::Error) {
-                continue;
+            let waits_on = match &constraint {
+                TypeConstraint::HasField { ty, .. } => ty,
+                TypeConstraint::ElementOf { container, .. } => container,
+                _ => continue,
+            };
+            match self.ctx.apply(waits_on) {
+                Type::Error => continue,
+                Type::Var(_) => {
+                    self.deferred_shapes.push(constraint);
+                    continue;
+                }
+                _ => {}
             }
-            match self.solve_constraint(constraint) {
-                Ok(_) => {}
-                Err(e) => self.errors.push(e),
+            solved = true;
+            if let Err(e) = self.solve_constraint(constraint) {
+                self.errors.push(e);
             }
         }
+        solved
     }
 
     /// Settle the `??`s still carried with an open operand. First the deferred
@@ -461,9 +479,39 @@ impl TypeChecker {
         }
     }
 
+    /// Resolve the deferred calls, fields and `for` items whose receiver the
+    /// main solve settled, before literals default. In
+    /// `mut c = 0; for r in rows.map(|v| v.seq()).flatten() { c += r.len() }`
+    /// the `flatten` waits on the closure's return type, `r.len()` waits on
+    /// `flatten`, and `c`'s `0` waits on `len`. Left to the retry after
+    /// defaults, `c` became an `i64` and `c += r.len()` a mismatch (#2045).
+    /// Calls on a still-open receiver stay queued for that retry.
+    pub(super) fn settle_deferred_before_defaults(&mut self) {
+        const MAX_ROUNDS: usize = 8;
+        for _ in 0..MAX_ROUNDS {
+            let waiting = self.deferred_methods.len();
+            self.drain_deferred_methods();
+            let methods_moved = self.deferred_methods.len() < waiting;
+            let shapes_moved = self.retry_deferred_shapes();
+            if !methods_moved && !shapes_moved {
+                break;
+            }
+            self.solve_constraints();
+        }
+    }
+
     pub(super) fn retry_deferred_methods(&mut self) {
-        self.drain_deferred_methods();
-        self.retry_deferred_fields();
+        // Methods, fields and `for` items wait on each other: `r.len()` waits
+        // on `r`, which waits on the `flatten` call its loop walks. Go round
+        // until a round settles no field or item.
+        const MAX_ROUNDS: usize = 8;
+        for _ in 0..MAX_ROUNDS {
+            self.drain_deferred_methods();
+            if !self.retry_deferred_shapes() {
+                break;
+            }
+        }
+        self.deferred_shapes.clear();
         // GT7: a call still unsure which conformance it reaches has nothing
         // left to tell it. Dropping it would leave the plain name, which no
         // longer names any body once the methods are filed.
@@ -871,10 +919,17 @@ impl TypeChecker {
             return Ok(false);
         }
         match self.container_elem_type(&resolved) {
-            ContainerElem::Known(found) => {
-                self.unify(&elem, &found, span)?;
-                Ok(true)
-            }
+            ContainerElem::Known(found) => match self.unify(&elem, &found, span) {
+                Ok(_) => Ok(true),
+                // The body pinned the item before the source settled, so a plain
+                // mismatch would name the use's type as what the loop expects.
+                Err(TypeError::Mismatch { .. }) => Err(TypeError::LoopItemMismatch {
+                    yields: self.ctx.apply(&found),
+                    used_as: self.ctx.apply(&elem),
+                    span,
+                }),
+                Err(e) => Err(e),
+            },
             ContainerElem::Deferred => {
                 if let Some(seq) = self.chain_head_sequence(&resolved, node, span)? {
                     self.ctx.add_constraint(TypeConstraint::ElementOf { container: seq, elem, node, span });

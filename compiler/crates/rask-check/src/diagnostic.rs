@@ -1791,6 +1791,20 @@ impl ToDiagnostic for crate::TypeError {
                 ))
             }
 
+            LoopItemMismatch { yields, used_as, span } => Diagnostic::error(format!(
+                "this loop yields `{yields}`, but the body uses its item as `{used_as}`"
+            ))
+            .with_code("E0986")
+            .with_primary(*span, format!("each item is a `{yields}`"))
+            .with_why(
+                "a loop's item is the element type of what it walks. This source's \
+                 element type settled only after the body was checked, so the \
+                 conflict is reported here rather than where the item was used",
+            )
+            .with_fix(format!(
+                "change the use in the body that expects `{used_as}`, or walk a source that yields `{used_as}`"
+            )),
+
             NotIterable { found, span } => {
                 let ty = found.to_string();
                 let mut diag = Diagnostic::error(format!("`{}` can't be iterated", ty))

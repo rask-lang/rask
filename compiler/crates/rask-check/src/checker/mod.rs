@@ -603,9 +603,10 @@ pub struct TypeChecker {
     /// Method calls whose receiver was still an inference variable when solving
     /// finished — retried after literal defaults land (`retry_deferred_methods`).
     pub(super) deferred_methods: Vec<TypeConstraint>,
-    /// Field accesses whose receiver was still open when the leftovers pass ran
-    /// — a closure parameter, most often, which its caller pins later.
-    pub(super) deferred_fields: Vec<TypeConstraint>,
+    /// Field accesses and `for` items whose receiver or source was still open
+    /// when the leftovers pass ran — a closure parameter, or the result of a
+    /// call that itself deferred, which settle later.
+    pub(super) deferred_shapes: Vec<TypeConstraint>,
     /// RC1/RC3: container-typed sites (bindings, params, returns, fields, alias
     /// targets) validated after solving, so an inferred `Vec.new()` element that
     /// unifies to a resource is caught. (Span, container type).
@@ -827,7 +828,7 @@ impl TypeChecker {
             pending_comptime_field_names: Vec::new(),
             type_param_static_calls: std::collections::HashSet::new(),
             deferred_methods: Vec::new(),
-            deferred_fields: Vec::new(),
+            deferred_shapes: Vec::new(),
             pending_index: Vec::new(),
             pending_mutations: Vec::new(),
             pending_self_mutations: Vec::new(),
@@ -979,6 +980,7 @@ impl TypeChecker {
         // (a method call's signature, say) pick widen-or-wrap now.
         self.resolve_pending_try_wraps();
         self.solve_constraints();
+        self.settle_deferred_before_defaults();
 
         // #310: validate index expression types (integer for Vec/slice/string,
         // K for Map) BEFORE literal defaults land, so a

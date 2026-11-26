@@ -1,0 +1,13 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// `flatten`'s item is the inner sequence's item, not a free variable (#2045).
+// The loop's source settles after the body is checked, so the conflict with
+// `let q: i32 = r` is reported at the loop.
+import sequence.Sequence
+
+func main() {
+    let rows: Vec<Vec<Vec<i64>>> = [[[1, 2], [3, 4, 5]], [[6]]]
+    // ERROR: the loop yields `Vec<i64>`, the body uses `r` as an `i32`
+    for r in rows.as_sequence().map(|v| v.as_sequence()).flatten() {
+        let q: i32 = r
+    }
+}
