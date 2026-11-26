@@ -6338,18 +6338,20 @@ impl<'a> FunctionBuilder<'a> {
         matches!(ret_ty, MirType::Result { .. }) && ctx.func_refs.contains_key("main_error_exit")
     }
 
-    /// Whether what a `void or E` main returns is an error, and the message
-    /// to print if so: `(is_err: i8, message: ptr)`. `None` when main can't
-    /// return an error.
+    /// Whether what a `void or E` main returns is an error, and where the
+    /// error is: `(is_err: i8, err: ptr)`. `None` when main can't return an
+    /// error.
     ///
     /// Split from the exit so a return through cleanups can read the value
-    /// where it is and exit after the cleanups have run.
+    /// where it is, and call its `message()` and exit after the cleanups have
+    /// run. The returned value is moved out of main's locals, so no cleanup
+    /// releases what `err` points at.
     fn main_error_verdict(
         builder: &mut ClifFunctionBuilder,
         value: Option<&MirOperand>,
         ctx: &CodegenCtx,
     ) -> CodegenResult<Option<(Value, Value)>> {
-        let MirType::Result { err, .. } = ctx.ret_ty else {
+        let MirType::Result { .. } = ctx.ret_ty else {
             return Ok(None);
         };
         if !ctx.func_refs.contains_key("main_error_exit") {
@@ -6358,16 +6360,13 @@ impl<'a> FunctionBuilder<'a> {
         let Some(val_op) = value else { return Ok(None) };
 
         let base = Self::lower_operand(builder, val_op, ctx)?;
-        let msg_fr = Self::aggregate_type_name(err, ctx)
-            .and_then(|name| ctx.func_refs.get(&format!("{}_message", name)).copied());
 
         // `return SomeError` in a `void or E` main lowers to the bare error
         // value, not a wrapped Result — that path is unconditionally an error.
         let local_ty = Self::operand_mir_type(val_op, ctx.locals);
         if Self::is_err_component(ctx.ret_ty, local_ty.as_ref()) {
-            let msg = Self::call_message(builder, msg_fr, base);
             let yes = builder.ins().iconst(types::I8, 1);
-            return Ok(Some((yes, msg)));
+            return Ok(Some((yes, base)));
         }
 
         // Wrapped Result: branch on the tag.
@@ -6376,31 +6375,15 @@ impl<'a> FunctionBuilder<'a> {
         }
         let tag = builder.ins().load(types::I8, MemFlags::new(), base, crate::layouts::TAG_OFFSET);
         let is_err = builder.ins().icmp_imm(IntCC::NotEqual, tag, crate::layouts::TAG_PRESENT);
-
-        let err_block = builder.create_block();
-        let join = builder.create_block();
-        let msg = builder.append_block_param(join, types::I64);
-        let null = builder.ins().iconst(types::I64, 0);
-        builder.ins().brif(is_err, err_block, &[], join, &[null.into()]);
-
-        builder.switch_to_block(err_block);
-        builder.seal_block(err_block);
-        // `{ErrType}_message(payload) -> string` when the error type defines one.
-        // Without it there's nothing to print but the fact, so pass null.
         let payload = builder
             .ins()
             .iadd_imm(base, rask_layout::payload_offset_of(ctx.ret_ty, ctx.target()) as i64);
-        let text = Self::call_message(builder, msg_fr, payload);
-        builder.ins().jump(join, &[text.into()]);
-
-        builder.switch_to_block(join);
-        builder.seal_block(join);
-        Ok(Some((is_err, msg)))
+        Ok(Some((is_err, payload)))
     }
 
-    /// Exit 1 with the message when `main_error_verdict` said error; fall
-    /// through otherwise.
-    fn emit_main_error_exit(builder: &mut ClifFunctionBuilder, (is_err, msg): (Value, Value), ctx: &CodegenCtx) {
+    /// Exit 1 with the error's message when `main_error_verdict` said error;
+    /// fall through otherwise.
+    fn emit_main_error_exit(builder: &mut ClifFunctionBuilder, (is_err, err_ptr): (Value, Value), ctx: &CodegenCtx) {
         let Some(&exit_fr) = ctx.func_refs.get("main_error_exit") else { return };
         let err_block = builder.create_block();
         let ok_block = builder.create_block();
@@ -6408,6 +6391,14 @@ impl<'a> FunctionBuilder<'a> {
 
         builder.switch_to_block(err_block);
         builder.seal_block(err_block);
+        // `{ErrType}_message(err) -> string` when the error type defines one.
+        // Without it there's nothing to print but the fact, so pass null.
+        let msg_fr = match ctx.ret_ty {
+            MirType::Result { err, .. } => Self::aggregate_type_name(err, ctx)
+                .and_then(|name| ctx.func_refs.get(&format!("{}_message", name)).copied()),
+            _ => None,
+        };
+        let msg = Self::call_message(builder, msg_fr, err_ptr);
         builder.ins().call(exit_fr, &[msg]);
         // rask_main_error_exit is _Noreturn, but the block still needs a
         // terminator for the verifier.

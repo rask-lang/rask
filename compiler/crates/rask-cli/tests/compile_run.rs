@@ -2416,8 +2416,20 @@ fn main_error_through_cleanup_exits_1() {
             assert!(stderr.contains(says), "{mode} {fixture}: should report `{says}`: {stderr}");
         }
     }
-    let (stdout, _, _) = run_capture("--native", "main_error_through_ensure.rk");
-    assert!(stdout.contains("cleaned up"), "the ensure runs before the exit: {stdout}");
+    for mode in ["--interp", "--native"] {
+        let (stdout, _, _) = run_capture(mode, "main_error_through_ensure.rk");
+        let order: Vec<&str> = stdout.lines().filter(|l| *l == "cleaned up" || *l == "message asked").collect();
+        assert_eq!(order, ["cleaned up", "message asked"], "{mode}: the ensure runs before the message is asked for: {stdout}");
+    }
+}
+
+#[test]
+fn main_error_whose_message_panics_exits_101() {
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "main_error_message_panics.rk");
+        assert_eq!(code, 101, "{mode}: a panic in message() is a panic\n{stdout}{stderr}");
+        assert!(stderr.contains("message blew up"), "{mode}: {stderr}");
+    }
 }
 
 #[test]

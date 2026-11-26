@@ -189,11 +189,10 @@ impl Interpreter {
                         // that true — so there is always something to
                         // say beyond "it was an error" (#1009).
                         let payload = fields.first().cloned().unwrap_or(Value::Unit);
-                        let text = self.describe_error_value(&payload);
-                        Err(RuntimeDiagnostic::new(
-                            RuntimeError::ForcedError(text),
-                            bang,
-                        ))
+                        Err(match self.describe_error_value(&payload) {
+                            Ok(text) => RuntimeDiagnostic::new(RuntimeError::ForcedError(text), bang),
+                            Err(e) => RuntimeDiagnostic::new(e, bang),
+                        })
                     }
                 }
                 _ => Err(RuntimeDiagnostic::new(

@@ -527,14 +527,17 @@ impl Interpreter {
                                 }
                                 _ => v.clone(),
                             };
-                            let detail = self.describe_error_value(&err);
-                            errors.push(prefix_origin(
-                                &origin,
-                                format!(
-                                    "{}: {}",
-                                    rask_stdlib::panic_messages::TRY_PROPAGATED_NOWHERE, detail
+                            // A panic inside `message()` is the test's panic.
+                            errors.push(match self.describe_error_value(&err) {
+                                Ok(detail) => prefix_origin(
+                                    &origin,
+                                    format!(
+                                        "{}: {}",
+                                        rask_stdlib::panic_messages::TRY_PROPAGATED_NOWHERE, detail
+                                    ),
                                 ),
-                            ));
+                                Err(e) => e.to_string(),
+                            });
                         }
                         break;
                     }

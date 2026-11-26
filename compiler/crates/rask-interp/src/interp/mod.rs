@@ -1673,7 +1673,9 @@ impl Interpreter {
             // explicit `return SomeError` came back as an ordinary value and
             // the process reported success (#345).
             if let Some(err) = Self::main_error_return(entry.ret_ty.as_ref(), &value) {
-                let msg = self.describe_error_value(err);
+                let msg = self
+                    .describe_error_value(err)
+                    .map_err(|e| RuntimeDiagnostic::new(e, entry.span))?;
                 return Err(RuntimeDiagnostic::new(
                     RuntimeError::MainReturnedError(msg),
                     entry.span,
@@ -1733,12 +1735,15 @@ impl Interpreter {
 
     /// Human-readable text for an error value: its own `message()` when the
     /// type defines one, otherwise the value as printed.
-    fn describe_error_value(&mut self, err: &Value) -> String {
+    /// The error's `message()`, or its debug form when it has none. A panic
+    /// inside `message()` is the program's panic and comes back as one (#2096).
+    fn describe_error_value(&mut self, err: &Value) -> Result<String, RuntimeError> {
         let owned = err.clone();
-        if let Ok(Value::String(ref s)) = self.call_method(owned.clone(), "message", vec![], None) {
-            return s.lock().unwrap().clone();
+        match self.call_method(owned.clone(), "message", vec![], None) {
+            Ok(Value::String(ref s)) => Ok(s.lock().unwrap().clone()),
+            Err(e) if e.is_panic() => Err(e),
+            _ => Ok(format!("{}", owned)),
         }
-        format!("{}", owned)
     }
 
     /// Run a build script: register declarations, find `func build(ctx)`,
@@ -1775,7 +1780,9 @@ impl Interpreter {
         // missing directory skipped every `compile_c` after it, and the link
         // then failed on symbols nobody had compiled.
         if let Some(err) = Self::main_error_return(build_fn.ret_ty.as_ref(), &value) {
-            let msg = self.describe_error_value(err);
+            let msg = self
+                .describe_error_value(err)
+                .map_err(|e| RuntimeDiagnostic::new(e, build_fn.span))?;
             return Err(RuntimeDiagnostic::new(
                 RuntimeError::Generic(format!("build() returned an error: {msg}")),
                 build_fn.span,

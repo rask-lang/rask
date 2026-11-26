@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 // An error out of main that leaves past an `ensure` runs the ensure, then
-// exits 1 with the error's message (#2081).
+// exits 1 with the error's message (#2081). The message is asked for after
+// the ensure has run, as the interpreter does: natively it was asked first.
 
 enum Fail {
     Bad
@@ -8,6 +9,7 @@ enum Fail {
 
 extend Fail {
     func message(self) -> string {
+        println("message asked")
         return "the thing failed"
     }
 }
