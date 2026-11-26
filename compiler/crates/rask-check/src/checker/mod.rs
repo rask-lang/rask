@@ -1692,51 +1692,19 @@ fn strip_module_from_patterns(resolved: &ResolvedProgram, decls: &mut [Decl]) {
     rewrite::rewrite_decls(decls, &mut Strip { modules: &modules });
 }
 
+/// Type-check a program. Always returns the (partial) TypedProgram, with
+/// the errors.
 ///
-/// Takes the declarations mutably to add the ones the checker wrote
-/// (`TypedProgram::attach_derived`): every caller goes on to read every body.
+/// `stdlib_decls` are the stdlib's types and signatures
+/// (`StubRegistry::typecheck_decls`); the stdlib's bodies are checked along
+/// with the program. Takes the declarations mutably to add the ones the
+/// checker wrote (`TypedProgram::attach_derived`): every caller goes on to
+/// read every body.
+///
+/// The partial program lets the driver run ownership and effects even when
+/// there are type errors, so you see all three kinds at once instead of
+/// fixing them one category at a time.
 pub fn typecheck(
-    resolved: ResolvedProgram,
-    decls: &mut Vec<Decl>,
-    operator_calls: &std::collections::HashSet<NodeId>,
-    target: rask_ast::Target,
-) -> Result<TypedProgram, Vec<TypeError>> {
-    let resolved = drop_module_qualifiers(resolved, decls);
-    let mut checker = TypeChecker::new(resolved, target);
-    checker.operator_calls = operator_calls.clone();
-    let mut typed = checker.check(decls)?;
-    typed.attach_derived(decls);
-    Ok(typed)
-}
-
-/// Typecheck with stdlib type/method declarations registered but not body-checked.
-pub fn typecheck_with_stdlib(
-    resolved: ResolvedProgram,
-    decls: &mut Vec<Decl>,
-    stdlib_decls: &[Decl],
-    operator_calls: &std::collections::HashSet<NodeId>,
-    target: rask_ast::Target,
-) -> Result<TypedProgram, Vec<TypeError>> {
-    let resolved = drop_module_qualifiers(resolved, decls);
-    let mut checker = TypeChecker::new(resolved, target);
-    checker.operator_calls = operator_calls.clone();
-    // In stdlib scope: these registrations are what stdlib code means by a
-    // name, and they must not be overwritten when the program declares its own.
-    checker.types.stdlib_mode = true;
-    checker.collect_type_declarations(stdlib_decls);
-    checker.types.stdlib_mode = false;
-    let mut typed = checker.check(decls)?;
-    typed.attach_derived(decls);
-    Ok(typed)
-}
-
-/// Lenient typecheck: always returns the (partial) TypedProgram plus errors.
-///
-/// Enables cross-stage error accumulation — the driver can feed the partial
-/// program to ownership/effects analysis even when type errors exist, so
-/// users see type errors + ownership errors + effect warnings in one pass
-/// instead of fixing them one category at a time.
-pub fn typecheck_with_stdlib_lenient(
     resolved: ResolvedProgram,
     decls: &mut Vec<Decl>,
     stdlib_decls: &[Decl],

@@ -16,7 +16,7 @@ fn stdlib_bodies_pass_the_ownership_checker() {
     let out = check_source("probe.rk", "func main() {}\n", &config);
     let checked = out.result.expect("an empty program checks");
     let stdlib = rask_stdlib::StubRegistry::typecheck_decls();
-    let result = rask_ownership::check_ownership_with_stdlib(&checked.typed, &stdlib, &stdlib);
+    let result = rask_ownership::check_ownership(&checked.typed, &stdlib, &stdlib);
 
     let sources: Vec<(&str, &str, u16)> = rask_stdlib::stubs::stub_sources().collect();
     let place = |span: rask_ast::Span| {

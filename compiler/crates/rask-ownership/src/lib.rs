@@ -1336,11 +1336,6 @@ impl<'a> OwnershipChecker<'a> {
         inst.subst.get(ty.bare_name()?)
     }
 
-    /// Run ownership analysis on all declarations.
-    pub fn check(self, decls: &[Decl]) -> OwnershipResult {
-        return self.check_with_signatures(decls, &[]);
-    }
-
     /// Run ownership analysis, reading parameter modes from `extra` as well.
     ///
     /// `extra` is the stdlib. Its bodies are not walked — only its signatures
@@ -11878,19 +11873,6 @@ impl<'a> OwnershipChecker<'a> {
     }
 }
 
-/// Run ownership analysis on a typed program.
-pub fn check_ownership(program: &TypedProgram, decls: &[Decl]) -> OwnershipResult {
-    let mut carrying = HashSet::new();
-    loop {
-        let mut checker = OwnershipChecker::new(program);
-        checker.carrying_tasks = carrying.clone();
-        let result = checker.check(decls);
-        if !grow_carrying(&mut carrying, &result) {
-            return result;
-        }
-    }
-}
-
 /// conc.async/B1: a task joined where it was spawned borrows its frame unless
 /// its block consumes something it names. Which ones do is the analysis's own
 /// answer, so a run that finds one is run again with it taking its captures.
@@ -11901,7 +11883,6 @@ fn grow_carrying(carrying: &mut HashSet<rask_ast::NodeId>, result: &OwnershipRes
     carrying.len() != before
 }
 
-/// Ownership analysis that can also read the stdlib's parameter modes.
 /// What a sequence terminal keeps of the items it's handed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Terminal {
@@ -11911,7 +11892,13 @@ enum Terminal {
     Picks,
 }
 
-pub fn check_ownership_with_stdlib(
+/// Run ownership analysis on a typed program.
+///
+/// `stdlib_decls` are the stdlib's declarations
+/// (`StubRegistry::typecheck_decls`): the program's calls into it read their
+/// parameter modes from there, and its bodies are walked for what lowering
+/// needs of them.
+pub fn check_ownership(
     program: &TypedProgram,
     decls: &[Decl],
     stdlib_decls: &[Decl],

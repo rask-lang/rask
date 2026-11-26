@@ -261,7 +261,7 @@ func main() {
         assert!(lexed.errors.is_empty(), "{:?}", lexed.errors);
         let mut parsed = rask_parser::Parser::new(lexed.tokens).parse();
         assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
-        rask_desugar::desugar(&mut parsed.decls);
+        rask_desugar::desugar(&mut parsed.decls, rask_desugar::Desugaring::Program { stdlib: &[] });
         let (mut interp, _out) = Interpreter::with_captured_output();
         let mut sources = rask_ast::SourceMap::new();
         sources.push("leak.rk", src);

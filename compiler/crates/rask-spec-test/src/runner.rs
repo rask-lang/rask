@@ -218,23 +218,24 @@ fn check_front_end(code: &str) -> Result<(), (FailStage, String)> {
     if !parse_result.is_ok() {
         return Err((FailStage::Parse, format!("{:?}", parse_result.errors)));
     }
-    let desugared = rask_desugar::desugar_with_stdlib(
+    let desugared = rask_desugar::desugar(
         &mut parse_result.decls,
-        rask_stdlib::StubRegistry::desugar_declarations(),
+        rask_desugar::Desugaring::Program { stdlib: rask_stdlib::StubRegistry::desugar_declarations() },
     );
 
     let stdlib_bodies = rask_stdlib::StubRegistry::compilable_decls();
-    let resolved = match rask_resolve::resolve_with_stdlib(
-        &parse_result.decls,
-        &stdlib_bodies,
-    ) {
+    let resolved = match rask_resolve::resolve(rask_resolve::ResolveInput {
+        decls: &parse_result.decls,
+        stdlib: &stdlib_bodies,
+        package: None,
+    }) {
         Ok(r) => r,
         Err(errors) => return Err((FailStage::Resolve, format!("{:?}", errors))),
     };
 
     let stdlib_decls = rask_stdlib::StubRegistry::typecheck_decls();
     let (typed, type_errors) =
-        rask_check::typecheck_with_stdlib_lenient(
+        rask_check::typecheck(
             resolved,
             &mut parse_result.decls,
             &stdlib_decls,
@@ -245,7 +246,7 @@ fn check_front_end(code: &str) -> Result<(), (FailStage, String)> {
         return Err((FailStage::Typecheck, format!("{:?}", type_errors)));
     }
 
-    let ownership = rask_ownership::check_ownership(&typed, &parse_result.decls);
+    let ownership = rask_ownership::check_ownership(&typed, &parse_result.decls, &stdlib_decls);
     if !ownership.is_ok() {
         return Err((FailStage::Ownership, format!("{:?}", ownership.errors)));
     }

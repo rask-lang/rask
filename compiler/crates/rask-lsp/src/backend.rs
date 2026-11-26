@@ -219,9 +219,9 @@ fn run_pipeline(uri: &Url, source: &str, version: i32) -> PipelineOutput {
     rask_comptime::apply_cfg(&mut parse_result.decls, &cfg);
 
     // --- Desugar (operators + default/named args) ---
-    let desugared = rask_desugar::desugar_with_stdlib(
+    let desugared = rask_desugar::desugar(
         &mut parse_result.decls,
-        rask_stdlib::StubRegistry::desugar_declarations(),
+        rask_desugar::Desugaring::Program { stdlib: rask_stdlib::StubRegistry::desugar_declarations() },
     );
     for e in &desugared.errors {
         diags.push(
@@ -248,24 +248,11 @@ fn run_pipeline(uri: &Url, source: &str, version: i32) -> PipelineOutput {
     };
 
     // --- Resolve ---
+    // A stdlib file is resolved by itself, under the stdlib's rules. Anything
+    // else is resolved the way `rask check` does: with its package's other
+    // files, and with the stdlib's bodies, which every program compiles.
     let is_stdlib = rask_stdlib::StubRegistry::is_stdlib_path(uri.path());
-    let resolved = if is_stdlib {
-        match rask_resolve::resolve_stdlib(&parse_result.decls) {
-            Ok(r) => r,
-            Err(errors) => {
-                for error in &errors {
-                    diags.push(error.to_diagnostic());
-                }
-                return PipelineOutput {
-                    version,
-                    source: source.to_string(),
-                    line_index,
-                    diagnostics: diags,
-                    result: None,
-                };
-            }
-        }
-    } else if let Some(ref ctx) = pkg_ctx {
+    if let (Some(ctx), false) = (&pkg_ctx, is_stdlib) {
         let file_path = uri.to_file_path().unwrap_or_default();
         let mut sibling_decls: Vec<Decl> = ctx.registry.get(ctx.root_id)
             .map(|pkg| {
@@ -276,49 +263,38 @@ fn run_pipeline(uri: &Url, source: &str, version: i32) -> PipelineOutput {
             })
             .unwrap_or_default();
         rask_comptime::apply_cfg(&mut sibling_decls, &cfg);
-        rask_desugar::desugar_with_stdlib(
+        rask_desugar::desugar(
             &mut sibling_decls,
-            rask_stdlib::StubRegistry::desugar_declarations(),
+            rask_desugar::Desugaring::Program { stdlib: rask_stdlib::StubRegistry::desugar_declarations() },
         );
         parse_result.decls.extend(sibling_decls);
-
-        match rask_resolve::resolve_package(
-            &parse_result.decls,
-            &ctx.registry,
-            ctx.root_id,
-        ) {
-            Ok(r) => r,
-            Err(errors) => {
-                for error in &errors {
-                    let diag = error.to_diagnostic();
-                    if is_current_file_diagnostic(&diag, &current_file_spans) {
-                        diags.push(diag);
-                    }
-                }
-                return PipelineOutput {
-                    version,
-                    source: source.to_string(),
-                    line_index,
-                    diagnostics: diags,
-                    result: None,
-                };
-            }
-        }
+    }
+    let stdlib_bodies = if is_stdlib { Vec::new() } else { rask_stdlib::StubRegistry::compilable_decls() };
+    let input = if is_stdlib {
+        rask_resolve::ResolveInput { decls: &[], stdlib: &parse_result.decls, package: None }
     } else {
-        match rask_resolve::resolve(&parse_result.decls) {
-            Ok(r) => r,
-            Err(errors) => {
-                for error in &errors {
-                    diags.push(error.to_diagnostic());
+        rask_resolve::ResolveInput {
+            decls: &parse_result.decls,
+            stdlib: &stdlib_bodies,
+            package: pkg_ctx.as_ref().map(|ctx| (&ctx.registry, ctx.root_id)),
+        }
+    };
+    let resolved = match rask_resolve::resolve(input) {
+        Ok(r) => r,
+        Err(errors) => {
+            for error in &errors {
+                let diag = error.to_diagnostic();
+                if is_current_file_diagnostic(&diag, &current_file_spans) {
+                    diags.push(diag);
                 }
-                return PipelineOutput {
-                    version,
-                    source: source.to_string(),
-                    line_index,
-                    diagnostics: diags,
-                    result: None,
-                };
             }
+            return PipelineOutput {
+                version,
+                source: source.to_string(),
+                line_index,
+                diagnostics: diags,
+                result: None,
+            };
         }
     };
 
@@ -336,7 +312,7 @@ fn run_pipeline(uri: &Url, source: &str, version: i32) -> PipelineOutput {
     // --- Typecheck (lenient so ownership/effects still run) ---
     let stdlib_decls = rask_stdlib::StubRegistry::typecheck_decls();
     let (mut typed, type_errors) =
-        rask_check::typecheck_with_stdlib_lenient(
+        rask_check::typecheck(
             resolved,
             &mut parse_result.decls,
             &stdlib_decls,
@@ -351,7 +327,7 @@ fn run_pipeline(uri: &Url, source: &str, version: i32) -> PipelineOutput {
     }
 
     // --- Ownership ---
-    let ownership_result = rask_ownership::check_ownership(&typed, &parse_result.decls);
+    let ownership_result = rask_ownership::check_ownership(&typed, &parse_result.decls, &stdlib_decls);
     for error in &ownership_result.errors {
         let diag = error.to_diagnostic();
         if is_current_file_diagnostic(&diag, &current_file_spans) {

@@ -954,7 +954,7 @@ impl StubRegistry {
             }
         }
 
-        let desugared = rask_desugar::desugar_stdlib(&mut decls);
+        let desugared = rask_desugar::desugar(&mut decls, rask_desugar::Desugaring::Stdlib);
         lift_inline_methods(&mut decls);
         CompilableStdlib { decls, operator_calls: desugared.operator_calls }
     }

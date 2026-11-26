@@ -34,7 +34,7 @@ fn no_stdlib_module_names_a_layer_above_its_own() {
     let layer = |file_id: u16| file_names.get(&file_id).and_then(|n| layer_of(n)).map(|l| (l, file_names[&file_id]));
 
     let stdlib = StubRegistry::compilable_decls();
-    let resolved = rask_resolve::resolve_with_stdlib(&[], &stdlib).unwrap_or_else(|errs| {
+    let resolved = rask_resolve::resolve(rask_resolve::ResolveInput { decls: &[], stdlib: &stdlib, package: None }).unwrap_or_else(|errs| {
         panic!("the stdlib doesn't resolve on its own: {errs:?}");
     });
 

@@ -12,7 +12,7 @@
 //!
 //! - **Lex errors** don't stop parsing (parser handles partial tokens).
 //! - **Desugar errors** don't stop resolution.
-//! - **Type errors** are collected via `typecheck_with_stdlib_lenient`, which
+//! - **Type errors** are collected via `rask_check::typecheck`, which
 //!   returns a partial TypedProgram. Ownership + effect stages still run on
 //!   that partial program so users see type errors, ownership errors, and
 //!   effect warnings in a single pipeline pass.
@@ -584,9 +584,9 @@ fn check_loaded_scoped(
     rask_comptime::apply_cfg(&mut parse_result.decls, &config.cfg);
 
     // --- Desugar (accumulate errors, continue) ---
-    let desugared = rask_desugar::desugar_with_stdlib(
+    let desugared = rask_desugar::desugar(
         &mut parse_result.decls,
-        rask_stdlib::StubRegistry::desugar_declarations(),
+        rask_desugar::Desugaring::Program { stdlib: rask_stdlib::StubRegistry::desugar_declarations() },
     );
     for e in &desugared.errors {
         diags.push(
@@ -614,10 +614,11 @@ fn check_loaded_scoped(
         // template is one of those bodies.
         let mut stdlib_bodies = rask_stdlib::StubRegistry::compilable_decls();
         stdlib_bodies.extend(rounds.library_copies().iter().cloned());
-        let resolved = match rask_resolve::resolve_with_stdlib(
-            &parse_result.decls,
-            &stdlib_bodies,
-        ) {
+        let resolved = match rask_resolve::resolve(rask_resolve::ResolveInput {
+            decls: &parse_result.decls,
+            stdlib: &stdlib_bodies,
+            package: None,
+        }) {
             Ok(r) => r,
             Err(errors) => {
                 for e in &errors {
@@ -631,7 +632,7 @@ fn check_loaded_scoped(
     // --- Typecheck (lenient — always returns TypedProgram + errors, so
     //     ownership/effects can still run and show accumulated diagnostics) ---
     let (typed, type_errors) =
-        rask_check::typecheck_with_stdlib_lenient(
+        rask_check::typecheck(
             resolved,
             &mut parse_result.decls,
             &stdlib_decls,
@@ -644,7 +645,7 @@ fn check_loaded_scoped(
 
     // --- Ownership (non-blocking — accumulate and continue) ---
     let ownership_result =
-        rask_ownership::check_ownership_with_stdlib(&typed, &parse_result.decls, &stdlib_decls);
+        rask_ownership::check_ownership(&typed, &parse_result.decls, &stdlib_decls);
     for e in &ownership_result.errors {
         diags.push(e.to_diagnostic());
     }
@@ -793,7 +794,7 @@ fn expand_templates(
     // so all of them are roots.
     let mut layout_decls = runners::with_every_entry(decls);
     layout_decls.extend(stdlib.iter().cloned());
-    let Ok(mono) = rask_mono::monomorphize_for_analysis(typed, &layout_decls) else {
+    let Ok(mono) = rask_mono::monomorphize(typed, &layout_decls, Default::default(), rask_mono::Roots::Analysis) else {
         // Monomorphization reports its own failures where the program is built.
         return Ok(false);
     };
@@ -850,8 +851,8 @@ fn comptime_diagnostics_for(
     if !comptime_eval::has_comptime(decls, typed) && !has_comptime_length(decls) {
         return diags;
     }
-    // `monomorphize_for_analysis`, not `monomorphize`: a file of `test` blocks
-    // has no `main`, and the plain one calls that a fatal error — so check said
+    // `Roots::Analysis`, not `Roots::Main`: a file of `test` blocks
+    // has no `main`, and `Main` calls that a fatal error — so check said
     // nothing at all about the comptime consts in every test file we have,
     // including ones that would fail to compile.
     //
@@ -863,7 +864,7 @@ fn comptime_diagnostics_for(
     let mut stdlib = rask_stdlib::StubRegistry::compilable_decls();
     typed.rewrite_checked_nodes(&mut stdlib);
     layout_decls.extend(stdlib);
-    let mono = match rask_mono::monomorphize_for_analysis(typed, &layout_decls) {
+    let mono = match rask_mono::monomorphize(typed, &layout_decls, Default::default(), rask_mono::Roots::Analysis) {
         Ok(mono) => mono,
         // A value too large at an instance is a compile error the checker
         // can't see, so check and the interpreter report it here.
@@ -1101,9 +1102,9 @@ fn check_package_scoped(
     // After package scoping, so a dependency's annotations and the
     // attachments naming them already agree on the name (type.annotations/AN3).
     let desugared =
-        rask_desugar::desugar_package(
+        rask_desugar::desugar(
             &mut pkg_ctx.all_decls,
-            rask_stdlib::StubRegistry::desugar_declarations(),
+            rask_desugar::Desugaring::Program { stdlib: rask_stdlib::StubRegistry::desugar_declarations() },
         );
     for e in &desugared.errors {
         diags.push(
@@ -1130,12 +1131,11 @@ fn check_package_scoped(
         // (#203).
         let mut stdlib_bodies = rask_stdlib::StubRegistry::compilable_decls();
         stdlib_bodies.extend(rounds.library_copies().iter().cloned());
-        let resolved = match rask_resolve::resolve_package_with_stdlib(
-            &pkg_ctx.all_decls,
-            &pkg_ctx.registry,
-            pkg_ctx.root_id,
-            &stdlib_bodies,
-        ) {
+        let resolved = match rask_resolve::resolve(rask_resolve::ResolveInput {
+            decls: &pkg_ctx.all_decls,
+            stdlib: &stdlib_bodies,
+            package: Some((&pkg_ctx.registry, pkg_ctx.root_id)),
+        }) {
             Ok(r) => r,
             Err(errors) => {
                 for e in &errors {
@@ -1209,7 +1209,7 @@ fn check_package_scoped(
 
         // --- Typecheck (lenient — always returns TypedProgram + errors) ---
         let (typed, type_errors) =
-            rask_check::typecheck_with_stdlib_lenient(
+            rask_check::typecheck(
                 resolved,
                 &mut pkg_ctx.all_decls,
                 &stdlib_decls,
@@ -1222,7 +1222,7 @@ fn check_package_scoped(
 
         // --- Ownership (non-blocking) ---
         let ownership_result =
-            rask_ownership::check_ownership_with_stdlib(&typed, &pkg_ctx.all_decls, &stdlib_decls);
+            rask_ownership::check_ownership(&typed, &pkg_ctx.all_decls, &stdlib_decls);
         for e in &ownership_result.errors {
             diags.push(e.to_diagnostic());
         }
@@ -1469,11 +1469,7 @@ fn finalize_compile_inner(
     transform(&mut check.decls, &check.typed);
 
     // --- Monomorphize ---
-    let mono = if package_modules.is_empty() {
-        rask_mono::monomorphize(&check.typed, &check.decls)
-    } else {
-        rask_mono::monomorphize_with_packages(&check.typed, &check.decls, package_modules.clone())
-    };
+    let mono = rask_mono::monomorphize(&check.typed, &check.decls, package_modules.clone(), rask_mono::Roots::Main);
     let mono = match mono {
         Ok(m) => m,
         Err(e) => {
