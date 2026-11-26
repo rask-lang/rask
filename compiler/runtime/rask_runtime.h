@@ -1569,6 +1569,7 @@ int64_t rask_sleep_ns(int64_t ns);
 
 // Spawn a thread running a closure [func_ptr | captures...].
 RaskTask *rask_closure_spawn(void *closure_ptr, int64_t result_owned);
+RaskTask *rask_closure_spawn_then(void *closure_ptr, int64_t result_owned, void (*done)(void));
 // `Thread.spawn`: the same, refused under sim.
 RASK_PANICS RaskTask *rask_thread_spawn(void *closure_ptr, int64_t result_owned);
 
@@ -1582,6 +1583,7 @@ void rask_threadpool_init(int64_t worker_count);
 
 // Drain the queue, stop the workers, join them. Idempotent.
 void rask_threadpool_shutdown(void);
+void rask_threadpool_close_if_open(void);
 
 // ThreadPool.spawn — enqueues a job. Outside a `using ThreadPool` block there
 // is no pool, so it falls back to one thread.

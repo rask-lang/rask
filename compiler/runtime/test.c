@@ -267,6 +267,7 @@ int rask_test_call(test_fn fn, char **error_msg, int *expects_fail) {
         failed = 1;
         msg = rask_panic_take_message();
         rask_scope_close_if_open();
+        rask_threadpool_close_if_open();
     }
 
     rask_panic_remove();

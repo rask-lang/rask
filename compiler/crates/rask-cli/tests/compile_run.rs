@@ -10827,3 +10827,32 @@ fn the_value_cap_counts_the_same_on_a_32_bit_target() {
     let text = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
     assert!(text.contains("E0980"), "wasm32 accepted a value over 64 KiB:\n{text}");
 }
+
+/// A test that panics inside `using ThreadPool` leaves the next test with the
+/// pool closed, on every backend.
+#[test]
+fn pool_block_is_closed_after_a_test_panics_in_it() {
+    let file = fixture("pool_block_closed_after_test_panic.rk");
+    for args in [vec!["test"], vec!["test", "--interp"], vec!["test", "--sim", "--seed", "1"]] {
+        let out = Command::new(rask_binary())
+            .args(&args)
+            .arg(&file)
+            .env("RASK_RUNTIME_DIR", runtime_dir())
+            .output()
+            .expect("failed to run rask test");
+        let combined = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr),
+        );
+        assert!(
+            combined.contains("3 tests, 1 passed, 2 failed"),
+            "{args:?}: only the fresh block should pass:\n{combined}"
+        );
+        assert!(
+            combined.contains("ThreadPool.spawn requires `using ThreadPool` context"),
+            "{args:?}: the stored call should panic:\n{combined}"
+        );
+        assert!(!combined.contains("without a pool"), "{args:?}: ran on a leftover pool:\n{combined}");
+    }
+}

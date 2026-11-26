@@ -885,6 +885,32 @@ pub struct ThreadPoolInner {
     pub sender: Mutex<Option<mpsc::Sender<PoolTask>>>,
     pub workers: Mutex<Vec<std::thread::JoinHandle<()>>>,
     pub size: usize,
+    /// Jobs spawned and not yet finished, detached ones included.
+    pub pending: Mutex<usize>,
+    pub idle: std::sync::Condvar,
+}
+
+impl ThreadPoolInner {
+    pub fn job_started(&self) {
+        *self.pending.lock().unwrap() += 1;
+    }
+
+    pub fn job_done(&self) {
+        let mut n = self.pending.lock().unwrap();
+        *n -= 1;
+        if *n == 0 {
+            self.idle.notify_all();
+        }
+    }
+
+    /// Wait for every job to finish. A job still running may spawn onto the
+    /// pool, so the block is open until this returns.
+    pub fn drain(&self) {
+        let mut n = self.pending.lock().unwrap();
+        while *n > 0 {
+            n = self.idle.wait(n).unwrap();
+        }
+    }
 }
 
 impl fmt::Debug for ThreadPoolInner {
@@ -1330,8 +1356,6 @@ pub enum Value {
     Sender(Arc<crate::chan::SenderEnd>),
     /// Channel receiver
     Receiver(Arc<crate::chan::ReceiverEnd>),
-    /// Thread pool (from `using ThreadPool(workers: n) { }`)
-    ThreadPool(Arc<ThreadPoolInner>),
     /// Multitasking runtime (from `using Multitasking { }`)
     MultitaskingRuntime(Arc<MultitaskingRuntime>),
     /// Map (key-value storage with Value keys)
@@ -1619,7 +1643,6 @@ impl Value {
             Value::MultitaskingRuntime(_) => "MultitaskingRuntime",
             Value::Sender(_) => "Sender",
             Value::Receiver(_) => "Receiver",
-            Value::ThreadPool(_) => "ThreadPool",
             Value::Map(_) => "Map",
             Value::Atomic(_) => "Atomic",
             Value::Shared(_) => "Shared",
@@ -1976,7 +1999,6 @@ impl fmt::Display for Value {
             Value::MultitaskingRuntime(r) => write!(f, "<Multitasking runtime workers={}>", r.workers),
             Value::Sender(_) => write!(f, "<Sender>"),
             Value::Receiver(_) => write!(f, "<Receiver>"),
-            Value::ThreadPool(p) => write!(f, "<ThreadPool size={}>", p.size),
             Value::Map(m) => {
                 let entries = map_entries_seeded(&m.lock().unwrap());
                 write!(f, "Map {{ ")?;

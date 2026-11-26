@@ -2947,31 +2947,25 @@ impl Interpreter {
                     sender: Mutex::new(Some(tx)),
                     workers: Mutex::new(Vec::new()),
                     size: num_threads,
+                    pending: Mutex::new(0),
+                    idle: std::sync::Condvar::new(),
                 });
 
+                let outer = self.thread_pool.replace(Arc::clone(&pool));
                 self.env.push_scope();
-                self.env.define("__thread_pool".to_string(), Value::ThreadPool(pool.clone()));
 
                 // `exec_stmts`, not a loop over `exec_stmt`: that one runs the
                 // block's `ensure`s, and a bare loop skipped every one of them.
-                let result = match self.exec_stmts(body) {
-                    Ok(val) => val,
-                    Err(e) => {
-                        *pool.sender.lock().unwrap() = None;
-                        for w in workers {
-                            let _ = w.join();
-                        }
-                        self.env.pop_scope();
-                        return Err(e);
-                    }
-                };
+                let result = self.exec_stmts(body);
 
+                pool.drain();
                 *pool.sender.lock().unwrap() = None;
                 for w in workers {
                     let _ = w.join();
                 }
                 self.env.pop_scope();
-                Ok(result)
+                self.thread_pool = outer;
+                result
             }
 
             ExprKind::UsingBlock { name, args, body }

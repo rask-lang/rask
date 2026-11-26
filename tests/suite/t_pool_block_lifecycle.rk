@@ -1,0 +1,85 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A `using ThreadPool` block stays open until every job spawned in it has
+// finished, detached ones included. Natively the block counted as closed
+// before its last jobs ran, so a job that spawned onto the pool then panicked
+// with "requires `using ThreadPool`", and a job that opened a block of its own
+// hung: the other workers had already exited. Two threads opening and closing
+// blocks at once hung too, each resetting state the other was using.
+
+import async.Channel
+import thread.Thread
+import thread.ThreadPool
+import time
+import time.Duration
+
+func crunch(n: i64) -> i64 {
+    return ThreadPool.spawn { return n * 2 }.join()!
+}
+
+func late_spawn_sized() -> i64 {
+    let (tx, rx) = Channel<i64>.buffered(1)
+    using ThreadPool(workers: 2) {
+        ThreadPool.spawn {
+            time.sleep(Duration.millis(20))!
+            tx.send(crunch(21))!
+            return 0
+        }.detach()
+    }
+    return rx.receive()!
+}
+
+func late_spawn_default() -> i64 {
+    let (tx, rx) = Channel<i64>.buffered(1)
+    using ThreadPool {
+        ThreadPool.spawn {
+            time.sleep(Duration.millis(20))!
+            tx.send(crunch(5))!
+            return 0
+        }.detach()
+    }
+    return rx.receive()!
+}
+
+func nested_from_draining_job() -> i64 {
+    let (tx, rx) = Channel<i64>.buffered(1)
+    using ThreadPool(workers: 2) {
+        ThreadPool.spawn {
+            time.sleep(Duration.millis(20))!
+            using ThreadPool(workers: 2) {
+                tx.send(crunch(4))!
+            }
+            return 0
+        }.detach()
+    }
+    return rx.receive()!
+}
+
+@allow(blocking_loop)
+func churn(k: i64) -> i64 {
+    mut total = 0
+    for i in 0..100 {
+        using ThreadPool(workers: 2) {
+            total += crunch(i + k)
+        }
+    }
+    return total
+}
+
+test "a detached job that runs as the block closes can still spawn" {
+    assert late_spawn_sized() == 42
+}
+
+test "the same, with a pool sized to the machine" {
+    assert late_spawn_default() == 10
+}
+
+test "a job still running as the block closes can open a block of its own" {
+    assert nested_from_draining_job() == 8
+}
+
+test "two threads open and close blocks at once" {
+    let a = Thread.spawn { return churn(0) }
+    let b = Thread.spawn { return churn(1) }
+    assert a.join()! == 9900
+    assert b.join()! == 10100
+}

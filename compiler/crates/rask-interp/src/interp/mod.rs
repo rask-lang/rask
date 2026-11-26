@@ -197,6 +197,9 @@ pub struct Interpreter {
     pub(crate) resource_tracker: ResourceTracker,
     /// Optional output buffer for capturing stdout (used in tests).
     output_buffer: Option<Arc<Mutex<String>>>,
+    /// The `using ThreadPool` block this code runs under. Not a variable:
+    /// a job's closure carries off only what it names, and lost it.
+    pub(crate) thread_pool: Option<Arc<crate::value::ThreadPoolInner>>,
     /// Command-line arguments passed to the program.
     pub(crate) cli_args: Vec<String>,
     /// Build script state (set when running via `run_build`).
@@ -566,6 +569,7 @@ impl Interpreter {
             const_facts: Arc::new(HashMap::new()),
             resource_tracker: ResourceTracker::new(),
             output_buffer: None,
+            thread_pool: None,
             cli_args: vec![],
             build_state: None,
             sources: Arc::default(),
@@ -626,6 +630,7 @@ impl Interpreter {
             const_facts: Arc::new(HashMap::new()),
             resource_tracker: ResourceTracker::new(),
             output_buffer: None,
+            thread_pool: None,
             cli_args: args,
             node_types: HashMap::new(),
             escaping_closures: std::collections::HashSet::new(),
@@ -688,6 +693,7 @@ impl Interpreter {
             const_facts: Arc::new(HashMap::new()),
             resource_tracker: ResourceTracker::new(),
             output_buffer: Some(buffer.clone()),
+            thread_pool: None,
             cli_args: vec![],
             build_state: None,
             sources: Arc::default(),
@@ -1208,6 +1214,7 @@ impl Interpreter {
         // reason, which is the failure std.testing/T19 exists to surface
         // (#1093). Shared rather than copied, because there is one report.
         child.output_buffer = self.output_buffer.clone();
+        child.thread_pool = self.thread_pool.clone();
         // The task owns what it captured. It runs on its own interpreter with
         // its own resource tracker, so without this the parent went on owing
         // a resource the task had already closed, and died at the scope's exit
@@ -1324,7 +1331,7 @@ impl Interpreter {
 
     /// Inside a `using ThreadPool` block.
     pub(crate) fn in_thread_pool(&self) -> bool {
-        matches!(self.env.get("__thread_pool"), Some(Value::ThreadPool(_)))
+        self.thread_pool.is_some()
     }
 
     /// Start an OS thread (`Thread.spawn { … }`).
@@ -1374,40 +1381,37 @@ impl Interpreter {
         use crate::value::PoolTask;
 
         // Check for thread pool context
-        let pool = match self.env.get("__thread_pool") {
-            Some(Value::ThreadPool(ref p)) => Arc::clone(p),
-            _ => {
-                return Err(RuntimeError::TypeError(
-                    "ThreadPool.spawn requires `using ThreadPool` context".to_string(),
-                ))
-            }
-        };
+        // CC3: a call the checker couldn't follow (a stored closure, an
+        // interface call) reaches here outside a block; it panics, as natively.
+        let no_pool = || RuntimeError::Panic(
+            "ThreadPool.spawn requires `using ThreadPool` context".to_string(),
+        );
+        let Some(pool) = self.thread_pool.clone() else { return Err(no_pool()) };
         let (child, body, ret) = self.task_from_closure("ThreadPool.spawn", closure, block)?;
 
         let (result_tx, result_rx) = mpsc::sync_channel::<Result<Value, String>>(1);
         let cancel = Arc::new(crate::value::CancelToken::default());
         let flag = cancel.clone();
 
+        let finished = Arc::clone(&pool);
         let task = PoolTask {
             work: Box::new(move || {
                 let ended = crate::value::with_cancel_flag(flag, move || run_task_body(child, body, ret));
                 let _ = result_tx.send(ended);
+                finished.job_done();
             }),
         };
 
+        // The block stays open until its last job ends (see `drain`), so a
+        // closed sender means this spawn came after the block, from a task
+        // that outlived it.
         let sender = pool.sender.lock().unwrap();
-        if let Some(ref tx) = *sender {
-            tx.send(task).map_err(|_| {
-                RuntimeError::ResourceClosed {
-                    resource_type: "ThreadPool".to_string(),
-                    operation: "spawn on".to_string(),
-                }
-            })?;
-        } else {
-            return Err(RuntimeError::TypeError(
-                "thread pool is shut down".to_string(),
-            ));
+        let Some(ref tx) = *sender else { return Err(no_pool()) };
+        pool.job_started();
+        if tx.send(task).is_err() {
+            return Err(no_pool());
         }
+        drop(sender);
 
         let join_handle = crate::spawn_interp_thread(move || {
             result_rx
