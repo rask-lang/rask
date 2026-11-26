@@ -1329,6 +1329,27 @@ impl Interpreter {
         Ok((child, Arc::clone(body), *ret))
     }
 
+    /// A `using Multitasking` block is open somewhere in the process.
+    pub(crate) fn require_multitasking(&self) -> Result<(), RuntimeError> {
+        if crate::value::ACTIVE_RUNTIME.read().unwrap().is_some() {
+            return Ok(());
+        }
+        Err(RuntimeError::Panic(
+            "RUNTIME PANIC: spawn with no active `using Multitasking` scope\n\
+             \n\
+             This can happen when:\n\
+             - A closure containing a spawn is stored and called outside a block\n\
+             - An interface object dispatches to an impl that spawns\n\
+             - FFI calls back into Rask outside any scope\n\
+             \n\
+             Install a `using Multitasking { ... }` block that encloses the call.".to_string(),
+        ))
+    }
+
+    pub(crate) fn no_pool() -> RuntimeError {
+        RuntimeError::Panic("ThreadPool.spawn requires `using ThreadPool` context".to_string())
+    }
+
     /// Inside a `using ThreadPool` block.
     pub(crate) fn in_thread_pool(&self) -> bool {
         self.thread_pool.is_some()
@@ -1348,19 +1369,6 @@ impl Interpreter {
     /// Start a green task (`spawn { … }` in `using Multitasking`). In the
     /// interpreter it's an OS thread.
     pub(crate) fn spawn_async_task(&mut self, closure: Value, block: &rask_ast::expr::Expr) -> Result<Value, RuntimeError> {
-        // Check for active runtime slot (CC3 fallback)
-        if crate::value::ACTIVE_RUNTIME.read().unwrap().is_none() {
-            return Err(RuntimeError::Panic(
-                "RUNTIME PANIC: spawn with no active `using Multitasking` scope\n\
-                 \n\
-                 This can happen when:\n\
-                 - A closure containing a spawn is stored and called outside a block\n\
-                 - An interface object dispatches to an impl that spawns\n\
-                 - FFI calls back into Rask outside any scope\n\
-                 \n\
-                 Install a `using Multitasking { ... }` block that encloses the call.".to_string(),
-            ));
-        }
         let (child, body, ret) = self.task_from_closure("spawn", closure, block)?;
 
         // The thread starts now; the body waits for one of the scope's
@@ -1380,13 +1388,7 @@ impl Interpreter {
     pub(crate) fn spawn_pool_task(&mut self, closure: Value, block: &rask_ast::expr::Expr) -> Result<Value, RuntimeError> {
         use crate::value::PoolTask;
 
-        // Check for thread pool context
-        // CC3: a call the checker couldn't follow (a stored closure, an
-        // interface call) reaches here outside a block; it panics, as natively.
-        let no_pool = || RuntimeError::Panic(
-            "ThreadPool.spawn requires `using ThreadPool` context".to_string(),
-        );
-        let Some(pool) = self.thread_pool.clone() else { return Err(no_pool()) };
+        let Some(pool) = self.thread_pool.clone() else { return Err(Self::no_pool()) };
         let (child, body, ret) = self.task_from_closure("ThreadPool.spawn", closure, block)?;
 
         let (result_tx, result_rx) = mpsc::sync_channel::<Result<Value, String>>(1);
@@ -1406,10 +1408,10 @@ impl Interpreter {
         // closed sender means this spawn came after the block, from a task
         // that outlived it.
         let sender = pool.sender.lock().unwrap();
-        let Some(ref tx) = *sender else { return Err(no_pool()) };
+        let Some(ref tx) = *sender else { return Err(Self::no_pool()) };
         pool.job_started();
         if tx.send(task).is_err() {
-            return Err(no_pool());
+            return Err(Self::no_pool());
         }
         drop(sender);
 

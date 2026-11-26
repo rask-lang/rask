@@ -10922,3 +10922,34 @@ fn pool_block_is_closed_after_a_test_panics_in_it() {
         assert!(!combined.contains("without a pool"), "{args:?}: ran on a leftover pool:\n{combined}");
     }
 }
+
+/// A spawn reached through an `any` call panics with no block open
+/// (conc.async/CC3), on every backend. The interpreter ran a task that borrows
+/// its frame without asking for a runtime, so both spawns here printed their
+/// answers there.
+#[test]
+fn spawn_through_any_panics_without_its_block() {
+    let file = fixture("spawn_through_any_needs_runtime.rk");
+    for args in [vec!["test"], vec!["test", "--interp"]] {
+        let out = Command::new(rask_binary())
+            .args(&args)
+            .arg(&file)
+            .env("RASK_RUNTIME_DIR", runtime_dir())
+            .output()
+            .expect("failed to run rask test");
+        let combined = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr),
+        );
+        assert!(
+            combined.contains("3 tests, 1 passed, 2 failed"),
+            "{args:?}: only the test with its blocks open should pass:\n{combined}"
+        );
+        assert!(
+            combined.contains("ThreadPool.spawn requires `using ThreadPool` context"),
+            "{args:?}: the pool spawn should panic:\n{combined}"
+        );
+        assert!(combined.contains("using Multitasking"), "{args:?}: the green spawn should panic:\n{combined}");
+    }
+}

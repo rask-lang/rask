@@ -2760,22 +2760,35 @@ impl Interpreter {
             // underneath, and hand that to the task.
             ExprKind::Spawn { target, args, body, .. } => {
                 let closure = self.eval_expr(body)?;
+                // The runtime comes first, whichever way the task then runs:
+                // a call the checker couldn't follow (an interface object, a
+                // stored closure) reaches here outside its block and panics,
+                // as natively (conc.async/CC3). Checked only on the path a
+                // task that escapes takes, a task that borrows its frame ran
+                // with no runtime at all.
+                match target {
+                    rask_ast::expr::SpawnTarget::Green => {
+                        self.require_multitasking().map_err(|e| RuntimeDiagnostic::new(e, expr.span))?;
+                    }
+                    // `requires_pool: false` with no pool runs here (S2).
+                    rask_ast::expr::SpawnTarget::Pool if !self.in_thread_pool() => {
+                        let requires = match args.first() {
+                            Some(a) => !matches!(self.eval_expr(&a.expr)?, Value::Bool(false)),
+                            None => true,
+                        };
+                        if requires {
+                            return Err(RuntimeDiagnostic::new(Self::no_pool(), expr.span));
+                        }
+                        return self.run_task_in_place(closure).map_err(|e| RuntimeDiagnostic::new(e, expr.span));
+                    }
+                    _ => {}
+                }
                 // A task that borrows its frame (conc.async/S5) runs beside
                 // it, like any other. Run to the end before the frame went on,
                 // a task that waits on the frame never finished: an unbuffered
                 // send blocked for a receive the frame hadn't reached (#2002).
                 if !self.escaping_closures.contains(&body.id) {
                     return self.spawn_borrowing_task(closure).map_err(|e| RuntimeDiagnostic::new(e, expr.span));
-                }
-                // `requires_pool: false` with no pool runs here too (S2).
-                if *target == rask_ast::expr::SpawnTarget::Pool && !self.in_thread_pool() {
-                    let requires = match args.first() {
-                        Some(a) => !matches!(self.eval_expr(&a.expr)?, Value::Bool(false)),
-                        None => true,
-                    };
-                    if !requires {
-                        return self.run_task_in_place(closure).map_err(|e| RuntimeDiagnostic::new(e, expr.span));
-                    }
                 }
                 let started = match target {
                     rask_ast::expr::SpawnTarget::Green => self.spawn_async_task(closure, body),

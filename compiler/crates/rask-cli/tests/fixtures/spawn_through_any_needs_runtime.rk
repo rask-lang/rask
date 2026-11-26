@@ -1,0 +1,53 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A spawn reached through an `any` call can't be checked ahead of time, so it
+// panics when no block is open (conc.async/CC3). The task here is joined in
+// the same function, so it borrows its frame, and the interpreter ran that
+// kind of task with no runtime at all.
+import thread.ThreadPool
+
+interface Starter {
+    func go(self) -> i64
+}
+
+struct Green {
+    n: i64
+}
+
+Green implements Starter {
+    func go(self) -> i64 {
+        let h = spawn { return 5 }
+        return h.join() catch _ => 0
+    }
+}
+
+struct Pooled {
+    n: i64
+}
+
+Pooled implements Starter {
+    func go(self) -> i64 {
+        let h = ThreadPool.spawn { return 6 }
+        return h.join() catch _ => 0
+    }
+}
+
+func run_any(x: any Starter) -> i64 {
+    return x.go()
+}
+
+test "a green spawn through any, with no Multitasking block" {
+    assert run_any(Green(n: 1)) == 5
+}
+
+test "a pool spawn through any, with no pool" {
+    assert run_any(Pooled(n: 1)) == 6
+}
+
+test "both, inside their blocks" {
+    using Multitasking {
+        assert run_any(Green(n: 1)) == 5
+    }
+    using ThreadPool {
+        assert run_any(Pooled(n: 1)) == 6
+    }
+}
