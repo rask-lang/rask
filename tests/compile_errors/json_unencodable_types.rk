@@ -1,0 +1,34 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Types JSON has no form for, rejected when they're encoded or decoded rather
+// than written in some made-up shape. A tuple, a `char`, a `Set`, and a `Map`
+// whose keys aren't strings all checked as encodable; native then printed a
+// tuple as an address and a `Map<i64, i64>` with its keys quoted, and the
+// interpreter refused at run time (std.encoding/E14, E15).
+import json
+
+struct Pair {
+    xy: (i64, i64)
+}
+
+struct Letter {
+    c: char
+}
+
+struct Tags {
+    s: Set<string>
+}
+
+struct Counts {
+    by_id: Map<i64, i64>
+}
+
+func main() {
+    // ERROR: a tuple field has no JSON form
+    println(json.encode(Pair(xy: (1, 2))))
+    // ERROR: nor does a `char`
+    println(json.encode(Letter(c: 'a')))
+    // ERROR: nor a `Set`
+    println(json.encode(Tags(s: Set.new())))
+    // ERROR: a map's keys are object keys, so they're strings
+    println(json.encode(Counts(by_id: Map.new())))
+}

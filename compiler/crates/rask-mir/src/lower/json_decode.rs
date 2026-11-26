@@ -79,7 +79,7 @@ impl<'a> MirLowerer<'a> {
         let Some(shape) = self.emit_shape(target) else {
             return Err(LoweringError::InvalidConstruct(format!(
                 "json.decode cannot build `{}` — only bool, integers, floats, string, \
-                 Vec<T>, Map<string, T>, T?, and structs of those are JSON-compatible",
+                 Vec<T>, [T; N], Map<string, T>, T?, and structs and enums of those are JSON-compatible",
                 type_label(target)
             )));
         };
@@ -302,13 +302,8 @@ impl<'a> MirLowerer<'a> {
             }
         }
         // A type with its own `decode` is read as its wire type and handed to
-        // that; one with its own `encode` is written as what that returns
-        // (std.encoding/E12b). Each way only follows its own hook.
-        if purpose == ShapeFor::Encode {
-            if let Some(shape) = self.emit_custom_encode_shape(ty) {
-                return Some(shape);
-            }
-        } else if let Some(shape) = self.emit_custom_decode_shape(ty, purpose) {
+        // that (std.encoding/E12b).
+        if let Some(shape) = self.emit_custom_decode_shape(ty, purpose) {
             return shape;
         }
         if purpose == ShapeFor::Claims {
@@ -359,8 +354,69 @@ impl<'a> MirLowerer<'a> {
             ]));
         }
 
+        if let Type::Array { elem, len: rask_types::ArrayLen::Known(len) } = ty {
+            let elem_shape = self.emit_shape_for(elem, purpose)?;
+            let stride = self.slot_size_for_type(elem)?;
+            return Some(self.emit_shape_call("rask_json_shape_array", vec![
+                MirOperand::Local(elem_shape),
+                MirOperand::Constant(MirConst::Int(stride)),
+                MirOperand::Constant(MirConst::Int(*len as i64)),
+            ]));
+        }
+
+        if let MirType::Enum(id) = self.ctx.type_to_mir(ty) {
+            return self.emit_enum_shape(id.id as usize, purpose);
+        }
+
         let layout = self.struct_layout_of(ty)?;
         self.emit_struct_shape(&layout, purpose)
+    }
+
+    /// An enum's shape: where its tag sits, and per variant its wire name and
+    /// payload, tagged the way `lower_json_encode_enum` writes it
+    /// (std.encoding/E22–E25). A lone unnamed payload is `bare`: the JSON
+    /// value is the payload itself, not an object of fields (E23).
+    fn emit_enum_shape(&mut self, index: usize, purpose: ShapeFor) -> Option<crate::LocalId> {
+        let int = |v: i64| MirOperand::Constant(MirConst::Int(v));
+        let layout = self.ctx.enum_layouts.get(index)?.clone();
+        let shape = self.emit_shape_call("json_shape_enum", vec![
+            int(layout.size as i64),
+            int(layout.tag_offset as i64),
+            int(layout.tag_bytes() as i64),
+        ]);
+        if let Some(tag) = field_attrs::tag_field(&layout.attrs) {
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                dst: None,
+                func: FunctionRef::reading("rask_json_shape_enum_tag"),
+                args: vec![MirOperand::Local(shape), MirOperand::Constant(MirConst::String(tag))],
+            }));
+        }
+        for variant in &layout.variants {
+            let payload = if variant.fields.is_empty() {
+                int(0)
+            } else {
+                let payload = self.emit_shape_call("rask_json_shape_struct", vec![int(layout.size as i64)]);
+                for f in &variant.fields {
+                    let field_shape = self.emit_shape_for(&f.ty, purpose)?;
+                    self.add_shape_field(payload, &f.name, (variant.payload_offset + f.offset) as i64, field_shape);
+                }
+                MirOperand::Local(payload)
+            };
+            let bare = variant.fields.len() == 1 && rask_ast::decl::is_positional_field_name(&variant.fields[0].name);
+            let name = field_attrs::serial_name(&variant.attrs, &variant.name);
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                dst: None,
+                func: FunctionRef::reading("rask_json_shape_variant"),
+                args: vec![
+                    MirOperand::Local(shape),
+                    int(variant.tag as i64),
+                    payload,
+                    MirOperand::Constant(MirConst::String(name)),
+                    int(bare as i64),
+                ],
+            }));
+        }
+        Some(shape)
     }
 
     fn emit_struct_shape(&mut self, layout: &StructLayout, purpose: ShapeFor) -> Option<crate::LocalId> {
@@ -446,7 +502,7 @@ impl<'a> MirLowerer<'a> {
     }
 
     /// The shapes only a claim's inputs use: `char`, 128-bit integers, tuples,
-    /// enums, `T or E`, and maps with a key that isn't a string. JSON has no
+    /// `T or E`, and maps with a key that isn't a string. JSON has no
     /// form for any of them yet (std.json), so a decode never asks.
     fn emit_claim_only_shape(&mut self, ty: &Type) -> Option<crate::LocalId> {
         let int = |v: i64| MirOperand::Constant(MirConst::Int(v));
@@ -506,36 +562,12 @@ impl<'a> MirLowerer<'a> {
             let mut offset: i64 = 0;
             for (elem, fty) in elems.iter().zip(&fields) {
                 let elem_shape = self.emit_shape_for(elem, ShapeFor::Claims)?;
-                self.add_shape_field(shape, offset, elem_shape);
+                self.add_shape_field(shape, "", offset, elem_shape);
                 offset += rask_layout::size_of(fty, self.ctx.target()) as i64;
             }
             return Some(shape);
         }
-        let MirType::Enum(id) = self.ctx.type_to_mir(ty) else { return None };
-        let layout = self.ctx.enum_layouts.get(id.id as usize)?.clone();
-        let shape = self.emit_shape_call("json_shape_enum", vec![
-            int(layout.size as i64),
-            int(layout.tag_offset as i64),
-            int(layout.tag_bytes() as i64),
-        ]);
-        for variant in &layout.variants {
-            let payload = if variant.fields.is_empty() {
-                int(0)
-            } else {
-                let payload = self.emit_shape_call("rask_json_shape_struct", vec![int(layout.size as i64)]);
-                for f in &variant.fields {
-                    let field_shape = self.emit_shape_for(&f.ty, ShapeFor::Claims)?;
-                    self.add_shape_field(payload, (variant.payload_offset + f.offset) as i64, field_shape);
-                }
-                MirOperand::Local(payload)
-            };
-            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                dst: None,
-                func: FunctionRef::internal("json_shape_variant".to_string()),
-                args: vec![MirOperand::Local(shape), int(variant.tag as i64), payload],
-            }));
-        }
-        Some(shape)
+        None
     }
 
     /// The symbol of the `__encode_json` of a type that writes itself out
@@ -562,68 +594,6 @@ impl<'a> MirLowerer<'a> {
             args: vec![value],
         }));
         Some(text)
-    }
-
-    /// The shape of a type with its own `encode`: a function the runtime calls
-    /// with the value's address and a string slot, which it fills with the
-    /// value's JSON text and the runtime then frees.
-    fn emit_custom_encode_shape(&mut self, ty: &Type) -> Option<crate::LocalId> {
-        let adapter = self.custom_encode_adapter(ty)?;
-        let ty_mir = self.ctx.type_to_mir(ty);
-        let string_mir = self.ctx.type_to_mir(&Type::String);
-        let fn_name = format!("{}__encode_custom_{}", self.parent_name, self.closure_counter);
-        self.closure_counter += 1;
-        let mut wb = crate::builder::BlockBuilder::new(fn_name.clone(), MirType::Void);
-        // Both parameters first, as in the decode trampoline: a parameter's
-        // local id is its position.
-        // An aggregate arrives as its own address; a word is read out of the
-        // buffer the runtime points at.
-        let src_param = if ty_mir.passed_by_address() {
-            wb.add_param("__src".to_string(), ty_mir.clone(), rask_ast::ty::ParamMode::Borrow)
-        } else {
-            wb.add_param("__src".to_string(), MirType::Ptr, rask_ast::ty::ParamMode::Borrow)
-        };
-        let out = wb.add_param("__out".to_string(), MirType::Ptr, rask_ast::ty::ParamMode::Borrow);
-        let value = if ty_mir.passed_by_address() {
-            src_param
-        } else {
-            let src = src_param;
-            let v = wb.alloc_temp(ty_mir.clone());
-            wb.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                dst: v,
-                rvalue: MirRValue::Field {
-                    base: MirOperand::Local(src),
-                    field_index: 0,
-                    byte_offset: Some(0),
-                    access: FieldAccess::for_field(&ty_mir, rask_layout::size_of(&ty_mir, self.ctx.target())),
-                },
-            }));
-            v
-        };
-        let text = wb.alloc_temp(string_mir.clone());
-        wb.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-            dst: Some(text),
-            func: FunctionRef::internal(adapter),
-            args: vec![MirOperand::Local(value)],
-        }));
-        wb.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-            addr: out,
-            offset: 0,
-            value: MirOperand::Local(text),
-            store_size: rask_layout::size_of(&string_mir, self.ctx.target()),
-            field: None,
-        }));
-        wb.terminate(MirTerminator::dummy(MirTerminatorKind::Return { value: None }));
-        self.synthesized_functions.push(wb.finish());
-        let addr = self.builder.alloc_temp(MirType::I64);
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-            dst: addr,
-            rvalue: MirRValue::FuncAddr(fn_name),
-        }));
-        Some(self.emit_shape_call("json_shape_custom_encode", vec![
-            MirOperand::Constant(MirConst::Int(rask_layout::size_of(&ty_mir, self.ctx.target()) as i64)),
-            MirOperand::Local(addr),
-        ]))
     }
 
     /// A type that decodes through its own `decode` (std.encoding/E12b): the
@@ -791,13 +761,13 @@ impl<'a> MirLowerer<'a> {
     }
 
     /// A positional field: no key, no flags, no default.
-    fn add_shape_field(&mut self, shape: crate::LocalId, offset: i64, field_shape: crate::LocalId) {
+    fn add_shape_field(&mut self, shape: crate::LocalId, key: &str, offset: i64, field_shape: crate::LocalId) {
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: None,
             func: FunctionRef::reading("rask_json_shape_field"),
             args: vec![
                 MirOperand::Local(shape),
-                MirOperand::Constant(MirConst::String(String::new())),
+                MirOperand::Constant(MirConst::String(key.to_string())),
                 MirOperand::Constant(MirConst::Int(offset)),
                 MirOperand::Local(field_shape),
                 MirOperand::Constant(MirConst::Int(0)),
@@ -927,53 +897,6 @@ impl<'a> MirLowerer<'a> {
         }
     }
 
-    /// Is this `T?` holding something the runtime has to walk?
-    pub(super) fn is_optional_collection(&self, ty: &Type) -> bool {
-        let Type::Result { ok, err } = ty else { return false };
-        if **err != Type::None {
-            return false;
-        }
-        self.collection_arg(ok, "Vec", 0).is_some() || self.is_map_type(ok)
-    }
-
-    /// Encode a value the runtime has to walk (a Map, or a `T?` around a
-    /// collection) by handing it the same shape decoding uses. Returns the
-    /// local holding the JSON fragment.
-    pub(super) fn lower_json_encode_shaped(
-        &mut self,
-        value: crate::LocalId,
-        ty: &Type,
-    ) -> Option<crate::LocalId> {
-        // An aggregate local already *is* its storage, so its address goes in.
-        // A word-sized value (a Map handle) goes in as itself, a plain read the
-        // drop pass sees. Pointing at it hid the encoder's read: a struct whose
-        // Map field was being encoded was freed before the call. Copying it into
-        // a scratch buffer instead read as a move, so the Map was never freed.
-        let by_address = self
-            .builder
-            .local_type(value)
-            .map(|t| t.passed_by_address())
-            .unwrap_or(false);
-        let shape = self.emit_shape_for(ty, ShapeFor::Encode)?;
-        let out = self.builder.alloc_temp(MirType::Buffer);
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-            dst: Some(out),
-            func: FunctionRef::reading(if by_address {
-                "rask_json_encode_shaped"
-            } else {
-                "rask_json_encode_shaped_word"
-            })
-            .writing_string(),
-            args: vec![MirOperand::Local(value), MirOperand::Local(shape)],
-        }));
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-            dst: None,
-            func: FunctionRef::releasing("rask_json_shape_free"),
-            args: vec![MirOperand::Local(shape)],
-        }));
-        Some(out)
-    }
-
     /// What T is in `json.decode<T>(…)`.
     ///
     /// The checker's type for the call is the better source — it has already
@@ -1006,9 +929,6 @@ impl<'a> MirLowerer<'a> {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ShapeFor {
     Json,
-    /// Writing a value out. The same walk as `Json`, except that a type follows
-    /// its own `encode`, not its `decode`.
-    Encode,
     Claims,
 }
 

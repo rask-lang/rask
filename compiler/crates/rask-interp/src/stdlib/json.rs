@@ -1143,6 +1143,42 @@ fn json_to_typed(
         _ => {}
     }
 
+    // `[T; N]`: a list of exactly N.
+    if let TypeExpr::Array { elem, len } = ty {
+        let count = match len.parse::<usize>() {
+            Ok(n) => n,
+            Err(_) => match cx.interp.env.get(len) {
+                Some(Value::Int(n, _)) if n >= 0 => n as usize,
+                _ => {
+                    return Err(JsonErr {
+                        kind: JsonErrKind::Type,
+                        message: format!("`{}` has no known length", ty.source()),
+                    })
+                }
+            },
+        };
+        let Value::Vec(items) = raw else {
+            return Err(type_err(path, "a list", json));
+        };
+        let items = items.lock().unwrap().clone();
+        let base = if path.is_empty() { "the list" } else { path };
+        if items.len() != count {
+            return Err(JsonErr {
+                kind: JsonErrKind::Type,
+                message: format!("{} should hold {} items, found {}", base, count, items.len()),
+            });
+        }
+        let mut out = Vec::with_capacity(count);
+        for (i, item) in items.iter().enumerate() {
+            out.push(json_to_typed(item, elem, &format!("{}[{}]", base, i), cx)?);
+        }
+        return Ok(Value::array(out));
+    }
+
+    if let Some(decl) = ty.bare_name().and_then(|n| cx.interp.enums.get(n).cloned()) {
+        return json_to_enum(json, raw, &decl, path, cx);
+    }
+
     let name = ty.bare_name().unwrap_or_default();
     match name {
         "string" => extract_string(raw).map_err(|_| type_err(path, "string", json)),
@@ -1206,6 +1242,104 @@ fn json_to_typed(
             Ok(Value::new_struct(name.to_string(), fields, None))
         }
     }
+}
+
+/// An enum, tagged the way the encoder writes it (std.encoding/E22–E25).
+/// External: a unit variant is its name as a string, any other an object with
+/// the name as its one key, holding a lone unnamed payload itself (E23) or the
+/// fields. Internal (`@tag`): an object whose tag member names the variant,
+/// with the fields beside it.
+fn json_to_enum(
+    json: &Value,
+    raw: &Value,
+    decl: &rask_ast::decl::EnumDecl,
+    path: &str,
+    cx: &mut Decode<'_>,
+) -> Result<Value, JsonErr> {
+    let where_ = if path.is_empty() { "the value".to_string() } else { path.to_string() };
+    let find = |wire: &str| {
+        decl.variants
+            .iter()
+            .position(|v| field_attrs::serial_name(&v.attrs, &v.name) == wire)
+            .ok_or_else(|| JsonErr {
+                kind: JsonErrKind::Type,
+                message: format!("{} names no variant: \"{}\"", where_, wire),
+            })
+    };
+    let string_of = |v: &Value| match unwrap_json_value(v) {
+        Value::String(s) => Some(s.lock().unwrap().clone()),
+        _ => None,
+    };
+    let tag_field = field_attrs::tag_field(&decl.attrs);
+    let (index, body) = match &tag_field {
+        Some(tf) => {
+            let entries = object_entries(raw).ok_or_else(|| type_err(path, "an object", json))?;
+            let tag = entries.iter().find(|(k, _)| k == tf).ok_or_else(|| JsonErr {
+                kind: JsonErrKind::Missing,
+                message: format!("field \"{}\" not found in the JSON object", tf),
+            })?;
+            let wire = string_of(&tag.1).ok_or_else(|| type_err(&child_path(path, tf), "a string", &tag.1))?;
+            (find(&wire)?, Some(json.clone()))
+        }
+        None => match string_of(json) {
+            Some(wire) => {
+                let index = find(&wire)?;
+                if !decl.variants[index].fields.is_empty() {
+                    return Err(JsonErr {
+                        kind: JsonErrKind::Type,
+                        message: format!("{}: variant \"{}\" has a payload, so it is an object", where_, wire),
+                    });
+                }
+                (index, None)
+            }
+            None => {
+                let entries = object_entries(raw)
+                    .filter(|e| e.len() == 1)
+                    .ok_or_else(|| type_err(path, "a variant name or an object with one key", json))?;
+                let (wire, body) = entries.into_iter().next().expect("one entry");
+                let index = find(&wire)?;
+                if decl.variants[index].fields.is_empty() {
+                    return Err(JsonErr {
+                        kind: JsonErrKind::Type,
+                        message: format!("{}: variant \"{}\" has no payload, so it is a string", where_, wire),
+                    });
+                }
+                (index, Some(body))
+            }
+        },
+    };
+    let variant = &decl.variants[index];
+    let wire = field_attrs::serial_name(&variant.attrs, &variant.name);
+    let mut fields = Vec::with_capacity(variant.fields.len());
+    if let Some(body) = body {
+        let inner = if tag_field.is_some() {
+            path.to_string()
+        } else if path.is_empty() {
+            format!("variant {}", wire)
+        } else {
+            format!("{}.{}", path, wire)
+        };
+        let bare = variant.fields.len() == 1 && rask_ast::decl::is_positional_field_name(&variant.fields[0].name);
+        if bare {
+            fields.push(json_to_typed(&body, &variant.fields[0].ty, &inner, cx)?);
+        } else {
+            let entries = object_entries(unwrap_json_value(&body))
+                .ok_or_else(|| type_err(&inner, "an object", &body))?;
+            for field in &variant.fields {
+                match entries.iter().find(|(k, _)| *k == field.name) {
+                    Some((_, v)) => fields.push(json_to_typed(v, &field.ty, &child_path(&inner, &field.name), cx)?),
+                    None if matches!(field.ty, TypeExpr::Optional(_)) => fields.push(Value::none()),
+                    None => {
+                        return Err(JsonErr {
+                            kind: JsonErrKind::Missing,
+                            message: format!("field \"{}\" not found in the JSON object", field.name),
+                        })
+                    }
+                }
+            }
+        }
+    }
+    Ok(Value::enum_with_index(decl.name.clone(), variant.name.clone(), fields, index as u32))
 }
 
 /// Unwrap a JsonValue enum to its inner content for easier inspection.

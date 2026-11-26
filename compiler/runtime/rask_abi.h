@@ -178,8 +178,8 @@
 #define RASK_JSHAPE_OPT 17
 #define RASK_JSHAPE_STRUCT 18
 
-// An enum: a tag, and per variant a struct of its payload. Claims build
-// these; JSON's enum form is still open (std.json).
+// An enum: a tag, and per variant its wire name and a struct of its
+// payload, tagged as std.encoding/E22–E24 write it.
 #define RASK_JSHAPE_ENUM 19
 
 // A `T or E`: the tag, and the `T` or the `E` at the payload. Claims
@@ -194,9 +194,8 @@
 // shape of what `decode` reads, and the function that calls it.
 #define RASK_JSHAPE_CUSTOM 22
 
-// A type that writes itself out through its own `encode`: the shape holds
-// the function that answers its value as JSON text. Encoding only.
-#define RASK_JSHAPE_CUSTOM_ENCODE 23
+// `[T; N]`: N elements of one shape, back to back in place.
+#define RASK_JSHAPE_ARRAY 23
 
 // A decode shape field flag: `@no_serialize`, never read from the input.
 #define RASK_JFIELD_NOT_SERIALIZED 1

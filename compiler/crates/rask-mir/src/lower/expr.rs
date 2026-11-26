@@ -5841,147 +5841,44 @@ impl<'a> MirLowerer<'a> {
                             // picks the pretty body by name.
                             let pretty = method == "encode_pretty";
                             let (arg_op, arg_ty) = self.lower_expr(&args[0].expr)?;
-                            // A type with its own `encode` is written as what
-                            // that answers (std.encoding/E12b).
-                            if let Some(written) = self.ctx.lookup_raw_type(args[0].expr.id) {
-                                if let Some(text) = self.custom_encode_text(arg_op.clone(), &written) {
-                                    let encoded = (MirOperand::Local(text), MirType::Buffer);
-                                    return Ok(Some(self.maybe_json_pretty(encoded, pretty)));
-                                }
-                                // A `T?` or a `Map` on its own: walked by the
-                                // runtime, as it is inside a struct. Falling on
-                                // to the integer encoder wrote the address of
-                                // its storage, which is what an `encode` that
-                                // answers one would have handed out.
-                                let optional = matches!(&*written, rask_types::Type::Result { err, .. } if **err == rask_types::Type::None);
-                                if optional || self.is_map_type(&written) {
-                                    if let MirOperand::Local(value) = &arg_op {
-                                        if let Some(text) = self.lower_json_encode_shaped(*value, &written) {
-                                            let encoded = (MirOperand::Local(text), MirType::Buffer);
-                                            return Ok(Some(self.maybe_json_pretty(encoded, pretty)));
-                                        }
-                                    }
-                                }
-                            }
-                            if let MirType::Struct(StructLayoutId { id, .. }) = &arg_ty {
-                                if let Some(layout) = self.ctx.struct_layouts.get(*id as usize) {
-                                    let encoded = self.lower_json_encode_struct(arg_op, layout.clone())?;
-                                    return Ok(Some(self.maybe_json_pretty(encoded, pretty)));
-                                }
-                            }
-
-                            // Vec<T>: generate loop that encodes each element.
-                            // Detection: the checker's type of the argument.
-                            let raw_ty = self.ctx.lookup_raw_type(args[0].expr.id);
-                            // A resolved `Type::Generic { base }` counts too: a
-                            // call returning `Vec<T>` comes back that way, and
-                            // missing it sent `json.encode(views())` through
-                            // json_encode_i64 — the binding held a pointer.
-                            let is_vec_from_type = raw_ty.as_deref().map_or(false, |ty| {
-                                matches!(&*ty,
-                                    rask_types::Type::UnresolvedGeneric { name, .. } if name == "Vec"
-                                ) || matches!(&*ty, rask_types::Type::UnresolvedNamed(n) if n == "Vec")
-                                    || self.vec_elem_of_checker_type(&ty).is_some()
-                            });
-                            let is_vec_from_prefix = !is_vec_from_type
-                                && self.type_base_of(&args[0].expr).as_deref() == Some("Vec");
-                            // Last resort: the callee's declared return type. A
-                            // call returning `Vec<T>` doesn't always carry a type
-                            // on the argument node, and missing it sent
-                            // `json.encode(views())` through json_encode_i64.
-                            let elem_from_sig = if is_vec_from_type || is_vec_from_prefix {
-                                None
-                            } else {
-                                self.vec_elem_of_expr(&args[0].expr)
-                            };
-                            if is_vec_from_type || is_vec_from_prefix || elem_from_sig.is_some() {
-                                // Extract element type from generic args when available
-                                let elem_ty = raw_ty.and_then(|ty| match &*ty {
-                                    rask_types::Type::UnresolvedGeneric { args: ga, .. }
-                                    | rask_types::Type::Generic { args: ga, .. } => {
-                                        ga.first().and_then(|a| match a {
-                                            rask_types::GenericArg::Type(t) => Some(t.as_ref().clone()),
-                                        })
-                                    }
-                                    _ => None,
-                                });
-                                // Last, the element type of the argument's own
-                                // checked type (a binding's, for a name the
-                                // checker didn't type at this node).
-                                let elem_mir = elem_ty
-                                    .as_ref()
-                                    .map(|t| self.ctx.type_to_mir(t))
-                                    .or(elem_from_sig)
-                                    .or_else(|| self.vec_elem_of_expr(&args[0].expr));
-                                let encoded = self.lower_json_encode_vec(arg_op, elem_ty, elem_mir)?;
-                                return Ok(Some(self.maybe_json_pretty(encoded, pretty)));
-                            }
-
-                            // A JsonValue has a Rask encoder — `stringify_value`
-                            // in stdlib/json.rk, reached through
-                            // `JsonValue.to_string`. Falling through to
-                            // `json_encode_i64` printed the enum's own address
-                            // (#689).
-                            //
-                            // Monomorphization queued the same body
-                            // (`Symbols::json_value_encoder`).
-                            if self.ctx.lookup_raw_type(args[0].expr.id).is_some_and(|t| self.ctx.type_defs.is_lang(&t, rask_types::LangItem::JsonValue)) {
+                            let written = self
+                                .ctx
+                                .lookup_raw_type(args[0].expr.id)
+                                .filter(|t| !matches!(&**t, rask_types::Type::Var(_)));
+                            // A JsonValue's pretty form is its own Rask
+                            // printer's, not the compact text re-indented.
+                            if written.as_deref().is_some_and(|t| self.ctx.type_defs.is_lang(t, rask_types::LangItem::JsonValue)) {
                                 let dst = self.json_value_text(arg_op, pretty)?;
                                 return Ok(Some((MirOperand::Local(dst), MirType::Buffer)));
                             }
-
-                            // A bare enum value, not nested in a struct field
-                            // (and not a JsonValue — that's handled above,
-                            // through its own Rask encoder). This used to fall
-                            // all the way to "Non-struct: string or integer"
-                            // below, which has no enum case and silently sent
-                            // it through json_encode_i64 — `json.encode(Color.Green)`
-                            // printed the address of the enum's stack slot as
-                            // a number (std.encoding/E22-E25).
-                            if let crate::types::MirType::Enum(crate::types::EnumLayoutId { id, .. }) = &arg_ty {
-                                if let Some(layout) = self.ctx.enum_layouts.get(*id as usize).cloned() {
-                                    let encoded = self.lower_json_encode_enum(arg_op, &layout)?;
+                            // A call returning `Vec<T>` doesn't always carry a
+                            // type on the argument node; the callee's declared
+                            // return type says what the elements are.
+                            if written.is_none() {
+                                if let Some(elem_mir) = self.vec_elem_of_expr(&args[0].expr) {
+                                    let encoded = self.lower_json_encode_vec(arg_op, None, Some(elem_mir))?;
                                     return Ok(Some(self.maybe_json_pretty(encoded, pretty)));
                                 }
                             }
-
-                            // Non-struct: string, bool, float or integer. A bool
-                            // or a float handed to the integer encoder printed
-                            // its register bits (`2.5` came out `2`, `true` an
-                            // address). JSON spells both the way a program
-                            // prints them, so they use the same formatters the
-                            // struct-field path does.
-                            // An f32 is written as the double it widens to, as it
-                            // is inside a struct or a Vec and in the interpreter.
-                            let mut arg_op = arg_op;
-                            if arg_ty == MirType::F32 {
-                                let wide = self.builder.alloc_temp(MirType::F64);
-                                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                                    dst: wide,
-                                    rvalue: MirRValue::Cast { value: arg_op, target_ty: MirType::F64 },
-                                }));
-                                arg_op = MirOperand::Local(wide);
-                            }
-                            let helper = if raw_ty.is_some_and(|t| self.ctx.is_text(&t)) {
-                                "rask_json_encode_string"
-                            } else {
-                                match &arg_ty {
-                                    MirType::Bool => "rask_bool_to_string",
-                                    MirType::F32 | MirType::F64 => "rask_f64_to_string",
-                                    _ => "rask_json_encode_i64",
+                            // Everything else is written by the encoder every
+                            // nested value goes through. This used to be a
+                            // list of its own, and what it missed fell to the
+                            // integer encoder: `json.encode(n)` on a `Node?`
+                            // wrote the address of its storage.
+                            let value = match arg_op {
+                                MirOperand::Local(l) => l,
+                                other => {
+                                    let tmp = self.builder.alloc_temp(arg_ty.clone());
+                                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                                        dst: tmp,
+                                        rvalue: MirRValue::Use(other),
+                                    }));
+                                    tmp
                                 }
                             };
-                            // Every helper here writes a string, so the result
-                            // is one (the way the struct path types its own):
-                            // typed as an integer, `println(json.encode(5))`
-                            // printed the string's address.
-                            let result_local = self.builder.alloc_temp(MirType::Buffer);
-                            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                                dst: Some(result_local),
-                                func: FunctionRef::borrowing(helper).writing_string(),
-                                args: vec![arg_op],
-                            }));
-                            let encoded = (MirOperand::Local(result_local), MirType::Buffer);
+                            let dst = self.builder.alloc_temp(MirType::Buffer);
+                            self.emit_json_value(&super::collections::JsonSink::Text { dst }, value, written.as_deref())?;
+                            let encoded = (MirOperand::Local(dst), MirType::Buffer);
                             return Ok(Some(self.maybe_json_pretty(encoded, pretty)));
                         }
 

@@ -2057,24 +2057,21 @@ impl ToDiagnostic for crate::TypeError {
                         format!("field `{}` has type `{}`, which can't be {}", f, fty, verb)
                     }
                     (Some(f), None) => format!("field `{}` can't be {}", f, verb),
-                    _ => format!("`{}` has a field that can't be {}", ty, verb),
+                    _ => format!("`{}` is, or holds, a type with no serialized form", ty),
                 };
                 // The list of what qualifies belongs in `fix`: the formatter
                 // drops `help` whenever fix/why are set, and someone reading
                 // this is exactly the person who needs the list.
-                let target = match field {
-                    Some(f) => format!("`{}`", f),
-                    None => "the offending field".to_string(),
+                const SERIALIZABLE: &str = "bool, the integer and float types, string, `T?`, \
+                    `Vec<T>`, `[T; N]`, `Map<string, T>`, or a struct or enum of those";
+                let fix = match field {
+                    Some(f) => format!("mark `{f}` with `@no_serialize`, or give it a serializable type — {SERIALIZABLE}"),
+                    None => format!("use a serializable type — {SERIALIZABLE}"),
                 };
                 Diagnostic::error(format!("`{}` cannot be {}", ty, verb))
                     .with_code("E0388")
                     .with_primary(*span, label)
-                    .with_fix(format!(
-                        "mark {} with `@no_serialize`, or give it a serializable type — bool, char, \
-                         the integer and float types, string, `T?`, tuples, `Vec<T>`, \
-                         `Map<string, T>`, or a struct or enum of those",
-                        target
-                    ))
+                    .with_fix(fix)
                     .with_why(format!("`{}` isn't implemented by hand — a type has it when its fields do, all the way down (std.encoding/E12)", interface_name))
             }
 

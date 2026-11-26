@@ -565,6 +565,14 @@ static RaskJsonShape *json_shape_new(int64_t kind, int64_t slot) {
     return s;
 }
 
+static char *json_copy_key(const RaskStr *key) {
+    int64_t klen = rask_string_len(key);
+    char *copy = (char *)rask_alloc(klen + 1);
+    memcpy(copy, rask_string_ptr(key), (size_t)klen);
+    copy[klen] = '\0';
+    return copy;
+}
+
 RaskJsonShape *rask_json_shape_struct(int64_t size) {
     return json_shape_new(RASK_JSHAPE_STRUCT, size);
 }
@@ -609,12 +617,8 @@ void rask_json_shape_field(RaskJsonShape *s, const RaskStr *key, int64_t offset,
             (int64_t)cap * (int64_t)sizeof(struct RaskJsonField));
         s->cap = cap;
     }
-    int64_t klen = rask_string_len(key);
-    char *copy = (char *)rask_alloc(klen + 1);
-    memcpy(copy, rask_string_ptr(key), (size_t)klen);
-    copy[klen] = '\0';
     struct RaskJsonField *f = &s->fields[s->nfields++];
-    f->key = copy;
+    f->key = json_copy_key(key);
     f->offset = offset;
     f->shape = fs;
     f->flags = flags;
@@ -646,12 +650,6 @@ RaskJsonShape *rask_json_shape_custom(int64_t size, RaskJsonShape *wire, int64_t
     return s;
 }
 
-RaskJsonShape *rask_json_shape_custom_encode(int64_t size, void *encode) {
-    RaskJsonShape *s = json_shape_new(RASK_JSHAPE_CUSTOM_ENCODE, size);
-    s->custom_encode = (RaskJsonCustomEncode)encode;
-    return s;
-}
-
 // Why the custom decode that just ran refused, for the decoder to put behind
 // the path it happened at.
 static _Thread_local char json_reject_msg[384];
@@ -674,7 +672,8 @@ void rask_json_shape_map_key(RaskJsonShape *map, RaskJsonShape *key) {
     map->key = key;
 }
 
-void rask_json_shape_variant(RaskJsonShape *s, int64_t tag, RaskJsonShape *payload) {
+void rask_json_shape_variant(RaskJsonShape *s, int64_t tag, RaskJsonShape *payload,
+                             const RaskStr *name, int64_t bare) {
     if (!s) return;
     if (s->nvariants == s->vcap) {
         int32_t old = s->vcap;
@@ -685,9 +684,24 @@ void rask_json_shape_variant(RaskJsonShape *s, int64_t tag, RaskJsonShape *paylo
             (int64_t)cap * (int64_t)sizeof(struct RaskJsonVariant));
         s->vcap = cap;
     }
-    s->variants[s->nvariants].tag = tag;
-    s->variants[s->nvariants].payload = payload;
-    s->nvariants++;
+    struct RaskJsonVariant *v = &s->variants[s->nvariants++];
+    v->tag = tag;
+    v->payload = payload;
+    v->name = json_copy_key(name);
+    v->bare = bare != 0;
+}
+
+void rask_json_shape_enum_tag(RaskJsonShape *s, const RaskStr *key) {
+    if (!s) return;
+    rask_free(s->tag_key);
+    s->tag_key = json_copy_key(key);
+}
+
+RaskJsonShape *rask_json_shape_array(RaskJsonShape *elem, int64_t elem_slot, int64_t count) {
+    RaskJsonShape *s = json_shape_new(RASK_JSHAPE_ARRAY, elem_slot);
+    s->elem = elem;
+    s->count = count;
+    return s;
 }
 
 void rask_json_shape_free(RaskJsonShape *s) {
@@ -698,9 +712,11 @@ void rask_json_shape_free(RaskJsonShape *s) {
     }
     rask_free(s->fields);
     for (int32_t i = 0; i < s->nvariants; i++) {
+        rask_free(s->variants[i].name);
         rask_json_shape_free(s->variants[i].payload);
     }
     rask_free(s->variants);
+    rask_free(s->tag_key);
     rask_json_shape_free(s->elem);
     rask_json_shape_free(s->err);
     rask_json_shape_free(s->key);
@@ -903,6 +919,119 @@ static int json_decode_map(void *dst, RaskJsonShape *shape, RaskJsonVal *v,
     return 1;
 }
 
+static struct RaskJsonVariant *json_find_variant(RaskJsonShape *shape, const RaskStr *name) {
+    int64_t len = rask_string_len(name);
+    const char *p = rask_string_ptr(name);
+    for (int32_t i = 0; i < shape->nvariants; i++) {
+        struct RaskJsonVariant *var = &shape->variants[i];
+        if ((int64_t)strlen(var->name) == len && memcmp(var->name, p, (size_t)len) == 0) return var;
+    }
+    return NULL;
+}
+
+// An enum, tagged the way std.encoding/E22–E24 write it. External: a unit
+// variant is its name as a string, any other is an object with the name as
+// its one key, holding the lone unnamed payload itself (E23) or the fields.
+// Internal (`@tag`): an object whose tag member names the variant, with the
+// fields beside it.
+static int json_decode_enum(void *dst, RaskJsonShape *shape, RaskJsonVal *v,
+                            const char *path) {
+    const char *where = path[0] ? path : "the value";
+    struct RaskJsonVariant *var = NULL;
+    RaskJsonVal *body = NULL;
+    if (shape->tag_key) {
+        if (v->kind != RASK_JSON_OBJ) {
+            json_fail(RASK_JSON_ERR_TYPE, "%s should be an object, found %s", where, json_kind_name(v->kind));
+            return 0;
+        }
+        RaskJsonVal *tag = NULL;
+        for (int32_t j = 0; j < v->as.obj.len; j++) {
+            const RaskStr *k = &v->as.obj.keys[j];
+            if ((int64_t)strlen(shape->tag_key) == rask_string_len(k)
+                && memcmp(rask_string_ptr(k), shape->tag_key, strlen(shape->tag_key)) == 0) {
+                tag = v->as.obj.vals[j];
+                break;
+            }
+        }
+        if (!tag) {
+            json_fail(RASK_JSON_ERR_MISSING, "field \"%s\" not found in the JSON object", shape->tag_key);
+            return 0;
+        }
+        if (tag->kind != RASK_JSON_STR) {
+            json_fail(RASK_JSON_ERR_TYPE, "%s.%s should be a string, found %s", where, shape->tag_key,
+                      json_kind_name(tag->kind));
+            return 0;
+        }
+        var = json_find_variant(shape, &tag->as.str);
+        if (!var) {
+            json_fail(RASK_JSON_ERR_TYPE, "%s names no variant: \"%.*s\"", where,
+                      (int)rask_string_len(&tag->as.str), rask_string_ptr(&tag->as.str));
+            return 0;
+        }
+        body = v;
+    } else if (v->kind == RASK_JSON_STR) {
+        var = json_find_variant(shape, &v->as.str);
+        if (!var) {
+            json_fail(RASK_JSON_ERR_TYPE, "%s names no variant: \"%.*s\"", where,
+                      (int)rask_string_len(&v->as.str), rask_string_ptr(&v->as.str));
+            return 0;
+        }
+        if (var->payload) {
+            json_fail(RASK_JSON_ERR_TYPE, "%s: variant \"%s\" has a payload, so it is an object", where, var->name);
+            return 0;
+        }
+    } else if (v->kind == RASK_JSON_OBJ && v->as.obj.len == 1) {
+        var = json_find_variant(shape, &v->as.obj.keys[0]);
+        if (!var) {
+            json_fail(RASK_JSON_ERR_TYPE, "%s names no variant: \"%.*s\"", where,
+                      (int)rask_string_len(&v->as.obj.keys[0]), rask_string_ptr(&v->as.obj.keys[0]));
+            return 0;
+        }
+        if (!var->payload) {
+            json_fail(RASK_JSON_ERR_TYPE, "%s: variant \"%s\" has no payload, so it is a string", where, var->name);
+            return 0;
+        }
+        body = v->as.obj.vals[0];
+    } else {
+        json_fail(RASK_JSON_ERR_TYPE, "%s should be a variant name or an object with one key, found %s",
+                  where, json_kind_name(v->kind));
+        return 0;
+    }
+    json_store_int((char *)dst + shape->tag_offset, shape->tag_width, var->tag);
+    if (!var->payload) return 1;
+    char child[256];
+    snprintf(child, sizeof(child), "%s%s%s", path, path[0] ? "." : "variant ", var->name);
+    if (var->bare) {
+        struct RaskJsonField *f = &var->payload->fields[0];
+        return json_decode_into_slot((char *)dst + f->offset, f->shape, body, child);
+    }
+    return json_decode_struct(dst, var->payload, body, shape->tag_key ? path : child);
+}
+
+// `[T; N]`: a list of exactly N, written in place.
+static int json_decode_array(void *dst, RaskJsonShape *shape, RaskJsonVal *v,
+                             const char *path) {
+    const char *where = path[0] ? path : "the list";
+    if (v->kind != RASK_JSON_ARR) {
+        json_fail(RASK_JSON_ERR_TYPE, "%s should be a list, found %s", where, json_kind_name(v->kind));
+        return 0;
+    }
+    if ((int64_t)v->as.arr.len != shape->count) {
+        json_fail(RASK_JSON_ERR_TYPE, "%s should hold %lld items, found %d", where,
+                  (long long)shape->count, v->as.arr.len);
+        return 0;
+    }
+    for (int32_t i = 0; i < v->as.arr.len; i++) {
+        char child[256];
+        snprintf(child, sizeof(child), "%s[%d]", where, i);
+        if (!json_decode_into_slot((char *)dst + (int64_t)i * shape->slot, shape->elem,
+                                   v->as.arr.items[i], child)) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
 static int json_decode_into_slot(void *dst, RaskJsonShape *shape,
                                  RaskJsonVal *v, const char *path) {
     if (!shape) return 1;
@@ -920,15 +1049,15 @@ static int json_decode_into_slot(void *dst, RaskJsonShape *shape,
         case RASK_JSHAPE_STRUCT: return json_decode_struct(dst, shape, v, path);
         case RASK_JSHAPE_VEC:    return json_decode_vec(dst, shape, v, path);
         case RASK_JSHAPE_MAP:    return json_decode_map(dst, shape, v, path);
-        // Claims build these shapes; JSON's form for them is still open (std.json),
-        // so lowering never asks the decoder for one.
+        case RASK_JSHAPE_ENUM:   return json_decode_enum(dst, shape, v, path);
+        case RASK_JSHAPE_ARRAY:  return json_decode_array(dst, shape, v, path);
+        // Claims build these shapes; JSON has no form for them (std.json), so
+        // lowering never asks the decoder for one.
         case RASK_JSHAPE_CHAR:
         case RASK_JSHAPE_I128:
         case RASK_JSHAPE_U128:
-        case RASK_JSHAPE_ENUM:
         case RASK_JSHAPE_RESULT:
         case RASK_JSHAPE_GENERATED:
-        case RASK_JSHAPE_CUSTOM_ENCODE:
             json_fail(RASK_JSON_ERR_TYPE, "%s has no JSON form yet", path[0] ? path : "the value");
             return 0;
         case RASK_JSHAPE_STRING: {
@@ -1022,163 +1151,6 @@ static void json_write_escaped(JsonStrBuf *b, const char *s, int64_t len) {
         }
     }
     jsb_push(b, "\"", 1);
-}
-
-static int64_t json_load_int(const void *src, int64_t width, int is_unsigned) {
-    switch (width) {
-        case 1: {
-            if (is_unsigned) { uint8_t v; memcpy(&v, src, 1); return (int64_t)v; }
-            int8_t v; memcpy(&v, src, 1); return (int64_t)v;
-        }
-        case 2: {
-            if (is_unsigned) { uint16_t v; memcpy(&v, src, 2); return (int64_t)v; }
-            int16_t v; memcpy(&v, src, 2); return (int64_t)v;
-        }
-        case 4: {
-            if (is_unsigned) { uint32_t v; memcpy(&v, src, 4); return (int64_t)v; }
-            int32_t v; memcpy(&v, src, 4); return (int64_t)v;
-        }
-        default: {
-            int64_t v; memcpy(&v, src, 8); return v;
-        }
-    }
-}
-
-static int json_shape_is_unsigned(int64_t kind) {
-    return kind == RASK_JSHAPE_U8 || kind == RASK_JSHAPE_U16
-        || kind == RASK_JSHAPE_U32 || kind == RASK_JSHAPE_U64;
-}
-
-static void json_write_shaped(JsonStrBuf *b, const void *src, const RaskJsonShape *shape);
-
-static void json_write_struct(JsonStrBuf *b, const void *src, const RaskJsonShape *shape) {
-    jsb_push(b, "{", 1);
-    int written = 0;
-    for (int32_t i = 0; i < shape->nfields; i++) {
-        const struct RaskJsonField *f = &shape->fields[i];
-        if (f->flags & RASK_JFIELD_NOT_SERIALIZED) continue;
-        if (written++) jsb_push(b, ",", 1);
-        json_write_escaped(b, f->key, (int64_t)strlen(f->key));
-        jsb_push(b, ":", 1);
-        json_write_shaped(b, (const char *)src + f->offset, f->shape);
-    }
-    jsb_push(b, "}", 1);
-}
-
-static void json_write_shaped(JsonStrBuf *b, const void *src, const RaskJsonShape *shape) {
-    if (!shape || !src) {
-        jsb_push(b, "null", 4);
-        return;
-    }
-    switch (shape->kind) {
-        // A type with its own `encode`: its value's JSON text, as it gave it.
-        case RASK_JSHAPE_CUSTOM_ENCODE: {
-            RaskStr text;
-            memset(&text, 0, sizeof text);
-            shape->custom_encode(src, &text);
-            jsb_push(b, rask_string_ptr(&text), rask_string_len(&text));
-            rask_string_free(&text);
-            return;
-        }
-        case RASK_JSHAPE_OPT: {
-            if (*(const uint8_t *)src != RASK_TAG_PRESENT) {
-                jsb_push(b, "null", 4);
-                return;
-            }
-            json_write_shaped(b, (const char *)src + shape->payload_offset, shape->elem);
-            return;
-        }
-        case RASK_JSHAPE_STRUCT:
-            json_write_struct(b, src, shape);
-            return;
-        case RASK_JSHAPE_VEC: {
-            RaskVec *vec;
-            memcpy(&vec, src, sizeof(RaskVec *));
-            jsb_push(b, "[", 1);
-            int64_t n = vec ? rask_vec_len(vec) : 0;
-            for (int64_t i = 0; i < n; i++) {
-                if (i) jsb_push(b, ",", 1);
-                json_write_shaped(b, rask_vec_get_unchecked(vec, i), shape->elem);
-            }
-            jsb_push(b, "]", 1);
-            return;
-        }
-        case RASK_JSHAPE_MAP: {
-            RaskMap *map;
-            memcpy(&map, src, sizeof(RaskMap *));
-            jsb_push(b, "{", 1);
-            if (map) {
-                // keys() and values() walk the same slots in the same order, so
-                // index i lines up across the two.
-                RaskVec *keys = rask_map_keys(map);
-                RaskVec *vals = rask_map_values(map);
-                int64_t n = rask_vec_len(keys);
-                for (int64_t i = 0; i < n; i++) {
-                    if (i) jsb_push(b, ",", 1);
-                    const RaskStr *k = (const RaskStr *)rask_vec_get_unchecked(keys, i);
-                    json_write_escaped(b, rask_string_ptr(k), rask_string_len(k));
-                    jsb_push(b, ":", 1);
-                    json_write_shaped(b, rask_vec_get_unchecked(vals, i), shape->elem);
-                }
-                rask_vec_free(keys);
-                rask_vec_free(vals);
-            }
-            jsb_push(b, "}", 1);
-            return;
-        }
-        case RASK_JSHAPE_STRING: {
-            const RaskStr *s = (const RaskStr *)src;
-            json_write_escaped(b, rask_string_ptr(s), rask_string_len(s));
-            return;
-        }
-        case RASK_JSHAPE_BOOL: {
-            int64_t v = json_load_int(src, shape->slot, 1);
-            if (v) jsb_push(b, "true", 4);
-            else jsb_push(b, "false", 5);
-            return;
-        }
-        case RASK_JSHAPE_F32: {
-            float f;
-            memcpy(&f, src, sizeof(float));
-            char num[RASK_F64_BUF_SIZE];
-            rask_fmt_double(num, sizeof(num), (double)f);
-            jsb_push(b, num, (int64_t)strlen(num));
-            return;
-        }
-        case RASK_JSHAPE_F64: {
-            double d;
-            memcpy(&d, src, sizeof(double));
-            char num[RASK_F64_BUF_SIZE];
-            rask_fmt_double(num, sizeof(num), d);
-            jsb_push(b, num, (int64_t)strlen(num));
-            return;
-        }
-        default: {
-            int unsig = json_shape_is_unsigned(shape->kind);
-            int64_t v = json_load_int(src, shape->slot, unsig);
-            char num[32];
-            int n = unsig
-                ? snprintf(num, sizeof(num), "%llu", (unsigned long long)v)
-                : snprintf(num, sizeof(num), "%lld", (long long)v);
-            jsb_push(b, num, n);
-            return;
-        }
-    }
-}
-
-void rask_json_encode_shaped(RaskStr *out, const void *src, RaskJsonShape *shape) {
-    JsonStrBuf b = {NULL, 0, 0};
-    json_write_shaped(&b, src, shape);
-    rask_string_from_bytes(out, b.data ? b.data : "null", b.len ? b.len : 4);
-    rask_free(b.data);
-}
-
-// A word-sized value (a Map's or a nullable collection's handle) handed over
-// as itself rather than by address. Taking the address of the caller's local
-// left the drop pass unable to see the encoder's read, so a struct whose Map
-// field was being encoded was freed before the call.
-void rask_json_encode_shaped_word(RaskStr *out, int64_t word, RaskJsonShape *shape) {
-    rask_json_encode_shaped(out, &word, shape);
 }
 
 // Re-indent compact JSON text into the form `JsonValue.to_string_pretty`

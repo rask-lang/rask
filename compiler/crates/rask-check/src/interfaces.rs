@@ -632,23 +632,24 @@ impl<'a> InterfaceChecker<'a> {
         match ty {
             // E14: base types
             Type::Bool
-            | Type::Char
             | Type::String
             | Type::Unit
             | Type::I8
             | Type::I16
             | Type::I32
             | Type::I64
-            | Type::I128
             | Type::Isize
             | Type::U8
             | Type::U16
             | Type::U32
             | Type::U64
-            | Type::U128
             | Type::Usize
             | Type::F32
             | Type::F64 => true,
+            // A claim can be handed these; JSON has no form for them (E14
+            // lists what it has), and a JSON encoder that met one wrote its
+            // bits as a number or refused at run time.
+            Type::Char | Type::I128 | Type::U128 => self.claim_input,
             // E15: `T?` (Result with an absent err) encodes when its payload does
             Type::Result { ok, err } if matches!(**err, Type::None) => {
                 self.type_is_encodable(ok, visited)
@@ -656,10 +657,12 @@ impl<'a> InterfaceChecker<'a> {
             // `T or E`, when both sides are. A claim builds one (type.claims);
             // JSON has no form for it yet, and a decode that reaches one says so.
             Type::Result { ok, err } => {
-                self.type_is_encodable(ok, visited) && self.type_is_encodable(err, visited)
+                self.claim_input
+                    && self.type_is_encodable(ok, visited)
+                    && self.type_is_encodable(err, visited)
             }
             Type::Array { elem, .. } => self.type_is_encodable(elem, visited),
-            Type::Tuple(elems) => elems.iter().all(|e| self.type_is_encodable(e, visited)),
+            Type::Tuple(elems) => self.claim_input && elems.iter().all(|e| self.type_is_encodable(e, visited)),
             Type::Named(id) => self.named_is_encodable(*id, &[], visited),
             Type::UnresolvedNamed(name) => match self.types.get_type_id(name) {
                 Some(id) => self.named_is_encodable(id, &[], visited),
@@ -938,8 +941,20 @@ impl<'a> InterfaceChecker<'a> {
         targs: &[Type],
         visited: &mut Vec<TypeId>,
     ) -> bool {
-        if matches!(name, Some("Vec" | "Map" | "Set")) {
-            return targs.iter().all(|t| self.type_is_encodable(t, visited));
+        // E15: a JSON object's keys are strings, so that's the Map JSON has.
+        // A claim's map takes any key it compares by bytes, and a claim can
+        // be handed a Set; JSON has no form for either.
+        let json_key = |t: &Type| matches!(t, Type::String) || matches!(t, Type::UnresolvedNamed(n) if n == "string");
+        match name {
+            Some("Vec") => return targs.iter().all(|t| self.type_is_encodable(t, visited)),
+            Some("Map") => {
+                return (self.claim_input || targs.first().is_some_and(json_key))
+                    && targs.iter().all(|t| self.type_is_encodable(t, visited));
+            }
+            Some("Set") => {
+                return self.claim_input && targs.iter().all(|t| self.type_is_encodable(t, visited));
+            }
+            _ => {}
         }
         match id {
             Some(id) => self.named_is_encodable(id, targs, visited),

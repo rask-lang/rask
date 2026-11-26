@@ -1,0 +1,85 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// json.decode reads back what json.encode writes for enums and fixed arrays.
+// Both encoders wrote enums in the std.encoding/E22–E25 form, and fixed arrays
+// as lists, but neither decoder read either: the interpreter answered "isn't a
+// type json.decode knows how to build" at run time, and native refused the
+// program while lowering, though the checker had passed it.
+
+import json
+
+enum Shape {
+    Circle(radius: f64)
+    Rect(w: i64, h: i64)
+    Point
+}
+
+enum Number {
+    Whole(i64)
+    @rename("frac")
+    Fraction(f64)
+}
+
+@tag("type")
+enum Event {
+    Click(x: i64, y: i64)
+    Close
+}
+
+struct Scene {
+    public shapes: Vec<Shape>
+    public named: Map<string, Number>
+    public last: Event?
+    public grid: [i64; 3]
+    public corners: [Number; 2]
+    public maybe: Vec<Shape?>
+    public lists: Map<string, Vec<i64>?>
+}
+
+func outcome(text: string) -> string {
+    let s = json.decode<Scene>(text) catch e => {
+        return e.message()
+    }
+    return json.encode(s)
+}
+
+test "an enum and a fixed array round-trip through json" {
+    mut named: Map<string, Number> = Map.new()
+    named.insert("a", Number.Whole(3))
+    mut lists: Map<string, Vec<i64>?> = Map.new()
+    lists.insert("l", [1, 2])
+    lists.insert("n", none)
+    let scene = Scene(
+        shapes: [Shape.Circle(radius: 1.5), Shape.Rect(w: 2, h: 3), Shape.Point],
+        named: named,
+        last: Event.Click(x: 4, y: 5),
+        grid: [7, 8, 9],
+        corners: [Number.Whole(1), Number.Fraction(0.5)],
+        maybe: [Shape.Point, none],
+        lists: lists,
+    )
+    let text = json.encode(scene)
+    assert text.contains("\"named\":{{\"a\":{{\"Whole\":3}}}}")
+    assert text.contains("\"maybe\":[\"Point\",null]")
+    assert text.contains("\"grid\":[7,8,9]")
+    assert outcome(text) == text
+}
+
+test "each enum form decodes to its variant" {
+    let n = json.decode<Number>("{{\"frac\":2.5}}") catch _ => Number.Whole(0)
+    assert n is Fraction(f) && f == 2.5
+    let s = json.decode<Shape>("\"Point\"") catch _ => Shape.Circle(radius: 0.0)
+    assert s is Point
+    let r = json.decode<Shape>("{{\"Rect\":{{\"w\":2,\"h\":3}}}}") catch _ => Shape.Point
+    assert r is Rect(w, h) && w * h == 6
+    let e = json.decode<Event>("{{\"type\":\"Click\",\"y\":1,\"x\":9}}") catch _ => Event.Close
+    assert e is Click(x, y) && x == 9 && y == 1
+    let c = json.decode<Event>("{{\"type\":\"Close\"}}") catch _ => Event.Click(x: 0, y: 0)
+    assert c is Close
+}
+
+test "a wrong variant or length is a type error" {
+    let base = "\"shapes\":[],\"named\":{{}},\"corners\":[1,{{\"Whole\":2}}]"
+    assert outcome("{{{base},\"grid\":[1,2]}}").contains("should hold 3 items")
+    assert outcome("{{\"shapes\":[\"Square\"],\"named\":{{}},\"grid\":[1,2,3],\"corners\":[],\"maybe\":[],\"lists\":{{}}}}").contains("names no variant")
+    assert outcome("{{\"shapes\":[\"Circle\"],\"named\":{{}},\"grid\":[1,2,3],\"corners\":[],\"maybe\":[],\"lists\":{{}}}}").contains("has a payload")
+}

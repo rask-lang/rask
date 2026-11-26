@@ -1208,7 +1208,6 @@ typedef int64_t (*RaskJsonCustom)(void *wire, void *dst);
 
 // A type's own `encode` (std.encoding/E12b), for the encoder: writes the JSON
 // text of the value at `src` into the string at `out`, which the encoder frees.
-typedef void (*RaskJsonCustomEncode)(const void *src, void *out);
 
 typedef struct RaskJsonVal RaskJsonVal;
 typedef struct RaskJsonShape RaskJsonShape;
@@ -1227,7 +1226,10 @@ RaskJsonShape *rask_json_shape_opt(RaskJsonShape *inner, int64_t total_size,
 void           rask_json_shape_field(RaskJsonShape *s, const RaskStr *key, int64_t offset,
                                      RaskJsonShape *fs, int64_t flags, RaskJsonFill fill);
 RaskJsonShape *rask_json_shape_enum(int64_t size, int64_t tag_offset, int64_t tag_width);
-void           rask_json_shape_variant(RaskJsonShape *s, int64_t tag, RaskJsonShape *payload);
+void           rask_json_shape_variant(RaskJsonShape *s, int64_t tag, RaskJsonShape *payload,
+                                       const RaskStr *name, int64_t bare);
+void           rask_json_shape_enum_tag(RaskJsonShape *s, const RaskStr *key);
+RaskJsonShape *rask_json_shape_array(RaskJsonShape *elem, int64_t elem_slot, int64_t count);
 // A `T or E`'s shape: either side, at the payload offset. Claims only.
 RaskJsonShape *rask_json_shape_result(RaskJsonShape *ok, RaskJsonShape *err, int64_t total_size,
                                       int64_t payload_offset);
@@ -1245,12 +1247,9 @@ RaskJsonShape *rask_json_shape_custom(int64_t size, RaskJsonShape *wire, int64_t
 void           rask_json_custom_reject(const RaskStr *msg);
 // A type with its own `encode`: its size, and the function that gives its
 // value as JSON text. Encoding only.
-RaskJsonShape *rask_json_shape_custom_encode(int64_t size, void *encode);
 void           rask_json_shape_free(RaskJsonShape *s);
 
 int64_t rask_json_decode_into(void *dst, RaskJsonShape *shape, const RaskStr *input);
-void    rask_json_encode_shaped(RaskStr *out, const void *src, RaskJsonShape *shape);
-void    rask_json_encode_shaped_word(RaskStr *out, int64_t word, RaskJsonShape *shape);
 void    rask_json_decode_zero(void *dst, int64_t size);
 int64_t rask_json_error_kind(void);
 void    rask_json_error_message(RaskStr *out, int64_t part);
