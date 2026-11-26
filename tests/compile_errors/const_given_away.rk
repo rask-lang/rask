@@ -42,6 +42,24 @@ test "a take parameter" {
     assert keep(ORIGIN) == 0
 }
 
+test "a block's value" {
+    // ERROR: cannot give away `ORIGIN` [E0883]
+    let p = { ORIGIN }
+    assert p.x == 0
+}
+
+// The caller would own the const: a write to what came back changed it.
+func origin() -> Point3 {
+    // ERROR: cannot give away `ORIGIN` [E0883]
+    return ORIGIN
+}
+
+test "a closure's result" {
+    // ERROR: cannot give away `ORIGIN` [E0883]
+    let f = || ORIGIN
+    assert f().x == 0
+}
+
 // --- none of these give it away ---
 test "reading, calling and cloning" {
     assert ORIGIN.z == 0
@@ -50,4 +68,8 @@ test "reading, calling and cloning" {
     assert keep(p) == 0
     let f = PICK.clone()
     assert f() == 42
+}
+
+func origin_copy() -> Point3 {
+    return ORIGIN.clone()
 }

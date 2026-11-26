@@ -2817,6 +2817,7 @@ impl<'a> OwnershipChecker<'a> {
             }
             hit |= match into {
                 Sink::Return if self.check_held_part_returned(value) => true,
+                Sink::Return if self.check_const_returned(value) => true,
                 Sink::Return => {
                     let field = self.check_borrowed_field_escape(value);
                     let capture = self.check_borrowed_capture_escape(value);
@@ -3037,18 +3038,32 @@ impl<'a> OwnershipChecker<'a> {
     /// a use of a maybe-moved value. Nested `if`s, `match`es and blocks are
     /// asked where they are.
     fn move_branch_value(&mut self, branch: &Expr) {
-        let mut tail = branch;
-        loop {
-            match &tail.kind {
-                ExprKind::Block(stmts) => match stmts.last() {
-                    Some(Stmt { kind: StmtKind::Expr(e), .. }) => tail = e,
-                    _ => return,
-                },
-                ExprKind::Ident(_) => break,
-                _ => return,
-            }
+        if let Some(tail) = self.name_yielded(branch) {
+            self.handle_assignment(tail, tail.span, false);
         }
-        self.handle_assignment(tail, tail.span, false);
+    }
+
+    /// The variable `expr` yields when it ends in one, through any blocks:
+    /// `x` for `{ log(); x }`. Asked once the blocks' scopes are gone, so a
+    /// name a block declared over an outer one now means the outer one, which
+    /// isn't the value; that yields nothing. A name the block alone declared
+    /// still holds its last state and is moved as usual.
+    fn name_yielded<'e>(&self, expr: &'e Expr) -> Option<&'e Expr> {
+        match &expr.kind {
+            ExprKind::Ident(_) => Some(expr),
+            ExprKind::Block(stmts) => {
+                let Some(Stmt { kind: StmtKind::Expr(tail), .. }) = stmts.last() else { return None };
+                let found = self.name_yielded(tail)?;
+                let ExprKind::Ident(name) = &found.kind else { return None };
+                let shadowed_here = self.binding_decl_blocks.contains_key(name)
+                    && stmts.iter().any(|st| match &st.kind {
+                        StmtKind::Let { name: n, .. } | StmtKind::Mut { name: n, .. } => n == name,
+                        _ => false,
+                    });
+                (!shadowed_here).then_some(found)
+            }
+            _ => None,
+        }
     }
 
     /// The values `expr` hands over: itself, or what each branch of an `if`
@@ -6522,6 +6537,14 @@ impl<'a> OwnershipChecker<'a> {
     }
 
     fn handle_assignment(&mut self, expr: &Expr, span: Span, is_mutable: bool) {
+        // `let h = { v }` hands `v` over as `let h = v` does. Nothing moved it,
+        // so `v` stayed usable beside the `h` that now owned it.
+        if matches!(expr.kind, ExprKind::Block(_)) {
+            if let Some(tail) = self.name_yielded(expr) {
+                self.handle_assignment(tail, tail.span, is_mutable);
+            }
+            return;
+        }
         if let Some(ty) = self.node_ty(&expr.id) {
             // Copy types: both source and target remain valid (VS1/VS2). An
             // `Owned` box is never one of them however small its payload — there
@@ -7188,6 +7211,22 @@ impl<'a> OwnershipChecker<'a> {
             },
             span: expr.span,
         });
+        true
+    }
+
+    /// A non-Copy const handed back by a `return` or a closure's result. The
+    /// caller would own the value every other function reads: the
+    /// interpreter handed out the const's own storage, so writing to the
+    /// result changed the const.
+    fn check_const_returned(&mut self, expr: &Expr) -> bool {
+        let ExprKind::Ident(name) = &expr.kind else { return false };
+        if !self.module_consts.contains(name) || self.bindings.contains_key(name) {
+            return false;
+        }
+        if self.node_ty(&expr.id).is_none_or(|ty| self.is_copy(ty)) {
+            return false;
+        }
+        self.consume_binding(name, expr.span, Some("return"));
         true
     }
 
