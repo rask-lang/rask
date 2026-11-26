@@ -44,6 +44,33 @@ pub fn infer_with_reach(
     (pass.effects, runtime_only, pass.param_needs)
 }
 
+/// Type parameters a body names as declared.
+fn same_names(params: &[rask_ast::decl::TypeParam]) -> HashMap<String, String> {
+    params.iter().map(|p| (p.name.clone(), p.name.clone())).collect()
+}
+
+/// The type's parameters as an `extend` header names them, by position: the
+/// body of `extend Holder<U>` says `U` for what calls bind as `Holder`'s `T`.
+fn extend_params(target: &rask_ast::ty::TypeExpr, decls: &[Decl]) -> HashMap<String, String> {
+    let rask_ast::ty::TypeExpr::Named { path, args } = target else { return HashMap::new() };
+    let Some(name) = path.last() else { return HashMap::new() };
+    let declared = decls.iter().find_map(|d| match &d.kind {
+        DeclKind::Struct(s) if s.name == *name => Some(&s.type_params),
+        DeclKind::Enum(e) if e.name == *name => Some(&e.type_params),
+        _ => None,
+    });
+    let Some(declared) = declared else { return HashMap::new() };
+    args.iter()
+        .zip(declared)
+        .filter_map(|(arg, p)| match arg {
+            rask_ast::ty::TypeExpr::Named { path, args } if path.len() == 1 && args.is_empty() => {
+                Some((path[0].clone(), p.name.clone()))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
 /// A call that binds the callee's type parameters, and the runtimes installed
 /// around it.
 struct GenericCall {
@@ -93,8 +120,11 @@ struct InferPass<'t> {
     /// with no runtime installed, so its local call sites don't settle the
     /// question.
     reachable_from_outside: HashSet<FuncName>,
-    /// Each function's own type parameters.
-    type_params: HashMap<FuncName, HashSet<String>>,
+    /// The type parameters in scope in each function, by the name its body
+    /// uses, mapped to the name a call binds: the function's own, and for a
+    /// method the type's, which `extend Holder<U>` may rename from the
+    /// declared `Holder<T>` (generics/GF6), so `U` is bound as `T`.
+    type_params: HashMap<FuncName, HashMap<String, String>>,
     /// CC2: each generic function's method calls on a type parameter, direct
     /// at first and then through the generic calls it makes.
     param_needs: ParamNeeds,
@@ -160,30 +190,33 @@ impl<'t> InferPass<'t> {
         for decl in decls {
             match &decl.kind {
                 DeclKind::Fn(f) => {
-                    self.collect_fn(&f.name, f);
+                    self.collect_fn(&f.name, f, HashMap::new());
                 }
                 DeclKind::Struct(s) => {
+                    let outer = same_names(&s.type_params);
                     for method in &s.methods {
                         let qname = format!("{}.{}", s.name, method.name);
-                        self.collect_fn(&qname, method);
+                        self.collect_fn(&qname, method, outer.clone());
                     }
                 }
                 DeclKind::Enum(e) => {
+                    let outer = same_names(&e.type_params);
                     for method in &e.methods {
                         let qname = format!("{}.{}", e.name, method.name);
-                        self.collect_fn(&qname, method);
+                        self.collect_fn(&qname, method, outer.clone());
                     }
                 }
                 DeclKind::Impl(i) => {
+                    let outer = extend_params(&i.target_ty, decls);
                     for method in &i.methods {
                         let qname = crate::method_key(&i.target_ty, &method.name);
-                        self.collect_fn(&qname, method);
+                        self.collect_fn(&qname, method, outer.clone());
                     }
                 }
                 DeclKind::Interface(t) => {
                     for method in &t.methods {
                         let qname = format!("{}.{}", t.name, method.name);
-                        self.collect_fn(&qname, method);
+                        self.collect_fn(&qname, method, HashMap::new());
                     }
                 }
                 // A test or benchmark body is a caller like `main`. Left out,
@@ -203,9 +236,10 @@ impl<'t> InferPass<'t> {
         }
     }
 
-    fn collect_fn(&mut self, qname: &str, f: &FnDecl) {
-        if !f.type_params.is_empty() {
-            self.type_params.insert(qname.to_string(), f.type_params.iter().map(|p| p.name.clone()).collect());
+    fn collect_fn(&mut self, qname: &str, f: &FnDecl, mut params: HashMap<String, String>) {
+        params.extend(same_names(&f.type_params));
+        if !params.is_empty() {
+            self.type_params.insert(qname.to_string(), params);
         }
         self.collect_body(qname, &f.body, &f.attrs, f.is_pub);
         // A stdlib native has no body to read, so its declaration says what
@@ -252,7 +286,7 @@ impl<'t> InferPass<'t> {
         }
 
         // CC2: compute which functions call spawn (or runtime-needing callees) without a guard
-        let no_params = HashSet::new();
+        let no_params = HashMap::new();
         let params = self.type_params.get(qname).unwrap_or(&no_params);
         let mut scan = ReachScan::new(self.targets, &self.imports, params);
         let direct_needs_rt = rt_scan_stmts(body, Runtimes::NONE, &mut scan);
@@ -299,7 +333,8 @@ impl<'t> InferPass<'t> {
                     for ((param, method), open) in reached {
                         let open = open.missing_from(call.held);
                         let Some(TypeArgTarget::Param(q)) = bound(&call.bindings, param) else { continue };
-                        if open.any() && own.contains(q) {
+                        let Some(q) = own.get(q) else { continue };
+                        if open.any() {
                             add.push(((q.clone(), method.clone()), open));
                         }
                     }
@@ -754,8 +789,8 @@ fn propagate_needs(
 struct ReachScan<'t> {
     targets: &'t CallTargets,
     imports: &'t sources::ImportedNames,
-    /// The scanned function's own type parameters.
-    type_params: &'t HashSet<String>,
+    /// The scanned function's type parameters (`InferPass::type_params`).
+    type_params: &'t HashMap<String, String>,
     unguarded: HashSet<String>,
     unguarded_pool: HashSet<String>,
     plain: HashSet<String>,
@@ -767,7 +802,7 @@ struct ReachScan<'t> {
 }
 
 impl<'t> ReachScan<'t> {
-    fn new(targets: &'t CallTargets, imports: &'t sources::ImportedNames, type_params: &'t HashSet<String>) -> Self {
+    fn new(targets: &'t CallTargets, imports: &'t sources::ImportedNames, type_params: &'t HashMap<String, String>) -> Self {
         Self {
             targets,
             imports,
@@ -791,12 +826,10 @@ impl<'t> ReachScan<'t> {
     /// A method call on a value of the function's own type parameter.
     fn param_call(&mut self, call: rask_ast::NodeId, held: Runtimes) {
         let Some((param, method)) = self.targets.param_methods.get(&call) else { return };
-        if !self.type_params.contains(param) {
-            return;
-        }
+        let Some(bound_as) = self.type_params.get(param) else { return };
         let open = Runtimes { multitasking: true, pool: true }.missing_from(held);
         if open.any() {
-            *self.param_calls.entry((param.clone(), method.clone())).or_default() |= open;
+            *self.param_calls.entry((bound_as.clone(), method.clone())).or_default() |= open;
         }
     }
 
@@ -864,6 +897,9 @@ fn rt_scan_stmt(stmt: &Stmt, held: Runtimes, rs: &mut ReachScan<'_>) -> Runtimes
 
 fn rt_scan_expr(expr: &Expr, held: Runtimes, rs: &mut ReachScan<'_>) -> Runtimes {
     if let Some(name) = crate::function_ref(expr, rs.targets, rs.imports) {
+        // A generic function named as a value has its types recorded under
+        // the name, so it is an instance the way a call is.
+        rs.generic_call(expr.id, held, name.clone());
         rs.record(held, name);
     }
     match &expr.kind {

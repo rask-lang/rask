@@ -2786,7 +2786,7 @@ impl TypeChecker {
 
     /// Could `value` be `member` once the type variables in either are
     /// settled? Variables match anything; everything else matches by shape.
-    fn fits_with_holes(&self, member: &Type, value: &Type) -> bool {
+    pub(super) fn fits_with_holes(&self, member: &Type, value: &Type) -> bool {
         let (member, value) = (self.ctx.apply(member), self.ctx.apply(value));
         let args_fit = |a: &[rask_types::GenericArg], b: &[rask_types::GenericArg]| {
             a.len() == b.len()

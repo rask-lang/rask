@@ -56,6 +56,17 @@ func into_enum_generic() -> i64 or Wrapped {
     return 0
 }
 
+enum Wi {
+    G(Gen<i64>)
+}
+
+// The argument is a bare literal, so `T` is still open when `try` looks for
+// the variant; the one variant that can hold a `Gen<_>` settles it as `i64`.
+func into_enum_literal() -> i64 or Wi {
+    try give(5)
+    return 0
+}
+
 func into_union_open() -> usize or (Afail | Gen<Vec<i64>>) {
     mut v = Vec.new()
     let x = try give(v)
@@ -65,6 +76,14 @@ func into_union_open() -> usize or (Afail | Gen<Vec<i64>>) {
 test "a generic error wraps into the enum variant that holds it" {
     message_is(into_enum(), "wrapped w")
     message_is(into_enum_generic(), "wrapped g")
+    if into_enum_literal() is Wi as e {
+        let v = match e {
+            Wi.G(g) => g.v,
+        }
+        assert v == 5
+    } else {
+        assert false
+    }
 }
 
 test "an error still open meets the one union member it can be" {

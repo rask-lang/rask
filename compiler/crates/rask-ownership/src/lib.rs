@@ -3045,9 +3045,9 @@ impl<'a> OwnershipChecker<'a> {
 
     /// The variable `expr` yields when it ends in one, through any blocks:
     /// `x` for `{ log(); x }`. Asked once the blocks' scopes are gone, so a
-    /// name a block declared over an outer one now means the outer one, which
-    /// isn't the value; that yields nothing. A name the block alone declared
-    /// still holds its last state and is moved as usual.
+    /// name a block declared over an outer one (or over a const) now means
+    /// the outer one, which isn't the value; that yields nothing. A name the
+    /// block alone declared still holds its last state and is moved as usual.
     fn name_yielded<'e>(&self, expr: &'e Expr) -> Option<&'e Expr> {
         match &expr.kind {
             ExprKind::Ident(_) => Some(expr),
@@ -3055,7 +3055,8 @@ impl<'a> OwnershipChecker<'a> {
                 let Some(Stmt { kind: StmtKind::Expr(tail), .. }) = stmts.last() else { return None };
                 let found = self.name_yielded(tail)?;
                 let ExprKind::Ident(name) = &found.kind else { return None };
-                let shadowed_here = self.binding_decl_blocks.contains_key(name)
+                let outer_meaning = self.binding_decl_blocks.contains_key(name) || self.module_consts.contains(name);
+                let shadowed_here = outer_meaning
                     && stmts.iter().any(|st| match &st.kind {
                         StmtKind::Let { name: n, .. } | StmtKind::Mut { name: n, .. } => n == name,
                         _ => false,
@@ -3091,7 +3092,27 @@ impl<'a> OwnershipChecker<'a> {
             }
             ExprKind::Block(stmts) | ExprKind::Unsafe { body: stmts } => {
                 if let Some(tail) = Self::stmts_tail(stmts) {
+                    // A name the block declared is its own value, whatever
+                    // the same name means outside: `{ let ORG = Pt(..) ORG }`
+                    // hands out a fresh value, not the const. The checks on
+                    // these values ask about outer names, so it is left out.
+                    let start = out.len();
                     self.values_reaching(tail, through_parts, out);
+                    let declared = |name: &String| {
+                        stmts.iter().any(|st| match &st.kind {
+                            StmtKind::Let { name: n, .. } | StmtKind::Mut { name: n, .. } => n == name,
+                            _ => false,
+                        })
+                    };
+                    let mut i = start;
+                    while i < out.len() {
+                        match &out[i].kind {
+                            ExprKind::Ident(name) if declared(name) => {
+                                out.remove(i);
+                            }
+                            _ => i += 1,
+                        }
+                    }
                 }
             }
             ExprKind::Tuple(elems) | ExprKind::Array(elems) if through_parts => {

@@ -5284,7 +5284,10 @@ impl TypeChecker {
     ) -> bool {
         let src = self.ctx.apply(src);
         let target = self.ctx.apply(target);
-        let variants = self.types.error_wrap_variants(&src, &target);
+        let mut variants = self.types.error_wrap_variants(&src, &target);
+        if variants.is_empty() {
+            variants = self.wrap_variants_with_holes(&src, &target, span);
+        }
         match variants.len() {
             0 => false,
             1 => {
@@ -5306,6 +5309,33 @@ impl TypeChecker {
                 true
             }
         }
+    }
+
+    /// The variants of the error enum `target` whose payload `src` can become
+    /// once its open type arguments settle: `try give(5)` propagates a
+    /// `Gen<_>` whose argument is still a literal's variable, and only
+    /// `G(Gen<i64>)` can hold it. One such variant settles `src` to its
+    /// payload, the way a union member is picked.
+    fn wrap_variants_with_holes(&mut self, src: &Type, target: &Type, span: Span) -> Vec<String> {
+        if matches!(src, Type::Var(_)) || self.fits_with_holes(target, src) {
+            return Vec::new();
+        }
+        let Type::Named(id) = target else { return Vec::new() };
+        let Some(rask_types::TypeDef::Enum { variants, .. }) = self.types.get(*id) else { return Vec::new() };
+        let fits: Vec<(String, Type)> = variants
+            .clone()
+            .into_iter()
+            .filter(|(_, payload)| payload.len() == 1)
+            .map(|(name, payload)| (name, self.resolve_named(&payload[0])))
+            .filter(|(_, payload)| self.fits_with_holes(payload, src))
+            .collect();
+        if let [(_, payload)] = fits.as_slice() {
+            let payload = payload.clone();
+            if self.unify(src, &payload, span).is_err() {
+                return Vec::new();
+            }
+        }
+        fits.into_iter().map(|(name, _)| name).collect()
     }
 
     /// The declared type of `field` on the annotation `get<A>()` names, when

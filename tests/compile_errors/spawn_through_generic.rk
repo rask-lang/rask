@@ -54,6 +54,25 @@ func relay<U: Starter>(x: U) -> i64 {
     return run(x)
 }
 
+// A generic type's method: the receiver picks `T`, so `h.call()` on a
+// `Holder<Green>` spawns and one on a `Holder<Quiet>` doesn't. The `extend`
+// header may rename the parameter; it still means the struct's `T`.
+struct Holder<T: Starter> {
+    x: T
+}
+
+extend Holder<U> {
+    func call(self) -> i64 {
+        return self.x.go()
+    }
+}
+
+// Hands a generic function on as a value: picking it at `Green` is what
+// needs the block, not the call through `f`.
+func apply(f: func(Green) -> i64, g: Green) -> i64 {
+    return f(g)
+}
+
 // Picks the type itself: the call here needs the block, and so does every
 // call to this function, the same as for a plain function that spawns.
 func green_inside() -> i64 {
@@ -77,11 +96,18 @@ func main() {
     let c = relay(Green(n: 1))
     // ERROR: calling `green_inside` needs a `using Multitasking { }` scope [E0353]
     let d = green_inside()
+    let hp = Holder(x: Pooled(n: 1))
+    // ERROR: calling `Holder.call` needs a `using ThreadPool { }` scope [E0353]
+    let j = hp.call()
+    // ERROR: passing `run` on needs a `using Multitasking { }` scope [E0353]
+    let k = apply(run, Green(n: 1))
 
     // --- none of these need a block ---
     let e = run(Quiet(n: 1))
     let f = relay(Quiet(n: 2))
     let g = green_guarded()
+    let hq = Holder(x: Quiet(n: 3))
+    let l = hq.call()
     using Multitasking {
         let h = relay(Green(n: 1))
     }

@@ -6986,6 +6986,7 @@ impl<'a> FunctionBuilder<'a> {
                 Self::holds_string_mir(ok, ctx, depth + 1)
                     || Self::holds_string_mir(err, ctx, depth + 1)
             }
+            MirType::Union(members) => members.iter().any(|m| Self::holds_string_mir(m, ctx, depth + 1)),
             MirType::Struct(id) => ctx.struct_layouts.get(id.id as usize).is_some_and(|l| {
                 l.fields
                     .iter()
@@ -7099,6 +7100,10 @@ impl<'a> FunctionBuilder<'a> {
                     |b, p, ctx| Self::release_strings_mir(b, p, 0, &ok, ctx, depth + 1),
                     |b, p, ctx| Self::release_strings_mir(b, p, 0, &err, ctx, depth + 1),
                 )
+            }
+            MirType::Union(members) => {
+                let payload = rask_layout::payload_offset_of(ty, ctx.target()) as i32;
+                Self::release_union(builder, base, offset, payload, members, ctx, depth)
             }
             MirType::Struct(id) => {
                 let Some(layout) = ctx.struct_layouts.get(id.id as usize) else { return Ok(()) };
@@ -7278,6 +7283,49 @@ impl<'a> FunctionBuilder<'a> {
         body(builder, payload, ctx)?;
         builder.ins().jump(done, &[]);
 
+        builder.switch_to_block(done);
+        builder.seal_block(done);
+        Ok(())
+    }
+
+    /// A union: the tag is the member's index, and every member shares the
+    /// payload offset. One comparison per member that holds something.
+    fn release_union(
+        builder: &mut ClifFunctionBuilder,
+        base: Value,
+        offset: i32,
+        payload_offset: i32,
+        members: &[MirType],
+        ctx: &CodegenCtx,
+        depth: u32,
+    ) -> CodegenResult<()> {
+        let owning: Vec<(i64, MirType)> = members
+            .iter()
+            .enumerate()
+            .filter(|(_, m)| Self::holds_string_mir(m, ctx, depth + 1))
+            .map(|(i, m)| (i as i64, m.clone()))
+            .collect();
+        if owning.is_empty() {
+            return Ok(());
+        }
+        let tag = builder.ins().load(types::I8, MemFlags::new(), base, offset + crate::layouts::TAG_OFFSET);
+        let done = builder.create_block();
+        for (index, member) in owning {
+            let hit = builder.create_block();
+            let next = builder.create_block();
+            let is = builder.ins().icmp_imm(IntCC::Equal, tag, index);
+            builder.ins().brif(is, hit, &[], next, &[]);
+
+            builder.switch_to_block(hit);
+            builder.seal_block(hit);
+            let payload = builder.ins().iadd_imm(base, (offset + payload_offset) as i64);
+            Self::release_strings_mir(builder, payload, 0, &member, ctx, depth + 1)?;
+            builder.ins().jump(done, &[]);
+
+            builder.switch_to_block(next);
+            builder.seal_block(next);
+        }
+        builder.ins().jump(done, &[]);
         builder.switch_to_block(done);
         builder.seal_block(done);
         Ok(())

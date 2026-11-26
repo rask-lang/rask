@@ -288,12 +288,14 @@ impl<'a> WarnContext<'a> {
                 if self.targets.function_refs.contains(&expr.id) =>
             {
                 let Some(name) = crate::function_ref(expr, self.targets, self.imports) else { return };
-                if let Some(callee_effects) = self.effects.get(name.as_str()) {
-                    let missing = callee_effects.needs_runtime.missing_from(self.held);
-                    for rt in [Runtime::Multitasking, Runtime::Pool] {
-                        if rt.is_in(missing) {
-                            warnings.push(cc2_value_error(rt, &name, expr.span));
-                        }
+                // A generic function named as a value is an instance of its
+                // own: the checker records the types it picks under the name,
+                // as it does under a call (`apply(run, g)` picks `run<Green>`).
+                let own = self.effects.get(name.as_str()).map(|e| e.needs_runtime).unwrap_or_default();
+                let missing = (own | self.instance_needs(expr.id, &name)).missing_from(self.held);
+                for rt in [Runtime::Multitasking, Runtime::Pool] {
+                    if rt.is_in(missing) {
+                        warnings.push(cc2_value_error(rt, &name, expr.span));
                     }
                 }
             }

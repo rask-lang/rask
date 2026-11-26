@@ -196,18 +196,28 @@ impl TypedProgram {
                 }
             }
         }
+        let target = |ty: &Type| match ty {
+            Type::UnresolvedNamed(name) => Some(rask_ast::decl::TypeArgTarget::Param(name.clone())),
+            ty => Some(rask_ast::decl::TypeArgTarget::Named(receiver_name(ty, &self.types)?)),
+        };
         for (node, bindings) in &self.call_type_args {
-            let args = bindings
+            let args: Vec<_> =
+                bindings.iter().filter_map(|b| Some((b.param.clone(), target(&b.ty)?))).collect();
+            out.type_args.entry(*node).or_default().extend(args);
+        }
+        // A method of a generic type also binds the type's parameters, from
+        // the receiver: `Holder(x: Green(..)).call()` runs `call` with `T` as
+        // `Green` (generics/G6a).
+        for (node, callee) in &self.call_targets {
+            let Callee::Method { recv: Type::Generic { base, args }, .. } = callee else { continue };
+            let Some(def) = self.types.get(*base) else { continue };
+            let bound: Vec<_> = def
+                .type_params()
                 .iter()
-                .filter_map(|b| {
-                    let target = match &b.ty {
-                        Type::UnresolvedNamed(name) => rask_ast::decl::TypeArgTarget::Param(name.clone()),
-                        ty => rask_ast::decl::TypeArgTarget::Named(receiver_name(ty, &self.types)?),
-                    };
-                    Some((b.param.clone(), target))
-                })
+                .zip(args)
+                .filter_map(|(param, rask_types::GenericArg::Type(ty))| Some((param.clone(), target(ty)?)))
                 .collect();
-            out.type_args.insert(*node, args);
+            out.type_args.entry(*node).or_default().extend(bound);
         }
         for (node, sym) in &self.resolutions {
             let function = self.symbols.get(*sym).is_some_and(|s| {

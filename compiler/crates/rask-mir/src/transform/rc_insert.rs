@@ -924,6 +924,7 @@ fn holds_rack(ty: &MirType, rack_holders: &HashSet<u32>) -> bool {
         MirType::Tuple(parts) => parts.iter().any(|p| holds_rack(p, rack_holders)),
         MirType::Array { elem, .. } | MirType::Option(elem) => holds_rack(elem, rack_holders),
         MirType::Result { ok, err } => holds_rack(ok, rack_holders) || holds_rack(err, rack_holders),
+        MirType::Union(members) => members.iter().any(|m| holds_rack(m, rack_holders)),
         _ => false,
     }
 }
@@ -2227,6 +2228,7 @@ fn struct_field_parts(
             | MirType::Array { .. }
             | MirType::Option(_)
             | MirType::Result { .. }
+            | MirType::Union(_)
                 if !copy_layouts.is_copy(dst_ty) && returned_copy_of(func, dst, &returned) =>
             {
                 copy_layouts.size_of(dst_ty)
@@ -2386,7 +2388,7 @@ fn view_of_field(
     }
     matches!(
         ty_of.get(&dst),
-        Some(MirType::Option(_)) | Some(MirType::Result { .. })
+        Some(MirType::Option(_)) | Some(MirType::Result { .. }) | Some(MirType::Union(_))
     )
 }
 
@@ -2430,6 +2432,9 @@ pub(crate) fn aggregate_may_hold_string(ty: &MirType) -> bool {
         MirType::Array { elem, .. } => slot_is_releasable(elem),
         MirType::Option(inner) => slot_is_releasable(inner),
         MirType::Result { ok, err } => slot_is_releasable(ok) || slot_is_releasable(err),
+        // A union is tagged the same way, one member at a time: a
+        // `usize or (Afail | Gen<Vec<i64>>)` dropped never freed the vector.
+        MirType::Union(members) => members.iter().any(slot_is_releasable),
         _ => false,
     }
 }
@@ -2463,6 +2468,11 @@ fn slot_is_releasable(ty: &MirType) -> bool {
         // it stored into an aggregate, so this is the only release it gets
         // (#1253).
         || matches!(ty, MirType::FuncPtr(_))
+        // So is an interface object: `interface_drop` counts a box stored
+        // into an aggregate as handed over, so the aggregate is its last
+        // owner. A struct field was released already (a struct always
+        // counts); a box under a tag (`i64 or any Error`, `(any I)?`) was not.
+        || matches!(ty, MirType::InterfaceObject { .. })
         || aggregate_may_hold_string(ty)
 }
 
@@ -3741,6 +3751,7 @@ pub(crate) fn held_mutate_params(func: &MirFunction, copy_layouts: &crate::CopyL
                         | MirType::Array { .. }
                         | MirType::Option(_)
                         | MirType::Result { .. }
+                        | MirType::Union(_)
                 )
                 && !copy_layouts.is_copy(&p.ty)
         })
