@@ -1909,7 +1909,7 @@ fn error_unimplemented_module_fn() {
     let (failed, out) = compile_error_output("unimplemented_module_fn.rk");
     assert!(failed, "an unimplemented module function must be rejected: {}", out);
     assert!(
-        out.contains("E0353") && out.contains("json.to_value"),
+        out.contains("E0349") && out.contains("json.to_value"),
         "should name the function and the unimplemented code: {}", out,
     );
 }

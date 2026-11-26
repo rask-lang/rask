@@ -699,7 +699,7 @@ impl ToDiagnostic for crate::TypeError {
                     "`{}.{}` is declared but not implemented yet",
                     ty, method
                 ))
-                .with_code("E0353")
+                .with_code("E0349")
                 .with_primary(*span, "no implementation behind this signature")
                 .with_help(format!(
                     "the signature exists so the API can be referenced, but \
