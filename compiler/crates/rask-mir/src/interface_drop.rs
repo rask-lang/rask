@@ -672,26 +672,30 @@ fn insert_for_function(
         })
     };
     let guards = crate::analysis::ownership::Guards::new(func, &plan);
-    let (_, unwind_edges) = crate::analysis::ownership::place_unwind(
+    let (shifted, unwind_edges) = crate::analysis::ownership::place_unwind(
         func,
         plan.unwind,
         &guards,
         &mut |_: &mut MirFunction, name: LocalId, _| vec![drop_of(name)],
     );
-    let mut at_end: Vec<(usize, LocalId, Option<usize>)> = Vec::new();
+    let mut in_block: Vec<(usize, usize, LocalId, Option<usize>)> = Vec::new();
     let mut on_edges: Vec<(BlockId, BlockId, Vec<MirStmt>)> = Vec::new();
     for r in plan.releases {
         match r {
-            crate::analysis::ownership::Release::At { block, name, guard, .. } => at_end.push((block, name, guard)),
+            crate::analysis::ownership::Release::At { block, at, name, guard, .. } => {
+                in_block.push((block, at, name, guard))
+            }
             crate::analysis::ownership::Release::OnEdge { from, to, name, guard, .. } => {
                 on_edges.push((from, to, guards.wrap(guard, vec![drop_of(name)])))
             }
         }
     }
-    at_end.sort_by_key(|(b, l, _)| (*b, l.0));
-    for (block, name, guard) in at_end {
-        func.blocks[block].statements.extend(guards.wrap(guard, vec![drop_of(name)]));
-    }
+    in_block.sort_by_key(|(b, at, l, _)| (*b, *at, l.0));
+    let in_block = in_block
+        .into_iter()
+        .map(|(block, at, name, guard)| (block, at, guards.wrap(guard, vec![drop_of(name)])))
+        .collect();
+    shifted.insert_releases(func, in_block);
     let flag_edges = guards.edges(func);
     crate::analysis::ownership::insert_on_edges(
         func,

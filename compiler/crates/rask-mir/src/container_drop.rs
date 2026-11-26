@@ -1560,28 +1560,31 @@ fn insert_for_function(
     };
     // Ahead of the releases, which go at block ends and on edges: the marks
     // index into the blocks as planned.
-    let (_, unwind_edges) = crate::analysis::ownership::place_unwind(
+    let (shifted, unwind_edges) = crate::analysis::ownership::place_unwind(
         func,
         plan.unwind,
         &guards,
         &mut |func: &mut MirFunction, name: LocalId, _| release(func, name),
     );
-    let mut at_end: Vec<(usize, LocalId, Option<usize>)> = Vec::new();
+    let mut in_block: Vec<(usize, usize, LocalId, Option<usize>)> = Vec::new();
     let mut on_edges: Vec<(BlockId, BlockId, Vec<MirStmt>)> = Vec::new();
     for r in plan.releases {
         match r {
-            crate::analysis::ownership::Release::At { block, name, guard, .. } => at_end.push((block, name, guard)),
+            crate::analysis::ownership::Release::At { block, at, name, guard, .. } => {
+                in_block.push((block, at, name, guard))
+            }
             crate::analysis::ownership::Release::OnEdge { from, to, name, guard, .. } => {
                 let stmts = guards.wrap(guard, release(func, name));
                 on_edges.push((from, to, stmts));
             }
         }
     }
-    at_end.sort_by_key(|(b, l, _)| (*b, l.0));
-    for (block, name, guard) in at_end {
-        let stmts = guards.wrap(guard, release(func, name));
-        func.blocks[block].statements.extend(stmts);
-    }
+    in_block.sort_by_key(|(b, at, l, _)| (*b, *at, l.0));
+    let in_block: Vec<(usize, usize, Vec<MirStmt>)> = in_block
+        .into_iter()
+        .map(|(block, at, name, guard)| (block, at, guards.wrap(guard, release(func, name))))
+        .collect();
+    shifted.insert_releases(func, in_block);
     let flag_edges = guards.edges(func);
     crate::analysis::ownership::insert_on_edges(
         func,
@@ -2440,11 +2443,12 @@ fn follow_copies(func: &MirFunction, fresh: &mut HashMap<LocalId, &'static str>)
 /// a load is somebody else's by default, which is why `to_vec` and `to_map`
 /// were freed by nobody (#1060).
 ///
-/// Only where the cell can hold nothing else. One store reaches it in the whole
-/// program — this frame's, plus any closure that captured it — and that store's
-/// value is one of this frame's own. A second store is a second possible
-/// container, and calling that one this frame's would free something somebody
-/// else still holds.
+/// Only where the cell can hold nothing else. Every store this frame makes into
+/// it holds one of the frame's own containers, all freed the same way, and no
+/// closure that captured it puts anything else there. A store of anything else
+/// is a container somebody else may still hold, and calling it this frame's
+/// would free it under them. `v = Vec.new()` after a closure captured `v` is
+/// a second store of the frame's own, and the caller freed neither (#2034).
 ///
 /// And only for a load this frame *returns*. The question this answers is
 /// "does this frame hand the caller a container to free" — nothing else. A load
@@ -2462,18 +2466,86 @@ fn fresh_through_cells(
     all: &[MirFunction],
     fresh: &HashMap<LocalId, &'static str>,
 ) -> Vec<(LocalId, &'static str)> {
-    // addr → what got stored there, across every offset. Offsets aren't
-    // separated: a cell holding one container is written at one offset, and a
-    // second write anywhere in it is enough to give up.
+    // addr → what got stored there. A cell holding one container is only ever
+    // written whole, at offset 0; a write anywhere else is part of something
+    // bigger, and stands for a value that isn't one of this frame's.
     let mut stores: HashMap<LocalId, Vec<MirOperand>> = HashMap::new();
     for block in &func.blocks {
         for stmt in &block.statements {
-            if let MirStmtKind::Store { addr, value, .. } = &stmt.kind {
-                stores.entry(*addr).or_default().push(value.clone());
+            if let MirStmtKind::Store { addr, offset, value, .. } = &stmt.kind {
+                let value = if *offset == 0 { value.clone() } else { MirOperand::Constant(crate::MirConst::Int(0)) };
+                stores.entry(*addr).or_default().push(value);
             }
         }
     }
 
+    let handed_back = handed_back_locals(func, &stores);
+    if handed_back.is_empty() {
+        return Vec::new();
+    }
+
+    // A load found fresh can be what the next cell holds, so this runs until
+    // no cell gives up another.
+    let mut known = fresh.clone();
+    let mut out: Vec<(LocalId, &'static str)> = Vec::new();
+    loop {
+        let found = out.len();
+        for (cell, values) in &stores {
+            let Some(free) = one_free_for_all(&stores_of_locals(values), values.len(), &known) else { continue };
+            if !cell_stays_owned_through_closures(func, all, *cell) {
+                continue;
+            }
+            for block in &func.blocks {
+                for stmt in &block.statements {
+                    if let MirStmtKind::Assign {
+                        dst,
+                        rvalue: MirRValue::Deref(MirOperand::Local(addr)),
+                    } = &stmt.kind
+                    {
+                        if addr == cell && handed_back.contains(dst) && !known.contains_key(dst) {
+                            known.insert(*dst, free);
+                            out.push((*dst, free));
+                        }
+                    }
+                }
+            }
+        }
+        if out.len() == found {
+            return out;
+        }
+        follow_copies(func, &mut known);
+    }
+}
+
+/// The locals a cell's stores put there; empty when one stores anything else.
+fn stores_of_locals(values: &[MirOperand]) -> Vec<LocalId> {
+    let locals: Vec<LocalId> = values
+        .iter()
+        .filter_map(|v| match v {
+            MirOperand::Local(l) => Some(*l),
+            _ => None,
+        })
+        .collect();
+    if locals.len() == values.len() { locals } else { Vec::new() }
+}
+
+/// How a cell's contents are freed, when every store into it is a container
+/// this frame made and all of them are freed the same way.
+fn one_free_for_all(
+    srcs: &[LocalId],
+    stores: usize,
+    fresh: &HashMap<LocalId, &'static str>,
+) -> Option<&'static str> {
+    if srcs.is_empty() || srcs.len() != stores {
+        return None;
+    }
+    let free = *fresh.get(&srcs[0])?;
+    srcs.iter().all(|s| fresh.get(s) == Some(&free)).then_some(free)
+}
+
+/// Every local whose value the frame returns, or wraps for the return, through
+/// nothing but copies, joins and cells holding that one value.
+fn handed_back_locals(func: &MirFunction, stores: &HashMap<LocalId, Vec<MirOperand>>) -> HashSet<LocalId> {
     let returned: HashSet<LocalId> = func
         .blocks
         .iter()
@@ -2487,7 +2559,7 @@ fn fresh_through_cells(
         })
         .collect();
     if returned.is_empty() {
-        return Vec::new();
+        return HashSet::new();
     }
 
     // Or put into a wrapper that is: `return out` from a `-> Vec<T> or E`
@@ -2527,16 +2599,13 @@ fn fresh_through_cells(
                         _ => None,
                     })
                     .collect(),
-                // And back through a cell the one value it holds: `r` captured
+                // And back through a cell the values it holds: `r` captured
                 // after `let r = loop { … break v }` puts the load out of
                 // `v`'s cell into `r`'s, and returns a load out of that.
                 MirStmtKind::Assign { dst, rvalue: MirRValue::Deref(MirOperand::Local(addr)) }
                     if handed_back.contains(dst) =>
                 {
-                    match stores.get(addr).map(Vec::as_slice) {
-                        Some([MirOperand::Local(src)]) => vec![*src],
-                        _ => continue,
-                    }
+                    stores_of_locals(stores.get(addr).map(Vec::as_slice).unwrap_or(&[]))
                 }
                 _ => continue,
             };
@@ -2545,39 +2614,7 @@ fn fresh_through_cells(
             }
         }
     }
-
-    // A load found fresh can be what the next cell holds, so this runs until
-    // no cell gives up another.
-    let mut known = fresh.clone();
-    let mut out: Vec<(LocalId, &'static str)> = Vec::new();
-    loop {
-        let found = out.len();
-        for (cell, values) in &stores {
-            let [MirOperand::Local(src)] = values.as_slice() else { continue };
-            let Some(free) = known.get(src).copied() else { continue };
-            if !cell_stays_owned_through_closures(func, all, *cell) {
-                continue;
-            }
-            for block in &func.blocks {
-                for stmt in &block.statements {
-                    if let MirStmtKind::Assign {
-                        dst,
-                        rvalue: MirRValue::Deref(MirOperand::Local(addr)),
-                    } = &stmt.kind
-                    {
-                        if addr == cell && handed_back.contains(dst) && !known.contains_key(dst) {
-                            known.insert(*dst, free);
-                            out.push((*dst, free));
-                        }
-                    }
-                }
-            }
-        }
-        if out.len() == found {
-            return out;
-        }
-        follow_copies(func, &mut known);
-    }
+    handed_back
 }
 
 /// Containers this frame owns that live in a capture cell and never leave.

@@ -1358,8 +1358,11 @@ pub fn plan(func: &MirFunction, facts: &Facts, placement: Placement) -> Plan {
     for _ in 0..(4 * edges + 64) {
         let (entries, exits, _) = solve(func, facts, &sh, &live, &kills, &mut HashSet::new());
         let later = NeededLater::new(func, &sh, &live, &entries, &exits, &kills);
-        if placement == Placement::LastUse {
-            let mut found = after_last_use(func, facts, &sh, &live, &entries, &kills, &later);
+        {
+            let mut found = match placement {
+                Placement::LastUse => after_last_use(func, facts, &sh, &live, &entries, &kills, &later),
+                Placement::ScopeEnd => before_overwrite(func, facts, &live, &entries, &kills),
+            };
             // One release per value per solve, the earliest in program order.
             // Each block was read against entries that don't know about the
             // others' releases yet, so a value whose last use is in one block
@@ -1487,6 +1490,48 @@ fn fields_moved_out(
             killed_at(&mut st, kills, bi, si);
         }
         note(&st, &facts.terminator_events[bi], bi, len, &mut out);
+    }
+    out
+}
+
+/// Releases of a value whose last holder is a slot a store writes over,
+/// placed before the store: `(block, statement, name, value)`.
+///
+/// A variable a closure captures by reference lives in a slot, and assigning
+/// it again stores over the value it held. Nothing names that value after the
+/// store, so no scope end can release it: `v = Vec.new()` after `let f = ||
+/// v.len()` leaked the vector it replaced (#2034). No reader can still see it
+/// either, since the checker refuses a write to a variable something borrows.
+fn before_overwrite(
+    func: &MirFunction,
+    facts: &Facts,
+    live: &Live,
+    entries: &[Option<State>],
+    kills: &Kills,
+) -> Vec<(usize, usize, usize, LocalId, Value, Option<GuardKey>)> {
+    let mut out = Vec::new();
+    for bi in 0..func.blocks.len() {
+        let Some(entry) = &entries[bi] else { continue };
+        let mut st = entry.clone();
+        for si in 0..func.blocks[bi].statements.len() {
+            if is_phi(func, bi, si) {
+                continue;
+            }
+            let before = st.clone();
+            apply(&mut st, &facts.moved_parts, &facts.events[bi][si], bi, si, &live.at[bi][si + 1], &mut HashSet::new());
+            killed_at(&mut st, kills, bi, si);
+            let MirStmtKind::Store { addr: slot, .. } = &func.blocks[bi].statements[si].kind else { continue };
+            if !facts.kills[bi][si].contains(slot) || facts.reads[bi][si].contains(slot) {
+                continue;
+            }
+            for v in before.own.iter().filter(|(_, o)| **o).map(|(v, _)| *v) {
+                if !before.holders(v).contains(slot) || !st.owned(v) || st.needed(v, &live.at[bi][si + 1]) {
+                    continue;
+                }
+                out.push((bi, si, si, *slot, v, st.guard.remove(&v)));
+                st.own.insert(v, false);
+            }
+        }
     }
     out
 }
@@ -2175,6 +2220,26 @@ impl Shifted {
     /// any marks placed there.
     pub fn at(&self, block: usize, at: usize) -> usize {
         self.at[block].get(at).copied().unwrap_or(at)
+    }
+
+    /// Put each in-block release's statements where the plan placed it:
+    /// `(block, at, statements)`, in the order they should run when several
+    /// share a spot. One after the block's last statement goes at its end,
+    /// after every mark.
+    pub fn insert_releases(&self, func: &mut MirFunction, releases: Vec<(usize, usize, Vec<MirStmt>)>) {
+        let (ends, inside): (Vec<_>, Vec<_>) =
+            releases.into_iter().partition(|(block, at, _)| *at + 1 >= self.at[*block].len());
+        for (block, _, stmts) in ends {
+            func.blocks[block].statements.extend(stmts);
+        }
+        // Back to front, so every index still means what the plan said, and
+        // releases sharing a spot keep their order.
+        let mut inside: Vec<(usize, (usize, usize, Vec<MirStmt>))> = inside.into_iter().enumerate().collect();
+        inside.sort_by_key(|(i, (block, at, _))| (*block, *at, *i));
+        for (_, (block, at, stmts)) in inside.into_iter().rev() {
+            let at = self.at(block, at);
+            func.blocks[block].statements.splice(at..at, stmts);
+        }
     }
 }
 
