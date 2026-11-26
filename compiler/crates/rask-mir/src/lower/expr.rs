@@ -1238,9 +1238,9 @@ impl<'a> MirLowerer<'a> {
     /// expects. `None` when the callee isn't a function value.
     fn value_call_sig(&self, func: &Expr) -> Option<super::FuncSig> {
         if let Some(name) = func.name() {
-            // A name that isn't a local is a function, a constructor or an
+            // A name that holds no value is a function, a constructor or an
             // intrinsic, and has its own signature.
-            if !self.locals.contains_key(name) {
+            if !self.name_holds_a_value(name) {
                 return None;
             }
         }
@@ -2742,9 +2742,13 @@ impl<'a> MirLowerer<'a> {
                 arg_mir_types.push(mir_ty);
             }
 
-            // Non-ident callees: field access, returned functions, etc.
-            // Lower the callee expression and emit an indirect ClosureCall.
-            let func_name = match func.name() {
+            // Non-ident callees (field access, returned functions) and module
+            // consts holding a function: lower the callee expression and emit
+            // an indirect ClosureCall. A local is called through below.
+            let named_function = func.name().filter(|name| {
+                self.locals.contains_key(*name) || !self.name_holds_a_value(name)
+            });
+            let func_name = match named_function {
                 Some(name) => {
                     // What the checker resolved, at this instance; the written
                     // name only for what has no body in Rask (a builtin).
