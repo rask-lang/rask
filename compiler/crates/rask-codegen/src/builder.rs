@@ -3082,7 +3082,16 @@ impl<'a> FunctionBuilder<'a> {
 
         // Copy concrete value to heap
         if let MirOperand::Local(src_id) = value {
-            if ctx.stack_slot_map.contains_key(src_id) {
+            // A struct parameter has no slot of its own, only the pointer it
+            // arrived as, so the slot map alone took it for a scalar and boxed
+            // the pointer's bytes: `|d| show(d)` printed garbage for `d.name`.
+            let by_address = ctx
+                .locals
+                .iter()
+                .chain(ctx.params.iter())
+                .find(|l| l.id == *src_id)
+                .is_some_and(|l| l.ty.passed_by_address());
+            if by_address || ctx.stack_slot_map.contains_key(src_id) {
                 // Aggregate: memcpy from the source pointer the var holds —
                 // not the local's own slot, which may be uninitialized when
                 // the var aliases another slot (e.g. `_1 = _0`).
