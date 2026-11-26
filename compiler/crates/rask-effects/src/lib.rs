@@ -276,8 +276,8 @@ pub(crate) fn method_callees(
     targets: &CallTargets,
     imports: &sources::ImportedNames,
 ) -> Vec<String> {
-    if let Some(target) = targets.methods.get(&call) {
-        return vec![target.name.clone()];
+    if let Some(name) = resolved_method(call, targets) {
+        return vec![name];
     }
     let mut names = Vec::new();
     if let Some(recv) = object.name() {
@@ -285,6 +285,11 @@ pub(crate) fn method_callees(
     }
     names.push(method.to_string());
     names
+}
+
+/// The method a call reaches, when the checker resolved it.
+pub(crate) fn resolved_method(call: NodeId, targets: &CallTargets) -> Option<String> {
+    targets.methods.get(&call).map(|t| t.name.clone())
 }
 
 /// The function a call `func(args)` counts as calling: its name or dotted

@@ -158,6 +158,17 @@ impl<'a> WarnContext<'a> {
         self.check_stmts(&f.body, warnings);
     }
 
+    /// CC2: a call reaching a task block whose runtime no block here installs.
+    fn check_runtime_needs(&self, callee: &str, span: Span, warnings: &mut Vec<EffectWarning>) {
+        let Some(callee_effects) = self.effects.get(callee) else { return };
+        let missing = callee_effects.needs_runtime.missing_from(self.held);
+        for rt in [Runtime::Multitasking, Runtime::Pool] {
+            if rt.is_in(missing) {
+                warnings.push(cc2_error(rt, callee, span));
+            }
+        }
+    }
+
     fn check_stmts(&mut self, stmts: &[Stmt], warnings: &mut Vec<EffectWarning>) {
         for stmt in stmts {
             self.check_stmt(stmt, warnings);
@@ -231,16 +242,7 @@ impl<'a> WarnContext<'a> {
                 let callee_name = crate::free_callee(expr.id, func, self.targets, self.imports);
                 if let Some(ref name) = callee_name {
                     self.maybe_warn_blocking_call(name, expr.span, warnings);
-                    // CC2: a call reaching a task block whose runtime no
-                    // block here installs.
-                    if let Some(callee_effects) = self.effects.get(name.as_str()) {
-                        let missing = callee_effects.needs_runtime.missing_from(self.held);
-                        for rt in [Runtime::Multitasking, Runtime::Pool] {
-                            if rt.is_in(missing) {
-                                warnings.push(cc2_error(rt, name, expr.span));
-                            }
-                        }
-                    }
+                    self.check_runtime_needs(name, expr.span, warnings);
                 }
                 // The callee's name was handled as the call above.
                 if !self.targets.function_refs.contains(&func.id) {
@@ -316,6 +318,12 @@ impl<'a> WarnContext<'a> {
                 };
                 for name in &names {
                     self.maybe_warn_blocking_call(name, expr.span, warnings);
+                }
+                // CC2, as for a plain call, when the checker resolved the method.
+                if !self.borrowing_joins.contains(&expr.id) {
+                    if let Some(name) = crate::resolved_method(expr.id, self.targets) {
+                        self.check_runtime_needs(&name, expr.span, warnings);
+                    }
                 }
                 self.check_expr(object, warnings);
                 for arg in args {

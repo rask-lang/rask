@@ -59,10 +59,6 @@ struct InferPass<'t> {
     /// The imports of the unit being collected, for what a name at a call
     /// site means.
     imports: sources::ImportedNames,
-    /// Whether the unit being collected is the program. CW2's reachability
-    /// walk is about the program's own call paths, so the stdlib's bodies
-    /// aren't scanned for it.
-    scan_reach: bool,
     /// Per-function direct effects (before transitive propagation).
     effects: EffectMap,
     /// Call graph: caller → callees.
@@ -91,7 +87,6 @@ impl<'t> InferPass<'t> {
             targets,
             c_macros,
             imports: sources::ImportedNames::default(),
-            scan_reach: true,
             effects: HashMap::new(),
             call_graph: HashMap::new(),
             direct_needs_runtime: HashMap::new(),
@@ -107,9 +102,8 @@ impl<'t> InferPass<'t> {
         // The stdlib first, so a program declaration of the same name is the
         // one its own calls reach. Each unit reads its own imports: a name
         // means what that file's imports say.
-        for (decls, is_program) in [(stdlib, false), (program, true)] {
+        for decls in [stdlib, program] {
             self.imports = sources::ImportedNames::from_decls(decls);
-            self.scan_reach = is_program;
             // Phase 1: Classify direct effects and build call graph
             self.collect(decls);
             // Phase 2: Mark extern functions conservatively (INF5)
@@ -226,10 +220,6 @@ impl<'t> InferPass<'t> {
 
         if is_pub {
             self.reachable_from_outside.insert(qname.to_string());
-        }
-
-        if !self.scan_reach {
-            return;
         }
 
         // CC2: compute which functions call spawn (or runtime-needing callees) without a guard
@@ -700,7 +690,8 @@ impl<'t> ReachScan<'t> {
         self.reach(held, name);
     }
 
-    /// A call CC2 doesn't follow — a method — recorded for reachability only.
+    /// A call CC2 doesn't follow (a method the checker didn't resolve),
+    /// recorded for reachability only.
     fn reach(&mut self, held: Runtimes, name: String) {
         if !held.multitasking {
             self.plain.insert(name);
@@ -789,9 +780,17 @@ fn rt_scan_expr(expr: &Expr, held: Runtimes, rs: &mut ReachScan<'_>) -> Runtimes
         }
 
         // All other expressions: recurse with same held
+        // A method the checker resolved is a call like any other: CC2
+        // follows it (`http.serve` spawns per connection). One it didn't is
+        // only a guess from the spelling, which can name methods the call
+        // never reaches, so it counts for reachability alone.
         ExprKind::MethodCall { object, method, args, .. } => {
-            for name in crate::method_callees(expr.id, object, method, rs.targets, rs.imports) {
-                rs.reach(held, name);
+            if let Some(name) = crate::resolved_method(expr.id, rs.targets) {
+                rs.record(held, name);
+            } else {
+                for name in crate::method_callees(expr.id, object, method, rs.targets, rs.imports) {
+                    rs.reach(held, name);
+                }
             }
             let mut r = rt_scan_expr(object, held, rs);
             for arg in args { r |= rt_scan_expr(&arg.expr, held, rs); }

@@ -34,11 +34,15 @@ func echo(req: Request) -> Response {
     return Response.ok(req.path())
 }
 
+// serve spawns a task per connection, so it is called inside the block
+// that runs them even though this one fails before accepting any.
 test "serve reports an address it can't listen on" {
-    let result = http.serve("not an address", echo)
-    if result is HttpError.Io(msg) {
-        assert msg == "listen failed"
-    } else {
-        assert false
+    using Multitasking {
+        let result = http.serve("not an address", echo)
+        if result is HttpError.Io(msg) {
+            assert msg == "listen failed"
+        } else {
+            assert false
+        }
     }
 }
