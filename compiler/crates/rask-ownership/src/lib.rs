@@ -2385,10 +2385,14 @@ impl<'a> OwnershipChecker<'a> {
                 None => self.lent_locals.remove(&name),
             };
             // A name the scope alone declared keeps its last state: the
-            // resource check at the function's end reads whether it was
-            // consumed.
-            if let Some(state) = outer.states.get(&name) {
-                self.bindings.insert(name.clone(), state.clone());
+            // resource check after the scope reads whether it was consumed.
+            // A state with no outer declaration behind it is a leftover from
+            // an earlier scope's binding (the first of two `if x? as old`),
+            // and restoring it would undo this scope's consumption.
+            if outer.decls.contains_key(&name) {
+                if let Some(state) = outer.states.get(&name) {
+                    self.bindings.insert(name.clone(), state.clone());
+                }
             }
             match outer.types.get(&name) {
                 Some(ty) => self.binding_types.insert(name, ty.clone()),
