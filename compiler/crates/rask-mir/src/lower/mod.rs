@@ -8377,6 +8377,34 @@ mod tests {
     }
 
     #[test]
+    fn lower_using_block_ending_in_return_tears_down_once() {
+        let using_block = Expr {
+            id: NodeId(703),
+            kind: ExprKind::UsingBlock {
+                name: "ThreadPool".to_string(),
+                args: vec![],
+                body: vec![expr_stmt(call_expr("work", vec![])), return_stmt(None)],
+            },
+            span: sp(),
+        };
+        let work = make_fn("work", vec![], None, vec![return_stmt(None)]);
+        let decl = make_fn("main", vec![], None, vec![expr_stmt(using_block)]);
+        // The return leaves through the cleanup chain, which runs the
+        // teardown. The block's own exit code used to be appended to the
+        // returning block as well, so the pool was shut down twice.
+        let f = lower(&decl, &[decl.clone(), work]);
+        let shuts_down = |b: &crate::MirBlock| {
+            b.statements.iter().any(|s| matches!(&s.kind,
+                MirStmtKind::Call { func, .. } if func.name == "rask_threadpool_shutdown"))
+        };
+        for b in &f.blocks {
+            if matches!(b.terminator.kind, MirTerminatorKind::CleanupReturn { .. }) {
+                assert!(!shuts_down(b), "a returning block also ran the teardown inline");
+            }
+        }
+    }
+
+    #[test]
     fn lower_using_unknown_no_init() {
         let using_block = Expr {
             id: NodeId(702),

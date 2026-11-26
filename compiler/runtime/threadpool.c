@@ -47,7 +47,8 @@ static struct {
     PoolJob         *head;
     PoolJob         *tail;
     int              shutting_down;
-    int              started;
+    int              started;     // workers exist
+    int              depth;       // `using ThreadPool` blocks open, atomic
 } g_pool;
 
 static PoolJob *dequeue_locked(void) {
@@ -121,8 +122,12 @@ static void enqueue(PoolJob *job) {
 
 // ─── Public API ────────────────────────────────────────────
 
+// Being inside a `using ThreadPool` block and having workers are separate:
+// a default-sized pool under sim and a pool whose threads couldn't be created
+// are both in the block with no workers, and spawn gives each job its own
+// task. A nested block shares the outer pool.
 void rask_threadpool_init(int64_t worker_count) {
-    if (g_pool.started) return;
+    if (__atomic_fetch_add(&g_pool.depth, 1, __ATOMIC_ACQ_REL) > 0) return;
 #ifdef RASK_SIM
     // A pool sized to the machine can't be replayed (determinism/D1), so a
     // default-sized pool under sim has no bound: every job gets its own task,
@@ -174,13 +179,14 @@ void rask_threadpool_init(int64_t worker_count) {
 #endif
         pthread_cond_destroy(&g_pool.work_ready);
         pthread_mutex_destroy(&g_pool.lock);
-        return;   // spawn falls back to one thread per job
+        return;   // in the block with no workers: one task per job
     }
 
     g_pool.started = 1;
 }
 
 void rask_threadpool_shutdown(void) {
+    if (__atomic_sub_fetch(&g_pool.depth, 1, __ATOMIC_ACQ_REL) > 0) return;
     if (!g_pool.started) return;
 
     pthread_mutex_lock(&g_pool.lock);
@@ -221,7 +227,7 @@ RaskTask *rask_threadpool_spawn(void *closure_ptr, int64_t result_owned, int8_t 
     RaskTaskFn func = *(RaskTaskFn *)(closure_ptr);
     void *env = (char *)closure_ptr + 8;
 
-    if (!g_pool.started) {
+    if (__atomic_load_n(&g_pool.depth, __ATOMIC_ACQUIRE) == 0) {
         if (requires_pool) {
             rask_panic("ThreadPool.spawn requires `using ThreadPool` context");
         }
@@ -230,6 +236,9 @@ RaskTask *rask_threadpool_spawn(void *closure_ptr, int64_t result_owned, int8_t 
         rask_task_run_inline(task, func, env);
         rask_task_release(task);   // the runner's ref; the handle keeps one
         return task;
+    }
+    if (!g_pool.started) {
+        return rask_closure_spawn(closure_ptr, result_owned);
     }
 
     RaskTask *task = rask_task_new();

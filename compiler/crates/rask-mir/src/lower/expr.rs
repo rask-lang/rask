@@ -4906,15 +4906,19 @@ impl<'a> MirLowerer<'a> {
                 let result = self.lower_block(body);
 
                 // Leaving the block normally: stop the cleanup chain covering
-                // it, then call the teardown here. A return inside the body
-                // has already gone through the cleanup block instead.
+                // it, then call the teardown here. A body that ends in a
+                // `return` has terminated its block and leaves through the
+                // cleanup chain; statements pushed after that still ran
+                // before the return, so the teardown ran twice.
                 self.ensure_stack.pop();
-                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::EnsurePop));
-                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                    dst: None,
-                    func: FunctionRef::reading(shutdown_fn),
-                    args: vec![],
-                }));
+                if self.builder.current_block_unterminated() {
+                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::EnsurePop));
+                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                        dst: None,
+                        func: FunctionRef::reading(shutdown_fn),
+                        args: vec![],
+                    }));
+                }
                 result
             } else {
                 self.lower_block(body)
