@@ -29,6 +29,24 @@ test "calls a function that spawns on the pool" {
     assert crunch() == 42
 }
 
+// --- CC2: handing the function on counts as reaching it ---
+// The function might be called anywhere the value goes, so naming it needs
+// the scope, the same as calling it.
+func apply(f: func() -> i64) -> i64 {
+    return f()
+}
+
+test "passes a function that spawns on the pool" {
+    // ERROR: passing `crunch` on needs a `using ThreadPool { }` scope [E0353]
+    assert apply(crunch) == 42
+}
+
+test "stores a function that spawns on the pool" {
+    // ERROR: passing `crunch` on needs a `using ThreadPool { }` scope [E0353]
+    let f = crunch
+    assert f() == 42
+}
+
 // --- the green runtime is not a pool ---
 test "a Multitasking block doesn't install a pool" {
     using Multitasking {
@@ -53,6 +71,7 @@ test "a pool job's block has the pool, not a scheduler" {
 test "a pool scope, and the jobs inside its jobs" {
     using ThreadPool {
         assert crunch() == 42
+        assert apply(crunch) == 42
         let h = ThreadPool.spawn { return crunch() }
         assert h.join()! == 42
     }

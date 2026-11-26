@@ -193,6 +193,14 @@ impl TypedProgram {
                 }
             }
         }
+        for (node, sym) in &self.resolutions {
+            let function = self.symbols.get(*sym).is_some_and(|s| {
+                matches!(s.kind, SymbolKind::Function { .. } | SymbolKind::ExternFunction { .. })
+            });
+            if function {
+                out.function_refs.insert(*node);
+            }
+        }
         out
     }
 

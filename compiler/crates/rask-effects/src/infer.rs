@@ -448,6 +448,9 @@ fn classify_stmt(stmt: &Stmt, effects: &mut Effects, callees: &mut HashSet<Strin
 }
 
 fn classify_expr(expr: &Expr, effects: &mut Effects, callees: &mut HashSet<String>, t: &Cx) {
+    if let Some(name) = crate::function_ref(expr, t.targets, t.imports) {
+        callees.insert(name);
+    }
     match &expr.kind {
         ExprKind::Call { func, args } => {
             if let Some(name) = crate::free_callee(expr.id, func, t.targets, t.imports) {
@@ -748,6 +751,9 @@ fn rt_scan_stmt(stmt: &Stmt, held: Runtimes, rs: &mut ReachScan<'_>) -> Runtimes
 }
 
 fn rt_scan_expr(expr: &Expr, held: Runtimes, rs: &mut ReachScan<'_>) -> Runtimes {
+    if let Some(name) = crate::function_ref(expr, rs.targets, rs.imports) {
+        rs.record(held, name);
+    }
     match &expr.kind {
         ExprKind::Call { func, args } => {
             if let Some(name) = crate::free_callee(expr.id, func, rs.targets, rs.imports) {

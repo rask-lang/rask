@@ -230,9 +230,29 @@ impl<'a> WarnContext<'a> {
                         }
                     }
                 }
-                self.check_expr(func, warnings);
+                // The callee's name was handled as the call above.
+                if !self.targets.function_refs.contains(&func.id) {
+                    self.check_expr(func, warnings);
+                }
                 for arg in args {
                     self.check_expr(&arg.expr, warnings);
+                }
+            }
+
+            // CC2 for a function handed on as a value: whatever receives it
+            // calls it, and nothing follows it there, so it's checked where
+            // it's named.
+            ExprKind::Ident(_) | ExprKind::GenericName { .. } | ExprKind::Field { .. }
+                if self.targets.function_refs.contains(&expr.id) =>
+            {
+                let Some(name) = crate::function_ref(expr, self.targets, self.imports) else { return };
+                if let Some(callee_effects) = self.effects.get(name.as_str()) {
+                    let missing = callee_effects.needs_runtime.missing_from(self.held);
+                    for rt in [Runtime::Multitasking, Runtime::Pool] {
+                        if rt.is_in(missing) {
+                            warnings.push(cc2_value_error(rt, &name, expr.span));
+                        }
+                    }
                 }
             }
 
@@ -573,6 +593,26 @@ fn cc2_error(rt: Runtime, name: &str, span: Span) -> EffectWarning {
             "`{spawn}` submits the task to the runtime the block \
              installs. Without one there is nowhere to submit it, \
              and the call panics on the first task [conc.async/CC2]"
+        )),
+    }
+}
+
+/// CC2 for a function named as a value rather than called.
+fn cc2_value_error(rt: Runtime, name: &str, span: Span) -> EffectWarning {
+    let (block, spawn) = (rt.block(), rt.spawn());
+    EffectWarning {
+        code: "E0353",
+        message: format!("passing `{name}` on needs a `using {block} {{ }}` scope"),
+        span,
+        callee_name: name.to_string(),
+        is_error: true,
+        label: format!("`{name}` reaches `{spawn}`, and whatever receives it can call it here"),
+        fix: Some(format!("open the block around the code that passes it on:\n    using {block} {{ … }}")),
+        why: Some(format!(
+            "a function passed as a value runs wherever its receiver calls \
+             it, so it needs the runtime where it's handed over. `{spawn}` \
+             submits the task to the runtime the block installs, and \
+             without one the call panics on the first task [conc.async/CC2]"
         )),
     }
 }

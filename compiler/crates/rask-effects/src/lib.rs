@@ -297,17 +297,34 @@ pub(crate) fn free_callee(
     targets: &CallTargets,
     imports: &sources::ImportedNames,
 ) -> Option<String> {
-    fn spelled(e: &Expr) -> Option<String> {
-        match &e.kind {
-            ExprKind::Ident(n) | ExprKind::GenericName { name: n, .. } => Some(n.clone()),
-            ExprKind::Field { object, field } => Some(format!("{}.{}", spelled(object)?, field)),
-            _ => None,
-        }
-    }
     if targets.value_calls.contains(&call) {
         return None;
     }
     Some(imports.qualify(&spelled(func)?))
+}
+
+/// The function an expression names, called or not.
+///
+/// A function handed on as a value runs wherever its receiver calls it, and
+/// nothing here follows it there, so naming it counts as reaching it at that
+/// point: `apply(work)` needs what `work` needs.
+pub(crate) fn function_ref(
+    expr: &Expr,
+    targets: &CallTargets,
+    imports: &sources::ImportedNames,
+) -> Option<String> {
+    if !targets.function_refs.contains(&expr.id) {
+        return None;
+    }
+    Some(imports.qualify(&spelled(expr)?))
+}
+
+fn spelled(e: &Expr) -> Option<String> {
+    match &e.kind {
+        ExprKind::Ident(n) | ExprKind::GenericName { name: n, .. } => Some(n.clone()),
+        ExprKind::Field { object, field } => Some(format!("{}.{}", spelled(object)?, field)),
+        _ => None,
+    }
 }
 
 #[cfg(test)]

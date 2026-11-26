@@ -361,6 +361,10 @@ pub struct CallTargets {
     /// a closure. Such a call runs whatever the binding holds, never the
     /// function its name happens to spell.
     pub value_calls: std::collections::HashSet<crate::NodeId>,
+    /// Every expression that names a function, called or not. `apply(work)`
+    /// hands `work` to whatever `apply` calls it through, so naming it reaches
+    /// it as surely as calling it does.
+    pub function_refs: std::collections::HashSet<crate::NodeId>,
 }
 
 /// A function parameter.
