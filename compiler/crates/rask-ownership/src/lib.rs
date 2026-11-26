@@ -227,6 +227,8 @@ struct Declared {
 struct Scope {
     decls: HashMap<String, Declared>,
     lent: HashMap<String, LentValue>,
+    states: HashMap<String, BindingState>,
+    types: HashMap<String, Type>,
 }
 
 
@@ -2355,14 +2357,20 @@ impl<'a> OwnershipChecker<'a> {
     }
 
     fn enter_scope(&self) -> Scope {
-        Scope { decls: self.binding_decl_blocks.clone(), lent: self.lent_locals.clone() }
+        Scope {
+            decls: self.binding_decl_blocks.clone(),
+            lent: self.lent_locals.clone(),
+            states: self.bindings.clone(),
+            types: self.binding_types.clone(),
+        }
     }
 
     /// End a scope. A name it declared, or shadowed, goes back to what it
-    /// was outside, view or not: the `v` of `if m.get(k)? as v` stopped being
-    /// a view at the branch's end and kept rejecting `return v` in functions
-    /// checked after it. A name it only assigned keeps what the assignment
-    /// made it.
+    /// was outside: view or not, moved or not, and its type. The `v` of
+    /// `if m.get(k)? as v` stopped being a view at the branch's end and kept
+    /// rejecting `return v` in functions checked after it, and an inner
+    /// `let v: Vec<i64>` given away left an outer `let v: i64` moved. A name
+    /// it only assigned keeps what the assignment made it.
     fn leave_scope(&mut self, outer: Scope) {
         let redeclared: Vec<String> = self
             .binding_decl_blocks
@@ -2373,13 +2381,19 @@ impl<'a> OwnershipChecker<'a> {
             .collect();
         for name in redeclared {
             match outer.lent.get(&name) {
-                Some(lent) => {
-                    self.lent_locals.insert(name, lent.clone());
-                }
-                None => {
-                    self.lent_locals.remove(&name);
-                }
+                Some(lent) => self.lent_locals.insert(name.clone(), lent.clone()),
+                None => self.lent_locals.remove(&name),
+            };
+            // A name the scope alone declared keeps its last state: the
+            // resource check at the function's end reads whether it was
+            // consumed.
+            if let Some(state) = outer.states.get(&name) {
+                self.bindings.insert(name.clone(), state.clone());
             }
+            match outer.types.get(&name) {
+                Some(ty) => self.binding_types.insert(name, ty.clone()),
+                None => self.binding_types.remove(&name),
+            };
         }
         self.binding_decl_blocks = outer.decls;
     }
@@ -4053,14 +4067,11 @@ impl<'a> OwnershipChecker<'a> {
                 }
                 let binding_names: Vec<String> = binding.names().iter().map(|s| s.to_string()).collect();
                 let saved_decls = self.enter_scope();
-                // A loop binding shadows any outer type for its name; with no
-                // entry of its own, lookups fall back to the checker's type of
-                // each use, which is the item's.
-                let saved_binding_types: Vec<(String, Option<Type>)> = binding_names
-                    .iter()
-                    .map(|n| (n.clone(), self.binding_types.remove(n)))
-                    .collect();
                 for name in &binding_names {
+                    // A loop binding shadows any outer type for its name; with
+                    // no entry of its own, lookups fall back to the checker's
+                    // type of each use, which is the item's.
+                    self.binding_types.remove(name);
                     self.bindings.insert(name.clone(), BindingState::Owned);
                     self.lent_locals.remove(name);
                     // Each iteration's value ends with the body.
@@ -4146,12 +4157,6 @@ impl<'a> OwnershipChecker<'a> {
                 self.check_loop_body(body, &binding_names, label.as_ref(), false);
                 self.borrowed_loop_items = saved_items;
                 self.parts = saved_parts;
-                for (name, ty) in saved_binding_types {
-                    match ty {
-                        Some(t) => self.binding_types.insert(name, t),
-                        None => self.binding_types.remove(&name),
-                    };
-                }
                 self.leave_scope(saved_decls);
                 if pushed {
                     self.active_for_mutates.pop();
@@ -4890,16 +4895,8 @@ impl<'a> OwnershipChecker<'a> {
                 // value is copied in, so it crosses.
                 if is_task && !borrows_frame && self.instance.is_none() {
                     for name in &captures {
-                        // The checker's type where the task reads the name is
-                        // the type of what it copies. A `for` item or a `with`
-                        // binding has no recorded type of its own, so asking
-                        // by name called `for n in nums` over a `Vec<i64>`
-                        // not Copy.
                         let first = Self::first_use(body, name);
-                        let read_ty = first.and_then(|e| self.program.node_types.get(&e.id));
-                        if self.capture_is_copy(name)
-                            || read_ty.is_some_and(|t| self.is_copy(t) || self.is_link_type(t))
-                        {
+                        if self.capture_is_copy(name, first) {
                             continue;
                         }
                         if let Some(lender) = self.lender_of(name) {
@@ -4930,7 +4927,7 @@ impl<'a> OwnershipChecker<'a> {
                 let mut stranded: Vec<(String, Option<String>)> = Vec::new();
                 if carries {
                     for name in &captures {
-                        if !self.capture_is_copy(name) && !self.outlives_this_call(name) {
+                        if !self.capture_is_copy(name, Self::first_use(body, name)) && !self.outlives_this_call(name) {
                             self.report_part_owner_changed(name, &[], name.clone(), "move", expr.span, None);
                         }
                     }
@@ -5002,7 +4999,7 @@ impl<'a> OwnershipChecker<'a> {
                                 // (SL4) — which is the whole sequence protocol:
                                 // `Vec.filter(self, pred) -> Sequence<T>`
                                 // answers a closure over a borrowed receiver.
-                                if !self.capture_is_copy(name) && !self.outlives_this_call(name) {
+                                if !self.capture_is_copy(name, Self::first_use(body, name)) && !self.outlives_this_call(name) {
                                     self.moved_captures.entry(expr.id).or_default().push(name.clone());
                                     // A part is its holder's (`parts`): carrying
                                     // it off is giving it away, and the closure
@@ -5044,7 +5041,7 @@ impl<'a> OwnershipChecker<'a> {
                     for name in &captures {
                         if resource_captures.contains(name) { continue; }
                         if self.outlives_this_call(name) { continue; }
-                        if self.capture_is_copy(name) { continue; }
+                        if self.capture_is_copy(name, Self::first_use(body, name)) { continue; }
                         if let Some(&block_id) = self.borrow_bindings.get(name) {
                             scope_limit = Some(match scope_limit {
                                 None => block_id,
@@ -5186,7 +5183,7 @@ impl<'a> OwnershipChecker<'a> {
                 }
                 for name in &captures {
                     if !resource_captures.contains(name) {
-                        if !is_task && !borrows_frame && self.bindings.contains_key(name) && !self.capture_is_copy(name) {
+                        if !is_task && !borrows_frame && self.bindings.contains_key(name) && !self.capture_is_copy(name, Self::first_use(body, name)) {
                             self.borrowed_captures.insert(name.clone(), expr.span);
                         }
                         self.bindings.insert(name.clone(), BindingState::Owned);
@@ -7411,7 +7408,12 @@ impl<'a> OwnershipChecker<'a> {
     /// Check if a type is Copy (implicit copy on assignment).
     /// Copy-ness of a captured name. Locals carry a resolved `Type`; a bare
     /// parameter only has its type-annotation string, so fall back to that.
-    fn capture_is_copy(&self, name: &str) -> bool {
+    /// Whether capturing `name` copies it. `read` is an expression reading
+    /// the name where it is captured: a `for` item has no recorded type of its
+    /// own, so the checker's type there answers for it. Without that, an `i64`
+    /// loop item captured by a stored closure read as moved, and so did an
+    /// outer `v` of the same name after the loop.
+    fn capture_is_copy(&self, name: &str, read: Option<&Expr>) -> bool {
         // A link counts here for the same reason a Copy value does: capturing one
         // copies a pointer into the closure, so it can't dangle and must not
         // scope-limit the closure. Without this, `children.filter(|c| c != n)` —
@@ -7424,6 +7426,9 @@ impl<'a> OwnershipChecker<'a> {
             if let Some(t) = self.type_from_name(tn) {
                 return self.is_copy(&t) || self.is_link_type(&t);
             }
+        }
+        if let Some(t) = read.and_then(|e| self.node_ty(&e.id)) {
+            return self.is_copy(t) || self.is_link_type(t);
         }
         // A parameter whose annotation didn't resolve: fall back to the spelling,
         // so a `Link<T>` param behaves the same as a resolved one.
@@ -10210,7 +10215,8 @@ impl<'a> OwnershipChecker<'a> {
             ExprKind::Ident(name) => name.as_str(),
             _ => Self::projection_root(expr)?,
         };
-        if self.capture_is_copy(name) {
+        let read = matches!(expr.kind, ExprKind::Ident(_)).then_some(expr);
+        if self.capture_is_copy(name, read) {
             return None;
         }
         let owner = self.storage_owner(name);
