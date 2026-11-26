@@ -297,14 +297,15 @@ impl<'a> WarnContext<'a> {
                 // Without this, a function that recursed through a spawned
                 // task (divide-and-conquer) was rejected at its own recursive
                 // call, a call that can never be missing a runtime.
+                //
+                // A `requires_pool: false` job runs on the spot when no pool
+                // is open, so its block holds only what the spawn site holds.
                 let (was_tp, was_held) = (self.in_thread_pool, self.held);
-                match target {
-                    SpawnTarget::Green => self.held.multitasking = true,
-                    SpawnTarget::Pool => {
-                        self.in_thread_pool = true;
-                        self.held.pool = true;
-                    }
-                    SpawnTarget::Thread => {}
+                if let Some(rt) = needs {
+                    self.held |= rt.held();
+                }
+                if *target == SpawnTarget::Pool {
+                    self.in_thread_pool = true;
                 }
                 self.check_expr(body, warnings);
                 (self.in_thread_pool, self.held) = (was_tp, was_held);
@@ -550,6 +551,13 @@ enum Runtime {
 }
 
 impl Runtime {
+    fn held(self) -> Runtimes {
+        match self {
+            Runtime::Multitasking => Runtimes::MULTITASKING,
+            Runtime::Pool => Runtimes::POOL,
+        }
+    }
+
     fn is_in(self, r: Runtimes) -> bool {
         match self {
             Runtime::Multitasking => r.multitasking,

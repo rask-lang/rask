@@ -15,8 +15,17 @@ test "panics inside the pool block" {
     }
 }
 
+func zero() -> i64 {
+    return 0
+}
+
+// Named inside a block, so the checker passes it, and called after the block
+// is gone: only the runtime can catch that (conc.async/CC3).
 test "outside any block, a stored call panics" {
-    let f: func() -> i64 = job
+    mut f: func() -> i64 = zero
+    using ThreadPool(workers: 1) {
+        f = job
+    }
     let v = f()
     println("got {v} without a pool")
 }

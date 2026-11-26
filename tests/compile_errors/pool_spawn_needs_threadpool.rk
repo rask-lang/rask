@@ -71,6 +71,17 @@ test "a pool job's block has the pool, not a scheduler" {
     }
 }
 
+// --- a job that doesn't need a pool doesn't bring one ---
+// With no pool open it runs right where it's spawned, so a pool spawn inside
+// it has nothing to submit to.
+test "a no-pool job calls a function that spawns on the pool" {
+    let h = ThreadPool.spawn(requires_pool: false) {
+        // ERROR: calling `crunch` needs a `using ThreadPool { }` scope [E0353]
+        return crunch()
+    }
+    assert h.join()! == 42
+}
+
 // --- none of these need anything more ---
 test "a pool scope, and the jobs inside its jobs" {
     using ThreadPool {

@@ -9641,8 +9641,9 @@ fn error_spawn_needs_multitasking_scope() {
     );
     assert_eq!(
         out.matches("E0353").count(),
-        1,
-        "CC2 fires once, at the call to the function that spawns:\n{out}"
+        3,
+        "CC2 fires at each call that reaches a spawn: a function, a method, \
+         a stdlib function:\n{out}"
     );
     assert!(
         out.contains("`launch_worker` reaches `spawn`"),
