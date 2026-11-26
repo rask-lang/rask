@@ -1795,7 +1795,7 @@ impl ToDiagnostic for crate::TypeError {
                 "this loop yields `{yields}`, but the body uses its item as `{used_as}`"
             ))
             .with_code("E0986")
-            .with_primary(*span, format!("each item is a `{yields}`"))
+            .with_primary(*span, format!("its items are `{yields}`"))
             .with_why(
                 "a loop's item is the element type of what it walks. This source's \
                  element type settled only after the body was checked, so the \

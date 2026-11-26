@@ -218,6 +218,19 @@ impl TypeChecker {
                 // Dropped here, `r` took any type at all, and native lowering
                 // found no receiver type for `r.len()` (#2045).
                 c @ TypeConstraint::ElementOf { .. } => self.deferred_shapes.push(c),
+                // The same holds for anything else waiting on that item, or on
+                // any value that settles in the retry: `r[0]`, `x!`, a `?.`
+                // read. Dropped here, `let first = r[0]` had no type (#2045).
+                c @ (TypeConstraint::Index { .. }
+                | TypeConstraint::Unwrap { .. }
+                | TypeConstraint::ErrorBranch { .. }
+                | TypeConstraint::OptionalChain { .. }
+                | TypeConstraint::TakePlace { .. }
+                | TypeConstraint::Projection { .. }) => {
+                    if Self::shape_waits_on(&c).is_some_and(|t| matches!(self.ctx.apply(t), Type::Var(_))) {
+                        self.deferred_shapes.push(c);
+                    }
+                }
                 // A widening into `T?` whose value never settled. The coercion
                 // re-defers while the value is a variable, waiting to find out
                 // whether it's already optional — and if nothing ever tells it,
@@ -233,12 +246,16 @@ impl TypeChecker {
                 // `pop()` in the same position was fine, because it answers
                 // `T?` outright and unified. There is only one answer left for
                 // the widening case — the value is the payload — so give it.
-                TypeConstraint::Coerce { value, target, span, .. } => {
-                    if !matches!(self.ctx.apply(&value), Type::Var(_)) {
-                        continue;
-                    }
-                    if let Some(inner) = self.ctx.apply(&target).as_option().cloned() {
-                        let _ = self.unify(&value, &inner, span);
+                //
+                // The value may yet settle in the retry of deferred calls, so
+                // the coercion waits for that first: a `for` item checked
+                // before its source resolved took `let z: i32 = v` on an `i64`
+                // and native truncated it (#2045). Whatever is still open
+                // afterwards gets the payload answer in
+                // `settle_deferred_before_defaults`.
+                c @ TypeConstraint::Coerce { .. } => {
+                    if Self::shape_waits_on(&c).is_some_and(|t| matches!(self.ctx.apply(t), Type::Var(_))) {
+                        self.deferred_shapes.push(c);
                     }
                 }
                 _ => {}
@@ -361,14 +378,28 @@ impl TypeChecker {
     /// Field accesses and `for` items whose receiver or source was still a
     /// variable when the leftovers pass ran. One still open stays queued for
     /// the next round; true when any was solved.
+    /// The type a deferred shape constraint is waiting to see settle.
+    fn shape_waits_on(c: &TypeConstraint) -> Option<&Type> {
+        match c {
+            TypeConstraint::HasField { ty, .. } => Some(ty),
+            TypeConstraint::ElementOf { container, .. } => Some(container),
+            TypeConstraint::Index { object, .. } => Some(object),
+            TypeConstraint::Unwrap { value, .. }
+            | TypeConstraint::ErrorBranch { value, .. }
+            | TypeConstraint::Coerce { value, .. } => Some(value),
+            TypeConstraint::OptionalChain { field, .. } => Some(field),
+            TypeConstraint::TakePlace { place, .. } => Some(place),
+            TypeConstraint::Projection { base, .. } => Some(base),
+            _ => None,
+        }
+    }
+
     fn retry_deferred_shapes(&mut self) -> bool {
         let deferred = std::mem::take(&mut self.deferred_shapes);
         let mut solved = false;
         for constraint in deferred {
-            let waits_on = match &constraint {
-                TypeConstraint::HasField { ty, .. } => ty,
-                TypeConstraint::ElementOf { container, .. } => container,
-                _ => continue,
+            let Some(waits_on) = Self::shape_waits_on(&constraint) else {
+                continue;
             };
             match self.ctx.apply(waits_on) {
                 Type::Error => continue,
@@ -497,6 +528,28 @@ impl TypeChecker {
                 break;
             }
             self.solve_constraints();
+        }
+        // A coercion whose value nothing settled gets the one answer left: into
+        // `T?` the value is the payload (#1026), into `any I` it is the
+        // interface. Any other has nothing to check.
+        let shapes = std::mem::take(&mut self.deferred_shapes);
+        for c in shapes {
+            match c {
+                TypeConstraint::Coerce { value, target, span, .. } => {
+                    if !matches!(self.ctx.apply(&value), Type::Var(_)) {
+                        continue;
+                    }
+                    let target = self.ctx.apply(&target);
+                    if let Some(inner) = target.as_option().cloned() {
+                        let _ = self.unify(&value, &inner, span);
+                    } else if matches!(self.resolve_named(&target), Type::InterfaceObject { .. }) {
+                        if let Err(e) = self.unify(&target, &value, span) {
+                            self.errors.push(e);
+                        }
+                    }
+                }
+                c => self.deferred_shapes.push(c),
+            }
         }
     }
 
@@ -919,11 +972,18 @@ impl TypeChecker {
             return Ok(false);
         }
         match self.container_elem_type(&resolved) {
-            ContainerElem::Known(found) => match self.unify(&elem, &found, span) {
+            // Directional: the source's element fills the item. Plain unify
+            // accepts integer narrowing either way round, so a body that pinned
+            // the item to `i32` before an `i64` source settled went unreported
+            // and native truncated the value.
+            ContainerElem::Known(found) => match self
+                .check_fits(&found, &elem, span)
+                .and_then(|_| self.unify(&elem, &found, span))
+            {
                 Ok(_) => Ok(true),
                 // The body pinned the item before the source settled, so a plain
                 // mismatch would name the use's type as what the loop expects.
-                Err(TypeError::Mismatch { .. }) => Err(TypeError::LoopItemMismatch {
+                Err(TypeError::Mismatch { .. } | TypeError::NarrowingNeedsPolicy { .. }) => Err(TypeError::LoopItemMismatch {
                     yields: self.ctx.apply(&found),
                     used_as: self.ctx.apply(&elem),
                     span,
@@ -1848,6 +1908,21 @@ impl TypeChecker {
                     self.unify(&expected, &wrapped, span)
                 }
             }
+        } else if matches!(self.resolve_named(&resolved_expected), Type::InterfaceObject { .. })
+            && matches!(self.ctx.apply(&ret_ty), Type::Var(_))
+        {
+            // A value still open going into `any I` waits to be boxed rather
+            // than becoming the interface itself. A `for` item checked before
+            // its source resolved turned into `any Describe` at `show(d)`,
+            // lost its fields, and native failed in MIR (#2045).
+            self.ctx.add_constraint(TypeConstraint::Coerce {
+                value: ret_ty,
+                target: expected,
+                site,
+                value_node,
+                span,
+            });
+            Ok(false)
         } else {
             self.unify(&expected, &ret_ty, span)
         }

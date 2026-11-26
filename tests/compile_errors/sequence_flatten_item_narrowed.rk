@@ -1,0 +1,17 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A `flatten` item pinned to a narrower integer by the body is rejected, not
+// truncated (#2045). The source settles after the body is checked, so the
+// error lands on the loop.
+import sequence.Sequence
+
+func half(x: i32) -> i32 {
+    return x / 2
+}
+
+func main() {
+    let flat: Vec<Vec<i64>> = [[5000000000], [8]]
+    // ERROR: the loop yields `i64`, the body hands it to an `i32` parameter
+    for v in flat.as_sequence().map(|w| w.as_sequence()).flatten() {
+        println("{half(v)}")
+    }
+}
