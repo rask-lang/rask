@@ -162,6 +162,19 @@ check_one() {
   rc=$?
   exec 2>&3 3>&-
   rm -f "$bin"
+  # Valgrind crashing is not a finding about the program. Its panic banner
+  # ("the 'impossible' happened", "VALGRIND INTERNAL ERROR") has no `==pid==`
+  # prefix, and the host stack trace after it has, so the line picked below
+  # would be a frame inside memcheck itself and read as a memory error in the
+  # program (#2101). The program wasn't measured; say that, with valgrind's
+  # own words. Only a frame in the tool binary (`memcheck-amd64-linux`)
+  # counts: a real finding's stack often runs through
+  # `vgpreload_memcheck-*.so`, valgrind's malloc, and must stay a finding.
+  if grep -qE "the 'impossible' happened|VALGRIND INTERNAL ERROR|\(in [^)]*/valgrind/memcheck-[^)/]*\)" "$WORK/$name.vg"; then
+    out="$(grep -m1 -E "impossible|INTERNAL ERROR|valgrind:|vex:" "$WORK/$name.vg")"
+    printf 'vgcrash\n%s\n' "${out:-no message}" > "$WORK/$name.result"
+    return
+  fi
   out="$(grep -m1 -E '^==[0-9]+== ' "$WORK/$name.vg" | sed -E 's/^==[0-9]+== //')"
   printf '%s\n%s\n' "$rc" "$out" > "$WORK/$name.result"
 }
@@ -178,6 +191,11 @@ for file in "${FILES[@]}"; do
   fi
   rc="$(sed -n 1p "$WORK/$name.result")"
   detail="$(sed -n 2p "$WORK/$name.result")"
+  if [ "$rc" = "vgcrash" ]; then
+    broken=$((broken + 1))
+    unran+=("$name.rk (valgrind itself crashed: $detail)")
+    continue
+  fi
   if [ "$rc" = "nobuild" ]; then
     broken=$((broken + 1))
     unran+=("$name.rk (no test binary was built)")
