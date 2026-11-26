@@ -975,6 +975,15 @@ impl<'a> FunctionBuilder<'a> {
             } else {
                 None
             };
+            // main takes the verdict on what it returns instead: whether it's
+            // an error and the message, exited on once the chain has run.
+            let main_verdict = if is_main && Self::main_may_fail(&self.mir_fn.ret_ty, &ctx) {
+                let is_err = builder.append_block_param(shared_block, types::I8);
+                let msg = builder.append_block_param(shared_block, types::I64);
+                Some((is_err, msg))
+            } else {
+                None
+            };
 
             // Targets resolve to this chain's copies first. A cleanup block's
             // terminator goes through the same lowering as any other block's,
@@ -997,6 +1006,9 @@ impl<'a> FunctionBuilder<'a> {
                 builder.ins().jump(first_block, &[]);
             } else {
                 // Empty chain — just return
+                if let Some(verdict) = main_verdict {
+                    Self::emit_main_error_exit(&mut builder, verdict, &cleanup_ctx);
+                }
                 Self::emit_unwind_pop(&mut builder, &cleanup_ctx);
                 if let Some(val) = ret_param {
                     builder.ins().return_(&[val]);
@@ -1071,6 +1083,11 @@ impl<'a> FunctionBuilder<'a> {
                                 builder.ins().jump(next_cl, &[]);
                             }
                             None => match ret_param {
+                                _ if main_verdict.is_some() => {
+                                    Self::emit_main_error_exit(&mut builder, main_verdict.unwrap(), &cleanup_ctx);
+                                    Self::emit_unwind_pop(&mut builder, &cleanup_ctx);
+                                    builder.ins().return_(&[]);
+                                }
                                 Some(val) => {
                                     Self::emit_unwind_pop(&mut builder, &cleanup_ctx);
                                     builder.ins().return_(&[val]);
@@ -1085,6 +1102,9 @@ impl<'a> FunctionBuilder<'a> {
                     // Leaving from inside a cleanup returns what the function
                     // was already returning.
                     MirTerminatorKind::Return { .. } | MirTerminatorKind::CleanupReturn { .. } => {
+                        if let Some(verdict) = main_verdict {
+                            Self::emit_main_error_exit(&mut builder, verdict, &cleanup_ctx);
+                        }
                         Self::emit_unwind_pop(&mut builder, &cleanup_ctx);
                         match ret_param {
                             Some(val) => {
@@ -5935,7 +5955,19 @@ impl<'a> FunctionBuilder<'a> {
                         // out of address 0.
                         let value = value.as_ref().filter(|op| !Self::is_void_operand(op, ctx));
                         if ctx.is_main {
-                            builder.ins().jump(shared_block, &[]);
+                            // main returns nothing to C, but an error it
+                            // returns still exits 1 once the cleanups have
+                            // run (#2081). The verdict is taken here, where
+                            // the value is.
+                            if Self::main_may_fail(ctx.ret_ty, ctx) {
+                                let (is_err, msg) = match Self::main_error_verdict(builder, value, ctx)? {
+                                    Some(v) => v,
+                                    None => (builder.ins().iconst(types::I8, 0), builder.ins().iconst(types::I64, 0)),
+                                };
+                                builder.ins().jump(shared_block, &[is_err, msg]);
+                            } else {
+                                builder.ins().jump(shared_block, &[]);
+                            }
                         } else if let Some(val) = Self::exit_value(builder, value, ctx)? {
                             builder.ins().jump(shared_block, &[val]);
                         } else if matches!(ctx.ret_ty, MirType::Void) || ctx.dst_param.is_some() {
@@ -6297,13 +6329,35 @@ impl<'a> FunctionBuilder<'a> {
         value: Option<&MirOperand>,
         ctx: &CodegenCtx,
     ) -> CodegenResult<()> {
+        if let Some(verdict) = Self::main_error_verdict(builder, value, ctx)? {
+            Self::emit_main_error_exit(builder, verdict, ctx);
+        }
+        Ok(())
+    }
+
+    /// Whether main can return an error for `main_error_verdict` to judge.
+    fn main_may_fail(ret_ty: &MirType, ctx: &CodegenCtx) -> bool {
+        matches!(ret_ty, MirType::Result { .. }) && ctx.func_refs.contains_key("main_error_exit")
+    }
+
+    /// Whether what a `void or E` main returns is an error, and the message
+    /// to print if so: `(is_err: i8, message: ptr)`. `None` when main can't
+    /// return an error.
+    ///
+    /// Split from the exit so a return through cleanups can read the value
+    /// where it is and exit after the cleanups have run.
+    fn main_error_verdict(
+        builder: &mut ClifFunctionBuilder,
+        value: Option<&MirOperand>,
+        ctx: &CodegenCtx,
+    ) -> CodegenResult<Option<(Value, Value)>> {
         let MirType::Result { err, .. } = ctx.ret_ty else {
-            return Ok(());
+            return Ok(None);
         };
-        let Some(val_op) = value else { return Ok(()) };
-        let Some(&exit_fr) = ctx.func_refs.get("main_error_exit") else {
-            return Ok(());
-        };
+        if !ctx.func_refs.contains_key("main_error_exit") {
+            return Ok(None);
+        }
+        let Some(val_op) = value else { return Ok(None) };
 
         let base = Self::lower_operand(builder, val_op, ctx)?;
         let msg_fr = Self::aggregate_type_name(err, ctx)
@@ -6314,20 +6368,22 @@ impl<'a> FunctionBuilder<'a> {
         let local_ty = Self::operand_mir_type(val_op, ctx.locals);
         if Self::is_err_component(ctx.ret_ty, local_ty.as_ref()) {
             let msg = Self::call_message(builder, msg_fr, base);
-            builder.ins().call(exit_fr, &[msg]);
-            return Ok(());
+            let yes = builder.ins().iconst(types::I8, 1);
+            return Ok(Some((yes, msg)));
         }
 
         // Wrapped Result: branch on the tag.
         if !matches!(local_ty, Some(MirType::Result { .. })) {
-            return Ok(());
+            return Ok(None);
         }
         let tag = builder.ins().load(types::I8, MemFlags::new(), base, crate::layouts::TAG_OFFSET);
         let is_err = builder.ins().icmp_imm(IntCC::NotEqual, tag, crate::layouts::TAG_PRESENT);
 
         let err_block = builder.create_block();
-        let ok_block = builder.create_block();
-        builder.ins().brif(is_err, err_block, &[], ok_block, &[]);
+        let join = builder.create_block();
+        let msg = builder.append_block_param(join, types::I64);
+        let null = builder.ins().iconst(types::I64, 0);
+        builder.ins().brif(is_err, err_block, &[], join, &[null.into()]);
 
         builder.switch_to_block(err_block);
         builder.seal_block(err_block);
@@ -6336,7 +6392,24 @@ impl<'a> FunctionBuilder<'a> {
         let payload = builder
             .ins()
             .iadd_imm(base, rask_layout::payload_offset_of(ctx.ret_ty, ctx.target()) as i64);
-        let msg = Self::call_message(builder, msg_fr, payload);
+        let text = Self::call_message(builder, msg_fr, payload);
+        builder.ins().jump(join, &[text.into()]);
+
+        builder.switch_to_block(join);
+        builder.seal_block(join);
+        Ok(Some((is_err, msg)))
+    }
+
+    /// Exit 1 with the message when `main_error_verdict` said error; fall
+    /// through otherwise.
+    fn emit_main_error_exit(builder: &mut ClifFunctionBuilder, (is_err, msg): (Value, Value), ctx: &CodegenCtx) {
+        let Some(&exit_fr) = ctx.func_refs.get("main_error_exit") else { return };
+        let err_block = builder.create_block();
+        let ok_block = builder.create_block();
+        builder.ins().brif(is_err, err_block, &[], ok_block, &[]);
+
+        builder.switch_to_block(err_block);
+        builder.seal_block(err_block);
         builder.ins().call(exit_fr, &[msg]);
         // rask_main_error_exit is _Noreturn, but the block still needs a
         // terminator for the verifier.
@@ -6344,7 +6417,6 @@ impl<'a> FunctionBuilder<'a> {
 
         builder.switch_to_block(ok_block);
         builder.seal_block(ok_block);
-        Ok(())
     }
 
     /// Call `{ErrType}_message(err) -> string` and get the 16 bytes into a slot

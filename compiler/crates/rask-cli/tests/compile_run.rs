@@ -2400,6 +2400,26 @@ fn main_error_return_exits_1() {
     }
 }
 
+// #2081: an error leaving main past a `using` block or an `ensure` runs the
+// cleanup first, then exits 1 with the message. Native jumped into the shared
+// cleanup without the value and returned 0.
+#[test]
+fn main_error_through_cleanup_exits_1() {
+    for (fixture, says) in [
+        ("main_error_through_using.rk", "boom"),
+        ("main_error_through_ensure.rk", "the thing failed"),
+    ] {
+        for mode in ["--interp", "--native"] {
+            let (stdout, stderr, code) = run_capture(mode, fixture);
+            assert_eq!(code, 1, "{mode} {fixture}: expected exit 1, got {code}\n{stdout}{stderr}");
+            assert!(!stdout.contains("unreachable"), "{mode} {fixture}: {stdout}");
+            assert!(stderr.contains(says), "{mode} {fixture}: should report `{says}`: {stderr}");
+        }
+    }
+    let (stdout, _, _) = run_capture("--native", "main_error_through_ensure.rk");
+    assert!(stdout.contains("cleaned up"), "the ensure runs before the exit: {stdout}");
+}
+
 #[test]
 fn main_ok_return_exits_0() {
     for mode in ["--interp", "--native"] {
