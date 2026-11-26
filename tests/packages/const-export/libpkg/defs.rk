@@ -5,3 +5,11 @@
 
 public const LIMIT: i64 = 99
 public const GREETING: string = "hei"
+
+// A const holding a function, called through the package: natively the
+// callee took the call's own node, so its type read as the call's `i64`.
+func answer() -> i64 {
+    return 42
+}
+
+public const PICK: func() -> i64 = answer

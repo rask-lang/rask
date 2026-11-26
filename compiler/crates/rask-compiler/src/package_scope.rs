@@ -31,6 +31,7 @@
 use std::collections::HashMap;
 
 use rask_ast::ty::TypeExpr;
+use rask_ast::{NodeId, Span};
 
 use rask_ast::decl::{Decl, DeclKind};
 use rask_ast::expr::{Expr, ExprKind, Pattern, PatternKind};
@@ -384,11 +385,15 @@ impl Rewrite for ReferenceQualifier<'_> {
         // is a namespace, so the whole thing is one name. Rewriting it here
         // rather than leaving it to resolve is what lets everything after —
         // dispatch prefixes, codegen symbols — see a plain call.
+        //
+        // The call keeps its node id and the callee takes the package name's:
+        // sharing the call's id gave the callee the call's result type, so a
+        // const holding a function (`libpkg.PICK()`) was an `i64` to call.
         let replacement = match &e.kind {
             ExprKind::MethodCall { object, method, type_args, args } => {
                 match package_binding(object) {
                     Some(pkg) => self.resolve(pkg, method).map(|q| ExprKind::Call {
-                        func: Box::new(callee_like(e, q, type_args.as_deref())),
+                        func: Box::new(callee_like(object.id, e.span, q, type_args.as_deref())),
                         args: args.clone(),
                     }),
                     None => None,
@@ -444,23 +449,15 @@ fn package_binding(object: &Expr) -> Option<&str> {
     }
 }
 
-/// An `Ident` carrying the original expression's id and span, so a diagnostic
-/// about the rewritten call still points at what was written.
-fn ident_like(at: &Expr, name: &str) -> Expr {
-    Expr { id: at.id, span: at.span, kind: ExprKind::Ident(name.to_string()) }
-}
-
 /// The callee of a rewritten call: the name, with the type arguments the
-/// qualified call was written with (`helpers.plain<i64>(5)` is `plain<i64>(5)`).
-fn callee_like(at: &Expr, name: &str, type_args: Option<&[TypeExpr]>) -> Expr {
-    match type_args {
-        Some(type_args) => Expr {
-            id: at.id,
-            span: at.span,
-            kind: ExprKind::GenericName { name: name.to_string(), type_args: type_args.to_vec() },
-        },
-        None => ident_like(at, name),
-    }
+/// qualified call was written with (`helpers.plain<i64>(5)` is `plain<i64>(5)`),
+/// spanning what was written so a diagnostic still points at it.
+fn callee_like(id: NodeId, span: Span, name: &str, type_args: Option<&[TypeExpr]>) -> Expr {
+    let kind = match type_args {
+        Some(type_args) => ExprKind::GenericName { name: name.to_string(), type_args: type_args.to_vec() },
+        None => ExprKind::Ident(name.to_string()),
+    };
+    Expr { id, span, kind }
 }
 
 /// Write a dependency's names back the way the program spells them, in every
