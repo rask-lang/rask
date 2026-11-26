@@ -6557,6 +6557,13 @@ impl<'a> OwnershipChecker<'a> {
                     let mode = if is_mutable { BorrowMode::Exclusive } else { BorrowMode::Shared };
                     self.create_borrow_with_projection(source_name, mode, span, projection);
                 } else {
+                    // O11: `let x = CONFIG` makes `x` an owner of a value every
+                    // function reads. The interpreter emptied the const there,
+                    // so the next read of it found nothing.
+                    if self.module_consts.contains(&source_name) && !self.bindings.contains_key(&source_name) {
+                        self.consume_binding(&source_name, span, None);
+                        return;
+                    }
                     // A borrowed *parameter* being moved out of is PM6 — giving
                     // away something the caller still owns. Reporting it as a
                     // borrow conflict named the wrong event: nothing is being

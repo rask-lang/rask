@@ -1,58 +1,53 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// Rejects: handing a module-level `const` to something that takes ownership
+// Rejects: giving away a non-Copy module const (mem.ownership/O11, E0883).
 //
-// A `const` is one value the whole program reads, so no function owns it
-// (mem.ownership/O11). Giving it away here would leave every other reader
-// holding something that's gone.
-//
-// It used to be tracked as a move, which put the error in the wrong place and
-// made it come and go: the move was per function, so this same line was
-// rejected in a body that read `NAMES` again afterwards and accepted silently
-// in one that didn't. Two functions could each "consume" the same const and
-// both ran (#1079). The error belongs at the consumption, where the fix is.
-//
-// A Copy const never reaches this rule — a scalar, a `string` or a small struct
-// is copied into the `take` rather than given (mem.parameters/PM6b). That's why
-// `GREETING` and `LIMIT` below go through with nothing written. Neither sink
-// writes `take`: PM6c forbids it on a Copy type, and PM6b is about what happens
-// to the argument, not about what the signature says.
+// A const is one value every function reads, so no function owns it. Handing
+// it to a `take` parameter was refused, but `let x = ORIGIN` wasn't: the
+// interpreter treated the binding as a move and emptied the const, so the next
+// read of it found nothing. A function value is not Copy either, so a const
+// holding one is the same case.
 
-const NAMES: Vec<string> = ["a", "b"]
-const GREETING: string = "hi"
-const LIMIT: i64 = 3
-
-func consume_vec(take v: Vec<string>) -> u64 {
-    return v.len()
+struct Point3 {
+    x: i64
+    y: i64
+    z: i64
 }
 
-func read_string(s: string) -> u64 {
-    return s.len()
+const ORIGIN: Point3 = Point3(x: 0, y: 0, z: 0)
+
+func answer() -> i64 {
+    return 42
 }
 
-func read_int(n: i64) -> i64 {
-    return n
+const PICK: func() -> i64 = answer
+
+func keep(take p: Point3) -> i64 {
+    return p.x
 }
 
-// ERROR: a const isn't yours to give away — clone it
-func gives_it_away() -> u64 {
-    return consume_vec(NAMES)
+test "binding a const makes the binding its owner" {
+    // ERROR: cannot give away `ORIGIN` [E0883]
+    let p = ORIGIN
+    assert p.y == ORIGIN.y
 }
 
-// ERROR: still an error in a function that never reads the const again
-func gives_it_away_again() -> u64 {
-    return consume_vec(NAMES)
+test "a function value in a const" {
+    // ERROR: cannot give away `PICK` [E0883]
+    let f = PICK
+    assert f() == PICK()
 }
 
-// The way to write it:
-//
-//   func fine() -> u64 {
-//       return consume_vec(NAMES.clone())
-//   }
+test "a take parameter" {
+    // ERROR: cannot give away `ORIGIN` [E0883]
+    assert keep(ORIGIN) == 0
+}
 
-// Copy consts are copied, not given — nothing to write, and the const is still
-// there on the next line.
-func copies_are_fine() -> u64 {
-    let a = read_string(GREETING)
-    let b = read_int(LIMIT)
-    return a + b.wrap<u64>() + GREETING.len()
+// --- none of these give it away ---
+test "reading, calling and cloning" {
+    assert ORIGIN.z == 0
+    assert PICK() == 42
+    let p = ORIGIN.clone()
+    assert keep(p) == 0
+    let f = PICK.clone()
+    assert f() == 42
 }
