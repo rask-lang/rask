@@ -305,6 +305,8 @@ pub enum ComptimeValue {
         /// Captured environment at time of closure creation.
         captures: Vec<HashMap<String, ComptimeValue>>,
     },
+    /// A named function used as a value (`const PICK = answer`).
+    Function(String),
 }
 
 impl PartialEq for ComptimeValue {
@@ -338,6 +340,7 @@ impl PartialEq for ComptimeValue {
             ) => n1 == n2 && v1 == v2 && d1 == d2,
             // Closures are never equal (identity semantics)
             (ComptimeValue::Closure { .. }, ComptimeValue::Closure { .. }) => false,
+            (ComptimeValue::Function(a), ComptimeValue::Function(b)) => a == b,
             _ => false,
         }
     }
@@ -387,6 +390,7 @@ fn show(v: &ComptimeValue) -> String {
         ComptimeValue::Struct { name, .. } => format!("{name} {{ … }}"),
         ComptimeValue::Enum { name, variant, .. } => format!("{name}.{variant}"),
         ComptimeValue::Closure { .. } => "<closure>".to_string(),
+        ComptimeValue::Function(name) => name.clone(),
     }
 }
 
@@ -417,6 +421,7 @@ impl ComptimeValue {
             ComptimeValue::Struct { .. } => "Struct",
             ComptimeValue::Enum { .. } => "Enum",
             ComptimeValue::Closure { .. } => "Closure",
+            ComptimeValue::Function(_) => "Function",
         }
     }
 
@@ -1515,12 +1520,11 @@ impl ComptimeInterpreter {
             ExprKind::None => Self::ct_none(),
 
             // Identifier
-            ExprKind::Ident(name) => {
-                self.env
-                    .get(name)
-                    .cloned()
-                    .ok_or_else(|| ComptimeError::UndefinedVariable(name.clone()))?
-            }
+            ExprKind::Ident(name) => match self.env.get(name) {
+                Some(v) => v.clone(),
+                None if self.env.get_function(name).is_some() => ComptimeValue::Function(name.clone()),
+                None => return Err(ComptimeError::UndefinedVariable(name.clone())),
+            },
 
             // Binary operation (after desugaring, most become method calls)
             // But logical operators remain as binary
@@ -2463,19 +2467,19 @@ impl ComptimeInterpreter {
         let arg_values: ComptimeResult<Vec<_>> = args.iter().map(|a| self.eval_expr(a)).collect();
         let arg_values = arg_values?;
 
-        // If the callee is an identifier, check named functions/builtins first,
-        // then fall back to variable lookup (could be a closure).
+        // A variable shadows a function of the same name; a variable can hold
+        // a closure or a function value (`const PICK = answer`).
         if let Some(name) = func.name() {
-            if let Some(func_decl) = self.env.get_function(name).cloned() {
-                self.env.count_branch()?;
-                return self.call_function(&func_decl, arg_values);
-            }
-
-            // Check if it's a closure stored in a variable
-            if let Some(val) = self.env.get(name).cloned() {
-                if let ComptimeValue::Closure { params, body, captures } = val {
-                    self.env.count_branch()?;
-                    return self.call_closure(&params, &body, &captures, arg_values);
+            match self.env.get(name).cloned() {
+                Some(callee @ (ComptimeValue::Closure { .. } | ComptimeValue::Function(_))) => {
+                    return self.call_value(callee, arg_values);
+                }
+                Some(_) => {}
+                None => {
+                    if let Some(func_decl) = self.env.get_function(name).cloned() {
+                        self.env.count_branch()?;
+                        return self.call_function(&func_decl, arg_values);
+                    }
                 }
             }
 
@@ -2497,13 +2501,20 @@ impl ComptimeInterpreter {
             }
         }
 
-        // Non-ident callee — evaluate it; if it produces a closure, call it
         let callee = self.eval_expr(func)?;
-        if let ComptimeValue::Closure { params, body, captures } = callee {
-            self.env.count_branch()?;
-            self.call_closure(&params, &body, &captures, arg_values)
-        } else {
-            Err(ComptimeError::NotSupported("indirect function calls".to_string()))
+        self.call_value(callee, arg_values)
+    }
+
+    /// Call a closure or a function value.
+    fn call_value(&mut self, callee: ComptimeValue, args: Vec<ComptimeValue>) -> ComptimeResult<ComptimeValue> {
+        self.env.count_branch()?;
+        match callee {
+            ComptimeValue::Closure { params, body, captures } => self.call_closure(&params, &body, &captures, args),
+            ComptimeValue::Function(name) => match self.env.get_function(&name).cloned() {
+                Some(decl) => self.call_function(&decl, args),
+                None => Err(ComptimeError::UndefinedFunction(name)),
+            },
+            other => Err(ComptimeError::NotSupported(format!("calling a `{}`", other.type_name()))),
         }
     }
 

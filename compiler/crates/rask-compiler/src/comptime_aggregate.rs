@@ -245,6 +245,9 @@ impl Writer<'_, '_> {
             MirType::InterfaceObject { .. } => return Err(gap("an `any` value, which points at a box")),
             MirType::Union(_) => return Err(gap("an error union")),
             _ => {
+                if let ComptimeValue::Function(name) = v {
+                    return Err(gap(format!("the function `{name}`: a compile-time value can't be a function")));
+                }
                 let what = match v {
                     ComptimeValue::Array(_) => "a list".to_string(),
                     ComptimeValue::Map(_) => "a map".to_string(),
