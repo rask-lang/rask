@@ -47,6 +47,10 @@ test "stores a function that spawns on the pool" {
     assert f() == 42
 }
 
+// A constant holds no scope at all.
+// ERROR: passing `crunch` on needs a `using ThreadPool { }` scope [E0353]
+const PICK: func() -> i64 = crunch
+
 // --- the green runtime is not a pool ---
 test "a Multitasking block doesn't install a pool" {
     using Multitasking {

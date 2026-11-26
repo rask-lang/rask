@@ -88,6 +88,18 @@ pub fn detect(
                 ctx.allow_blocking_loop = allows_blocking_loop(&b.attrs);
                 ctx.check_stmts(&b.body, &mut warnings);
             }
+            // A constant holds no runtime, so a function stored in one that
+            // needs a runtime is reported where it's named, like any other
+            // function handed on as a value.
+            DeclKind::Const(c) => {
+                ctx.in_thread_pool = false;
+                ctx.in_loop = false;
+                ctx.held = Runtimes::NONE;
+                ctx.in_root = true;
+                ctx.under_runtime = false;
+                ctx.allow_blocking_loop = false;
+                ctx.check_expr(&c.init, &mut warnings);
+            }
             _ => {}
         }
     }
