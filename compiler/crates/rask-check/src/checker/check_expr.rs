@@ -5214,8 +5214,13 @@ impl TypeChecker {
         // unified with `any Error`, a `parse<i64>()`'s error became the box
         // instead of the `ParseError` going into one, and nothing boxed it.
         // Wait for the call to say what it is, as for an enum to wrap it in.
+        // A union target waits too: unified with the union, a stdlib call's
+        // `IoError` became the whole `A | IoError`, and lowering, which reads
+        // the call's error to pick the member, found nothing to pick and left
+        // the union's member index unwritten.
         let erasing = matches!(target, Type::InterfaceObject { .. });
-        if matches!(src, Type::Var(_)) && (erasing || self.wrap_candidate(&target)) {
+        let union = matches!(target, Type::Union(_));
+        if matches!(src, Type::Var(_)) && (erasing || union || self.wrap_candidate(&target)) {
             self.pending_try_errors.push((node, src, target, span));
             return;
         }

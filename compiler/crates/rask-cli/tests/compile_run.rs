@@ -2437,6 +2437,20 @@ fn main_union_error_reports_its_members_message() {
     }
 }
 
+/// `try` on a stdlib call whose error is one member of a union error keeps
+/// which member it is. Natively the value came out as the union's first
+/// member.
+#[test]
+fn stdlib_error_into_union_keeps_its_member() {
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "main_error_union_from_stdlib.rk");
+        assert_eq!(code, 1, "{mode}: expected exit 1, got {code}\n{stdout}{stderr}");
+        assert!(stdout.contains("is IoError"), "{mode}: the error is the IoError member: {stdout}");
+        assert!(!stdout.contains("is Sfail"), "{mode}: {stdout}");
+        assert!(!stderr.contains("sfail"), "{mode}: reported the wrong member's message: {stderr}");
+    }
+}
+
 #[test]
 fn main_error_whose_message_panics_exits_101() {
     for mode in ["--interp", "--native"] {
