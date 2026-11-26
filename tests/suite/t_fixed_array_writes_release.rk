@@ -70,35 +70,50 @@ func bump_all(mutate a: [i64; 3], f: |mutate i64|) {
     }
 }
 
-func main() {
+test "a mutate receiver" {
     mut rs: [Room; 2] = [Room(n: 1, name: mk(1)), Room(n: 2, name: mk(2))]
     rs[1].relabel()
-    println("receiver: {rs[0].name} | {rs[1].name}")
+    assert rs[0].name == mk(1)
+    assert rs[1].name == mk(77)
+}
+
+test "a mutate argument" {
+    mut rs: [Room; 2] = [Room(n: 1, name: mk(1)), Room(n: 2, name: mk(2))]
     redo(mutate rs[0])
     rename(mutate rs[1].name)
-    println("argument: {rs[0].name} | {rs[1].name}")
+    assert rs[0].name == mk(88)
+    assert rs[1].name == "R({mk(2)})"
+}
+
+test "for mutate and with" {
+    mut rs: [Room; 2] = [Room(n: 1, name: mk(1)), Room(n: 2, name: mk(2))]
     for mutate r in rs {
         r.name = mk(5)
     }
-    println("for mutate: {rs[0].name} | {rs[1].name}")
     with rs[0] as r {
         r.name = mk(6)
     }
-    println("with: {rs[0].name} | {rs[1].name}")
+    assert rs[0].name == mk(6)
+    assert rs[1].name == mk(5)
+}
 
+test "a callee that writes only through for mutate" {
     mut ss: [string; 3] = [mk(1), mk(2), mk(3)]
     mark(mutate ss)
-    println("callee for mutate: {ss[0]} | {ss[2]}")
+    assert ss[0] == "X{mk(1)}"
+    assert ss[2] == "X{mk(3)}"
     mut ns: [i64; 3] = [1, 2, 3]
     bump_all(mutate ns, |mutate c: i64| {
         c += 100
     })
-    println("closure: {ns[0]} {ns[1]} {ns[2]}")
+    assert ns[0] + ns[1] + ns[2] == 306
+}
 
+test "a Heap in the path" {
     mut o = Outer(id: 1, h: Heap(Inner(x: 1)))
     o.h.x = 5
-    println("heap field: {o.h.x}")
+    assert o.h.x == 5
     mut h = Heap(Box3(pts: [Pt(x: 1, y: 2), Pt(x: 3, y: 4)], name: mk(9)))
     ensure drop(h)
-    println("heap read: {h.name}")
+    assert h.name == mk(9)
 }

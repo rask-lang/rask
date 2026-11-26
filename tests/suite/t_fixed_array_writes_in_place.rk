@@ -43,36 +43,50 @@ func mkr(k: i64) -> Room {
     return Room(n: k, name: "room {k}, long enough to allocate a heap string", pts: [k, k, k])
 }
 
-func main() {
+test "for mutate over a fixed array" {
     mut grid: [[i64; 3]; 2] = [[1, 2, 3], [4, 5, 6]]
     for mutate row in grid {
         row[0] = 0
     }
-    println("for mutate: {grid[0][0]} {grid[1][0]}")
+    assert grid[0][0] == 0
+    assert grid[1][0] == 0
+}
 
+test "a field assignment and a mutate receiver" {
     mut ps: [Pt; 2] = [Pt(x: 1, y: 2), Pt(x: 3, y: 4)]
     ps[1].x = 44
     ps[0].bump()
-    println("field and receiver: {ps[0].x} {ps[1].x}")
+    assert ps[0].x == 11
+    assert ps[1].x == 44
+}
 
+test "with on an element" {
     mut rs: [Room; 2] = [mkr(1), mkr(2)]
     with rs[1] as r {
         r.n = 20
         r.name = "renamed, long enough to allocate a heap string"
         r.pts[2] = 22
     }
-    println("with: {rs[1].n} {rs[1].name} {rs[1].pts[2]}")
+    assert rs[1].n == 20
+    assert rs[1].name == "renamed, long enough to allocate a heap string"
+    assert rs[1].pts[2] == 22
+}
 
+test "an element inside a struct field" {
     mut h = House(id: 0, main: mkr(3), rooms: [mkr(4), mkr(5)])
     with h.rooms[0] as r {
         r.n = 40
     }
     h.main.pts[0] = 30
     h.rooms[1].pts[1] = 51
-    println("nested: {h.rooms[0].n} {h.main.pts[0]} {h.rooms[1].pts[1]}")
+    assert h.rooms[0].n == 40
+    assert h.main.pts[0] == 30
+    assert h.rooms[1].pts[1] == 51
+}
 
+test "an element behind a Heap" {
     mut node = Heap(Node(id: 1, arr: [0, 0, 0]))
     ensure drop(node)
     node.arr[1] = 5
-    println("heap: {node.arr[1]}")
+    assert node.arr[1] == 5
 }

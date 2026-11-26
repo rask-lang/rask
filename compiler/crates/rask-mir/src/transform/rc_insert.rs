@@ -1832,6 +1832,11 @@ fn insert_aggregate_release(
                 MirStmtKind::ClosureCall { dst, closure, args, .. } => {
                     for (i, arg) in args.iter().enumerate() {
                         let Some(id) = uses::operand_local(arg) else { continue };
+                        // A field or element's address, as for a direct call:
+                        // the body behind the value may write through it.
+                        if let Some(root) = inline_roots.get(&id).filter(|r| is_tracked(r)) {
+                            ev.push(ownership::Event::WriteThrough(*root));
+                        }
                         if is_tracked(&id)
                             && !retained_for_this.contains(&id)
                             && closure_keeps(&func_name, *closure, i, args.len())
