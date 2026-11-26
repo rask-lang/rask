@@ -944,32 +944,27 @@ impl<'a> MirLowerer<'a> {
         value: crate::LocalId,
         ty: &Type,
     ) -> Option<crate::LocalId> {
-        // The encoder reads through a pointer. An aggregate local already *is*
-        // its storage, so its address goes straight in; a word-sized value is
-        // pointed at where it lives. Copying the handle into a scratch buffer
-        // instead read to the drop pass as the value moving into the buffer,
-        // so a `Map` passed to `json.encode` was never freed.
+        // An aggregate local already *is* its storage, so its address goes in.
+        // A word-sized value (a Map handle) goes in as itself, a plain read the
+        // drop pass sees. Pointing at it hid the encoder's read: a struct whose
+        // Map field was being encoded was freed before the call. Copying it into
+        // a scratch buffer instead read as a move, so the Map was never freed.
         let by_address = self
             .builder
             .local_type(value)
             .map(|t| t.passed_by_address())
             .unwrap_or(false);
-        let slot = if by_address {
-            value
-        } else {
-            let addr = self.builder.alloc_temp(MirType::Ptr);
-            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                dst: addr,
-                rvalue: MirRValue::Ref(value),
-            }));
-            addr
-        };
         let shape = self.emit_shape_for(ty, ShapeFor::Encode)?;
         let out = self.builder.alloc_temp(MirType::Buffer);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(out),
-            func: FunctionRef::reading("rask_json_encode_shaped").writing_string(),
-            args: vec![MirOperand::Local(slot), MirOperand::Local(shape)],
+            func: FunctionRef::reading(if by_address {
+                "rask_json_encode_shaped"
+            } else {
+                "rask_json_encode_shaped_word"
+            })
+            .writing_string(),
+            args: vec![MirOperand::Local(value), MirOperand::Local(shape)],
         }));
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: None,

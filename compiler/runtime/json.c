@@ -1173,6 +1173,14 @@ void rask_json_encode_shaped(RaskStr *out, const void *src, RaskJsonShape *shape
     rask_free(b.data);
 }
 
+// A word-sized value (a Map's or a nullable collection's handle) handed over
+// as itself rather than by address. Taking the address of the caller's local
+// left the drop pass unable to see the encoder's read, so a struct whose Map
+// field was being encoded was freed before the call.
+void rask_json_encode_shaped_word(RaskStr *out, int64_t word, RaskJsonShape *shape) {
+    rask_json_encode_shaped(out, &word, shape);
+}
+
 // Re-indent compact JSON text into the form `JsonValue.to_string_pretty`
 // produces: two spaces per level, `": "` after a key, and `[]` / `{}` left
 // inline when empty.
