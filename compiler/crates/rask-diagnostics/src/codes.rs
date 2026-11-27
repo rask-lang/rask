@@ -74,7 +74,7 @@ impl Default for ErrorCodeRegistry {
                     "The lexer encountered a character that isn't valid in Rask source code. This usually means a stray special character or encoding issue.",
                     "// Error: unexpected '@' (outside attribute position)\nlet x = @value"),
                 "E0002" => ("unterminated string literal", Syntax,
-                    "A string was opened but never closed, so the rest of the file was read as its text. A plain or interpolated string ends at the next unescaped `\"`, a `\"\"\"` string at the next `\"\"\"`, and `r#\"` at `\"#`.",
+                    "A string was opened but never closed. A plain or interpolated string, an `r\"` raw string and an `x\"` bytes literal end at the next unescaped `\"` on the same line; reaching the end of the line first is this error. The forms that span lines run to the end of the file instead: a `\"\"\"` string ends at the next `\"\"\"`, and `r#\"` at `\"#`.",
                     "// Error: string never closed\nlet msg = \"hello world"),
                 "E0003" => ("invalid escape sequence", Syntax,
                     "A backslash in a string was followed by a character that isn't a recognized escape. Valid escapes: \\n, \\t, \\r, \\\\, \\\", \\0.",

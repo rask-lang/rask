@@ -214,7 +214,7 @@ func compute() -> i32 {
 
 // Strings
 "hello"             // string literal
-"line 1\nline 2"    // Escape sequences
+"line 1\nline 2"    // Escape sequences; "…" and r"…" end on their line
 """
 Multi-line
 string literal

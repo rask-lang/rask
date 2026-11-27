@@ -116,7 +116,7 @@ test "a required option" {
 }
 
 test "help text" {
-    let expected = "mygrep 1.0.0
+    let expected = """mygrep 1.0.0
 Search for patterns in files
 
 Usage: mygrep [options] <pattern> <files>
@@ -129,20 +129,20 @@ Options:
   -i, --ignore-case        Case-insensitive matching
   -m, --max-count <value>  Stop after N matches
   -h, --help               Show this help
-      --version            Show version"
+      --version            Show version"""
     assert grep_parser().help() == expected
 }
 
 test "help without version, description or positionals" {
     let p = cli.Parser.new("t").flag("all", "", "Everything").option("out", "o", "Where", required: true)
-    let expected = "t
+    let expected = """t
 
 Usage: t [options]
 
 Options:
       --all          Everything
   -o, --out <value>  Where (required)
-  -h, --help         Show this help"
+  -h, --help         Show this help"""
     assert p.help() == expected
 }
 

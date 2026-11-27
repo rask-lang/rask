@@ -1,12 +1,17 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// Compile Error: a string literal that never closes
+// Compile Error: string literals that never close
 //
-// Everything after the opening quote is the string's text, so the rest of the
-// file is swallowed. The error points at the quote that opened it, not at the
-// end of the file where the lexer ran out.
+// A `"` string stays on its line, so the error points at the string that was
+// left open. A plain string used to run on to the next quote in the file, and
+// the error landed on a later string that was closed properly. (`x"…"` may
+// span lines, like `"""`, so it isn't tested here.)
 
 func main() {
-    // ERROR: the quote opens a string that runs to the end of the file [E0002]
+    // ERROR: the line ends before the string does [E0002]
     let greeting = "hello
     println(greeting)
+    println("done")
+    // ERROR: raw string never closed [E0002]
+    let path = r"C:\temp
+    println(path)
 }

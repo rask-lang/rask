@@ -286,11 +286,11 @@ enum RawToken {
     Char,
 
     // Raw string literal (r"..." — no escape processing)
-    #[regex(r#"r"[^"]*""#)]
+    #[token("r\"", one_line_quoted)]
     RawString,
 
     // Hex bytes literal (x"89 50 4E 47" — std.bytes/BY10)
-    #[regex(r#"x"[^"]*""#)]
+    #[token("x\"", to_next_quote)]
     HexBytes,
 
     // Raw string literal with hash delimiters (r#"..."# — handles embedded quotes)
@@ -378,10 +378,14 @@ fn raw_hash_string(lexer: &mut logos::Lexer<RawToken>) -> Result<(), RawError> {
     Err(RawError::UnterminatedString)
 }
 
-/// The delimiter a string starting at `rest` opened with: `"`, `"""` or `r#…#"`.
+/// The delimiter a string starting at `rest` opened with: `"`, `"""`,
+/// `r"`, `x"` or `r#…#"`.
 fn string_opener(rest: &str) -> &str {
     if rest.starts_with("\"\"\"") {
         return &rest[..3];
+    }
+    if rest.starts_with("r\"") || rest.starts_with("x\"") {
+        return &rest[..2];
     }
     if rest.starts_with("r#") {
         let hashes = rest[1..].bytes().take_while(|&b| b == b'#').count();
@@ -434,17 +438,44 @@ fn scan_multi_line(bytes: &[u8]) -> Option<usize> {
     None
 }
 
-/// The old rule: end at the first unescaped quote, braces be damned.
+/// The old rule: end at the first unescaped quote, braces be damned. A
+/// plain string stays on its line; `"""` is the one that spans lines.
 fn scan_plain(bytes: &[u8]) -> Option<usize> {
     let mut pos = 0;
     while pos < bytes.len() {
         match bytes[pos] {
             b'\\' => pos += 2,
             b'"' => return Some(pos + 1),
+            b'\n' => return None,
             _ => pos += 1,
         }
     }
     None
+}
+
+/// The rest of an `r"…"` literal, opener already consumed: up to the next
+/// quote, on the same line. No escapes.
+fn one_line_quoted(lexer: &mut logos::Lexer<RawToken>) -> Result<(), RawError> {
+    let bytes = lexer.remainder().as_bytes();
+    match bytes.iter().position(|&b| b == b'"' || b == b'\n') {
+        Some(n) if bytes[n] == b'"' => {
+            lexer.bump(n + 1);
+            Ok(())
+        }
+        _ => Err(RawError::UnterminatedString),
+    }
+}
+
+/// The rest of an `x"…"` literal: up to the next quote. Hex pairs may be
+/// spread over lines (std.bytes/BY10), so a newline doesn't end it.
+fn to_next_quote(lexer: &mut logos::Lexer<RawToken>) -> Result<(), RawError> {
+    match lexer.remainder().find('"') {
+        Some(n) => {
+            lexer.bump(n + 1);
+            Ok(())
+        }
+        None => Err(RawError::UnterminatedString),
+    }
 }
 
 /// End at the first unescaped quote that isn't inside a `{ }` hole.
@@ -494,7 +525,7 @@ fn scan_hole_aware(bytes: &[u8]) -> Option<usize> {
                 pos = after;
                 continue;
             }
-            b'\n' if !holes.is_empty() => return None,
+            b'\n' => return None,
             _ => {}
         }
         pos += 1;
@@ -624,11 +655,21 @@ impl<'a> Lexer<'a> {
                     // and doesn't report the gap as a second mistake.
                     TokenKind::Invalid
                 }
-                // Both run to end of input, so nothing follows to recover.
                 Err(RawError::UnterminatedString) => {
                     let rest = &self.source[span.start..];
-                    self.errors.push(LexError::unterminated_string(span.start, string_opener(rest)));
-                    break;
+                    let opener = string_opener(rest);
+                    let spans_lines = matches!(opener, "\"\"\"" | "x\"") || opener.starts_with("r#");
+                    self.errors.push(LexError::unterminated_string(span.start, opener, spans_lines));
+                    // A string that may span lines ran to the end of input,
+                    // so nothing follows to recover. One that stays on its
+                    // line ended there, and lexing goes on from the next.
+                    if spans_lines {
+                        break;
+                    }
+                    let line_end = rest.find('\n').map_or(self.source.len(), |n| span.start + n);
+                    logos_lexer.bump(line_end.saturating_sub(logos_lexer.span().end));
+                    tokens.push(Token { kind: TokenKind::Invalid, span: self.span(span.start, line_end) });
+                    continue;
                 }
                 Err(RawError::UnterminatedComment) => {
                     self.errors.push(LexError::unterminated_comment(span.start));
@@ -1088,20 +1129,37 @@ impl LexError {
         }
     }
 
-    fn unterminated_string(start: usize, opener: &str) -> Self {
-        // `r##"` closes with `"##`, `"""` with `"""`, a plain `"` with `"`.
-        let close: String = if opener.starts_with('r') {
-            std::iter::once('"').chain(opener.chars().filter(|&c| c == '#')).collect()
+    fn unterminated_string(start: usize, opener: &str, spans_lines: bool) -> Self {
+        // `r##"` closes with `"##`, `"""` with `"""`, `r"`, `x"` and `"` with `"`.
+        let quotes = opener.chars().filter(|&c| c == '"');
+        let close: String = quotes.chain(opener.chars().filter(|&c| c == '#')).collect();
+        let (label, why) = if spans_lines {
+            (
+                "this string runs to the end of the file",
+                "everything after an opening quote is text until the matching closing quote",
+            )
         } else {
-            opener.to_string()
+            (
+                "the line ends before this string does",
+                if opener == "\"" {
+                    "a `\"` string stays on one line; `\"\"\"` is the form that spans lines"
+                } else {
+                    "an `r\"` string stays on one line; `\"\"\"` is the form that spans lines"
+                },
+            )
+        };
+        let hint = if opener == "\"" {
+            format!("end the string with `{close}`; a quote inside one is written `\\\"`")
+        } else {
+            format!("end the string with `{close}`")
         };
         Self {
             span: Span::new(start, start + opener.len()),
             message: "string literal never closed".to_string(),
-            hint: Some(format!("end the string with `{close}`; a quote inside one is written `\\\"`")),
+            hint: Some(hint),
             code: "E0002",
-            label: "this string runs to the end of the file",
-            why: "everything after an opening quote is text until the matching closing quote",
+            label,
+            why,
         }
     }
 
