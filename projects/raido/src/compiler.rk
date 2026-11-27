@@ -73,8 +73,9 @@
 //
 // FUNCTION REFERENCES
 // ===================
-// Raido has no closures — only references to named top-level functions.
-// FUNC_REF loads a prototype index into a register. No captured state.
+// FUNC_REF loads a prototype index into a register. A closure that captures
+// variables is CLOSURE: the prototype plus the captured registers, copied
+// into a heap object (language/types.md, Functions as Values).
 
 enum CompileError {
     LexError(LexError)
@@ -141,7 +142,7 @@ extend Compiler {
             current: Token.Eof
             previous: Token.Eof
             current_line: 1
-            proto: Prototype.new("<main>", 0)
+            proto: Prototype.new("<main>", 0, 0)
             proto_stack: Vec.new()
             scope: Scope(locals: Vec.new(), depth: 0)
             next_reg: 0
@@ -299,7 +300,9 @@ extend Compiler {
         // Emit implicit return None at end
         self.emit_abx(Opcode.RETURN, 255, 0)
 
-        return Chunk.new(self.proto.clone())
+        mut chunk = Chunk.new()
+        chunk.add_proto(self.proto.clone())
+        return chunk
     }
 
     func compile_statement(self) -> void or CompileError {

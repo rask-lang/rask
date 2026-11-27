@@ -1,0 +1,96 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Sorting and map order, against the merge sort in vm/architecture.md and
+// the map rules in language/types.md.
+
+import raido
+
+const SORT: string = """
+let calls = 0
+
+func by_key(a: int, b: int) -> bool {{
+    calls += 1
+    return a % 7 < b % 7
+}}
+
+func sorted(csv: string) -> string {{
+    let items: array<int> = []
+    for part in csv.split(",") {{
+        items.push(int(part)!)
+    }}
+    calls = 0
+    items.sort(by_key)
+    return "{{items}}|{{calls}}"
+}}
+"""
+
+// The comparator sees the same calls in the same order as the specified merge
+// sort, and equal keys keep their order. Keys collide often (x % 7), so a
+// different algorithm, or an unstable one, shows up in the result or the count.
+claim sort_is_the_specified_merge_sort(v: Vec<i64>) {
+    if v.len() == 0 {
+        return
+    }
+    mut vm = vm_with(SORT)
+    let csv = string_arg(mutate vm, joined(v))
+    let want = spec_sort(v)
+    assert call_text(mutate vm, "sorted", csv) == "{shown(want.items)}|{want.calls}"
+}
+
+const MAP_ORDER: string = """
+func build(csv: string) -> map<int, int> {{
+    let m: map<int, int> = {{}}
+    let i = 0
+    for part in csv.split(",") {{
+        m[int(part)!] = i
+        i += 1
+    }}
+    return m
+}}
+
+func order(csv: string) -> array<int> {{
+    return build(csv).keys()
+}}
+
+func moved(csv: string) -> array<int> {{
+    let m = build(csv)
+    let first = int(csv.split(",")[0])!
+    m.remove(first)
+    m[first] = -1
+    return m.keys()
+}}
+"""
+
+// Keys come back in the order they were first inserted: assigning to an
+// existing key keeps its place, and removing then inserting moves it last.
+claim maps_keep_first_insertion_order(v: Vec<i64>) {
+    if v.len() == 0 {
+        return
+    }
+    mut vm = vm_with(MAP_ORDER)
+    let csv = string_arg(mutate vm, joined(v))
+    let firsts = first_occurrences(v)
+    assert call_text(mutate vm, "order", csv.clone()) == shown(firsts)
+    mut moved_order: Vec<i64> = Vec.new()
+    for k in firsts {
+        if k != v[0] {
+            moved_order.push(k)
+        }
+    }
+    moved_order.push(v[0])
+    assert call_text(mutate vm, "moved", csv) == shown(moved_order)
+}
+
+func first_occurrences(v: Vec<i64>) -> Vec<i64> {
+    mut out: Vec<i64> = Vec.new()
+    for x in v {
+        if !out.contains(x) {
+            out.push(x)
+        }
+    }
+    return out
+}
+
+func string_arg(mutate vm: raido.Vm, s: string) -> Vec<raido.Value> {
+    let v = vm.new_string(s) catch e => panic("new_string: {e.message()}")
+    return Vec<raido.Value>.from([v])
+}

@@ -24,7 +24,7 @@ enum Token {
 
     // Keywords
     Let
-    Mutate
+    Const
     Func
     Return
     If
@@ -35,11 +35,11 @@ enum Token {
     Break
     Continue
     Match
-    Try
     True
     False
     In
-    Yield
+    Deferred
+    Pausing
     Struct
     Enum
     Extern
@@ -199,7 +199,7 @@ extend Lexer {
     func keyword_or_ident(self, word: string) -> Token {
         match word {
             "let" => return Token.Let
-            "mutate" => return Token.Mutate
+            "const" => return Token.Const
             "func" => return Token.Func
             "return" => return Token.Return
             "if" => return Token.If
@@ -210,11 +210,11 @@ extend Lexer {
             "break" => return Token.Break
             "continue" => return Token.Continue
             "match" => return Token.Match
-            "try" => return Token.Try
             "true" => return Token.True,
             "false" => return Token.False,
             "in" => return Token.In,
-            "yield" => return Token.Yield,
+            "deferred" => return Token.Deferred,
+            "pausing" => return Token.Pausing,
             "struct" => return Token.Struct,
             "enum" => return Token.Enum,
             "extern" => return Token.Extern,

@@ -1,107 +1,97 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 // Chunk and Prototype — the compiled output of the Raido compiler
 //
-// A Prototype is one function's compiled bytecode. It contains:
-//   - code: the instruction stream
-//   - constants: literal values used by LOAD_CONST (strings, large numbers)
-//   - prototypes: nested function definitions
-//   - metadata: how many registers it needs, how many parameters, etc.
+// A Prototype is one function's bytecode. A Chunk holds every prototype in
+// one flat list, so `FUNC_REF Bx` and `CLOSURE Bx` name a prototype by index,
+// plus the struct layouts `NEW_STRUCT` needs and the module variables.
 //
-// A Chunk is the top-level output: the "main" prototype plus import/export info.
-//
-// When you compile a Raido script, you get one Chunk. The main prototype is
-// the script body. Any `func` declarations inside it become nested prototypes.
-//
-// Example:
-//   func add(a, b) { return a + b }
-//   print(add(1, 2))
-//
-// Compiles to:
-//   Chunk {
-//     main: Prototype {
-//       code: [FUNC_REF r0 #0, LOAD_INT r1 1, LOAD_INT r2 2, CALL r0 2, ...]
-//       prototypes: [
-//         Prototype {  // the "add" function
-//           code: [ADD r2 r0 r1, RETURN r2]
-//           arity: 2
-//         }
-//       ]
-//     }
-//   }
+// Module variables are initialised by the `init` prototype, which the VM
+// runs once at load as its own transaction.
 
 struct Prototype {
     code: Vec<u32>
     constants: Vec<Value>
-    prototypes: Vec<Prototype>
     num_registers: i64
     arity: i64
-    param_types: Vec<i64>
-    return_type: i64
+    captures: i64
     name: string
     lines: Vec<i64>
 }
-// Max registers this function uses
-// Number of parameters
-// Type IDs for parameters
-// Type ID for return value
-// Function name (or "<main>" for top-level)
-// Source line number per instruction (debug info)
 
 extend Prototype {
-    func new(name: string, arity: i64) -> Prototype {
+    func new(name: string, arity: i64, num_registers: i64) -> Prototype {
         return Prototype(
             code: Vec.new()
             constants: Vec.new()
-            prototypes: Vec.new()
-            num_registers: 0
+            num_registers: num_registers
             arity: arity
-            param_types: Vec.new()
-            return_type: 0
+            captures: 0
             name: name
             lines: Vec.new()
         )
     }
 
-    func add_constant(self, take val: Value) -> i64 {
-        // Add a constant and return its index in the constant pool.
-        // If the same constant already exists, return the existing index.
-        // For now, always add (deduplication is an optimization)
-        let idx = self.constants.len()
-        self.constants.push(val)
-        return idx.wrap<i64>()
+    func add_constant(mutate self, v: Value) -> i64 {
+        self.constants.push(v)
+        return self.constants.len().wrap<i64>() - 1
     }
 
     func disassemble(self) -> string {
-        // Disassemble the whole prototype to a string
         mut out = "== {self.name} (regs={self.num_registers}, args={self.arity}) ==\n"
         mut i: i64 = 0
         let count = self.code.len().wrap<i64>()
         while i < count {
-            let instr = self.code.get(i) ?? break
-            out = "{out}{disassemble_instr(instr, i)}\n"
+            out = "{out}{disassemble_instr(self.code[i], i)}\n"
             i = i + 1
         }
         return out
     }
 }
 
+// A tuple is a struct the language doesn't name; it compares by content.
+struct StructLayout {
+    name: string
+    field_count: i64
+    is_tuple: bool
+}
+
 struct Chunk {
-    main: Prototype
+    protos: Vec<Prototype>
+    structs: Vec<StructLayout>
+    module_vars: i64
+    init: i64
     imports: Vec<string>
     module_imports: Vec<string>
     exports: Vec<string>
 }
-// Extern declarations the script requires
-// Content-addressed chunk imports
-// Top-level functions the host can call
 
 extend Chunk {
-    func new(take main: Prototype) -> Chunk {
+    func new() -> Chunk {
         return Chunk(
-            main: main
+            protos: Vec.new()
+            structs: Vec.new()
+            module_vars: 0
+            init: -1
             imports: Vec.new()
             module_imports: Vec.new()
             exports: Vec.new()
         )
+    }
+
+    func add_proto(mutate self, take p: Prototype) -> i64 {
+        self.protos.push(p)
+        return self.protos.len().wrap<i64>() - 1
+    }
+
+    func find(self, name: string) -> i64? {
+        mut i: i64 = 0
+        let n = self.protos.len().wrap<i64>()
+        while i < n {
+            if self.protos[i].name == name {
+                return i
+            }
+            i = i + 1
+        }
+        return none
     }
 }

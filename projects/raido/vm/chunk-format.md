@@ -5,23 +5,28 @@
 
 # Chunk Format
 
-A compiled chunk is the output of `vm.compile()`. Contains bytecode, type metadata, and enough structure for validation and trust.
+A compiled chunk is the output of `raido.compile()`. Contains bytecode, type metadata, and enough structure for validation and trust.
 
 ## Format
 
 ```
 +---------------------+
-| header              |  magic bytes, format version
-| content_hash        |  SHA-256 of bytecode + constants + prototypes + types
+| header              |  magic bytes, format version, profile
+| content_hash        |  SHA-256 of everything below that carries meaning
 +---------------------+
-| type_table          |  struct layouts, enum definitions, extern declarations
-| imports[]           |  extern funcs + extern structs this script needs
-| module_imports[]    |  content-addressed module dependencies
+| type_table          |  struct, tuple and enum layouts, extern declarations
+| variants[]          |  (enum type, variant) pairs for NEW_ENUM
+| api_hash            |  content hash of the published API module
+| imports[]           |  extern funcs + extern structs this script uses
+| builtins[]          |  the built-ins it calls, by name, for CALL_BUILTIN
+| module_imports[]    |  content-addressed module dependencies (name + hash)
+| functions[]         |  own prototypes, then imported functions (module, name)
+| module_vars[]       |  own top-level `let`s (name, type), then imported ones (module, name)
+| init                |  the prototype that runs the initializers, in declaration order
 | exports[]           |  top-level functions the host can call
 +---------------------+
-| constants           |  constant pool (strings, floats)
-| prototypes[]        |  function prototypes (register count, arity, param types, return type)
-| bytecode            |  instructions
+| constants           |  ints, floats and strings
+| prototypes[]        |  register types, arity, capture count, return type, bytecode
 +---------------------+
 | debug (optional)    |  source locations, function names
 +---------------------+
@@ -32,73 +37,59 @@ A compiled chunk is the output of `vm.compile()`. Contains bytecode, type metada
 Static types require metadata in the chunk so the VM can:
 - Allocate structs with the correct layout (field count, field sizes)
 - Validate extern struct bindings at load time
-- Deserialize registers with the correct types (no per-value tags)
+- Know each container's element type, and which element types keep their tag
 
 The type table contains:
 - **Struct definitions.** Name, field names, field types, field count. Layout order matches declaration order.
 - **Enum definitions.** Name, variant names, variant payloads (if any).
 - **Extend methods.** Type name, method name, parameter types, return type, prototype index. Methods are compiled as regular functions — extend is resolved at compile time, not runtime.
 - **Extern struct declarations.** Name, field names, field types, readonly flags.
-- **Extern func declarations.** Name, parameter types, return type.
+- **Extern func declarations.** Name, parameter types, return type, and whether it's immediate, deferred or pausing.
 
 The type table is part of the content hash -- changing a struct definition changes the chunk's identity.
 
+Every index an instruction carries points into one of these tables, so bytecode never names anything by string at run time. Imported functions and module variables, and the built-ins, are named in their tables and resolved once at load: a built-in name the VM doesn't know, or an import that doesn't export the name, fails the load. A built-in table by name, rather than a global numbering, means adding a built-in later doesn't renumber anyone's bytecode.
+
+Each prototype lists a type for every register. A register holds that type for the whole function, which is what lets the verifier check each instruction on its own ([architecture.md](architecture.md#verification)).
+
 ## Content Identity
 
-SHA-256 of the bytecode + constants + prototypes + type table sections. Computed at compile time, stored in the chunk header.
+SHA-256 over everything that decides what the chunk does: the format version, the profile, the type table, the API module's hash, the module imports (names and resolved hashes), module variables, exports, constants, prototypes and bytecode. Debug sections are left out. Computed at compile time, stored in the chunk header.
+
+Leaving any of these out would let one hash run under two meanings: the same bytecode against a different API, under a different profile's memory rule, or with a different imported module.
 
 The host uses this however it wants -- comparing against expected hashes, including in audit logs, verifying snapshots came from a known script. The VM computes the hash and exposes it. The VM does not own the trust model.
 
 ```rask
-let chunk = try vm.compile("script.rd", source)
-let hash = chunk.hash()  // [u8; 32] -- SHA-256 of bytecode content
+let chunk = try raido.compile("script.rd", source, api, Vec.new(), raido.CompileOpts.default())
+let hash = chunk.hash()  // 32 bytes
 ```
 
 Serialized snapshots include the bytecode hash so the host can verify "this snapshot came from this script" on restore.
 
 ## Imports and Exports
 
-**Imports** -- the extern structs and extern funcs the script uses from the published API module, and that module's hash. Checked at load time: if the host hasn't bound a required extern, `vm.load()` fails immediately with a clear error listing missing bindings.
+**Imports** -- the extern structs and extern funcs the script uses from the published API module, and that module's hash. Checked at load time: if the host's bindings don't match the module, or it hasn't bound something the script uses, `vm.load()` fails with a clear error listing what's missing.
 
 **Module imports** -- other content-addressed chunks referenced via `import "name" as alias`. The import graph is part of the chunk's content hash. The host resolves import names to chunks.
 
 **Exports** -- top-level `func` declarations with their typed signatures. The host can inspect what's callable and what types are expected without reading source.
 
 ```rask
-let chunk = try vm.compile("script.rd", source)
-chunk.imports()         // extern declarations needed
-chunk.module_imports()  // ["combat_utils", "physics_common"]
-chunk.exports()         // [("on_update", ...), ("process", ...)]
-
-// Load fails fast if externs aren't satisfied
-vm.register_extern_struct("Enemy", ...)
-vm.register_extern_func("move_to", move_to_handler)
-try vm.load(chunk)  // fails if any extern unbound
+chunk.exports()         // name, parameter types and result type of each
+try vm.load(chunk, library)  // fails if the bindings leave out anything the API needs
 ```
 
 ## Validation
 
-Single-pass structural validation runs during `vm.compile()` (for source) or `vm.load()` (for pre-compiled bytecode). Rejects malformed chunks before execution.
+`raido.compile()` checks source; `raido.Chunk.decode(bytes)` checks bytecode from disk or network, recomputes the hash, and verifies every function ([architecture.md](architecture.md#verification)). Beyond the per-instruction checks there:
 
-Checks:
-- Register indices within frame size
-- Jump targets within bytecode bounds
-- Constant pool indices valid
-- Prototype indices valid (for `FUNC_REF`, `NEW_STRUCT`)
-- Struct field indices within field count
-- Extern struct/func declarations match host bindings (types, field count, readonly flags)
-- Format version recognized
-- Type table consistency (no undefined type references)
+- the format version is recognized;
+- the type table is consistent: no undefined type references;
+- every table index is in range;
+- a pure or provable chunk keeps its profile's rules, and a provable one contains no float constants or float instructions ([architecture.md](architecture.md#profiles)).
 
-`vm.load(bytes)` validates pre-compiled bytecode from disk or network. If validation fails, load returns an error -- no partial execution, no undefined behavior.
-
-```rask
-// Compile from source (validates during compilation)
-let chunk = try vm.compile("script.rd", source)
-
-// Load pre-compiled bytecode (validates on load)
-let chunk = try vm.load(bytecode_bytes)
-```
+Extern declarations are checked against the host's bindings at `vm.load()`. If any check fails, nothing runs.
 
 ## Version Compatibility
 
@@ -122,7 +113,8 @@ The chunk header carries:
 |-------|------|---------|
 | `magic` | `[u8; 4]` | Format identifier (`RADO`) |
 | `version` | `u16` | Chunk format version |
-| `content_hash` | `[u8; 32]` | SHA-256 of bytecode + constants + prototypes + types |
+| `profile` | `u8` | 0 = normal, 1 = pure, 2 = provable |
+| `content_hash` | `[u8; 32]` | SHA-256 over the sections listed in [Content Identity](#content-identity) |
 
 The version field is checked first during `vm.load()`. If the VM doesn't support that version, it rejects immediately -- before reading any other section.
 
@@ -188,9 +180,7 @@ Optional. Stripped by default in release, included with a compile flag.
 - **Function names.** Maps prototype indices to names. Powers readable stack traces.
 
 ```rask
-let chunk = try vm.compile("script.rd", source, raido.CompileOpts {
-    debug_info: true,
-})
+let chunk = try raido.compile("script.rd", source, api, Vec.new(), raido.CompileOpts(debug_info: true, profile: raido.Profile.Normal))
 ```
 
 When debug info is absent, stack traces show `<chunk>:proto[3]:offset[42]` instead of `script.rd:27 in process()`.

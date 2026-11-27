@@ -1,77 +1,257 @@
 <!-- id: raido.interop -->
 <!-- status: proposed -->
-<!-- summary: Rask integration API -- VM creation, extern structs/funcs, scoped bindings, serialization -->
+<!-- summary: The host API in Rask: compiling, bindings, calls, pausing, roots, snapshots; the contract every implementation exposes -->
 <!-- depends: raido/vm/architecture.md, raido/language/types.md -->
 
-# Rask Integration
+# Host API
 
-Host API for integrating Raido. All interaction is safe -- no `unsafe` required.
+How a Rask program runs Raido. The signatures in [The Contract](#the-contract) are exact: every implementation exposes them, under a package named `raido`, so one set of conformance claims checks any of them ([../conformance/](../conformance/)). All of it is safe Rask; no `unsafe`.
 
-## VM Lifecycle
+## A Host in One Page
 
 ```rask
-let vm = raido.Vm.new(raido.Config {
-    memory_limit: 256.kilobytes(),
-    initial_fuel: 100_000,
-    max_call_depth: 256,
-    stdlib: [raido.Stdlib.math],
-})
-ensure vm.close()
+import raido
 
-// Seed the PRNG (deterministic -- same seed = same random sequence)
+// The published API module, compiled once
+let api = try raido.compile_api("game_api.rd", api_source)
+
+// Bindings: a handler for each immediate extern, a getter and setter per field
+mut bindings = raido.Bindings.new(api)
+bindings.getter("Enemy", "health", |id| raido.Value.from_int(enemies[id].health))
+bindings.setter("Enemy", "health", |id, v| { enemies[id].health = v.as_int()! })
+bindings.immediate("noise", |args| raido.Value.from_float(noise(args[0].as_float()!, args[1].as_int()!, args[2].as_int()!)))
+
+// A script, compiled against the API
+let chunk = try raido.compile("guard.rd", source, api, Vec.new(), raido.CompileOpts.default())
+
+mut vm = raido.Vm.new(raido.Config.default(), bindings)
 vm.seed(12345)
+try vm.load(chunk, Vec.new())           // checks bindings, runs top-level `let`s as one run
 
-// Register extern bindings before loading
-vm.register_extern_struct("Enemy", raido.ExternStruct {
-    fields: [
-        raido.Field.int("health", get_health, set_health)
-        raido.Field.float("x", get_x, set_x)
-        raido.Field.float("y", get_y, set_y)
-        raido.Field.string("name", get_name, null)  // readonly
-    ],
-})
-vm.register_extern_func("move_to", move_to_handler)
-vm.register_extern_func("noise", noise_handler)
+let guard = try vm.extern_value("Enemy", 7)
+match try vm.call("on_guard_spawned", [guard]) {
+    raido.Outcome.Done(_) => {}
+    raido.Outcome.Paused(task, call) => schedule(task, call)   // call.name == "wait"
+}
+for c in vm.deferred() { apply(c) }      // move_to, attack, ... in call order
+for t in vm.spawned() { schedule_new(t) }
+for line in vm.printed() { log.info("raido: {line}") }
 
-// Register module import resolver
-vm.set_import_resolver(|name: string| -> Vec<u8> or raido.Error {
-    return try load_chunk_bytes(name)
-})
-
-// Override print handler (default: no-op)
-vm.set_print(|msg: string| { log.info("raido: {msg}") })
-
-// Compile -- validates, derives imports/exports, computes content hash
-let chunk = try vm.compile("script.rd", source)
-
-// Or compile with debug info
-let chunk = try vm.compile("script.rd", source, raido.CompileOpts {
-    debug_info: true,
-})
-
-// Or load pre-compiled bytecode (validates on load)
-let chunk = try vm.load(bytecode_bytes)
-
-// Inspect before running
-chunk.hash()             // content identity (SHA-256)
-chunk.imports()          // extern declarations the script needs
-chunk.module_imports()   // content-addressed module dependencies
-chunk.exports()          // functions the host can call (with typed signatures)
-
-// Load -- fails fast if externs don't match declarations
-try vm.exec(chunk)
-let result = try vm.call("process", [raido.Value.int(42)])
+// later, when the wait is over
+match try vm.resume(task, raido.Value.none()) { ... }
 ```
 
-See [chunk-format.md](chunk-format.md) for format details.
+## The Contract
+
+```rask
+// --- Compiling ---
+
+public func compile_api(name: string, source: string) -> Api or CompileError {}
+
+// `library` holds the chunks this one imports, and theirs. The compiled chunk
+// names each by hash.
+public func compile(name: string, source: string, api: Api, library: Vec<Chunk>, opts: CompileOpts) -> Chunk or CompileError {}
+
+public enum Profile { Normal, Pure, Provable }
+
+public struct CompileOpts {
+    public debug_info: bool
+    public profile: Profile
+}
+
+extend CompileOpts {
+    public func default() -> CompileOpts {}          // no debug info, Normal
+}
+
+public struct CompileError {
+    public file: string
+    public line: i64
+    public text: string
+}
+
+extend CompileError {
+    public func message(self) -> string {}
+}
+
+extend Api {
+    public func hash(self) -> Vec<u8> {}             // 32 bytes
+}
+
+extend Chunk {
+    public func decode(data: Vec<u8>) -> Chunk or DecodeError {}   // verifies the bytecode
+    public func encode(self) -> Vec<u8> {}
+    public func hash(self) -> Vec<u8> {}             // 32 bytes, the content identity
+    public func profile(self) -> Profile {}
+    public func exports(self) -> Vec<Export> {}
+}
+
+public struct Export {
+    public name: string
+    public params: Vec<string>                       // Raido type syntax: "int", "Vec2", "Enemy?"
+    public result: string                            // "void" for none
+}
+
+public struct DecodeError {
+    public text: string
+}
+
+extend DecodeError {
+    public func message(self) -> string {}
+}
+
+// --- Bindings ---
+// Built from the API module, which already says every type. The host only
+// supplies handlers. Deferred and pausing externs need none: the VM hands
+// their calls back.
+
+extend Bindings {
+    public func new(api: Api) -> Bindings {}
+    public func getter(mutate self, extern_struct: string, field: string, get: func(i64) -> Value) {}
+    public func setter(mutate self, extern_struct: string, field: string, set: func(i64, Value) -> void or HostFailure) {}
+    public func immediate(mutate self, name: string, handler: func(Vec<Value>) -> Value or HostFailure) {}
+    public func undoable(mutate self, name: string, handler: func(Vec<Value>) -> Value or HostFailure, undo: func(Vec<Value>, Value)) {}
+}
+
+public struct HostFailure {
+    public text: string
+}
+
+extend HostFailure {
+    public func message(self) -> string {}
+}
+
+// --- Values ---
+// 16 bytes, Copy. A heap value is only meaningful to the VM it came from.
+
+extend Value {
+    public func none() -> Value {}
+    public func from_bool(b: bool) -> Value {}
+    public func from_int(n: i64) -> Value {}
+    public func from_float(x: f64) -> Value {}       // a NaN or infinity is refused at the boundary
+    public func as_bool(self) -> bool? {}
+    public func as_int(self) -> i64? {}
+    public func as_float(self) -> f64? {}
+    public func is_none(self) -> bool {}
+    public func extern_id(self) -> i64? {}
+}
+
+// --- The VM ---
+
+public struct Config {
+    public memory_limit: i64
+    public fuel: i64
+    public max_call_depth: i64
+    public profile: Profile
+}
+
+extend Config {
+    public func default() -> Config {}               // 256 KB, 100_000 fuel, depth 256, Normal
+}
+
+public enum Outcome {
+    Done(Value)                                      // Value.none() for a function returning nothing
+    Paused(Root, HostCall)                           // the task, and the pausing call it's waiting in
+}
+
+public struct HostCall {
+    public name: string
+    public args: Vec<Value>
+}
+
+public struct Root {
+    public index: i64                                // stable across snapshot and restore
+}
+
+extend Vm {
+    public func new(config: Config, take bindings: Bindings) -> Vm {}
+    public func load(mutate self, chunk: Chunk, library: Vec<Chunk>) -> void or ScriptError {}
+    public func seed(mutate self, seed: i64) {}
+    public func fuel(self) -> i64 {}
+    public func set_fuel(mutate self, fuel: i64) {}
+
+    public func call(mutate self, name: string, args: Vec<Value>) -> Outcome or ScriptError {}
+    public func resume(mutate self, task: Root, value: Value) -> Outcome or ScriptError {}
+
+    // Queues, drained in order. Each fills only when a run commits.
+    public func deferred(mutate self) -> Vec<HostCall> {}
+    public func spawned(mutate self) -> Vec<Root> {}
+    public func printed(mutate self) -> Vec<string> {}   // print lines, failed runs included
+
+    // Values the host makes or reads
+    public func new_string(mutate self, s: string) -> Value or ScriptError {}
+    public func extern_value(self, extern_struct: string, id: i64) -> Value or ScriptError {}
+    public func show(self, v: Value) -> string or ScriptError {}   // exactly what `tostring` gives
+    public func text(self, v: Value) -> string or ScriptError {}   // a string's contents
+    public func len(self, v: Value) -> i64 or ScriptError {}       // string, array or map
+    public func item(self, v: Value, i: i64) -> Value or ScriptError {}   // array element
+    public func field(self, v: Value, i: i64) -> Value or ScriptError {}  // struct or tuple field
+
+    public func root(mutate self, v: Value) -> Root or ScriptError {}
+    public func get(self, r: Root) -> Value or ScriptError {}
+    public func unroot(mutate self, r: Root) {}
+
+    public func reset(mutate self) -> void or ScriptError {}
+    public func snapshot(self) -> Vec<u8> {}
+    public func restore(data: Vec<u8>, chunks: Vec<Chunk>, take bindings: Bindings) -> Vm or SnapshotError {}
+}
+
+public struct SnapshotError {
+    public text: string
+}
+
+extend SnapshotError {
+    public func message(self) -> string {}
+}
+
+public struct ScriptError {
+    public kind: ErrorKind
+    public text: string
+    public trace: Vec<TraceFrame>
+}
+
+extend ScriptError {
+    public func message(self) -> string {}
+}
+
+public enum ErrorKind {
+    DivisionByZero
+    IntegerOverflow
+    FloatError
+    IndexOutOfBounds
+    KeyNotFound
+    UnwrapNone
+    ArgumentError
+    Uninitialized
+    ModifiedDuringIteration
+    PauseNotAllowed
+    MemoryExhausted
+    FuelExhausted
+    CallOverflow
+    HostError
+    ScriptError
+}
+
+extend ErrorKind {
+    public func name(self) -> string {}              // "DivisionByZero", as written above
+}
+
+public struct TraceFrame {
+    public chunk: i64                                // load position
+    public function: i64                             // prototype index
+    public offset: i64                               // instruction offset
+}
+```
+
+`ErrorKind` and the trace are part of the determinism contract ([architecture.md](architecture.md#formal-contract)); message text isn't.
+
+Anything not listed here is the implementation's own business. A host that sticks to this contract can swap one implementation for another.
 
 ## The Published API
 
-The host publishes its API as one Raido module of `extern` declarations: the structs it exposes, their fields, and the functions scripts may call. Every script compiled for that host sees the module already imported, under the host's chosen name (a game might call it `game`, or import its names directly). Scripts never write `extern` themselves.
+The host publishes its API as one Raido module: `extern` declarations for the structs it exposes and the functions scripts may call, and any ordinary Raido types and functions it wants to give every script (`Vec2`). Every script compiled for that host sees the module already imported. Scripts never write `extern` themselves.
 
 ```raido
-// game_api.rd -- written by the engine authors, or generated from the
-// host's registrations, the way `rask bindc` generates bindings from a C header
+// game_api.rd -- written by the engine authors
 extern struct Enemy {
     health: int
     x: float
@@ -79,195 +259,82 @@ extern struct Enemy {
     readonly name: string
 }
 
-extern func move_to(entity: Enemy, target: Vec2)
+struct Vec2 { x: float, y: float }
+
+extern deferred func move_to(entity: Enemy, target: Vec2)
 extern func noise(quality: float, id: int, index: int) -> float
+extern deferred func send_message(target: string, body: string)
+extern pausing func wait(seconds: float)
 ```
 
 - **One copy of the API.** Adding a field or function to the engine changes the module; scripts don't each carry a stale copy.
-- **Checked at load.** The host's registered bindings must match the module's declarations, or `vm.load()` fails, so a host can't publish an API it doesn't implement.
-- **Part of identity.** The module's content hash is part of every chunk's import graph, so two scripts compiled against different API versions have different identities, and a chunk built for an old API refuses to load against a new one instead of misbehaving.
+- **Checked at load.** `vm.load` fails if the bindings leave out anything the module needs: a getter for every field, a setter for every field that isn't `readonly`, a handler for every immediate extern.
+- **Part of identity.** The module's hash is part of every chunk's identity, so a chunk built for an old API refuses to load against a new one instead of misbehaving.
 
 ## Extern Structs
 
-The published API declares `extern struct` for host-managed data shapes. The compiler type-checks all field access against these declarations. The host binds at `vm.load()`.
+Fields hold only `int`, `float`, `bool`, `string`, payload-free enums, other extern structs, or optionals of those ([types.md](../language/types.md#extern-types)). A field holding a struct or a collection would hand the script a value it could change without going through a setter, where rollback can't see it.
 
-**API module:**
-```raido
-extern struct Enemy {
-    health: int
-    x: float
-    y: float
-    readonly name: string
-}
+An extern struct value is the host's 64-bit id for the object, tagged with the struct's type (`vm.extern_value("Enemy", 7)`). The id is what gets saved, so it has to stay meaningful after a save and load: an entity id or a pool handle, not a pointer.
 
-func chase(attacker: Enemy, target: Enemy) {
-    let dest = Vec2 { x: target.x, y: target.y }
-    move_to(attacker, dest)
-}
-```
-
-**Host side:**
-```rask
-vm.register_extern_struct("Enemy", raido.ExternStruct {
-    fields: [
-        raido.Field.int("health", get_health, set_health)
-        raido.Field.float("x", get_x, set_x)
-        raido.Field.float("y", get_y, set_y)
-        raido.Field.string("name", get_name, null)  // null setter = readonly
-    ],
-})
-```
-
-**Type mismatch = load error.** If the API module declares `health: int` but the host binds `health` as `float`, `vm.load()` fails. No runtime surprises.
-
-**Readonly enforcement.** Fields declared `readonly` in the API module have no setter in the host binding (`null`). The compiler rejects writes to readonly fields at compile time.
-
-**Runtime dispatch:** `GET_FIELD` / `SET_FIELD` index into the vtable by slot number. No string hashing, no map lookup. One indexed function pointer call per field access.
+**Getters and setters are plain field access.** A getter returns the field and changes nothing; a setter stores the value and does nothing else. The VM relies on that to roll a write back: it reads the old value with the getter, stores the new one with the setter, and on failure stores the old ones back, newest first. A setter that wants to do more (play a sound when health drops) belongs in a deferred extern instead.
 
 ## Extern Funcs
 
-The API module declares `extern func` for host-provided functions with typed signatures.
+An extern function is one of three kinds, and the API module says which, because a script can tell them apart:
 
-**API module:**
-```raido
-extern func move_to(entity: Enemy, target: Vec2)
-extern func noise(quality: float, id: int, index: int) -> float
-extern func spawn(kind: string, pos: Vec2) -> Enemy
-```
+- **Immediate** (`extern func`): the VM calls the host's handler at the call, and the handler's result is the call's result. It must either change nothing the script could later observe (`noise`, reads), or be registered with `undoable`, whose undo the VM runs if the call fails (`spawn_unit` with a despawn). It sees the script's field writes so far, since those went straight through the setters.
+- **Deferred** (`extern deferred func`): returns nothing. Its calls are queued and handed to the host by `vm.deferred()` once the run commits, in call order. A deferred effect isn't visible to the call that made it, and lands after all of that call's field writes. Most world-changing actions are deferred: `move_to`, `attack`, `play_sound`.
+- **Pausing** (`extern pausing func`): takes time. Calling it pauses the script, and `vm.call` or `vm.resume` returns `Paused(task, call)` with the function's name and arguments. The host does whatever the function means and later calls `vm.resume(task, result)` ([language/pausing.md](../language/pausing.md)).
 
-**Host side:**
-```rask
-vm.register_extern_func("move_to", |ctx| {
-    let entity_ref = try ctx.arg_extern(0)  // Enemy reference
-    let target = try ctx.arg_struct(1)       // Vec2 struct
-    // host logic...
-})
+A handler, getter, setter or undo can't call back into the VM: a `vm.call` or `vm.resume` while one is running is a `HostError`.
 
-vm.register_extern_func("noise", |ctx| {
-    let quality = try ctx.arg_number(0)
-    let id = try ctx.arg_int(1)
-    let index = try ctx.arg_int(2)
-    return raido.Value.float(compute_noise(quality, id, index))
-})
-```
-
-Same load-time checking: if a declared `extern func` isn't registered, `vm.load()` fails.
-
-## Binding Helpers
-
-The `raido.bind` helper library reduces boilerplate for mapping host data to extern structs:
-
-```rask
-import raido.bind
-
-// Bind a pool -- each handle becomes an extern struct reference
-raido.bind.pool(vm, "enemies", enemies, [
-    bind.Field.int("health")
-    bind.Field.float("x")
-    bind.Field.float("y")
-])
-
-// Bind a struct directly
-raido.bind.struct(vm, "config", config)
-```
-
-`raido.bind` is a convenience library, not VM core. It generates `register_extern_struct` calls.
-
-## Memory
-
-The heap is garbage collected, invisibly to scripts ([architecture.md](architecture.md#heap)). The host has one call to make:
-
-```rask
-// Full reset between independent evaluations -- clears the heap and coroutines
-vm.reset()
-```
+**Values from the host are checked.** Every value that enters the VM is checked against the type the API declares for it before a script sees it: `vm.call` arguments against the export, a handler's result against the extern's return type, a getter's value against the field type, a resume value against the pausing function's return type. A mismatch is a `HostError`. So the script's types hold at the boundary too, whatever the host does.
 
 ## Host References
 
-A heap value the host gets back from the VM (a struct, array, string, closure or coroutine) stays alive while the host's call is in progress. To keep one after that, the host roots it, like Lua's registry:
+A heap value the host gets back from a call (a struct, array, string or closure) stays alive until the host's next call into the VM starts, and so does one the host makes with `vm.new_string`. Passed into that call, it's in a register from then on. To keep one longer, the host roots it, like Lua's registry:
 
 ```rask
-let result = try vm.call("make_plan", [])
-let plan = vm.root(result)        // stays alive and valid until unrooted
+let plan = match try vm.call("make_plan", Vec.new()) { raido.Outcome.Done(v) => v, _ => return }
+let r = try vm.root(plan)        // stays alive until unrooted
 // ... later ticks ...
-let value = vm.get(plan)
-vm.unroot(plan)
+let again = try vm.get(r)
+vm.unroot(r)
 ```
 
-Roots are what the collector and serialization start from, and they're part of the serialized state, in creation order. A heap value the host kept without rooting may be collected; in debug builds the VM detects its use and raises a host error.
+Roots are what the collector and serialization start from, and they're part of the serialized state, in creation order. A task is a root too. A root's index survives a save and load, which is how a host finds its tasks again.
 
-## Module Import Resolution
+Whether the host may still use a value is decided by reachability, never by whether the collector got to it: a value passed into a call must be reachable from a root, the last call's result, or something the host made since. Anything else is a `HostError`, collected or not, so the host can't observe the collector. A heap value carries its slot's generation, so a slot reused by a newer object is never mistaken for the old one.
 
-Scripts use `import "name" as alias`. The host resolves import names to compiled chunks via a resolver callback:
+## Modules
 
-```rask
-vm.set_import_resolver(|name: string| -> Vec<u8> or raido.Error {
-    // Resolve however you want: file lookup, content store, network fetch
-    return try content_store.get(name)
-})
-```
+A script imports others with `import "name" as alias`. The name is opaque to the VM: the host resolves names to chunks before compiling, and passes them in `library`. The compiled chunk records each import by content hash, and `vm.load` finds them in its `library` argument by hash.
 
-The resolver receives the import name string and returns the raw chunk bytes. The VM validates and loads the imported chunk. Import resolution happens during `vm.exec()` -- all imports must resolve or exec fails.
+Each chunk is loaded once per VM, keyed by hash: two names that resolve to the same chunk share one instance and one set of module variables. Load order is depth first, imports in the order they're written, each chunk after everything it imports (post-order), so a diamond `A -> B, C -> D` loads `D, B, C, A`. That order is also initializer order and serialization order.
 
-The import name is opaque to the VM. The host decides what it means: a filename, a content hash, a registry key. The import graph (names + resolved hashes) is part of the chunk's content identity.
+## Loading, Reset and Snapshots
 
-## Scoped Bindings
+`vm.load` runs every initializer of the chunk and its imports as one run: deferred calls and spawns happen only if all of them succeed, and a failed load leaves the VM as it was.
 
-Extern struct field accessors need access to host data (pools, DBs, etc). Scoped bindings provide this safely:
+`vm.reset()` clears the heap, every root (tasks included) and the queues, re-seeds the PRNG with the last seed, and runs the initializers again as one run ([architecture.md](architecture.md#memory-limit)).
 
-```rask
-try vm.with_context(|ctx| {
-    ctx.bind("enemies", enemies)  // borrow for this scope
-    ctx.call("on_update", [raido.Value.float(dt)])
-})
-// borrow released
-```
-
-Same scoped borrowing pattern -- the host binds whatever data extern struct accessors and extern funcs need. The VM doesn't care what it is.
-
-## Serialization
-
-```rask
-let bytes = vm.serialize()
-let vm2 = raido.Vm.deserialize(bytes)
-// Re-register extern structs and funcs
-// Re-bind contexts before calling
-```
-
-Format is versioned -- version header from day one. Deserialize rejects unknown versions with a clear error.
-
-Serializes: the heap reachable from root handles, in canonical order ([architecture.md](architecture.md#serialization)), PRNG state (4 x u32), fuel remaining.
-Does not serialize: host function closures (by name), host bindings (re-bound), bytecode (re-loaded).
-
-
-## Environment Configuration
-
-The host controls what's available:
-
-```rask
-let vm = raido.Vm.new(raido.Config {
-    memory_limit: 256.kilobytes(),
-    initial_fuel: 100_000,
-    max_call_depth: 256,
-    stdlib: [raido.Stdlib.math, raido.Stdlib.string],  // only these modules
-})
-```
-
-No stdlib modules loaded by default. Host opts in to what scripts can access.
-
-## Error Propagation
-
-- **Script -> Host:** `raido.ScriptError` (kind, message, stack trace).
-- **Host -> Script:** Rask errors in extern funcs become Raido runtime errors (`HostError`).
-- **In-script:** `error(msg)` raises. Scripts don't catch; absence is `T?`.
+`vm.snapshot()` writes the VM's state in canonical form ([architecture.md](architecture.md#serialization)). `Vm.restore(data, chunks, bindings)` rebuilds it, given the chunks it names by hash and fresh bindings. The config comes from the snapshot.
 
 ## Calls Are Transactions
 
-Every call the host makes into a script (`vm.call`, resuming a waiting handler) either completes or changes nothing:
+Every run of a script, from `vm.call` or `vm.resume` to the next pause or the end, is one transaction: it either commits or changes nothing. A task that pauses three times is four transactions; each pause commits what came before it, so the host can act on it while the task waits.
 
-- **Objects allocated** during the call become unreachable when it fails; the collector reclaims them.
-- **Writes to objects that existed before the call** (a coroutine's struct, a map held by a root) go into an undo log: each store records the slot's old value. On failure the log is replayed backwards. Objects allocated during the call need no logging; each object records the call it was made in, so the check is one comparison.
-- **Extern field writes** go into a write buffer. Reads within the call see the buffered value; the buffer is applied when the call returns and dropped if it fails.
-- **Extern functions with effects** (`send_message`, `spawn_unit`) are registered as deferred: their calls are queued and run after the call succeeds, in call order. Pure extern functions (`noise`, `distance`) run immediately.
+- **Objects allocated** during the run become unreachable when it fails; the collector reclaims them.
+- **Writes to objects that existed before the run** (a struct in a module variable, a map held by a root) go into an undo log. A slot is logged once per run, with the value it had when the run started; a container's first change of shape (push, remove, a new key, sort) saves the whole of it once. Module variable and cell writes are logged the same way. On failure the log is replayed newest first. Objects allocated during the run need no logging; each object records the run it was made in.
+- **Tasks.** Resuming a task logs its status and saved frames first. Saved frames are replaced as a whole at each pause, never edited, so rolling back puts the task back where it was paused.
+- **The PRNG state** is logged at its first use in the run and restored on failure.
+- **Extern field writes** go straight through the setter, after the VM reads the old value with the getter and logs it. On failure the old values are stored back, newest first.
+- **Undoable externs** have their undos queued; on failure they run, newest first.
+- **Deferred calls and spawned tasks** are queued, and reach `vm.deferred()` and `vm.spawned()` only if the run commits.
+
+A failed run leaves the VM, and a task, exactly as before it started; the host gets the error, logs it, and usually drops the task.
+
+Two things aren't rolled back: fuel spent, and `print`, which is a log (`vm.printed()` includes lines from failed runs). Both are deterministic, so replay still matches.
 
 So a mod that fails halfway through an event never leaves the world half-updated, and the host only has to log the error and carry on.

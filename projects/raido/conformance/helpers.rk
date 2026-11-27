@@ -1,0 +1,262 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Helpers for the conformance claims: building a VM from Raido source,
+// reading results as text, and reference models written straight from the
+// spec. Claims sources may hold helpers; nothing outside them can import
+// these (type.claims/CL3).
+
+import raido
+
+// The API module every claim compiles against. `ask` pauses, `note` is
+// deferred, so both are visible from outside the VM.
+const API_SOURCE: string = """
+extern pausing func ask() -> int
+extern deferred func note(x: int)
+"""
+
+func big_config() -> raido.Config {
+    return raido.Config(memory_limit: 16_000_000, fuel: 100_000_000, max_call_depth: 256, profile: raido.Profile.Normal)
+}
+
+func test_api() -> raido.Api {
+    return raido.compile_api("api.rd", API_SOURCE) catch e => panic("API module: {e.message()}")
+}
+
+// Raido source that doesn't compile is a bug in the claim, not in the
+// implementation under test, so it panics instead of failing the claim.
+func compiled(source: string) -> raido.Chunk {
+    let api = test_api()
+    return raido.compile("claim.rd", source, api, Vec.new(), raido.CompileOpts.default()) catch e => panic("claim source, line {e.line}: {e.message()}")
+}
+
+func vm_with_config(source: string, config: raido.Config) -> raido.Vm {
+    let api = test_api()
+    let chunk = compiled(source)
+    mut vm = raido.Vm.new(config, raido.Bindings.new(api))
+    vm.load(chunk, Vec.new()) catch e => panic("load: {e.message()}")
+    return vm
+}
+
+func vm_with(source: string) -> raido.Vm {
+    return vm_with_config(source, big_config())
+}
+
+// A call's result as text: the value as `tostring` writes it, "error:Kind",
+// or "paused:name".
+func call_text(mutate vm: raido.Vm, name: string, args: Vec<raido.Value>) -> string {
+    match vm.call(name, args) {
+        raido.Outcome as o => return outcome_text(mutate vm, o)
+        raido.ScriptError as e => return "error:{e.kind.name()}"
+    }
+}
+
+func outcome_text(mutate vm: raido.Vm, o: raido.Outcome) -> string {
+    match o {
+        raido.Outcome.Done(v) => return vm.show(v) catch e => "error:{e.kind.name()}"
+        raido.Outcome.Paused(_, call) => return "paused:{call.name}"
+    }
+}
+
+func int_args(a: i64, b: i64) -> Vec<raido.Value> {
+    return Vec<raido.Value>.from([raido.Value.from_int(a), raido.Value.from_int(b)])
+}
+
+func one_int(a: i64) -> Vec<raido.Value> {
+    return Vec<raido.Value>.from([raido.Value.from_int(a)])
+}
+
+// "1,2,3": how a claim hands an array of ints to Raido, which splits it.
+func joined(v: Vec<i64>) -> string {
+    mut out = ""
+    mut first = true
+    for x in v {
+        if first {
+            out = "{x}"
+            first = false
+        } else {
+            out = "{out},{x}"
+        }
+    }
+    return out
+}
+
+// "[1, 2, 3]": how `tostring` writes an array<int>.
+func shown(v: Vec<i64>) -> string {
+    mut out = "["
+    mut first = true
+    for x in v {
+        if first {
+            out = "{out}{x}"
+            first = false
+        } else {
+            out = "{out}, {x}"
+        }
+    }
+    return "{out}]"
+}
+
+// --- Reference: integer arithmetic (language/types.md, Arithmetic Rules) ---
+
+func spec_add(a: i64, b: i64) -> string {
+    let r = a.checked_add(b) ?? {
+        return "error:IntegerOverflow"
+    }
+    return "{r}"
+}
+
+func spec_sub(a: i64, b: i64) -> string {
+    let r = a.checked_sub(b) ?? {
+        return "error:IntegerOverflow"
+    }
+    return "{r}"
+}
+
+func spec_mul(a: i64, b: i64) -> string {
+    let r = a.checked_mul(b) ?? {
+        return "error:IntegerOverflow"
+    }
+    return "{r}"
+}
+
+// `//` truncates toward zero; MIN // -1 overflows.
+func spec_idiv(a: i64, b: i64) -> string {
+    if b == 0 {
+        return "error:DivisionByZero"
+    }
+    let r = a.checked_div(b) ?? {
+        return "error:IntegerOverflow"
+    }
+    return "{r}"
+}
+
+// `%` takes the dividend's sign, so a == (a // b) * b + a % b; MIN % -1 is 0.
+func spec_mod(a: i64, b: i64) -> string {
+    if b == 0 {
+        return "error:DivisionByZero"
+    }
+    if b == -1 {
+        return "0"
+    }
+    return "{a % b}"
+}
+
+// --- Reference: the merge sort (vm/architecture.md, Formal Contract) ---
+
+struct Sorted {
+    items: Vec<i64>
+    calls: i64
+}
+
+// Ordering by `key`, so equal keys show whether the sort is stable.
+func key(x: i64) -> i64 {
+    return x % 7
+}
+
+func spec_sort(v: Vec<i64>) -> Sorted {
+    mut calls: i64 = 0
+    let items = merge_sort(v, mutate calls)
+    return Sorted(items: items, calls: calls)
+}
+
+func merge_sort(v: Vec<i64>, mutate calls: i64) -> Vec<i64> {
+    let n = v.len().wrap<i64>()
+    if n <= 1 {
+        return v.clone()
+    }
+    let half = n / 2
+    mut left: Vec<i64> = Vec.new()
+    mut right: Vec<i64> = Vec.new()
+    for i in 0..n {
+        if i < half {
+            left.push(v[i])
+        } else {
+            right.push(v[i])
+        }
+    }
+    let l = merge_sort(left, mutate calls)
+    let r = merge_sort(right, mutate calls)
+    mut out: Vec<i64> = Vec.new()
+    mut i: i64 = 0
+    mut j: i64 = 0
+    let ln = l.len().wrap<i64>()
+    let rn = r.len().wrap<i64>()
+    while i < ln && j < rn {
+        // cmp(right_item, left_item): take the right one only if it goes first
+        calls = calls + 1
+        if key(r[j]) < key(l[i]) {
+            out.push(r[j])
+            j = j + 1
+        } else {
+            out.push(l[i])
+            i = i + 1
+        }
+    }
+    while i < ln {
+        out.push(l[i])
+        i = i + 1
+    }
+    while j < rn {
+        out.push(r[j])
+        j = j + 1
+    }
+    return out
+}
+
+// --- Reference: the PRNG (vm/architecture.md, PRNG) ---
+
+struct Xoshiro {
+    s0: u64
+    s1: u64
+    s2: u64
+    s3: u64
+}
+
+func splitmix(z: u64) -> u64 {
+    mut r = z
+    r = (r ^ r >> 30).wrapping_mul(0xBF58476D1CE4E5B9)
+    r = (r ^ r >> 27).wrapping_mul(0x94D049BB133111EB)
+    return r ^ r >> 31
+}
+
+func seeded(seed: i64) -> Xoshiro {
+    let z1 = seed.wrap<u64>().wrapping_add(0x9E3779B97F4A7C15)
+    let z2 = z1.wrapping_add(0x9E3779B97F4A7C15)
+    let r1 = splitmix(z1)
+    let r2 = splitmix(z2)
+    let low: u64 = 0xFFFFFFFF
+    return Xoshiro(s0: r1 & low, s1: r1 >> 32, s2: r2 & low, s3: r2 >> 32)
+}
+
+func rotl32(x: u64, k: u64) -> u64 {
+    let low: u64 = 0xFFFFFFFF
+    return (x << k | x >> 32 - k) & low
+}
+
+extend Xoshiro {
+    // xoshiro128++: one 32-bit output
+    func next(mutate self) -> u64 {
+        let low: u64 = 0xFFFFFFFF
+        let result = rotl32(self.s0 + self.s3 & low, 7) + self.s0 & low
+        let t = self.s1 << 9 & low
+        self.s2 = self.s2 ^ self.s0
+        self.s3 = self.s3 ^ self.s1
+        self.s1 = self.s1 ^ self.s2
+        self.s0 = self.s0 ^ self.s3
+        self.s2 = self.s2 ^ t
+        self.s3 = rotl32(self.s3, 11)
+        return result
+    }
+
+    // random(n): 64 bits from two outputs, rejection below a multiple of n
+    func below(mutate self, n: u64) -> u64 {
+        let rem = 0u64.wrapping_sub(n) % n
+        loop {
+            let a = self.next()
+            let b = self.next()
+            let x = a << 32 | b
+            // lim = 2^64 - rem; with rem == 0 nothing is rejected
+            if rem == 0 || x < 0u64.wrapping_sub(rem) {
+                return x % n
+            }
+        }
+    }
+}

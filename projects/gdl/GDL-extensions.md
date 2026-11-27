@@ -29,7 +29,9 @@ Client Scripts
 
 Most GDL extensions move data between server and client — observation deltas, input streams, output streams. Client scripts flip the model: instead of streaming derived state (animation changes, effect updates, sound triggers), the domain ships deterministic code and the client derives the state locally. The server stops sending "now play walk" 200 times per second and instead sends the velocity property. The client's script decides the animation.
 
-This works because [Raido](../raido/) is deterministic by design. Fixed-point arithmetic, no floating-point drift, content-addressed bytecode. The domain can verify any client output by re-running the same script with the same inputs. Identical inputs + identical code = identical output, bitwise, on every platform.
+This works because [Raido](../raido/) is deterministic by design. Its floats follow a strict profile (no fused multiply-add, correctly rounded math functions, no NaN), so they give the same bits everywhere, and bytecode is content-addressed and verified before it runs. The domain can verify any client output by re-running the same script with the same inputs. Identical inputs + identical code = identical output, bitwise, on every platform.
+
+The cost lands on the client: its Raido needs correctly rounded `sin`, `cos`, `exp` and the rest, on every platform it ships to, WASM and mobile included. Platform `libm` doesn't promise that.
 
 **Entity scripts**
 
@@ -99,6 +101,8 @@ time.wall	All scripts	Wall-clock time from domain (float seconds since epoch)
 
 Scripts cannot read other entities, call affordances, access the network, or mutate authoritative state. They read properties the server sends and produce derived visual/audio/physics state.
 
+A client script is compiled in Raido's [pure profile](../raido/vm/architecture.md#profiles), since the domain may re-run it, and the client refuses one that isn't: no state between frames, no pausing, spawning or deferred effects, no hidden randomness. That's what keeps a frame's output a function of that frame's inputs, so the client can run every frame through one VM without a reset.
+
 Outputs (per category):
 
 The script's return value is interpreted according to its category. An animation script returns a string or layered list. An effects script returns an array of effect descriptors. A sound script returns an array of sound triggers. The output types match what GDL already defines for these concepts.
@@ -114,9 +118,9 @@ noise_2d(x, y, seed)	(float, float, int) → float	2D simplex/perlin noise (dete
 noise_3d(x, y, z, seed)	(float, float, float, int) → float	3D noise
 distance(x1, y1, x2, y2)	(float, float, float, float) → float	2D distance
 distance_3d(x1, y1, z1, x2, y2, z2)	(float × 6) → float	3D distance
-lerp(a, b, t)	(float, float, float) → float	Linear interpolation
-clamp(v, min, max)	(float, float, float) → float	Clamp value to range
-random(seed)	(int) → float	Deterministic PRNG (0.0–1.0)
+hash_unit(seed)	(int) → float	Deterministic value in [0, 1) from a seed
+
+`lerp`, `clamp`, `sqrt` and the trigonometry are already in Raido's standard library, and a script can't declare a name the standard library uses, so the client doesn't provide them. `hash_unit` is a pure function of its seed, unlike Raido's `random()`, which advances state the script would then carry between frames.
 
 These are the math primitives that scripts need but shouldn't implement in interpreted bytecode. The client runs them at native speed. They're all deterministic — same inputs, same output — so they don't break the verification guarantee.
 
@@ -124,7 +128,7 @@ The host function list is extensible through fidelity. A client can declare addi
 
 client_fidelity:
   scripts: true
-  script_host_functions: [noise_2d, noise_3d, distance, lerp, clamp, random, physics_step, raycast]
+  script_host_functions: [noise_2d, noise_3d, distance, hash_unit, physics_step, raycast]
 
 A domain that uses `raycast` in its scripts only works with clients that declare it. A domain that sticks to the standard set works everywhere.
 
@@ -134,7 +138,7 @@ Client scripts run per-entity per-frame. Resource limits prevent a malicious or 
 
 Limit	Default	Behavior when exceeded
 Fuel (instructions per frame)	10,000 per entity script	Script halted, falls back to server-driven state
-Arena (memory)	64 KB per entity script	Script halted, falls back
+Memory (reachable heap)	64 KB per entity script	Script halted, falls back
 Call depth	64	Script halted, falls back
 
 These are Raido's existing resource limits — not a new mechanism. The client sets the budget per script invocation. A script that exceeds it is killed and the client falls back to the server-driven model for that entity. The entity still renders — it just gets animation states from observation deltas instead of local computation.
@@ -143,7 +147,7 @@ Region scripts get higher budgets (they run once per frame, not per-entity):
 
 Limit	Default
 Fuel	100,000 per frame
-Arena	256 KB
+Memory	256 KB
 Call depth	128
 
 Clients can adjust these based on hardware. A mobile client might halve the fuel budget. A desktop VR client might double it.
@@ -156,7 +160,7 @@ The verification model has three levels, applied at the domain's discretion:
 
 1. **No verification.** The domain trusts the client for purely cosmetic scripts (animation, effects, sound). If the client cheats on animation state, it only hurts its own rendering. Most scripts fall here — the domain doesn't care if a goblin's walk cycle is wrong on one client.
 
-2. **Spot-check verification.** For prediction scripts (movement, physics), the domain periodically re-runs the script with the same inputs and compares the client's reported state. If they diverge, the domain sends an authoritative correction. The check interval is the domain's choice — every 500ms, every 5 seconds, on suspicious behavior. This is the same model every multiplayer game uses for anti-cheat, but with a mathematical guarantee: Raido's determinism means honest clients ALWAYS match.
+2. **Spot-check verification.** For prediction scripts (movement, physics), the domain periodically re-runs the script with the same inputs and the same budgets the client used, and compares the client's reported state. The budgets matter because running out of fuel or memory is a result too: a client that halved its fuel and halted got a different answer, honestly. If they diverge, the domain sends an authoritative correction. The check interval is the domain's choice — every 500ms, every 5 seconds, on suspicious behavior. This is the same model every multiplayer game uses for anti-cheat, but with a mathematical guarantee: Raido's determinism means honest clients ALWAYS match.
 
 3. **Full verification.** For high-stakes state (competitive games, economic transactions), the domain runs every frame server-side and compares. This is equivalent to the current server-driven model in computation cost, but the client still gets zero-latency local execution. The verification catches cheating without adding latency to the honest path.
 
@@ -174,7 +178,7 @@ This is the same progressive enhancement pattern as everything else in GDL. Scri
 
 Scripts are content-addressed. When the domain deploys new logic, the entity's `scripts` field changes through a normal `entity_update` delta — the hash changes, the client fetches the new bytecode from Leden's content store. Same mechanism as any property change. No special update protocol.
 
-Region scripts update through the observation stream as region field changes. The client sees a new hash, fetches the new bytecode, and starts executing it next frame. The old script's state is discarded — Raido scripts are stateless between frames (they're pure functions of properties and time).
+Region scripts update through the observation stream as region field changes. The client sees a new hash, fetches the new bytecode, and starts executing it next frame. Nothing carries over from the old script: client scripts are stateless between frames (pure functions of properties and time), which the pure profile guarantees.
 
 Script updates are rare — they represent logic changes (a domain patch, a new ability), not data changes. Data flows through entity properties. Logic flows through script bytecode. Different cadences, same delivery mechanism.
 

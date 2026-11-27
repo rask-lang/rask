@@ -47,12 +47,33 @@ is_known_fail() {
         | grep -qxF "$1"
 }
 
+# Shared claims sources (type.claims/W2), one directory per line. A claim
+# can only be checked through a package that lists it under [claims], so a
+# file in one of these has nothing to check on its own and is skipped here.
+CLAIMS_SOURCES="$ROOT/tests/claims_sources.txt"
+is_claims_source() {
+    [ -f "$CLAIMS_SOURCES" ] || return 1
+    local dir
+    while IFS= read -r line; do
+        dir="${line%%#*}"
+        dir="$(echo "$dir" | tr -d '[:space:]')"
+        [ -n "$dir" ] || continue
+        case "$1" in "$dir"/*) return 0 ;; esac
+    done < "$CLAIMS_SOURCES"
+    return 1
+}
+
 fails=0
 ok=0
 known=0
+claims_skipped=0
 
 for f in $(find "$PROJECTS_DIR" -name '*.rk' | sort); do
     rel="${f#"$ROOT"/}"
+    if is_claims_source "$rel"; then
+        claims_skipped=$((claims_skipped + 1))
+        continue
+    fi
     out=$("$RASK" check "$f" 2>&1)
     status=$?
     if [ "$status" -eq 0 ]; then
@@ -129,5 +150,5 @@ if [ -f "$RUNS_FILE" ]; then
 fi
 
 echo "──────────────────────────────────────────────────"
-echo "projects gate: $ok ok, $fails failed, $known known-fail, $ran run on both backends"
+echo "projects gate: $ok ok, $fails failed, $known known-fail, $claims_skipped in claims sources, $ran run on both backends"
 [ "$fails" -eq 0 ]

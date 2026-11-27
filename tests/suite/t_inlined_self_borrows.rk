@@ -1,0 +1,81 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// An inlined method borrows its receiver; it never owns it (#1747).
+//
+// Inlining bound the callee's `self` to a fresh local. For a receiver that is a
+// field (`o.inner.get(1)`) the local was copied from the field's address and
+// counted as a new owner, so it freed `o.inner` when the inlined body ended.
+// For a receiver that is a local (`s.has(1)`) codegen copies the whole struct
+// into the fresh local and ownership moved to the copy; a later `reset` that
+// replaced a map in `s` left the copy holding the old one, which was then
+// freed a second time.
+
+enum Oops {
+    Range
+}
+
+extend Oops {
+    func message(self) -> string {
+        return "out of range"
+    }
+}
+
+struct Inner {
+    items: Vec<i64>
+}
+
+struct Outer {
+    id: i64
+    inner: Inner
+}
+
+extend Inner {
+    func doubled(self, v: i64) -> i64 {
+        return v * 2 + self.items.len().wrap<i64>()
+    }
+
+    func get(self, i: i64) -> i64 or Oops {
+        if i < 0 || i >= self.items.len().wrap<i64>() {
+            return Oops.Range
+        }
+        let v = self.items[i]
+        return self.doubled(v)
+    }
+}
+
+struct Store {
+    seen: Map<string, bool>
+    count: i64
+}
+
+extend Store {
+    func key(self, i: i64) -> string {
+        return "k{i}"
+    }
+
+    func has(self, i: i64) -> bool {
+        return self.seen.contains(self.key(i))
+    }
+
+    func reset(mutate self) {
+        self.seen = Map.new()
+        self.count = self.count + 1
+    }
+}
+
+test "a method called on a field leaves the field alone" {
+    mut o = Outer(id: 1, inner: Inner(items: Vec<i64>.from([10, 20, 30])))
+    let x = o.inner.get(1) catch e => panic(e.message())
+    assert x == 43
+    assert o.inner.items.len() == 3
+    assert o.inner.items[2] == 30
+}
+
+test "a method called on a local doesn't take it over" {
+    mut s = Store(seen: Map.new(), count: 0)
+    s.seen.insert(s.key(1), true)
+    assert s.has(1)
+    s.reset()
+    s.seen.insert(s.key(2), true)
+    assert s.seen.len() == 1
+    assert s.count == 1
+}
