@@ -506,8 +506,7 @@ impl ToDiagnostic for crate::OwnershipError {
                     LinearWildcardDiscard { .. } | ResourceDiscardedAsStatement { .. } => {
                         "throws a value away with `_`".to_string()
                     }
-                    ResourceAlreadyConsumed { name, .. }
-                    | UseAfterMove { name, .. }
+                    UseAfterMove { name, .. }
                     | UseAfterMaybeMove { name, .. } => format!("uses `{}` after giving it away", name),
                     _ => "does something to it a linear value can't take".to_string(),
                 };
@@ -841,14 +840,6 @@ impl ToDiagnostic for crate::OwnershipError {
                 .with_why("concurrent read and write access to the same value would be a data race")
             }
 
-            ResourceAlreadyConsumed { name, consumed_at } => {
-                Diagnostic::error(format!("resource `{}` already consumed", name))
-                    .with_code("E0807")
-                    .with_primary(self.span, "second use here")
-                    .with_secondary(*consumed_at, "resource consumed here")
-                    .with_why("resources must be consumed exactly once")
-            }
-
             MutateWhileBorrowed { name, borrow_span } => {
                 Diagnostic::error(format!(
                     "`{}` cannot be changed while it's being read",
@@ -859,30 +850,6 @@ impl ToDiagnostic for crate::OwnershipError {
                 .with_secondary(*borrow_span, "borrow is active here")
                 .with_help(format!("restructure so the borrow ends before mutating, or use `{}.clone()` to work on an independent copy", name))
                 .with_why("mutation during an active borrow could invalidate the borrow's view of the data")
-            }
-
-            InstantBorrowEscapes { source_type } => {
-                Diagnostic::error(format!(
-                    "cannot store reference from `{}`",
-                    source_type
-                ))
-                .with_code("E0803")
-                .with_primary(self.span, "reference would escape")
-                .with_help("use the value inline or copy it out")
-                .with_fix("use the value inline or copy it out")
-                .with_why("collection element references are expression-scoped — they can't outlive the access expression")
-            }
-
-            BorrowEscapes { name } => {
-                Diagnostic::error(format!(
-                    "`{}` would become invalid after this point",
-                    name
-                ))
-                .with_code("E0804")
-                .with_primary(self.span, "borrow would escape scope")
-                .with_help("ensure the value lives long enough, or clone it")
-                .with_fix("ensure the value lives long enough, or clone it")
-                .with_why("references cannot outlive their source — Rask prevents dangling references by construction")
             }
 
             LocalSharedSent { name } => {

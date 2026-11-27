@@ -1,0 +1,30 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: a bare literal that two conformances could take
+//
+// `i64` and `i32` can both multiply a `Tick`, so `3 * tick` doesn't say which
+// one `3` is. A suffix or an annotated binding picks.
+
+struct Tick {
+    n: i64
+}
+
+i64 implements Mul<Tick> {
+    type Out = Tick
+    func mul(self, t: Tick) -> Tick {
+        return Tick(n: self * t.n)
+    }
+}
+
+i32 implements Mul<Tick> {
+    type Out = Tick
+    func mul(self, t: Tick) -> Tick {
+        return Tick(n: (self as i64) * t.n)
+    }
+}
+
+func main() {
+    let tick = Tick(n: 2)
+    let fine = 3i64 * tick
+    // ERROR: `3` could be an `i64` or an `i32` here [E0895]
+    let which = 3 * tick
+}

@@ -1,0 +1,34 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: a `Self`-returning method called through `any Interface`
+//
+// `any Shape` has erased the concrete type, and `scaled` returns that type.
+// The caller would have nowhere to put the result. The same call on the
+// concrete type is fine.
+
+interface Shape {
+    func area(self) -> f64
+    func scaled(self, k: f64) -> Self
+}
+
+struct Circle {
+    r: f64
+}
+
+Circle implements Shape {
+    func area(self) -> f64 {
+        return self.r * self.r * 3.14
+    }
+
+    func scaled(self, k: f64) -> Circle {
+        return Circle(r: self.r * k)
+    }
+}
+
+func main() {
+    let c = Circle(r: 1.0)
+    println(c.scaled(2.0).area())
+    let s: any Shape = Circle(r: 1.0)
+    println(s.area())
+    // ERROR: what type would `bigger` be? [E0332]
+    let bigger = s.scaled(2.0)
+}

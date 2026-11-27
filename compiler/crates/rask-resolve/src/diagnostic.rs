@@ -266,15 +266,6 @@ impl ToDiagnostic for crate::ResolveError {
                 )
             }
 
-            NotVisible { name } => {
-                Diagnostic::error(format!("`{}` is not public", name))
-                    .with_code("E0203")
-                    .with_primary(self.span, "not visible from this scope")
-                    .with_help("mark the item as `public` to make it accessible")
-                    .with_fix(format!("mark `{}` as `public`, or access it from the defining module", name))
-                    .with_why("items are private by default — only `public` items are accessible from other modules")
-            }
-
             ShadowsImport { name, module } => {
                 // Naming the module the name came from is the difference between
                 // a fix the reader can apply and a hunt through their import
@@ -303,18 +294,6 @@ impl ToDiagnostic for crate::ResolveError {
                         .with_help("rename your declaration, or alias the import")
                         .with_fix(format!("import pkg.{} as Other{}", name, name)),
                 }
-            }
-
-            CircularDependency { path } => {
-                Diagnostic::error(format!(
-                    "circular import: {}",
-                    path.join(" -> ")
-                ))
-                .with_code("E0202")
-                .with_primary(self.span, "cycle detected here")
-                .with_help("break the cycle by restructuring imports or extracting shared types")
-                .with_fix("extract shared types into a separate module to break the cycle")
-                .with_why("circular imports create unresolvable dependencies — restructure into a DAG")
             }
 
             ConflictingExtern { name, previous, current, previous_span: _ } => {

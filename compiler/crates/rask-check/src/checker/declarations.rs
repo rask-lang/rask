@@ -2296,6 +2296,7 @@ impl TypeChecker {
                 cycle: path.join(" → "),
                 span,
             });
+            self.types.register_cyclic_alias(a.name.clone());
             return;
         }
         let params = a.type_params.iter().map(|p| p.name.clone()).collect();

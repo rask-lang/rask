@@ -114,13 +114,6 @@ impl ResolveError {
         }
     }
 
-    pub fn not_visible(name: String, span: Span) -> Self {
-        Self {
-            kind: ResolveErrorKind::NotVisible { name },
-            span,
-        }
-    }
-
     /// IM8. `module` is the stdlib module the name came from when one owns it,
     /// so the message can say which import to alias instead of leaving the
     /// reader to search their import list.
@@ -139,13 +132,6 @@ impl ResolveError {
     ) -> Self {
         Self {
             kind: ResolveErrorKind::NoSuchStdlibExport { module, symbol, suggestion },
-            span,
-        }
-    }
-
-    pub fn circular_dependency(path: Vec<String>, span: Span) -> Self {
-        Self {
-            kind: ResolveErrorKind::CircularDependency { path },
             span,
         }
     }
@@ -269,14 +255,8 @@ pub enum ResolveErrorKind {
     #[error("`{name}` is a `scope \"{scope}\"` dependency and this build doesn't link it")]
     ScopedDependencyUse { name: String, scope: String },
 
-    #[error("`{name}` is not public and cannot be accessed from this package")]
-    NotVisible { name: String },
-
     #[error("cannot define `{name}` because it shadows an imported name; consider using a different name or aliasing the import")]
     ShadowsImport { name: String, module: Option<String> },
-
-    #[error("circular import dependency detected: {}", path.join(" -> "))]
-    CircularDependency { path: Vec<String> },
 
     #[error("cannot define `{name}` because it shadows a built-in; built-in types and functions cannot be redefined")]
     ShadowsBuiltin { name: String },

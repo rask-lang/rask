@@ -213,6 +213,10 @@ pub struct TypeTable {
     pub(crate) stdlib_mode: bool,
     /// Built-in type names mapped to Type.
     pub(super) builtins: HashMap<String, Type>,
+    /// Aliases that were rejected as part of a cycle (E0395). The name still
+    /// exists as far as the program can tell, so a use of it is `Error`
+    /// rather than an unknown type: the cycle is the one thing to report.
+    cyclic_aliases: HashSet<String>,
     /// Type alias name → target, as program code reads them: the program's
     /// own aliases and imports, then the stdlib's.
     type_aliases: HashMap<String, Alias>,
@@ -358,6 +362,7 @@ impl TypeTable {
             declared_names: HashMap::new(),
             stdlib_mode: false,
             builtins: HashMap::new(),
+            cyclic_aliases: HashSet::new(),
             type_aliases: HashMap::new(),
             stdlib_aliases: HashMap::new(),
             type_param_scope: Vec::new(),
@@ -777,6 +782,12 @@ impl TypeTable {
     /// Scoped like a declared type: a stdlib alias is the stdlib's and, unless
     /// the program takes the name, the program's too; a program alias is the
     /// program's only.
+    /// Record an alias rejected for closing a cycle, so its uses read as
+    /// already reported.
+    pub fn register_cyclic_alias(&mut self, name: String) {
+        self.cyclic_aliases.insert(name);
+    }
+
     pub fn register_alias(&mut self, name: String, params: Vec<String>, target: TypeExpr) {
         let alias = Alias { params, target };
         if self.stdlib_mode {
@@ -864,6 +875,9 @@ impl TypeTable {
     pub fn lookup(&self, name: &str) -> Option<Type> {
         if let Some(ty) = self.builtins.get(name) {
             return Some(ty.clone());
+        }
+        if self.cyclic_aliases.contains(name) {
+            return Some(Type::Error);
         }
         if let Some(target) = self.alias_target(name) {
             return super::parse_type::resolve_type_expr(target, self).ok();

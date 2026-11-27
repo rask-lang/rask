@@ -329,18 +329,6 @@ pub enum OwnershipErrorKind {
         borrow_span: Span,
     },
 
-    /// Trying to store a reference from a collection (Vec, Map).
-    #[error("cannot store reference from {source_type} - use inline or copy out the value")]
-    InstantBorrowEscapes {
-        source_type: String,
-    },
-
-    /// Trying to return or store a reference that would become invalid.
-    #[error("`{name}` would become invalid after this point")]
-    BorrowEscapes {
-        name: String,
-    },
-
     /// S5: `p.f` written over while `name`, a view of it, is still in scope.
     #[error("`{path}` written over while `{name}` views it")]
     ViewOutlivedReplace {
@@ -676,13 +664,6 @@ pub enum OwnershipErrorKind {
         /// Where the ensure was scheduled.
         ensure_at: Span,
         /// One branch's consumption site.
-        consumed_at: Span,
-    },
-
-    /// Resource consumed more than once.
-    #[error("resource `{name}` already consumed")]
-    ResourceAlreadyConsumed {
-        name: String,
         consumed_at: Span,
     },
 

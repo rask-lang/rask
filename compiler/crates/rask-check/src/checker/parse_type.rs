@@ -68,7 +68,19 @@ pub fn resolve_type_expr(ty: &TypeExpr, types: &TypeTable) -> Result<Type, TypeE
         TypeExpr::NoneType => Ok(Type::None),
         TypeExpr::NoReturn => Ok(Type::Never),
         TypeExpr::Union(parts) => {
-            Ok(Type::union_named(resolve_all(parts)?, |id| Some(types.type_name(id))))
+            let members = resolve_all(parts)?;
+            // U5: the canonical union dedups its members, so a repeat has to
+            // be caught while the written list is still here. `A | A` would
+            // otherwise quietly become `A`.
+            if let Some(i) = (1..members.len()).find(|&i| members[..i].contains(&members[i])) {
+                let variant = members[i].clone();
+                return Err(TypeError::DuplicateSumVariant {
+                    ty: Type::union_named(members, |id| Some(types.type_name(id))),
+                    variant,
+                    span: Span::new(0, 0),
+                });
+            }
+            Ok(Type::union_named(members, |id| Some(types.type_name(id))))
         }
         TypeExpr::Optional(inner) => Ok(Type::option(resolve_type_expr(inner, types)?)),
         TypeExpr::Result { ok, err } => Ok(Type::Result {

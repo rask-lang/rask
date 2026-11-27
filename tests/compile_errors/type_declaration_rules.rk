@@ -1,0 +1,52 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: type declarations that can't stand
+//
+// An alias that names itself through another alias has no type at the bottom.
+// A field and a method with one name make `h.run` mean two things. A primitive
+// takes conformances, not methods of its own. A result's two sides have to be
+// different types, and an error union can't name one error twice.
+
+// ERROR: `Ping` and `Pong` name each other [E0395]
+type alias Ping = Pong
+type alias Pong = Ping
+
+struct Handler {
+    run: i64
+}
+
+extend Handler {
+    // ERROR: `run` is already a field [E0403]
+    func run(self) -> i64 {
+        return 1
+    }
+}
+
+extend f64 {
+    // ERROR: an inherent method on a primitive [E0892]
+    func doubled(self) -> f64 {
+        return self * 2.0
+    }
+}
+
+struct ParseError {
+    at: i64
+}
+
+extend ParseError {
+    func message(self) -> string {
+        return "parse"
+    }
+}
+
+// ERROR: `ParseError` is in the union twice [E0354]
+func twice() -> i64 or (ParseError | ParseError) {
+    return 1
+}
+
+// ERROR: both sides are `ParseError` [E0343]
+func same() -> ParseError or ParseError {
+    return ParseError(at: 0)
+}
+
+func main() {
+}

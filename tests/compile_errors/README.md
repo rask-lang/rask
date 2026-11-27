@@ -307,6 +307,20 @@ go down.
 | [list_leading_operator.rk](list_leading_operator.rk) | A list item that starts with `-` on a new line (SYNTAX.md, Lists). A newline separates items, so `1` then `- 2` would quietly be two arguments; the fix is the operator at the end of the line above, or a comma |
 | [container_turbofish.rk](container_turbofish.rk) | `Vec.new<string>()` followed by a push of the wrong type (#1084) — the written type argument used to be dropped, so the binding stayed open and widened instead |
 | [context_on_entry_point.rk](context_on_entry_point.rk) | A `using` clause on the entry point (CC11, E0831) — nothing can supply the hidden param, so it used to run on garbage (#732) |
+| [unterminated_string.rk](unterminated_string.rk) | A string whose closing quote never comes (E0002). It used to be reported as a stray `"` character |
+| [unterminated_block_comment.rk](unterminated_block_comment.rk) | A `/*` comment still open at the end of the file, nested comments included (E0006). It used to surface as a missing `}` |
+| [call_on_a_value.rk](call_on_a_value.rk) | `n(3)` on an `i64`, `s()` on a string (E0311). The result type was left unsolved and the error came later or not at all |
+| [range_step_rules.rk](range_step_rules.rk) | `(0..10).step(0)` (E0337). The check looked for the range's type before the checker resolved it, so it never fired |
+| [call_site_markers_and_strategies.rk](call_site_markers_and_strategies.rk) | A `deleting` parameter called with `mutate` (E0330), a `Local` `Shared` where `Readers` is expected (E0381), and `using` an unknown context (E0342) |
+| [optional_operators.rk](optional_operators.rk) | `!x` on a `bool?` (E0830), and `else as e` on an optional, which has no error to bind (E0397) |
+| [interface_object_self.rk](interface_object_self.rk) | A `Self`-returning method called through `any Shape` (E0332); the same call on the concrete type is fine |
+| [union_rules.rk](union_rules.rk) | A `union` member that owns memory (E0934), and a union built from two members at once (E0938) |
+| [literal_operand_ambiguous.rk](literal_operand_ambiguous.rk) | `3 * tick` when both `i64` and `i32` multiply a `Tick` (E0895); a suffix picks one |
+| [enum_discriminants.rk](enum_discriminants.rk) | Explicit discriminants: some variants state one and some don't (E0391), a payload variant claims a number (E0393), two variants share one (E0394) |
+| [public_signature_contract.rk](public_signature_contract.rk) | A public function whose parameter types (E0334) or error types (E0390, `_`) are left to inference; a public signature is what callers read |
+| [type_declaration_rules.rk](type_declaration_rules.rk) | Aliases that name each other (E0395, with no unknown-type cascade after it), a method named like a field (E0403), an inherent method on a primitive (E0892), an error union naming one error twice (E0354: `A | A` used to be quietly shortened to `A`), `A or A` (E0343) |
+| [foreign_wrapper_spellings.rk](foreign_wrapper_spellings.rk) | `Some(x)` as a call (E0348), `Ok(v)` as a pattern (E0350), `??` on a result (E0364), `catch` on an optional (E0363), `take` on a `let` (E0366) |
+| [function_body_rules.rk](function_body_rules.rk) | A body whose last expression is dropped instead of returned (E0318), `+` on strings (E0335), `try` in a constant (E0317) |
 
 ## Running Tests
 

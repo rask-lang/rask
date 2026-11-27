@@ -1,0 +1,28 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: enum discriminants that don't add up
+//
+// An explicit discriminant is a promise about the enum's numbers. Either every
+// variant states one or none does, a variant with a payload has no single
+// number to state, and two variants can't share one.
+
+// ERROR: `NotFound` gets its number from its position, the others state theirs [E0391]
+enum Status {
+    Ok = 200
+    NotFound
+    Error = 500
+}
+
+// ERROR: `Data` carries a payload and claims a number [E0393]
+enum Msg {
+    Ping = 1
+    Data(i64) = 2
+}
+
+// ERROR: `Ok` and `Done` are both 0 [E0394]
+enum Code {
+    Ok = 0
+    Done = 0
+}
+
+func main() {
+}

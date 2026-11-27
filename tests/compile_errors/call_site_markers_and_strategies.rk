@@ -1,0 +1,45 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: a call site that says the wrong thing about its argument
+//
+// A `deleting` parameter can free nodes the caller never named, so the call
+// says `deleting`, not `mutate`. A `Shared`'s strategy is part of its type:
+// a task-local box doesn't fit a parameter that expects the default `Readers`
+// one. `using` names a runtime context that exists.
+
+import memory.Rack
+import sync.Shared
+
+struct Node {
+    v: i64
+}
+
+func prune(deleting r: Rack<Node>) {
+    r.clear()
+}
+
+func pruned() {
+    mut r: Rack<Node> = Rack.new()
+    r.insert(Node(v: 1))
+    // ERROR: `prune` can delete from `r`, and the call says only `mutate` [E0330]
+    prune(mutate r)
+}
+
+func bump(c: Shared<i64>) -> i64 {
+    return with c.read() as v { v + 1 }
+}
+
+func strategies() {
+    let c = Shared.local(0)
+    // ERROR: a `Local` box where a `Readers` one is expected [E0381]
+    println(bump(c))
+}
+
+func contexts() {
+    // ERROR: there is no runtime context called `Workers` [E0342]
+    using Workers {
+        println("x")
+    }
+}
+
+func main() {
+}

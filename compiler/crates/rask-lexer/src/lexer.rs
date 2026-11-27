@@ -5,8 +5,20 @@ use logos::Logos;
 use rask_ast::token::{FloatSuffix, IntSuffix, StrPositions, Token, TokenKind};
 use rask_ast::Span;
 
+/// Why logos couldn't make a token. Anything no rule matches is `Unexpected`;
+/// the two scanners that run to end of input say so, so an unclosed string
+/// isn't reported as a stray quote.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+enum RawError {
+    #[default]
+    Unexpected,
+    UnterminatedString,
+    UnterminatedComment,
+}
+
 /// Raw token type for logos - we parse values in a second pass.
 #[derive(Logos, Debug, Clone, PartialEq)]
+#[logos(error = RawError)]
 #[logos(skip r"[ \t]+")]  // Skip horizontal whitespace (not newlines)
 enum RawToken {
     // === Keywords ===
@@ -327,7 +339,7 @@ fn parse_hex_bytes(inner: &str, base: usize) -> Result<Vec<u8>, LexError> {
 /// Lex a raw hash string: r#"..."#, r##"..."##, etc.
 /// The `r#` prefix is already consumed by logos. We count additional `#` chars,
 /// expect `"`, then scan for the matching `"` + same number of `#`.
-fn raw_hash_string(lexer: &mut logos::Lexer<RawToken>) -> bool {
+fn raw_hash_string(lexer: &mut logos::Lexer<RawToken>) -> Result<(), RawError> {
     let bytes = lexer.remainder().as_bytes();
     let mut pos = 0;
 
@@ -340,7 +352,7 @@ fn raw_hash_string(lexer: &mut logos::Lexer<RawToken>) -> bool {
 
     // Expect opening "
     if pos >= bytes.len() || bytes[pos] != b'"' {
-        return false;
+        return Err(RawError::Unexpected);
     }
     pos += 1;
 
@@ -357,13 +369,25 @@ fn raw_hash_string(lexer: &mut logos::Lexer<RawToken>) -> bool {
             if count == hash_count {
                 pos += 1 + hash_count; // skip " and all #s
                 lexer.bump(pos);
-                return true;
+                return Ok(());
             }
         }
         pos += 1;
     }
 
-    false
+    Err(RawError::UnterminatedString)
+}
+
+/// The delimiter a string starting at `rest` opened with: `"`, `"""` or `r#…#"`.
+fn string_opener(rest: &str) -> &str {
+    if rest.starts_with("\"\"\"") {
+        return &rest[..3];
+    }
+    if rest.starts_with("r#") {
+        let hashes = rest[1..].bytes().take_while(|&b| b == b'#').count();
+        return &rest[..2 + hashes];
+    }
+    &rest[..1]
 }
 
 /// Scan a double-quoted string; the opening `"` is already consumed.
@@ -379,7 +403,7 @@ fn raw_hash_string(lexer: &mut logos::Lexer<RawToken>) -> bool {
 /// string on the same line and the hole it is reading has something in it
 /// before the quote. Otherwise the scan restarts with the old rule: stop at
 /// the first unescaped quote.
-fn double_quoted_string(lexer: &mut logos::Lexer<RawToken>) -> bool {
+fn double_quoted_string(lexer: &mut logos::Lexer<RawToken>) -> Result<(), RawError> {
     let bytes = lexer.remainder().as_bytes();
 
     let len = if bytes.starts_with(b"\"\"") {
@@ -391,9 +415,9 @@ fn double_quoted_string(lexer: &mut logos::Lexer<RawToken>) -> bool {
     match len {
         Some(n) => {
             lexer.bump(n);
-            true
+            Ok(())
         }
-        None => false,
+        None => Err(RawError::UnterminatedString),
     }
 }
 
@@ -497,7 +521,7 @@ fn skip_nested_string(bytes: &[u8], pos: usize) -> Option<usize> {
 }
 
 /// Skip block comments, handling nesting.
-fn block_comment(lexer: &mut logos::Lexer<RawToken>) -> logos::Skip {
+fn block_comment(lexer: &mut logos::Lexer<RawToken>) -> logos::FilterResult<(), RawError> {
     let mut depth = 1;
     let remainder = lexer.remainder();
     let mut chars = remainder.chars().peekable();
@@ -518,12 +542,15 @@ fn block_comment(lexer: &mut logos::Lexer<RawToken>) -> logos::Skip {
             Some(c) => {
                 consumed += c.len_utf8();
             }
-            None => break, // Unterminated - we'll handle error elsewhere
+            None => {
+                lexer.bump(consumed);
+                return logos::FilterResult::Error(RawError::UnterminatedComment);
+            }
         }
     }
 
     lexer.bump(consumed);
-    logos::Skip
+    logos::FilterResult::Skip
 }
 
 /// Maximum number of errors to collect before stopping.
@@ -590,11 +617,20 @@ impl<'a> Lexer<'a> {
                         }
                     }
                 }
-                Err(()) => {
-                    // Get the problematic character
+                Err(RawError::Unexpected) => {
                     let ch = self.source[span.start..].chars().next().unwrap_or('?');
                     self.errors.push(LexError::unexpected_char(ch, span.start));
-                    continue; // Skip and continue
+                    continue;
+                }
+                // Both run to end of input, so nothing follows to recover.
+                Err(RawError::UnterminatedString) => {
+                    let rest = &self.source[span.start..];
+                    self.errors.push(LexError::unterminated_string(span.start, string_opener(rest)));
+                    break;
+                }
+                Err(RawError::UnterminatedComment) => {
+                    self.errors.push(LexError::unterminated_comment(span.start));
+                    break;
                 }
             };
 
@@ -1047,6 +1083,34 @@ impl LexError {
             code: "E0001",
             label: "unexpected character",
             why: "the lexer expected a valid token at this position",
+        }
+    }
+
+    fn unterminated_string(start: usize, opener: &str) -> Self {
+        // `r##"` closes with `"##`, `"""` with `"""`, a plain `"` with `"`.
+        let close: String = if opener.starts_with('r') {
+            std::iter::once('"').chain(opener.chars().filter(|&c| c == '#')).collect()
+        } else {
+            opener.to_string()
+        };
+        Self {
+            span: Span::new(start, start + opener.len()),
+            message: "string literal never closed".to_string(),
+            hint: Some(format!("end the string with `{close}`; a quote inside one is written `\\\"`")),
+            code: "E0002",
+            label: "this string runs to the end of the file",
+            why: "everything after an opening quote is text until the matching closing quote",
+        }
+    }
+
+    fn unterminated_comment(start: usize) -> Self {
+        Self {
+            span: Span::new(start, start + 2),
+            message: "block comment never closed".to_string(),
+            hint: Some("end it with `*/`; block comments nest, so each `/*` inside needs its own `*/`".to_string()),
+            code: "E0006",
+            label: "this comment runs to the end of the file",
+            why: "everything after `/*` is comment until its matching `*/`",
         }
     }
 

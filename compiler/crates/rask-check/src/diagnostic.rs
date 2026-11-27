@@ -309,13 +309,6 @@ impl ToDiagnostic for crate::TypeError {
                 ))
             }
 
-            Undefined(name) => Diagnostic::error(format!("undefined type: `{}`", name))
-                .with_code("E0309")
-                .with_primary(Span::new(0, 0), "type not found")
-                .with_help("check spelling or add an import for this type")
-                .with_fix("check spelling or add an import for this type")
-                .with_why("all types must be defined or imported before use"),
-
             FnParamModeMismatch { expected, found, index, span } => {
                 use rask_ast::ty::ParamMode;
                 let mode_at = |t: &crate::Type| match t {
@@ -462,12 +455,12 @@ impl ToDiagnostic for crate::TypeError {
             }
 
             NotCallable { ty, span } => {
-                Diagnostic::error(format!("type `{}` is not callable", ty))
+                Diagnostic::error(format!("a value of type `{}` can't be called", ty))
                     .with_code("E0311")
-                    .with_primary(*span, "not a function")
-                    .with_help("only functions and closures can be called with `()`")
-                    .with_fix("only functions and closures can be called with `()`")
-                    .with_why("the call operator `()` requires a callable type")
+                    .with_primary(*span, format!("this is a `{}`, not a function", ty))
+                    .with_help("only functions and closures take `(…)`; to call a method on it, write `value.method(…)`")
+                    .with_fix("only functions and closures take `(…)`; to call a method on it, write `value.method(…)`")
+                    .with_why("`(…)` after a value runs it, and only a function has a body to run")
             }
 
             NoSuchField { ty, field, span } => {
@@ -835,22 +828,6 @@ impl ToDiagnostic for crate::TypeError {
                     .with_help("break the cycle with an explicit type annotation")
                     .with_fix("break the cycle with an explicit type annotation or use `Heap<T>` for indirection")
                     .with_why("a type cannot contain itself without indirection")
-            }
-
-            CannotInfer { span } => Diagnostic::error("cannot infer type")
-                .with_code("E0315")
-                .with_primary(*span, "type annotation needed")
-                .with_help("add an explicit type annotation")
-                .with_fix("add an explicit type annotation")
-                .with_why("the compiler needs enough context to determine every type — ambiguous cases need annotations"),
-
-            InvalidTypeString(s) => {
-                Diagnostic::error(format!("invalid type: `{}`", s))
-                    .with_code("E0300")
-                    .with_primary(Span::new(0, 0), "invalid type expression")
-                    .with_help("expected a type like `i32`, `string`, or a struct name")
-                    .with_fix("use a type like `i32`, `string`, or a struct name")
-                    .with_why("type expressions must be valid type names or parameterized types")
             }
 
             UnknownTypeName { name, suggestion, span } => {
@@ -2851,10 +2828,11 @@ impl ToDiagnostic for crate::TypeError {
             }
 
             ZeroStep { span } => {
-                Diagnostic::error("zero step".to_string())
+                Diagnostic::error("a range can't step by 0".to_string())
                     .with_code("E0337")
-                    .with_primary(*span, "step must be non-zero")
-                    .with_help("use a positive step for ascending ranges, or a negative step for descending ranges")
+                    .with_primary(*span, "this step never moves past the start")
+                    .with_help("step by a positive number to count up, or a negative one to count down: `(0..10).step(2)`, `(10..0).step(-1)`")
+                    .with_fix("step by a positive number to count up, or a negative one to count down: `(0..10).step(2)`, `(10..0).step(-1)`")
                     .with_why("a zero step would loop forever without making progress [ctrl.ranges/SP3]")
             }
 
@@ -3286,7 +3264,7 @@ impl ToDiagnostic for crate::TypeError {
                     ),
                     _ => ("legacy wrapper constructor", "remove the wrapper"),
                 };
-                Diagnostic::error(format!("`{}(...)` is no longer a valid constructor", name))
+                Diagnostic::error(format!("`{}(...)` isn't a constructor in Rask", name))
                     .with_code("E0348")
                     .with_primary(*span, format!("`{}` is not callable", name))
                     .with_help(fix)
@@ -3427,22 +3405,6 @@ impl ToDiagnostic for crate::TypeError {
                         ty = ty,
                     ))
             }
-            ToMapNeedsPairs { elem, span } => {
-                Diagnostic::error(format!(
-                    "`to_map` needs a sequence of pairs, got a sequence of `{}`",
-                    elem
-                ))
-                .with_code("E0853")
-                .with_primary(*span, "each item must be a (K, V) tuple")
-                .with_fix(
-                    "produce the pairs first — `.map(|u| (u.id, u))` — then `to_map()`".to_string(),
-                )
-                .with_why(
-                    "a Map needs a key per value, and `to_map` reads the key out of the first tuple slot rather than inventing one [type.sequence/SEQ29]"
-                        .to_string(),
-                )
-            }
-
             UnhashableMapKey { key, fix, span } => {
                 use crate::MapKeyFix;
                 let d = Diagnostic::error(format!("`{}` can't be a Map key", key))
@@ -3640,86 +3602,6 @@ impl ToDiagnostic for crate::TypeError {
                             .to_string(),
                     )
             }
-        }
-    }
-}
-
-// ============================================================================
-// Interface Errors
-// ============================================================================
-
-impl ToDiagnostic for crate::InterfaceError {
-    fn to_diagnostic(&self) -> Diagnostic {
-        use crate::InterfaceError::*;
-
-        match self {
-            NotSatisfied {
-                ty,
-                interface_name,
-                span,
-            } => Diagnostic::error(format!(
-                "type `{}` does not satisfy interface `{}`",
-                ty, interface_name
-            ))
-            .with_code("E0700")
-            .with_primary(*span, format!("interface `{}` not implemented", interface_name))
-            .with_help(format!("add `extend {} : {} {{ ... }}`", ty, interface_name))
-            .with_fix(format!("add `extend {} : {} {{ ... }}`", ty, interface_name))
-            .with_why("interface bounds require the type to provide all methods declared by the interface"),
-
-            MissingMethod {
-                ty,
-                interface_name,
-                method,
-                signature,
-                span,
-            } => Diagnostic::error(format!(
-                "`{}` has no `{}`, which `{}` requires",
-                ty, method, interface_name
-            ))
-            .with_code("E0701")
-            .with_primary(*span, format!("`{}` is not in the block", method))
-            .with_fix(format!(
-                "add it:\n    {} implements {} {{\n        {}\n    }}",
-                ty,
-                interface_name,
-                if signature.is_empty() { format!("func {}(…) {{ … }}", method) } else { signature.clone() }
-            ))
-            .with_why("the header is the claim and the block is the evidence — a conformance is only declared once every method the interface names is there [type.generics/G1]"),
-
-            SignatureMismatch {
-                method,
-                expected,
-                found,
-                span,
-                ..
-            } => Diagnostic::error(format!("method `{}` has wrong signature", method))
-                .with_code("E0702")
-                .with_primary(*span, format!("expected `{}`, found `{}`", expected, found))
-                .with_help(format!("change `{}` signature to match the interface", method))
-                .with_fix(format!("change `{}` signature to match the interface", method))
-                .with_why("interface method signatures are contracts — implementations must match exactly"),
-
-            UnknownInterface(name) => Diagnostic::error(format!("unknown interface: `{}`", name))
-                .with_code("E0703")
-                .with_primary(Span::new(0, 0), "interface not found")
-                .with_help("check spelling or add an import for this interface")
-                .with_fix("check spelling or add an import for this interface")
-                .with_why("interfaces must be defined or imported before use in bounds"),
-
-            ConflictingMethods {
-                method,
-                interface1,
-                interface2,
-            } => Diagnostic::error(format!(
-                "conflicting method `{}` from interfaces `{}` and `{}`",
-                method, interface1, interface2
-            ))
-            .with_code("E0704")
-            .with_primary(Span::new(0, 0), "conflicting definitions")
-            .with_help(format!("rename or disambiguate `{}` in one of the interface implementations", method))
-            .with_fix(format!("disambiguate `{}` in one of the interface implementations", method))
-            .with_why("when two interfaces provide the same method name, the compiler can't determine which to call"),
         }
     }
 }

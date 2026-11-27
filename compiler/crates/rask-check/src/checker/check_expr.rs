@@ -3549,12 +3549,43 @@ impl TypeChecker {
                     _ => self.ctx.fresh_var(),
                 }
             }
+            // A value whose type is settled and has no `()`: `let n = 5; n(3)`.
+            // A name that hasn't resolved yet, a type parameter or an
+            // interface object still might be called, so those wait.
+            ref other if Self::has_no_call(&self.ctx.apply(other)) => {
+                for arg in args { self.infer_expr(&arg.expr); }
+                let ty = self.ctx.apply(other);
+                self.errors.push(TypeError::NotCallable { ty, span: func.span });
+                Type::Error
+            }
             _ => {
                 self.check_marked_args_of_opaque_call(args);
                 for arg in args { self.infer_expr(&arg.expr); }
                 self.ctx.fresh_var()
             }
         }
+    }
+
+    /// A type no call can ever apply to, whatever the rest of the program says.
+    fn has_no_call(ty: &Type) -> bool {
+        matches!(
+            ty,
+            Type::Unit
+                | Type::Bool
+                | Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128 | Type::Isize
+                | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128 | Type::Usize
+                | Type::F32 | Type::F64
+                | Type::Char
+                | Type::String
+                | Type::Bytes
+                | Type::Tuple(_)
+                | Type::Array { .. }
+                | Type::Result { .. }
+                | Type::Union(_)
+                | Type::RawPtr(_)
+                | Type::SimdVector { .. }
+                | Type::None
+        )
     }
 
     /// The call as it should read once argument `index` carries `marker`:
@@ -4768,13 +4799,9 @@ impl TypeChecker {
         // SP3: zero step on range is a compile error
         // SP1/SP2: step direction mismatch is a warning
         if method == "step" {
-            let is_range = matches!(
-                &self.ctx.apply(&obj_ty),
-                Type::UnresolvedNamed(n) if n == "Range"
-            ) || matches!(
-                &self.ctx.apply(&obj_ty),
-                Type::UnresolvedGeneric { name, .. } if name == "Range"
-            );
+            // `resolve_named` above has already turned the literal's
+            // `Range<T>` into the declared type, so ask for the base by name.
+            let is_range = self.generic_name_of(&self.ctx.apply(&obj_ty)).as_deref() == Some("Range");
             if is_range {
                 if let Some(first_arg) = args.first() {
                     let is_zero = matches!(

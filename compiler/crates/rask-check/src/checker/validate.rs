@@ -728,6 +728,5 @@ pub(super) fn interface_error_parts(e: &crate::interfaces::InterfaceError) -> (S
         MissingMethod { ty, interface_name, .. } => (ty.clone(), interface_name.clone()),
         SignatureMismatch { ty, method, .. } => (ty.clone(), method.clone()),
         UnknownInterface(name) => (String::from("_"), name.clone()),
-        ConflictingMethods { interface1, .. } => (String::from("_"), interface1.clone()),
     }
 }

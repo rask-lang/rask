@@ -1,0 +1,37 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: operators that don't reach through an optional
+//
+// `!x` on a `bool?` has no answer for an absent `x`. `else as e` names the
+// error a failed `if r?` produced, and an optional's absence carries none.
+
+func flag(k: i64) -> bool? {
+    if k > 0 {
+        return true
+    }
+    return none
+}
+
+func negated(k: i64) -> bool {
+    let x = flag(k)
+    // ERROR: negation doesn't reach through the optional [E0830]
+    return !x
+}
+
+func find(k: i64) -> string? {
+    if k > 0 {
+        return "found"
+    }
+    return none
+}
+
+func bound(k: i64) {
+    // ERROR: `find` returns `string?`, so there's no error for `e` [E0397]
+    if find(k)? as v {
+        println(v)
+    } else as e {
+        println("missing")
+    }
+}
+
+func main() {
+}

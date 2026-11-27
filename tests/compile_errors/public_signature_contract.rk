@@ -1,0 +1,36 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: a public function's signature is written out
+//
+// Inference works inside a body and on anything not `public`. A public
+// signature is what callers read, so its parameter types, return type and
+// error types are spelled in the declaration.
+
+// ERROR: `v` and `k` have no types [E0334]
+public func scale(v, k) -> f64 {
+    return 1.0
+}
+
+enum LoadError {
+    Missing
+}
+
+extend LoadError {
+    func message(self) -> string {
+        return "missing"
+    }
+}
+
+// ERROR: `_` leaves the error types to the body [E0390]
+public func load(p: string) -> i64 or _ {
+    if p == "" {
+        return LoadError.Missing
+    }
+    return 1
+}
+
+// Not public: inference is fine.
+func helper(v, k) {
+}
+
+func main() {
+}

@@ -66,8 +66,6 @@ pub enum TypeError {
         index: usize,
         span: Span,
     },
-    #[error("undefined type: {0}")]
-    Undefined(String),
     /// Inference finished and this binding's type is still open. Either nothing
     /// in scope pinned it down (the program needs an annotation) or inference
     /// has a gap (our bug) — the message says both, because the compiler can't
@@ -196,10 +194,6 @@ pub enum TypeError {
     },
     #[error("infinite type: type variable would create infinite type")]
     InfiniteType { var: TypeVarId, ty: Type, span: Span },
-    #[error("cannot infer type")]
-    CannotInfer { span: Span },
-    #[error("invalid type string: {0}")]
-    InvalidTypeString(String),
     /// type.gradual/PC2: PascalCase name in a signature resolves to nothing
     #[error("unknown type `{name}`")]
     UnknownTypeName {
@@ -1572,7 +1566,7 @@ pub enum TypeError {
     },
 
     /// OPT2/ER2: legacy `Some(x)`/`Ok(x)`/`Err(x)` constructor — migration error
-    #[error("`{name}(...)` is no longer a valid constructor")]
+    #[error("`{name}(...)` isn't a constructor in Rask")]
     LegacyWrapperConstructor {
         name: String,
         span: Span,
@@ -1679,13 +1673,6 @@ pub enum TypeError {
         method: String,
         elem: Type,
         copies: bool,
-        span: Span,
-    },
-
-    /// type.sequence/SEQ29: `to_map` is defined only on a sequence of pairs.
-    #[error("`to_map` needs a sequence of pairs")]
-    ToMapNeedsPairs {
-        elem: Type,
         span: Span,
     },
 
@@ -1952,6 +1939,9 @@ impl TypeError {
                 TypeError::TypeArgCount { name, params, expected, found, site, span }
             }
             TypeError::ValueTooLarge { ty, bytes, .. } => TypeError::ValueTooLarge { ty, bytes, span },
+            TypeError::DuplicateSumVariant { ty, variant, .. } => {
+                TypeError::DuplicateSumVariant { ty, variant, span }
+            }
             other => other,
         }
     }
@@ -2038,7 +2028,6 @@ impl TypeError {
                 *to = f(to);
             }
             UnhashableMapKey { key, .. } => *key = f(key),
-            ToMapNeedsPairs { elem, .. } => *elem = f(elem),
 
             DuplicateSumVariant { ty, variant, .. } => {
                 *ty = f(ty);
@@ -2104,8 +2093,7 @@ impl TypeError {
             }
 
             // Carry no types.
-            Undefined(..)
-            | DynamicFieldNameNotComptime { .. }
+            DynamicFieldNameNotComptime { .. }
             | ReflectItemNotUnrolled { .. }
             | DuplicateConformance { .. }
             | ForeignCoreConformance { .. }
@@ -2121,8 +2109,6 @@ impl TypeError {
             | PrivateModuleFunction { .. }
             | NotDisplayable { .. }
             | UnboundedTypeParamMethod { .. }
-            | CannotInfer { .. }
-            | InvalidTypeString(..)
             | UnknownTypeName { .. }
             | SingleLetterTypeName { .. }
             | LowercaseTypeName { .. }
