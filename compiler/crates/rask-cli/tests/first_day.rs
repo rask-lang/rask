@@ -201,3 +201,18 @@ fn an_integer_literal_name_times_a_float_is_a_float_every_time() {
         prints_on_both(source, "7.5 7.5\n");
     }
 }
+
+// ─── Habits from other languages ───────────────────────────────────────────
+
+/// `Point { x: 1, y: 2 }` is how Rust, Go and C# build a struct. It gave three
+/// errors, the last saying top-level statements can't sit beside `main`.
+/// Now it is one error per literal that shows the call to write instead.
+#[test]
+fn a_struct_built_with_braces_is_one_error_that_shows_the_call() {
+    let run = check_program(
+        "struct Point {\n    x: i64\n    y: i64\n}\n\nfunc main() {\n    let p = Point { x: 1, y: 2 }\n    println(\"{p.x}\")\n}\n",
+    );
+    assert_eq!(run.code, 1, "{run:?}");
+    assert!(run.all().contains("Point(x: …, y: …)"), "{run:?}");
+    assert_eq!(run.all().matches("error[").count(), 1, "{run:?}");
+}
