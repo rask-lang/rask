@@ -3625,7 +3625,8 @@ impl<'a> MirLowerer<'a> {
             let (idx_op, _) = self.lower_expr(index)?;
 
             // Fixed-size arrays: direct memory access (base + index * elem_size)
-            if let MirType::Array { ref elem, .. } = obj_ty {
+            if let MirType::Array { ref elem, len } = obj_ty {
+                self.guard_array_index(&idx_op, len);
                 let elem_size = rask_layout::size_of(elem.as_ref(), self.ctx.target());
                 let result_ty = *elem.clone();
                 let result_local = self.builder.alloc_temp(result_ty.clone());

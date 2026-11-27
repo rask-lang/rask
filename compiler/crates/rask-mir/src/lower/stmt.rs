@@ -1341,7 +1341,8 @@ impl<'a> MirLowerer<'a> {
                         };
                         let (idx_op, _) = self.lower_expr(index)?;
 
-                        if let MirType::Array { ref elem, .. } = obj_ty {
+                        if let MirType::Array { ref elem, len } = obj_ty {
+                            self.guard_array_index(&idx_op, len);
                             // Fixed-size array: direct store at base + index * elem_size
                             if let MirOperand::Local(base_id) = obj_op {
                                 // An element that is or holds a link is an edge
@@ -2124,8 +2125,9 @@ impl<'a> MirLowerer<'a> {
             }
             ExprKind::Index { object, index } if self.is_fixed_array(object) => {
                 let Some((base, base_ty)) = self.place_addr(object)? else { return Ok(None) };
-                let MirType::Array { elem, .. } = base_ty else { return Ok(None) };
+                let MirType::Array { elem, len } = base_ty else { return Ok(None) };
                 let (idx_op, _) = self.lower_expr(index)?;
+                self.guard_array_index(&idx_op, len);
                 let scaled = self.builder.alloc_temp(MirType::I64);
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                     dst: scaled,
@@ -2185,6 +2187,51 @@ impl<'a> MirLowerer<'a> {
             rvalue: MirRValue::BinaryOp { op: crate::operand::BinOp::Add, left: base, right: by },
         }));
         dst
+    }
+
+    /// Panic unless `0 <= index < len`, before a fixed-size array is read or
+    /// written at `index`. A vector checks inside the runtime call that
+    /// reaches its buffer; an array is plain memory with nothing in between,
+    /// so without this `a[5]` on a `[i64; 3]` read whatever came next (#1724).
+    /// A constant index the length already admits needs no check.
+    pub(crate) fn guard_array_index(&mut self, index: &MirOperand, len: u32) {
+        if let MirOperand::Constant(MirConst::Int(i)) = index {
+            if *i >= 0 && *i < i64::from(len) {
+                return;
+            }
+        }
+        use crate::operand::BinOp as Op;
+        // One unsigned compare covers both ends: a negative index is a huge
+        // unsigned one.
+        let in_range = self.builder.alloc_temp(MirType::Bool);
+        let as_unsigned = self.builder.alloc_temp(MirType::U64);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: as_unsigned,
+            rvalue: MirRValue::Cast { value: index.clone(), target_ty: MirType::U64 },
+        }));
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: in_range,
+            rvalue: MirRValue::BinaryOp {
+                op: Op::Lt,
+                left: MirOperand::Local(as_unsigned),
+                right: MirOperand::Constant(MirConst::Int(i64::from(len))),
+            },
+        }));
+        let fail = self.builder.create_block();
+        let ok = self.builder.create_block();
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
+            cond: MirOperand::Local(in_range),
+            then_block: ok,
+            else_block: fail,
+        }));
+        self.builder.switch_to_block(fail);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+            dst: None,
+            func: FunctionRef::runtime("rask_panic_index".to_string()),
+            args: vec![index.clone(), MirOperand::Constant(MirConst::Int(i64::from(len)))],
+        }));
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Unreachable));
+        self.builder.switch_to_block(ok);
     }
 
     pub(crate) fn is_fixed_array(&self, expr: &Expr) -> bool {

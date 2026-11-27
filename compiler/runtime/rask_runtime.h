@@ -370,6 +370,9 @@ int64_t  rask_vec_is_full(const RaskVec *v);
 int64_t  rask_vec_try_push(RaskVec *v, const void *elem);
 int64_t  rask_vec_push(RaskVec *v, const void *elem);
 RASK_PANICS void *rask_vec_get(const RaskVec *v, int64_t index);
+// A fixed-size array index past its length (native lowering checks before
+// the load or store, since an array has no header to check against).
+RASK_PANICS void rask_panic_index(int64_t index, int64_t len);
 // Element pointer lent straight out of the buffer, so a `mutate` callee writes
 // the real element instead of a copy. Between borrow and release, anything that
 // would move the buffer panics rather than leave the pointer dangling.
