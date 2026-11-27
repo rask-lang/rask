@@ -1,0 +1,44 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// 10. Structs
+//
+// A struct groups a few values that belong together into one type of your
+// own. A point on a map is an x and a y; passing them around as two loose
+// integers invites mixing them up, while a `Point` keeps them together and
+// names them.
+//
+// You build one like a function call, giving every field by name, and read a
+// field with a dot: `p.x`.
+
+struct Point {
+    x: i32
+    y: i32
+}
+
+func distance_from_origin(p: Point) -> i32 {
+    return abs(p.x) + abs(p.y)
+}
+
+func abs(n: i32) -> i32 {
+    return if n < 0: -n else: n
+}
+
+// Changing a struct in place comes later. For now, a function that "moves" a
+// point builds a new one from the old one's fields.
+//
+// Your turn: `step_right(p, 3)` gives back a new Point whose x is three more
+// than p's, with the same y. `Point(x: 1, y: 2)` becomes `Point(x: 4, y: 2)`.
+
+func step_right(p: Point, by: i32) -> Point {
+    return Point(x: p.x + by, y: p.y)
+}
+
+test "distance" {
+    assert distance_from_origin(Point(x: 3, y: -4)) == 7
+}
+
+test "step right" {
+    let p = step_right(Point(x: 1, y: 2), 3)
+    assert p.x == 4
+    assert p.y == 2
+}

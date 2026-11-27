@@ -1,0 +1,35 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// The sim showcase's fix: the check and the debit happen under one lock,
+// so no other transfer can land between them.
+import sync.Shared
+
+struct Bank {
+    balances: Vec<i64>
+}
+
+const bank = Shared.new(Bank(balances: [100, 0, 0]))
+
+func transfer(from: i64, to: i64, amount: i64) -> bool {
+    with bank.write() as b {
+        println("sees {b.balances[from]}, sending {amount}")
+        if b.balances[from] < amount {
+            return false
+        }
+        b.balances[from] -= amount
+        b.balances[to] += amount
+    }
+    return true
+}
+
+test "an account never goes below zero" {
+    using Multitasking {
+        let to_bob = spawn { transfer(0, 1, 80) }
+        ensure to_bob.detach()
+        let to_carol = spawn { transfer(0, 2, 80) }
+        ensure to_carol.detach()
+        let _ = to_bob.join()!
+        let _ = to_carol.join()!
+    }
+    let alice = with bank.read() as b { b.balances[0] }
+    assert alice >= 0, "alice is at {alice}"
+}

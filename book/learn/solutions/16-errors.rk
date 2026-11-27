@@ -1,0 +1,65 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// 16. Errors are values
+//
+// Taking money out of an account can fail, and the caller needs to know.
+// Exceptions tell them by jumping out of the function, and nothing in the
+// function's signature warns that it might. Error codes don't jump, but they
+// are easy to ignore.
+//
+// In Rask, a function that can fail says so in its return type: `i32 or
+// BankError` is either a new balance or a reason. The error is an ordinary
+// value, usually an enum, and the function returns it like any other value.
+//
+// The caller can't ignore the result: calling `withdraw` and dropping what it
+// gives back is a compile error. `r is BankError` asks which one you got,
+// and `r is BankError.NotPositive` whether it was that error in particular.
+// `if r is BankError as e { }` runs the block only for an error, named `e`,
+// the way `? as` does for an optional. `r!` takes the balance out and stops
+// the program if it's an error, which is right when an error here could only
+// be a bug.
+
+enum BankError {
+    Overdrawn(short: i32)
+    TooLarge(over: i32)
+    NotPositive
+}
+
+func withdraw(balance: i32, amount: i32) -> i32 or BankError {
+    if amount > balance {
+        return BankError.Overdrawn(short: amount - balance)
+    }
+    return balance - amount
+}
+
+// Your turn: `deposit` adds `amount` to the balance. An amount of zero or
+// less is `NotPositive`. The bank takes at most 1000 at a time; more than
+// that is `TooLarge`, carrying how far over the limit it was.
+
+func deposit(balance: i32, amount: i32) -> i32 or BankError {
+    if amount <= 0 {
+        return BankError.NotPositive
+    }
+    if amount > 1000 {
+        return BankError.TooLarge(over: amount - 1000)
+    }
+    return balance + amount
+}
+
+test "withdraw" {
+    assert withdraw(10, 3)! == 7
+    assert withdraw(10, 30) is BankError
+}
+
+test "deposit" {
+    assert deposit(10, 5)! == 15
+    assert deposit(0, 1000)! == 1000
+    assert deposit(10, 0) is BankError.NotPositive
+    assert deposit(10, -3) is BankError.NotPositive
+    assert deposit(10, 1001) is BankError
+    let r = deposit(10, 1250)
+    assert r is BankError
+    if r is BankError as e {
+        assert e == BankError.TooLarge(over: 250)
+    }
+}

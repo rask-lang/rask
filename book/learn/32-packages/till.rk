@@ -1,0 +1,8 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// Your turn: `total` adds up what the items cost, with `price_of` from
+// prices.rk. Something without a price counts as 0.
+
+public func total(items: Vec<string>) -> i32 {
+    todo()
+}

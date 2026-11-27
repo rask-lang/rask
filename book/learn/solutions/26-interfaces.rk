@@ -1,0 +1,58 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// 26. Interfaces
+//
+// A generic function can only use what its bound promises. `Equal` from
+// step 25 is an interface: a list of methods that a type promises to have.
+// Writing your own lets one function work on any type that keeps your
+// promise, like `total_area` below on squares and rectangles alike.
+//
+// A type keeps it by saying so, `Square implements Shape { ... }`, with the
+// methods inside. Having methods with the right names isn't enough; the
+// compiler wants the words. So a type never takes on a promise by accident,
+// and you can find every shape by searching for `implements Shape`.
+
+interface Shape {
+    func area(self) -> i32
+}
+
+struct Square {
+    side: i32
+}
+
+Square implements Shape {
+    func area(self) -> i32 {
+        return self.side * self.side
+    }
+}
+
+func total_area<T: Shape>(shapes: Vec<T>) -> i32 {
+    mut total = 0
+    for s in shapes {
+        total += s.area()
+    }
+    return total
+}
+
+// Your turn: make rectangles shapes too. A 2 by 3 Rect has an area of 6.
+
+struct Rect {
+    width: i32
+    height: i32
+}
+
+Rect implements Shape {
+    func area(self) -> i32 {
+        return self.width * self.height
+    }
+}
+
+test "squares" {
+    assert total_area(Vec.from([Square(side: 2), Square(side: 3)])) == 13
+    assert Square(side: 4).area() == 16
+}
+
+test "rects" {
+    assert Rect(width: 2, height: 3).area() == 6
+    assert total_area(Vec.from([Rect(width: 2, height: 3), Rect(width: 5, height: 1)])) == 11
+}
