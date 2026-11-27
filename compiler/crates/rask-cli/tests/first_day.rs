@@ -233,3 +233,48 @@ fn a_misspelled_stdlib_import_suggests_the_module() {
     assert_eq!(run.code, 1, "{run:?}");
     assert!(run.all().contains("did you mean `string`?"), "{run:?}");
 }
+
+// ─── A project, start to finish ─────────────────────────────────────────────
+
+/// `rask init`, then every everyday command with no path, the way the init
+/// message and `cargo`/`go` habits suggest. `run` and `build` already took
+/// the package you're in; `check`, `test` and `lint` said "missing file or
+/// directory argument", and `rask check`'s usage line named `typecheck`.
+#[test]
+fn a_new_project_takes_every_everyday_command_with_no_path() {
+    let dir = TempDir::new();
+    let init = rask_in(dir.path(), &["init", "hello"]);
+    assert_eq!(init.code, 0, "{init:?}");
+    assert!(init.stdout.contains("rask run\n"), "init should say plain `rask run`:\n{init:?}");
+
+    let project = dir.path().join("hello");
+    fs::write(
+        project.join("main.rk"),
+        "func double(x: i64) -> i64 {\n    return x * 2\n}\n\nfunc main() {\n    println(\"{double(21)}\")\n}\n\ntest \"double\" {\n    assert double(2) == 4\n}\n",
+    )
+    .unwrap();
+
+    let run = rask_in(&project, &["run"]);
+    assert_eq!((run.code, run.stdout.as_str()), (0, "42\n"), "{run:?}");
+    for args in [&["check"][..], &["test"], &["test", "--interp"], &["lint"], &["fmt", "--check"]] {
+        let out = rask_in(&project, args);
+        assert_eq!(out.code, 0, "`rask {}` in a project:\n{out:?}", args.join(" "));
+        assert!(!out.all().contains("missing"), "`rask {}`:\n{out:?}", args.join(" "));
+    }
+    let test = rask_in(&project, &["test"]);
+    assert!(test.all().contains("double"), "the test should have run:\n{test:?}");
+}
+
+/// `rask help` led with `compile`, `targets` and `bindc`, left `check` out
+/// entirely, and filed `test`, `init` and `lint` under later headings. The
+/// first section is now the everyday loop.
+#[test]
+fn help_leads_with_the_everyday_commands() {
+    let dir = TempDir::new();
+    let help = rask_in(dir.path(), &["help"]);
+    assert_eq!(help.code, 0, "{help:?}");
+    let everyday = help.stdout.split("\n\n").find(|s| s.starts_with("Everyday:")).expect("an Everyday section");
+    for cmd in ["init", "run", "test", "check", "fmt", "lint"] {
+        assert!(everyday.contains(&format!("\n  {cmd} ")), "`{cmd}` should be under Everyday:\n{everyday}");
+    }
+}

@@ -119,12 +119,12 @@ pub fn cmd_init(name: Option<&str>, agents: bool) {
         println!();
         println!("  Run with:");
         println!("    {} {}", "cd".dimmed(), project_dir.display());
-        println!("    {} {} {}", output::command("rask"), output::command("run"), "main.rk");
+        println!("    {} {}", output::command("rask"), output::command("run"));
     } else {
         println!("  {} in {}", "Initialized".green().bold(), project_dir.display());
         println!();
         println!("  Run with:");
-        println!("    {} {} {}", output::command("rask"), output::command("run"), "main.rk");
+        println!("    {} {}", output::command("rask"), output::command("run"));
     }
 }
 
