@@ -7,7 +7,6 @@
 // Under the leak gate each of these leaked before: `grow(mutate s)` every
 // string but the last, a `lines()` loop body every vector it replaced, and a
 // loop body's `return out` either leaked or freed the vector it returned.
-import sequence.Sequence
 
 func grow(mutate s: string, x: i64) {
     s = "{s}/{x}, padded so the string lives on the heap"

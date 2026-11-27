@@ -9,8 +9,6 @@
 // mutate`, `with`, a path through a Heap) read the element into a temporary
 // and wrote to that. They all take the element's address now.
 
-import memory.Heap
-
 struct Pt {
     public x: i64
     public y: i64

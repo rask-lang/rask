@@ -12,6 +12,7 @@
 // `decode` itself are in `t_decode_custom.rk`.
 
 import json
+import json.JsonError
 
 struct PortError {
     reason: string

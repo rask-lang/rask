@@ -6,7 +6,6 @@
 // compatible error types. You can't mix unrelated errors without conversion.
 
 import fs
-import json
 
 // Define distinct error types
 enum ParseError {

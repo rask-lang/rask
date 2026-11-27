@@ -9,6 +9,7 @@
 
 import fs
 import fs.DirEntry
+import io.IoError
 
 test "listing a directory that exists" {
     mut found = false

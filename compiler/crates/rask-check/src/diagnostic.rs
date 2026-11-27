@@ -1569,6 +1569,24 @@ impl ToDiagnostic for crate::TypeError {
                     .with_why("Rask has no lock poisoning — a panic mid-update releases the lock and the next task reads whatever was written (ctrl.panic/LK1–LK4). `staged()` makes the update atomic against that by construction. Add `@allow(torn_lock_update)` to the enclosing function or test block if partial state is harmless here [tool.warnings/W9]")
             }
 
+            UnreachableCode { span, after, leaves } => {
+                use crate::checker::Leaves;
+                let what = match leaves {
+                    Leaves::Return => "this returns",
+                    Leaves::Break => "this breaks out of the loop",
+                    Leaves::Continue => "this goes back to the top of the loop",
+                    Leaves::NoReturnCall => "this call never comes back",
+                    Leaves::EndlessLoop => "this loop has no `break`, so it never ends",
+                    Leaves::EveryBranch => "every branch of this leaves",
+                };
+                Diagnostic::warning("unreachable code".to_string())
+                    .with_code("W0902")
+                    .with_primary(*span, "nothing reaches this")
+                    .with_secondary(*after, what)
+                    .with_fix("delete the dead code, or move it above the statement that leaves")
+                    .with_why("code that can't run is usually a mistake: a `return` left in while debugging, or a step that was meant to happen first. Put `@allow(unreachable_code)` on the function if it's meant [tool.warnings/W4]")
+            }
+
             UnreachableArm { earlier, span } => {
                 Diagnostic::error("unreachable match arm".to_string())
                     .with_code("E0949")

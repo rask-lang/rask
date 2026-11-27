@@ -4,10 +4,6 @@
 // a stdlib enum arrived as a bare name: `Method.Post` was "type 'Method' has no
 // field 'Post'". Native was always fine, so this is a both-backends test.
 
-import http
-import os
-import json
-import io
 import http.Method
 import io.IoError
 import json.JsonValue

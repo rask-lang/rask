@@ -2,7 +2,7 @@
 // Same for a header that names a parameter inside another generic:
 // `extend Wrap<Wrap<U>>` on `Wrap<Wrap<Vec<Link<Node>>>>` gives `U` the vector,
 // not the inner `Wrap` (#1382).
-import memory.{Rack, Link}
+import memory.Link
 
 struct Node {
     id: i64

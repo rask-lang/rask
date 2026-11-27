@@ -3,7 +3,7 @@
 // second generic function: `wrap<U>` calls `keep(u)`, so `keep`'s `T` is
 // whatever `wrap`'s `U` is. No link is held, but the type can hold one, so
 // the closure may not cross to another task (#1382).
-import memory.{Rack, Link}
+import memory.Link
 
 struct Node {
     id: i64

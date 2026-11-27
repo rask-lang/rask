@@ -24,10 +24,10 @@ On by default. Suppress with `@allow(warning_name)`.
 
 | Rule | Code | ID | Check |
 |------|------|----|-------|
-| **W1: unused_import** | W0201 | `unused_import` | Import never referenced in this file |
+| **W1: unused_import** | W0201 | `unused_import` | Import nothing in its package refers to |
 | **W2: moved** | | | Ignoring a `T or E` result is no longer a warning: it is a compile error, `type.errors/ER50` |
 | **W3: unused_variable** | W0901 | `unused_variable` | Binding never read after assignment |
-| **W4: unreachable_code** | W0902 | `unreachable_code` | Code after `return` or `break` |
+| **W4: unreachable_code** | W0902 | `unreachable_code` | Code after `return`, `break`, `continue`, a `@noreturn` call, or a branch that leaves on every path |
 | **W5: deprecated** | W0903 | `deprecated` | Calling an item marked `@deprecated` |
 | **W9: torn_lock_update** | W0907 | `torn_lock_update` | `with` block over a `Shared` assigns 2+ fields of the locked value without `.staged()` (`conc.sync/ST1–ST4`) |
 | **W11: mod_for_index** | W0909 | `mod_for_index` | `%` whose result is used as an index and whose left operand can be negative — `%` takes the dividend's sign (`type.operators/AR2`), so `(i - 1) % n` indexes out of range instead of wrapping. `.mod(n)` is the floored answer (AR3) |
@@ -41,6 +41,10 @@ func process(data: Vec<u8>) -> i32 {
     return 42
 }
 ```
+
+**W1 (unused_import) scope:** An import counts as used when anything in its package names it: an expression, a type, a type argument, a pattern, an `implements` block, a bound. Package-wide rather than per file, because an import reaches the whole package today, and a warning that says "remove this" must never leave a build that no longer compiles. A glob import is left alone (IM6 already warns). Importing a package only for a conformance it declares is unused too: a conformance is visible through the dependency graph in `rask.toml`, not through `import` (`type.generics/XC4`). An import carries no attributes, so there's no `@allow` for it: delete the line.
+
+**W4 (unreachable_code) scope:** The first statement after one control never gets past: `return`, `break`, `continue`, a call to a `@noreturn` function (`panic`, `exit`), a `loop` with no `break` anywhere inside, or an `if`/`match` whose every branch does one of those. One warning per block, at the first dead statement. Suppress with `@allow(unreachable_code)` on the function or test block — the usual case is a spawned task that panics and still needs a `return` to say what type it would have produced.
 
 **W3 (unused_variable) scope:** `let` and `mut` locals. A plain `x = v` doesn't count as reading `x`; `x += v` does, since it reads the old value. Parameters and names bound by patterns aren't checked yet.
 

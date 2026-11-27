@@ -8,7 +8,6 @@
 
 import interfacepkg
 import interfacepkg.Labeled
-import liba
 
 func show<T: Labeled>(x: T) -> string {
     return x.label()

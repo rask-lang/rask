@@ -145,7 +145,7 @@ pub fn cmd_resolve(path: &str, format: Format) {
         rask_resolve::resolve(rask_resolve::ResolveInput {
             decls: &pkg_ctx.all_decls,
             stdlib: &[],
-            package: Some((&pkg_ctx.registry, pkg_ctx.root_id)),
+            package: Some(rask_resolve::PackageBuild { registry: &pkg_ctx.registry, id: pkg_ctx.root_id, renamed: &Default::default() }),
         })
     } else {
         let mut decls = parse_result.decls;

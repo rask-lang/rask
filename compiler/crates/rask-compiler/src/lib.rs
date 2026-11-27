@@ -604,6 +604,10 @@ fn check_loaded_scoped(
     let mut rounds = rask_template::Rounds::new(&parse_result.decls, desugared.operator_calls.clone());
     let round_start = diags.len();
     let stdlib_decls = rask_stdlib::StubRegistry::typecheck_decls();
+    // W1 is about the program as written, so it's the first round's. A later
+    // round has each `comptime for` written out, and the call it iterated
+    // over (`reflect.fields<T>()`) is gone with it.
+    let mut written_unused_imports: Option<Vec<rask_resolve::UnusedImport>> = None;
     let (mut typed, ownership_result) = loop {
         diags.truncate(round_start);
         parse_result.decls = rounds.program();
@@ -628,6 +632,8 @@ fn check_loaded_scoped(
             }
     };
     diags.extend(resolved.unused_locals.iter().map(|u| u.to_diagnostic()));
+    let unused_imports = written_unused_imports.get_or_insert_with(|| resolved.unused_imports.clone());
+    diags.extend(unused_imports.iter().map(|u| u.to_diagnostic()));
     parse_result.decls.extend(rounds.library_copies().iter().cloned());
 
     // --- Typecheck (lenient — always returns TypedProgram + errors, so
@@ -1120,6 +1126,10 @@ fn check_package_scoped(
     let mut rounds = rask_template::Rounds::new(&pkg_ctx.all_decls, desugared.operator_calls.clone());
     let round_start = diags.len();
     let stdlib_decls = rask_stdlib::StubRegistry::typecheck_decls();
+    // W1 is about the program as written, so it's the first round's. A later
+    // round has each `comptime for` written out, and the call it iterated
+    // over (`reflect.fields<T>()`) is gone with it.
+    let mut written_unused_imports: Option<Vec<rask_resolve::UnusedImport>> = None;
     let (mut typed, ownership_result) = loop {
         diags.truncate(round_start);
         pkg_ctx.all_decls = rounds.program();
@@ -1135,7 +1145,7 @@ fn check_package_scoped(
         let resolved = match rask_resolve::resolve(rask_resolve::ResolveInput {
             decls: &pkg_ctx.all_decls,
             stdlib: &stdlib_bodies,
-            package: Some((&pkg_ctx.registry, pkg_ctx.root_id)),
+            package: Some(rask_resolve::PackageBuild { registry: &pkg_ctx.registry, id: pkg_ctx.root_id, renamed: exports }),
         }) {
             Ok(r) => r,
             Err(errors) => {
@@ -1154,6 +1164,8 @@ fn check_package_scoped(
             }
         };
         diags.extend(resolved.unused_locals.iter().map(|u| u.to_diagnostic()));
+        let unused_imports = written_unused_imports.get_or_insert_with(|| resolved.unused_imports.clone());
+        diags.extend(unused_imports.iter().map(|u| u.to_diagnostic()));
 
         // --- A dependency's internals are not the program's to name ---
         //

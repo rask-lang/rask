@@ -17,9 +17,7 @@
 // (`over_aligned_values_sit_on_their_alignment`).
 
 import std.reflect
-import memory.Heap
 import memory.Rack
-import memory.Link
 import sync.Shared
 
 @align(64)

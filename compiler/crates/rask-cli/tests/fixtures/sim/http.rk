@@ -4,7 +4,6 @@
 // can't arrive at a port nobody is listening on yet. (With the server in the
 // task, the client connected first on some seeds.)
 import http
-import http.HttpError
 import http.Response
 import sim
 import sim.Fault

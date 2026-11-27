@@ -5,7 +5,6 @@
 // the bottom level. Background compaction uses spawn + channel.
 
 import fs
-import async
 import async.Sender
 
 const MAX_LEVELS: i32 = 4

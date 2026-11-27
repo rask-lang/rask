@@ -5,6 +5,7 @@
 // had already ended and replaced it, so the function returned whatever came
 // next: `bare()` answered -1 where the interpreter answered 5.
 
+@allow(unreachable_code)
 func bare() -> i64 {
     {
         return 5
@@ -12,6 +13,7 @@ func bare() -> i64 {
     return -1
 }
 
+@allow(unreachable_code)
 func in_unsafe() -> i64 {
     unsafe {
         return 6

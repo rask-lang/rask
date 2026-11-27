@@ -9401,11 +9401,21 @@ fn marker_anchors(source: &str) -> Vec<usize> {
 }
 
 /// Line numbers `rask check` pointed at, from the `--> file.rk:LINE:COL` line
-/// of each diagnostic.
+/// of each error. A warning says the code compiles, so it answers no marker:
+/// an unused import on a line below `// ERROR` would otherwise pass for the
+/// rejection.
 fn diagnostic_lines(output: &str) -> Vec<usize> {
+    let mut in_error = false;
     let mut lines: Vec<usize> = output
         .lines()
-        .filter_map(|l| l.trim().strip_prefix("--> "))
+        .filter_map(|l| {
+            if l.starts_with("error") {
+                in_error = true;
+            } else if l.starts_with("warning") {
+                in_error = false;
+            }
+            l.trim().strip_prefix("--> ").filter(|_| in_error)
+        })
         .filter_map(|loc| {
             let mut parts = loc.rsplitn(3, ':');
             parts.next()?; // column

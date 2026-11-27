@@ -4,7 +4,6 @@
 // (rask-manifest), so every parameter and every result is a string, and
 // structured results travel as JSON.
 
-import json
 import json.JsonValue
 import schema.{LoadError, migrate, check_history, json_schema}
 

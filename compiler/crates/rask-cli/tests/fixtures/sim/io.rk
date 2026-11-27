@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 // Sim reads the real tree and keeps every change in memory (sim/B5).
 import fs
+import io.IoError
 
 test "reading a real file works" {
     let text = try fs.read_text("io.rk")

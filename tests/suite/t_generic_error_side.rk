@@ -20,6 +20,8 @@
 // Spec: specs/types/error-types.md — `T or E`, and `is E` to test the error
 // side.
 
+import collections.GrowError
+
 enum Refused<T> {
     Full(T)
     Closed

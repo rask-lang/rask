@@ -316,6 +316,7 @@ Tradeoff acknowledged: directory = package makes intra-package dependencies invi
 | Package discovery | Implemented |
 | IM1 — nothing pre-imported (modules and types) | Implemented |
 | IM3 — aliased import carries the type | Implemented |
+| IM7 — unused imports warn | Implemented |
 | IM8 — no shadowing an import | Implemented |
 | BI1/BI3 — built-in set, no shadowing | Implemented |
 | BF1/BF3 — built-in functions, no shadowing | Implemented |

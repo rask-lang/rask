@@ -20,9 +20,9 @@
 // Past the end is a different case and legal — the position moves, and reading
 // from there gives nothing.
 import fs
-import io
 import io.Buffer
 import io.SeekFrom
+import io.IoError
 
 test "std.io/K3 — a fresh buffer is at zero" {
     mut b = Buffer.new()

@@ -18,6 +18,7 @@
 
 import sync.Atomic
 import sync.MemoryOrder
+import sync.CasFailed
 
 const COUNTER: Atomic<i64> = Atomic<i64>.new(0)
 const SHUTDOWN: Atomic<bool> = Atomic<bool>.new(false)

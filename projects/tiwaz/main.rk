@@ -1,8 +1,6 @@
 import http.Request
 import http.Response
 import http.HttpError
-import http.HttpServer
-import http.Responder
 import json
 
 func main() -> void or Error {

@@ -9,7 +9,6 @@
 // those names are its own.
 
 import fs
-import http
 import json
 import json.JsonValue
 

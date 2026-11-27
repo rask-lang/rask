@@ -86,6 +86,8 @@ pub struct ResolvedProgram {
     /// The program's `let`/`mut` bindings nothing reads, in source order
     /// (tool.warnings/W3). Warnings, so they ride on a successful resolve.
     pub unused_locals: Vec<UnusedLocal>,
+    /// The program's imports nothing refers to (tool.warnings/W1).
+    pub unused_imports: Vec<UnusedImport>,
 }
 
 /// A `let`/`mut` binding nothing reads.
@@ -93,6 +95,26 @@ pub struct ResolvedProgram {
 pub struct UnusedLocal {
     pub name: String,
     /// The name where it's bound.
+    pub span: Span,
+}
+
+/// One of the program's imports, for the unused-import warning.
+#[derive(Debug, Clone)]
+pub(crate) struct ProgramImport {
+    /// The name it binds: the alias, or the path's last segment.
+    pub binding: String,
+    pub path: Vec<String>,
+    pub span: Span,
+    /// The package the import is written in.
+    pub package: Option<PackageId>,
+}
+
+/// An import whose name nothing in its package uses.
+#[derive(Debug, Clone)]
+pub struct UnusedImport {
+    /// The name the import binds: the alias, or the path's last segment.
+    pub name: String,
+    /// The `import` line.
     pub span: Span,
 }
 
@@ -115,9 +137,22 @@ pub struct ResolveInput<'a> {
     /// when only the program's own names matter. To resolve a stdlib file by
     /// itself, put it here and leave `decls` empty.
     pub stdlib: &'a [Decl],
-    /// For a package build: the registry of every package in it, and which
-    /// one `decls` is. Other packages' exports and types come from here.
-    pub package: Option<(&'a PackageRegistry, PackageId)>,
+    /// For a package build. Other packages' exports and types come from here.
+    pub package: Option<PackageBuild<'a>>,
+}
+
+/// What a package build tells resolve beyond the merged declarations.
+#[derive(Clone, Copy)]
+pub struct PackageBuild<'a> {
+    /// Every package in the build.
+    pub registry: &'a PackageRegistry,
+    /// The one `decls` is.
+    pub id: PackageId,
+    /// Per dependency, by the name the program imports it as: each declared
+    /// name against the name it was merged under (`Dog` → `Dog_libpkg`).
+    /// References were rewritten to those names before resolve, so it's what
+    /// a use of an import looks like here. Empty when nothing was renamed.
+    pub renamed: &'a HashMap<String, HashMap<String, String>>,
 }
 
 /// Resolve every name in a program.

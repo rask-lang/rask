@@ -152,7 +152,6 @@ func second_of(l: List) -> i64 {
         }
         List.Nil => return 0
     }
-    return 0
 }
 
 // A field access answered with a variable even when the receiver's type was

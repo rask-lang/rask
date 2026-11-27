@@ -9,6 +9,7 @@
 
 import csv
 import json
+import csv.CsvError
 
 struct Bad {
     why: string

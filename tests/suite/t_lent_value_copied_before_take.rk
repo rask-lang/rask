@@ -7,6 +7,7 @@
 
 import json
 import json.JsonValue
+import collections.GrowError
 
 func sample() -> Map<string, JsonValue> {
     let v = json.decode<JsonValue>("{{\"k\":[1,2]}}") catch e => { return Map.new() }

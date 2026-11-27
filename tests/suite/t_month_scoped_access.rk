@@ -21,7 +21,6 @@
 
 import sync.Shared
 import memory.Heap
-import sync.Mutex
 import sync.Shared
 
 struct Counter {

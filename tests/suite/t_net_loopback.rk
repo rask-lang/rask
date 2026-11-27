@@ -27,6 +27,8 @@
 
 import net
 import io.IoError
+import net.TcpConnection
+import net.TcpListener
 
 // Everything the happy path does, in one function so the handles stay in scope.
 func echo_once(payload: string) -> string or IoError {

@@ -19,7 +19,6 @@
 // same source for the message.
 
 import fs
-import io.File
 
 func open_result(path: string) -> string {
     mut f = fs.open(path) catch e => {

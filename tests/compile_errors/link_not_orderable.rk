@@ -8,7 +8,6 @@
 // define here: "node A is less than node B" is a statement about malloc.
 //
 // `==` and `!=` stay: two links are equal when they name the same node.
-import memory.Rack
 import memory.Link
 
 struct Node {

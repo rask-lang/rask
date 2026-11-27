@@ -6,6 +6,7 @@
 // not a reason to go back to a C implementation.
 
 import json
+import json.JsonValue
 
 func build_object(n: i64) -> JsonValue {
     mut items = Vec.new()

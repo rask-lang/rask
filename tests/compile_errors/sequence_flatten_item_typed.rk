@@ -2,7 +2,6 @@
 // `flatten`'s item is the inner sequence's item, not a free variable (#2045).
 // The loop's source settles after the body is checked, so the conflict with
 // `let q: i32 = r` is reported at the loop.
-import sequence.Sequence
 
 func main() {
     let rows: Vec<Vec<Vec<i64>>> = [[[1, 2], [3, 4, 5]], [[6]]]

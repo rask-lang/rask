@@ -8,6 +8,7 @@
 
 import fs
 import io.SeekFrom
+import io.IoError
 
 test "reading a file opened for writing is an IoError" {
     let p = "/tmp/rask_t_file_read_errors.txt"

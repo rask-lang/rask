@@ -9,10 +9,14 @@ import time.Timer
 import os.SysError
 import json.JsonValue
 import async.Handles
-import time
 import http
 import time.Duration
 import http.Response
+
+// Each imported name is a type a signature can use.
+func takes_the_imports(t: Timer, e: SysError, v: JsonValue, h: Handles<i64>) -> bool {
+    return true
+}
 
 test "a plain import registers the module's structs" {
     let d = Duration.millis(3)

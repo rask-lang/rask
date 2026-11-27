@@ -10,6 +10,8 @@
 // and past U+10FFFF all have the right *width*, so only checking widths accepts
 // them and hands back a `string` whose bytes aren't UTF-8.
 
+import string.Utf8Error
+
 func of(bs: Vec<i64>) -> Vec<u8> {
     mut v: Vec<u8> = Vec.new()
     for b in bs {

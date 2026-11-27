@@ -9,8 +9,6 @@
 // program linking it pulls in someone else's — is `each-library-keeps-its-own`.
 
 import interfacepkg
-import liba
-import libb
 
 func main() {
     let d = interfacepkg.make_doc(7)

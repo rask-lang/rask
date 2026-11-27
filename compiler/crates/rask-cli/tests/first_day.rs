@@ -383,6 +383,120 @@ fn an_unused_variable_is_a_warning() {
     assert!(!allowed.all().contains("W0901"), "{allowed:?}");
 }
 
+/// In a package build a dependency's names reach the resolver renamed
+/// (`libpkg.twice` arrives as `twice_libpkg`), so the import's own name never
+/// shows up. The first W1 called every package import unused. A use through
+/// the module, an imported type and an alias all count; an import of a
+/// package used for nothing still warns.
+#[test]
+fn a_package_import_used_under_its_merged_name_is_used() {
+    let dir = TempDir::new();
+    let toml = |name: &str, deps: &str| {
+        format!(
+            "schema = \"rask-package@1\"\n\n[package]\nname = \"{name}\"\nversion = \"0.1.0\"\n\
+             description = \"x\"\nlicense = \"MIT OR Apache-2.0\"\n{deps}"
+        )
+    };
+    for sub in ["app", "libpkg", "other"] {
+        fs::create_dir_all(dir.path().join(sub)).unwrap();
+    }
+    dir.write(
+        "app/rask.toml",
+        &toml("app", "\n[dependencies]\nlibpkg = { path = \"../libpkg\" }\nother = { path = \"../other\" }\n"),
+    );
+    dir.write("libpkg/rask.toml", &toml("libpkg", ""));
+    dir.write("other/rask.toml", &toml("other", ""));
+    dir.write(
+        "libpkg/defs.rk",
+        "public struct Dog {\n    public age: i64\n}\n\npublic func twice(n: i64) -> i64 {\n    return n * 2\n}\n",
+    );
+    dir.write("other/defs.rk", "public func unused() -> i64 {\n    return 1\n}\n");
+    dir.write(
+        "app/main.rk",
+        "import libpkg\nimport libpkg.Dog\nimport libpkg as lp\nimport other\n\n\
+         func main() {\n    let d = Dog(age: 3)\n    println(\"{libpkg.twice(d.age)} {lp.twice(1)}\")\n}\n",
+    );
+    let run = rask_in(&dir.path().join("app"), &["check"]);
+    assert_eq!(run.code, 0, "{run:?}");
+    let all = run.all();
+    let warned: Vec<&str> = all.lines().filter(|l| l.contains("W0201")).collect();
+    assert_eq!(warned, ["warning[W0201]: unused import `other`"], "{run:?}");
+}
+
+/// An import nothing uses is left over from an edit (tool.warnings/W1).
+/// Every way a name gets used counts: a call through the module, a type in
+/// a signature, a type argument, a type pattern, an `implements` block, a
+/// bound on a type parameter.
+#[test]
+fn an_unused_import_is_a_warning() {
+    let run = check_program("import time.Duration\nimport os\n\nfunc main() {\n    println(\"hi\")\n}\n");
+    assert_eq!(run.code, 0, "{run:?}");
+    assert!(run.all().contains("unused import `Duration`"), "{run:?}");
+    assert!(run.all().contains("unused import `os`"), "{run:?}");
+
+    let used = check_program(concat!(
+        "import os\n",
+        "import time.Duration\n",
+        "import io\n",
+        "import io.IoError\n",
+        "import fs\n",
+        "import std.reflect\n",
+        "import time.Instant\n",
+        "\n",
+        "struct Pad {\n    n: usize\n}\n\n",
+        "Pad implements io.Writer {\n",
+        "    func write(self, data: Vec<u8>) -> usize or IoError {\n        return self.n\n    }\n",
+        "    func write_bytes(self, data: Vec<u8>) -> void or IoError {\n        return\n    }\n",
+        "    func write_text(self, data: string) -> void or IoError {\n        return\n    }\n",
+        "    func flush(self) -> void or IoError {\n        return\n    }\n",
+        "}\n\n",
+        "func wait(d: Duration) {}\n\n",
+        "func main() {\n",
+        "    println(\"{os.args().len()}\")\n",
+        "    let has = reflect.has_method<Instant>(\"elapsed\")\n",
+        "    println(\"{has}\")\n",
+        "    let r = fs.read_text(\"nope\")\n",
+        "    if r is IoError as e {\n        println(e.message())\n    }\n",
+        "}\n",
+    ));
+    assert!(!used.all().contains("W0201"), "{used:?}");
+}
+
+/// Code after a `return` is usually a debugging leftover (tool.warnings/W4).
+#[test]
+fn unreachable_code_is_a_warning() {
+    let run = check_program(concat!(
+        "func pick(x: i64) -> i64 {\n",
+        "    if x > 0 {\n        return 1\n    } else {\n        return 2\n    }\n",
+        "    println(\"after if\")\n",
+        "}\n\n",
+        "func main() {\n",
+        "    for i in 0..3 {\n        continue\n        println(\"after continue\")\n    }\n",
+        "    println(\"{pick(1)}\")\n",
+        "    return\n",
+        "    println(\"after return\")\n",
+        "}\n",
+    ));
+    assert_eq!(run.code, 0, "{run:?}");
+    assert_eq!(run.all().matches("W0902").count(), 3, "{run:?}");
+    // In source order, nested lists included.
+    let at = |s: &str| run.all().find(s).unwrap();
+    assert!(at("after if") < at("after continue") && at("after continue") < at("after return"), "{run:?}");
+
+    // A loop with a `break`, a panic inside an `if`, and a function that says
+    // it's meant: nothing to say.
+    let quiet = check_program(concat!(
+        "@allow(unreachable_code)\nfunc meant() -> i64 {\n    return 1\n    println(\"x\")\n}\n\n",
+        "func main() {\n",
+        "    mut n = 0\n",
+        "    loop {\n        n += 1\n        if n > 3 {\n            break\n        }\n    }\n",
+        "    if n > 10 {\n        panic(\"big\")\n    }\n",
+        "    println(\"{n} {meant()}\")\n",
+        "}\n",
+    ));
+    assert!(!quiet.all().contains("W0902"), "{quiet:?}");
+}
+
 /// One mistake, one error. After `??` was rejected on a result, `n` had no
 /// type, and `{n + 1}` (which is `n.add(1)`) was also reported as mutating
 /// the `let` binding `n`, because `Set.add` mutates.

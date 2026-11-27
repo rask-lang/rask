@@ -34,7 +34,9 @@ mod arg_labels;
 mod method_visibility;
 mod reads_as;
 mod temporary;
+mod unreachable;
 pub use reads_as::ReadsAs;
+pub use unreachable::Leaves;
 pub use derive::WrapperFns;
 pub(crate) mod resolved_types;
 
@@ -975,6 +977,7 @@ impl TypeChecker {
         self.pop_scope();
 
         self.solve_constraints();
+        self.check_unreachable_code(decls);
 
         // ER31a: `try` sites whose source error type only became concrete here
         // (a method call's signature, say) pick widen-or-wrap now.

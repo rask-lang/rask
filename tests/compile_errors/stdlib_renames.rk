@@ -5,7 +5,6 @@
 //
 // One function per old name so a single rejection doesn't mask the others.
 
-import async.Channel
 import time.Duration
 import os
 import fs

@@ -460,3 +460,13 @@ impl ToDiagnostic for crate::UnusedLocal {
             .with_why("an unread binding is usually a typo or a leftover from an edit [tool.warnings/W3]")
     }
 }
+
+impl ToDiagnostic for crate::UnusedImport {
+    fn to_diagnostic(&self) -> Diagnostic {
+        Diagnostic::warning(format!("unused import `{}`", self.name))
+            .with_code("W0201")
+            .with_primary(self.span, "nothing uses this")
+            .with_fix("remove the import")
+            .with_why("an import nothing uses is usually left over from an edit [tool.warnings/W1]")
+    }
+}

@@ -2,7 +2,6 @@
 // A `flatten` item pinned to a narrower integer by the body is rejected, not
 // truncated (#2045). The source settles after the body is checked, so the
 // error lands on the loop.
-import sequence.Sequence
 
 func half(x: i32) -> i32 {
     return x / 2

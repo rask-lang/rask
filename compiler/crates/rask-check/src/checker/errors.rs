@@ -524,6 +524,16 @@ pub enum TypeError {
     /// type.enums/PM7: a `match` arm that can never run, because a catch-all
     /// above it takes every value or an unguarded arm above it already tests
     /// the same variant.
+    /// tool.warnings/W4 (`unreachable_code`, W0902): a statement after one
+    /// control never gets past.
+    #[error("unreachable code")]
+    UnreachableCode {
+        /// The first statement nothing reaches.
+        span: Span,
+        /// The statement that stops control.
+        after: Span,
+        leaves: super::unreachable::Leaves,
+    },
     #[error("unreachable match arm")]
     UnreachableArm {
         /// The arm that took this one's values, written as it reads.
@@ -2153,6 +2163,7 @@ impl TypeError {
             | StagedOnLocal { .. }
             | StagedOutsideWith { .. }
             | TornLockUpdate { .. }
+            | UnreachableCode { .. }
             | UnreachableArm { .. }
 
             | NoAllocViolation { .. }

@@ -400,8 +400,6 @@ test "chained catch — second fails" {
 
 // ─── HTTP types (Response constructors, Request.path) ───────────
 
-import http
-
 test "Response.ok creates 200 response" {
     let resp = Response.ok("hello")
     assert resp.status == 200

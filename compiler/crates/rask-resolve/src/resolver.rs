@@ -52,6 +52,8 @@ pub struct Resolver {
     extern_symbols: HashMap<String, SymbolId>,
     /// What an import path names, and from which package each file imports.
     import_index: crate::ImportIndex,
+    /// See [`crate::PackageBuild::renamed`].
+    renamed: HashMap<String, HashMap<String, String>>,
     file_package_ids: HashMap<u16, PackageId>,
     imported_symbols: HashSet<String>,
     /// Packages the manifest declares under a `scope` this build doesn't
@@ -113,6 +115,15 @@ pub struct Resolver {
     write_only: HashSet<NodeId>,
     /// The function being resolved says `@allow(unused_variable)`.
     allow_unused_variable: bool,
+    /// The program's imports, for the unused-import warning
+    /// (tool.warnings/W1).
+    program_imports: Vec<crate::ProgramImport>,
+    /// Each name the program's code refers to, with the package the
+    /// reference is in. An import counts as used when its package names it.
+    /// Package-wide rather than per file, because that's how far an import
+    /// reaches in the resolver: a warning that says "remove this" must never
+    /// be wrong about the build still compiling afterwards.
+    used_names: HashSet<(Option<crate::PackageId>, String)>,
 }
 
 impl Resolver {
@@ -126,6 +137,7 @@ impl Resolver {
             field_type_pattern_names: HashMap::new(),
             current_package: None,
             import_index: crate::ImportIndex::default(),
+            renamed: HashMap::new(),
             extern_symbols: HashMap::new(),
             file_package_ids: HashMap::new(),
             imported_symbols: HashSet::new(),
@@ -143,6 +155,8 @@ impl Resolver {
             local_bindings: Vec::new(),
             write_only: HashSet::new(),
             allow_unused_variable: false,
+            program_imports: Vec::new(),
+            used_names: HashSet::new(),
         };
 
         resolver.register_builtins();
@@ -548,7 +562,10 @@ impl Resolver {
         let crate::ResolveInput { decls, stdlib, package } = input;
         let mut resolver = Resolver::new();
         let (external_decls, file_packages, package_deps) = match package {
-            Some((registry, current_package)) => resolver.load_packages(registry, current_package),
+            Some(build) => {
+                resolver.renamed = build.renamed.clone();
+                resolver.load_packages(build.registry, build.id)
+            }
             None => Default::default(),
         };
 
@@ -571,6 +588,7 @@ impl Resolver {
 
         if resolver.errors.is_empty() {
             let unused_locals = resolver.unused_locals();
+            let unused_imports = resolver.unused_imports();
             Ok(ResolvedProgram {
                 symbols: resolver.symbols,
                 resolutions: resolver.resolutions,
@@ -580,6 +598,7 @@ impl Resolver {
                 package_deps,
                 field_type_pattern_names: resolver.field_type_pattern_names,
                 unused_locals,
+                unused_imports,
             })
         } else {
             resolver.name_unlinked_scopes();
@@ -885,6 +904,7 @@ impl Resolver {
                 DeclKind::Impl(_) => {}
                 DeclKind::Import(import_decl) => {
                     self.resolve_import(import_decl, decl.span);
+                    self.record_program_import(import_decl, decl.span);
                 }
                 DeclKind::Export(export_decl) => {
                     self.resolve_export(export_decl, decl.span);
@@ -1931,6 +1951,116 @@ impl Resolver {
         }
     }
 
+    /// The package a span's file belongs to; `None` outside a package build.
+    fn package_of(&self, span: Span) -> Option<crate::PackageId> {
+        self.file_package_ids.get(&span.file_id).copied()
+    }
+
+    /// The code at `span` refers to `name`, which may be what an import
+    /// brought in. A dotted name (`Shape.Circle`, `pkg.Struct`) counts as
+    /// its first segment, the part an import binds.
+    fn note_use(&mut self, name: &str, span: Span) {
+        if self.stdlib_mode {
+            return;
+        }
+        let root = name.split('.').next().unwrap_or(name);
+        let pkg = self.package_of(span);
+        self.used_names.insert((pkg, root.to_string()));
+    }
+
+    /// The interfaces a declaration names outside any type annotation: bounds
+    /// on its type parameters, the interface an `implements` block is for, an
+    /// interface's super-interfaces. An import used only there is still used.
+    fn note_interface_uses(&mut self, decl: &Decl) {
+        if self.stdlib_mode {
+            return;
+        }
+        let mut tys: Vec<&TypeExpr> = Vec::new();
+        fn bounds(params: &[TypeParam]) -> impl Iterator<Item = &TypeExpr> {
+            params.iter().flat_map(|p| p.bounds.iter().map(|b| &b.ty))
+        }
+        match &decl.kind {
+            DeclKind::Fn(f) => tys.extend(bounds(&f.type_params)),
+            DeclKind::Struct(s) => tys.extend(bounds(&s.type_params)),
+            DeclKind::Enum(e) => tys.extend(bounds(&e.type_params)),
+            DeclKind::Interface(t) => {
+                tys.extend(bounds(&t.type_params));
+                tys.extend(t.super_interfaces.iter());
+                for m in &t.methods {
+                    tys.extend(bounds(&m.type_params));
+                }
+            }
+            DeclKind::Impl(i) => {
+                tys.extend(bounds(&i.where_bounds));
+                tys.extend(i.interface.iter());
+                for m in &i.methods {
+                    tys.extend(bounds(&m.type_params));
+                }
+            }
+            _ => {}
+        }
+        let mut roots: Vec<String> = Vec::new();
+        for ty in tys {
+            ty.walk_paths(&mut |path| roots.push(path[0].clone()));
+        }
+        for root in roots {
+            self.note_use(&root, decl.span);
+        }
+    }
+
+    /// Keep an import for the unused-import warning when it's the program's
+    /// own. A glob import binds names the program never wrote, so there's no
+    /// one name to look for; IM6 already warns about it.
+    fn record_program_import(&mut self, import_decl: &ImportDecl, span: Span) {
+        let other_package = self.current_package.is_some()
+            && self.package_of(span) != self.current_package;
+        if self.stdlib_mode || other_package || import_decl.is_glob {
+            return;
+        }
+        let Some(last) = import_decl.path.last() else { return };
+        let binding = import_decl.alias.clone().unwrap_or_else(|| last.clone());
+        self.program_imports.push(crate::ProgramImport {
+            binding,
+            path: import_decl.path.clone(),
+            span,
+            package: self.package_of(span),
+        });
+    }
+
+    /// The names a use of `import` can arrive as: its binding, and in a
+    /// package build the merged names of what it brings in. A dependency's
+    /// names reach the resolver already renamed to carry their origin
+    /// (`libpkg.greet` and an imported `Dog` arrive as `greet_libpkg` and
+    /// `Dog_libpkg`), so there the binding itself never shows up.
+    fn import_use_names(&self, import: &crate::ProgramImport) -> Vec<String> {
+        let mut names = vec![import.binding.clone()];
+        let path = &import.path;
+        let Some((pkg, n)) = self.import_index.package(path, import.package) else { return names };
+        let Some(renamed) = self.import_index.key(pkg).and_then(|key| self.renamed.get(key)) else {
+            return names;
+        };
+        if n == path.len() {
+            names.extend(renamed.values().cloned());
+        } else if n + 1 == path.len() {
+            names.extend(renamed.get(&path[n]).cloned());
+        }
+        names
+    }
+
+    /// Imports nothing in their package refers to (tool.warnings/W1).
+    fn unused_imports(&self) -> Vec<crate::UnusedImport> {
+        let mut unused: Vec<crate::UnusedImport> = self
+            .program_imports
+            .iter()
+            .filter(|i| {
+                !self.import_use_names(i).into_iter().any(|n| self.used_names.contains(&(i.package, n)))
+            })
+            .map(|i| crate::UnusedImport { name: i.binding.clone(), span: i.span })
+            .collect();
+        unused.sort_by_key(|u| (u.span.file_id, u.span.start));
+        unused
+    }
+
     /// `let`/`mut` bindings nothing reads (tool.warnings/W3). `_` in front
     /// of the name says it's meant. Assigning a binding isn't reading it, so
     /// `mut total = 0` followed only by `total = 5` is still unused.
@@ -2304,6 +2434,7 @@ impl Resolver {
 
     /// Report `name` as needing an import, once. True when it did.
     fn report_missing_import(&mut self, name: &str, span: Span) -> bool {
+        self.note_use(name, span);
         let Some(module) = self.needs_import_from(name) else { return false };
         if !self.reported_missing_imports.insert(name.to_string()) {
             // Already said. Still "yes, this name needs an import" for callers
@@ -2385,6 +2516,7 @@ impl Resolver {
     /// on whether the `import` line happened to come first in the file.
     fn check_annotations(&mut self, decls: &[Decl]) {
         for decl in decls {
+            self.note_interface_uses(decl);
             match &decl.kind {
                 DeclKind::Struct(s) => {
                     self.push_type_params(Self::declared_type_params(&s.type_params));
@@ -2504,9 +2636,13 @@ impl Resolver {
                     self.resolve_expr(&arg.expr);
                 }
             }
-            ExprKind::MethodCall { object, method, args, .. } => {
+            ExprKind::MethodCall { object, method, type_args, args } => {
+                for arg in type_args.iter().flatten() {
+                    self.check_type_annotation(arg, expr.span);
+                }
                 // Check for calls on external packages: lib.greet()
                 if let Some(name) = object.name() {
+                    self.note_use(name, object.span);
                     if let Some(sym_id) = self.scopes.lookup(name) {
                         if let Some(sym) = self.symbols.get(sym_id) {
                             if let SymbolKind::ExternalPackage { package_id } = &sym.kind {
@@ -2554,6 +2690,7 @@ impl Resolver {
             }
             ExprKind::Field { object, field } => {
                 if let Some(name) = object.name() {
+                    self.note_use(name, object.span);
                     // Check for qualified access on external packages
                     if let Some(sym_id) = self.scopes.lookup(name) {
                         if let Some(sym) = self.symbols.get(sym_id) {
@@ -2739,6 +2876,7 @@ impl Resolver {
                 }
             }
             ExprKind::StructLit { name, type_args, fields, spread } => {
+                self.note_use(name, expr.span);
                 for arg in type_args {
                     self.check_type_annotation(arg, expr.span);
                 }
@@ -2981,7 +3119,10 @@ impl Resolver {
                 // field-less struct named after itself (`struct time {}`), so
                 // it looks like a type here, and it is never one a pattern
                 // tests for. `EngineStart(time) => …` binds `time`.
-                if self.pattern_name_is_not_a_binding(name) {
+                // A dotted name (`ReceiveError.Cancelled`, `j.JsonError`)
+                // names a variant or a type; a binding is one identifier.
+                if name.contains('.') || self.pattern_name_is_not_a_binding(name) {
+                    self.note_use(name, pattern.span);
                     return;
                 }
                 self.define_pattern_binding(name);
@@ -2990,14 +3131,13 @@ impl Resolver {
                 self.resolve_expr(expr);
             }
             PatternKind::Constructor { name, fields } => {
-                if let Some(sym_id) = self.scopes.lookup(name) {
-                    let _ = sym_id;
-                }
+                self.note_use(name, pattern.span);
                 for field_pattern in fields {
                     self.resolve_pattern(field_pattern);
                 }
             }
             PatternKind::Struct { name, fields, .. } => {
+                self.note_use(name, pattern.span);
                 for (field, field_pattern) in fields {
                     // `Cash(amount: i32)`: after the colon goes a pattern, and a
                     // bare type name there tests the field's type (ER27); it
@@ -3047,7 +3187,8 @@ impl Resolver {
                 }
             }
             PatternKind::Range { .. } => {}
-            PatternKind::TypePat { binding, .. } => {
+            PatternKind::TypePat { ty, binding } => {
+                self.check_type_annotation(ty, pattern.span);
                 if let Some(name) = binding {
                     let sym_id = self.symbols.insert(
                         name.clone(),
@@ -3459,7 +3600,7 @@ mod tests {
         );
 
         let decls = vec![make_fn_decl("main")];
-        let result = crate::resolve(ResolveInput { decls: &decls, stdlib: &[], package: Some((&registry, pkg_id)) });
+        let result = crate::resolve(ResolveInput { decls: &decls, stdlib: &[], package: Some(crate::PackageBuild { registry: &registry, id: pkg_id, renamed: &HashMap::new() }) });
         assert!(result.is_ok(), "Package resolution should succeed");
     }
 
@@ -3485,7 +3626,7 @@ mod tests {
             make_fn_decl("main"),
         ];
 
-        let result = crate::resolve(ResolveInput { decls: &decls, stdlib: &[], package: Some((&registry, main_pkg)) });
+        let result = crate::resolve(ResolveInput { decls: &decls, stdlib: &[], package: Some(crate::PackageBuild { registry: &registry, id: main_pkg, renamed: &HashMap::new() }) });
         assert!(result.is_ok(), "Package with import should resolve");
     }
 
@@ -3560,7 +3701,7 @@ mod tests {
             make_fn_decl("main"),
         ];
 
-        let result = crate::resolve(ResolveInput { decls: &decls, stdlib: &[], package: Some((&registry, app_pkg)) });
+        let result = crate::resolve(ResolveInput { decls: &decls, stdlib: &[], package: Some(crate::PackageBuild { registry: &registry, id: app_pkg, renamed: &HashMap::new() }) });
         assert!(result.is_ok(), "Cross-package import should resolve: {:?}", result.err());
 
         // Verify the import created an ExternalPackage symbol
@@ -3603,7 +3744,7 @@ mod tests {
         ];
 
         // A member the package doesn't export names nothing here.
-        let result = crate::resolve(ResolveInput { decls: &decls, stdlib: &[], package: Some((&registry, app_pkg)) });
+        let result = crate::resolve(ResolveInput { decls: &decls, stdlib: &[], package: Some(crate::PackageBuild { registry: &registry, id: app_pkg, renamed: &HashMap::new() }) });
         let errors = result.expect_err("a private member isn't importable");
         assert!(
             errors.iter().any(|e| matches!(&e.kind, crate::ResolveErrorKind::UndefinedSymbol { name, .. } if name == "internal_helper")),
@@ -3637,7 +3778,7 @@ mod tests {
             make_fn_decl("main"),
         ];
 
-        let result = crate::resolve(ResolveInput { decls: &decls, stdlib: &[], package: Some((&registry, app_pkg)) });
+        let result = crate::resolve(ResolveInput { decls: &decls, stdlib: &[], package: Some(crate::PackageBuild { registry: &registry, id: app_pkg, renamed: &HashMap::new() }) });
         assert!(result.is_ok(), "Unqualified import should resolve: {:?}", result.err());
 
         // Verify greet is in scope as a Function symbol (not a dummy Variable)
@@ -3677,7 +3818,7 @@ mod tests {
             make_fn_decl("main"),
         ];
 
-        let result = crate::resolve(ResolveInput { decls: &decls, stdlib: &[], package: Some((&registry, app_pkg)) });
+        let result = crate::resolve(ResolveInput { decls: &decls, stdlib: &[], package: Some(crate::PackageBuild { registry: &registry, id: app_pkg, renamed: &HashMap::new() }) });
         assert!(result.is_ok(), "Struct import should resolve: {:?}", result.err());
 
         let resolved = result.unwrap();
@@ -3803,7 +3944,7 @@ mod tests {
             make_fn_decl("main"),
         ];
 
-        let result = crate::resolve(ResolveInput { decls: &decls, stdlib: &[], package: Some((&registry, app_pkg)) });
+        let result = crate::resolve(ResolveInput { decls: &decls, stdlib: &[], package: Some(crate::PackageBuild { registry: &registry, id: app_pkg, renamed: &HashMap::new() }) });
         assert!(result.is_ok(), "Should resolve: {:?}", result.err());
 
         let resolved = result.unwrap();
@@ -3873,7 +4014,7 @@ mod tests {
             make_import_decl(vec!["liba"], None, false, false),
             make_fn_decl("main"),
         ];
-        let resolved = crate::resolve(ResolveInput { decls: &decls, stdlib: &[], package: Some((&registry, app)) })
+        let resolved = crate::resolve(ResolveInput { decls: &decls, stdlib: &[], package: Some(crate::PackageBuild { registry: &registry, id: app, renamed: &HashMap::new() }) })
             .expect("should resolve");
 
         let ext = resolved.external_decls.get("liba").expect("liba exports");
@@ -3939,7 +4080,7 @@ mod tests {
             make_fn_decl("main"),
         ];
 
-        let result = crate::resolve(ResolveInput { decls: &decls, stdlib: &[], package: Some((&registry, app_pkg)) });
+        let result = crate::resolve(ResolveInput { decls: &decls, stdlib: &[], package: Some(crate::PackageBuild { registry: &registry, id: app_pkg, renamed: &HashMap::new() }) });
         assert!(result.is_ok());
 
         let resolved = result.unwrap();
@@ -4019,7 +4160,7 @@ mod tests {
             main_decl,
         ];
 
-        let result = crate::resolve(ResolveInput { decls: &decls, stdlib: &[], package: Some((&registry, app_pkg)) });
+        let result = crate::resolve(ResolveInput { decls: &decls, stdlib: &[], package: Some(crate::PackageBuild { registry: &registry, id: app_pkg, renamed: &HashMap::new() }) });
         assert!(result.is_ok(), "Should resolve: {:?}", result.err());
 
         let resolved = result.unwrap();

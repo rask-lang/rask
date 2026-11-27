@@ -5,7 +5,6 @@
 // `T: Equal` takes each of them: a tuple or an optional when its parts are,
 // and a link by identity, whatever its node holds.
 
-import memory.Link
 import memory.Rack
 
 struct Node {

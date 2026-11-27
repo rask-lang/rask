@@ -10,7 +10,6 @@
 // permutation, same pick. The walk is Fisher-Yates from the last index down,
 // drawing `next_u64() % (i + 1)`, which is what the interpreter does.
 
-import random
 import random.Random
 
 test "std.random — the same seed gives the same sequence" {

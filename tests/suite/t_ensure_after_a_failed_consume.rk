@@ -20,7 +20,6 @@
 func joined_after_panic() -> i64 {
     let h = spawn {
         panic("boom")
-        return 1
     }
     ensure h.detach()
     let v = h.join() catch e => { return -1 }
@@ -30,7 +29,6 @@ func joined_after_panic() -> i64 {
 func joined_in_a_match() -> i64 {
     let h = spawn {
         panic("boom")
-        return 1
     }
     ensure h.detach()
     match h.join() {
