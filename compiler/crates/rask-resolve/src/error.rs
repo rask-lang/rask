@@ -15,7 +15,7 @@ pub struct ResolveError {
 impl ResolveError {
     pub fn undefined(name: String, span: Span) -> Self {
         Self {
-            kind: ResolveErrorKind::UndefinedSymbol { name },
+            kind: ResolveErrorKind::UndefinedSymbol { name, similar: None },
             span,
         }
     }
@@ -70,6 +70,10 @@ impl ResolveError {
             kind: ResolveErrorKind::InvalidBreak { label },
             span,
         }
+    }
+
+    pub fn break_value_from_comptime_for(span: Span) -> Self {
+        Self { kind: ResolveErrorKind::BreakValueFromComptimeFor, span }
     }
 
     pub fn invalid_continue(label: Option<String>, span: Span) -> Self {
@@ -197,7 +201,11 @@ impl ResolveError {
 #[derive(Debug, Clone, Error)]
 pub enum ResolveErrorKind {
     #[error("undefined symbol: {name}")]
-    UndefinedSymbol { name: String },
+    UndefinedSymbol {
+        name: String,
+        /// A name in scope one typo away, for "did you mean".
+        similar: Option<String>,
+    },
 
     /// A stdlib module or type name used with no `import` for it (IM1).
     #[error("`{name}` is used but never imported")]
@@ -233,6 +241,10 @@ pub enum ResolveErrorKind {
 
     #[error("break outside of loop{}", label.as_ref().map(|l| format!(" (label: {})", l)).unwrap_or_default())]
     InvalidBreak { label: Option<String> },
+
+    /// `break value` whose loop is a `comptime for`, which has no value.
+    #[error("break with a value out of a comptime for")]
+    BreakValueFromComptimeFor,
 
     #[error("`{name}` is neither a variable to break with nor a label to break to")]
     UnknownBreakTarget { name: String, labels: Vec<String> },

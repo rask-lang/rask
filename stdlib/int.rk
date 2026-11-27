@@ -12,6 +12,23 @@
 // the compiler registers for every width (type.operator-resolution/OR2).
 
 extend Integer {
+    // ── Numeric's constructors (type.primitives/NT1) ────────────
+    // What `T.zero()` in a body bounded by `T: Numeric` calls, and what a
+    // newtype over an integer delegates its own `zero()` to.
+
+    public func zero() -> Self {
+        return 0
+    }
+
+    public func one() -> Self {
+        return 1
+    }
+
+    /// `n` at this width. One that doesn't fit panics, like `.to<Self>()!`.
+    public func from_int(n: i64) -> Self {
+        return n.to<Self>()!
+    }
+
     /// The magnitude. An unsigned value is its own.
     @builtin
     public func abs(self) -> Self {}

@@ -15,6 +15,20 @@ pub struct FieldSlot {
     pub field: u32,
 }
 
+/// What dropping an interface object's box does about the value inside it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BoxRelease {
+    /// The value was moved into the box, so the box's release gives it back
+    /// through the vtable's `owned_release`, and the block with it.
+    Owns,
+    /// The box only borrowed the value, which the frame keeps and releases
+    /// itself. The block alone is freed.
+    Borrows,
+    /// A `take self` call consumed the value: the method released it. The block
+    /// alone is freed.
+    Taken,
+}
+
 /// MIR statement kind — no control flow
 #[derive(Debug, Clone)]
 pub enum MirStmtKind {
@@ -70,7 +84,13 @@ pub enum MirStmtKind {
     /// Deregister the most recent ensure hook. Emitted at the top of the inline
     /// cleanup block, so a normal scope exit removes the hook (the inline path
     /// runs the body) and only a panic reaches it through `rask_ensure_run_all`.
-    EnsureHookPop,
+    ///
+    /// `kept` are the locals the hook holds by reference. The pop reads them,
+    /// which is what keeps each one owned from where the hook was registered
+    /// to here: a panic anywhere in between runs the hook, and a body that
+    /// writes one of them releases what it replaces, so the value has to
+    /// still be there to release.
+    EnsureHookPop { kept: Vec<LocalId> },
     /// From here on this frame owns what `value` holds: store it in slot
     /// `slot` of the frame's unwind record, so a panic that abandons the frame
     /// releases it (ctrl.panic/U6).
@@ -105,10 +125,10 @@ pub enum MirStmtKind {
         dst: Option<LocalId>,
         closure: LocalId,
         args: Vec<MirOperand>,
-        /// Which arguments go to a `take` parameter, from the function value's
-        /// type: those the callee owns from here, the rest it borrows. Shorter
-        /// than `args` (or empty) means the rest are borrowed.
-        taken: Vec<bool>,
+        /// How the closure's type takes each argument, one per `args` entry.
+        /// Only a `take` parameter can keep what it's handed (`mem.closures/CP1`);
+        /// the body behind the call is often unknown (a sequence's callback).
+        modes: Vec<rask_ast::ty::ParamMode>,
     },
     /// Get at a captured variable through the closure environment pointer.
     LoadCapture {
@@ -116,6 +136,15 @@ pub enum MirStmtKind {
         env_ptr: LocalId,
         offset: u32,
         access: CaptureAccess,
+    },
+    /// `dst` names the storage at `addr`, which this frame doesn't own: a
+    /// collection element bound by `with v[i] as x` or `for mutate`. Reads and
+    /// writes of `dst` go through the address, the way a by-reference
+    /// capture's do, and nothing here frees it. Binding a copy instead and
+    /// writing it back at the end lost every write a panic interrupted (#1922).
+    BindPlace {
+        dst: LocalId,
+        addr: LocalId,
     },
     /// Free a heap-allocated closure. `made` is the `ClosureCreate` that built
     /// it, when one did: the closure is freed under whichever name still holds
@@ -125,23 +154,16 @@ pub enum MirStmtKind {
         closure: LocalId,
         made: Option<LocalId>,
     },
-    /// Take one more reference to a heap closure this frame only borrows,
-    /// because it is about to hand the closure to something that keeps it
-    /// and will free it. The closure's owner still frees its own reference.
-    ///
-    /// `made` is the `ClosureCreate` that built it, when this frame owns it
-    /// and is sharing it with a keeper: then the frame's own `closure_drop`
-    /// isn't the block's last reference, so what the closure captured is the
-    /// environment's to free, not the frame's. A label, not a read.
-    ClosureRetain {
-        closure: LocalId,
-        made: Option<LocalId>,
-    },
-    /// Store into a fixed-size array element: base_ptr[index * elem_size] = value
+    /// Store into a fixed-size array element: base_ptr[index * elem_size] = value.
+    /// `base` holds the array's address: the array local itself, or a `Ptr`
+    /// to an array inside an aggregate (`self.buf[i] = b`).
     ArrayStore {
         base: LocalId,
         index: MirOperand,
         elem_size: u32,
+        /// The element lives in its slot (`stored_inline_in_array`), so
+        /// `value` is its address and the store copies `elem_size` bytes.
+        inline: bool,
         value: MirOperand,
     },
     /// Load the address of a comptime global data section.
@@ -159,22 +181,34 @@ pub enum MirStmtKind {
         /// The box's block is aligned to this; the vtable carries it to the
         /// runtime, which reads it back on release.
         concrete_align: u32,
+        /// The vtable's name in monomorphization's table, which says what
+        /// its slots hold.
         vtable_name: String,
+        /// The value is a literal written where it is boxed: nothing else
+        /// names it, so the box is its only owner and releases what is inside.
+        /// Any other value is a name the frame goes on holding, or one a
+        /// caller handed it, and the box only borrows it.
+        owns_value: bool,
     },
     /// Call a method through an interface object's vtable.
+    ///
+    /// `takes_receiver` is the interface's own word on the method: it is
+    /// declared `take self`. The box is the call's from there on. The method
+    /// releases the value inside like any `take` parameter, and the box's block
+    /// is freed by the caller (`BoxRelease::Taken`).
     InterfaceCall {
         dst: Option<LocalId>,
         interface_object: LocalId,
         method_name: String,
         vtable_offset: u32,
         args: Vec<MirOperand>,
+        takes_receiver: bool,
     },
-    /// Drop an interface object's box. With `owns`, the value inside is the
-    /// box's and is released through the vtable's `owned_release` first;
-    /// without, the box only borrowed it and the block alone is freed.
+    /// Drop an interface object's box. What happens to the value inside is
+    /// `release`'s.
     InterfaceDrop {
         interface_object: LocalId,
-        owns: bool,
+        release: BoxRelease,
     },
     /// SSA phi node — selects a value based on which predecessor block was executed.
     /// Always appears at the start of a block; removed by de-SSA before codegen.
@@ -221,6 +255,10 @@ pub enum MirStmtKind {
     /// retains its elements.
     RcIncContents {
         local: LocalId,
+        /// Taken by the release pass for one hand-off: the keeper gets
+        /// these references. Without it, the binding owns its copy for
+        /// life (lowering's retain of a value copied out of a place).
+        for_hand_off: bool,
     },
     /// Release what a slot holds, just before something else is written over it.
     ///
@@ -330,6 +368,13 @@ pub struct ClosureCapture {
     /// the frame is inlined into its caller the capture looks like the
     /// caller's own local, and freeing it freed the caller's Vec (#1679).
     pub lent: bool,
+    /// What the environment owns in this slot, as a type with its containers
+    /// named, or `None` when it owns nothing there. A carried capture was
+    /// moved in (mem.closures/CM2), so the environment gives it back when the
+    /// closure dies and copies it when the closure is cloned (CV2). Codegen
+    /// turns it into the owned-entry list the closure's header carries; the
+    /// runtime walks that list, the same one a `Vec` element type gets.
+    pub owns: Option<crate::MirType>,
 }
 
 /// Lay out a closure environment: each capture at its own alignment, in
@@ -339,19 +384,26 @@ pub struct ClosureCapture {
 /// `items` is (local, type, by_ref, copy) per capture.
 pub fn lay_out_captures(
     items: impl IntoIterator<Item = (LocalId, crate::MirType, bool, bool)>,
+    target: rask_ast::Target,
 ) -> Vec<ClosureCapture> {
-    let mut end = 0u32;
+    let items: Vec<_> = items.into_iter().collect();
+    let parts: Vec<(u32, u32)> = items
+        .iter()
+        .map(|(_, ty, by_ref, _)| {
+            if *by_ref {
+                (target.word(), target.word())
+            } else {
+                rask_layout::size_align_of(ty, target)
+            }
+        })
+        .collect();
+    let (offsets, _, _) = rask_layout::tuple_layout(parts.iter().copied());
     items
         .into_iter()
-        .map(|(local_id, ty, by_ref, copy)| {
-            let (size, align) = if by_ref {
-                (crate::MirType::word(), crate::MirType::word())
-            } else {
-                (ty.size(), ty.align().max(1))
-            };
-            let offset = end.next_multiple_of(align);
-            end = offset + size;
-            ClosureCapture { local_id, offset, size, by_ref, copy, lent: false }
+        .zip(parts)
+        .zip(offsets)
+        .map(|(((local_id, _, by_ref, copy), (size, _)), offset)| {
+            ClosureCapture { local_id, offset, size, by_ref, copy, lent: false, owns: None }
         })
         .collect()
 }

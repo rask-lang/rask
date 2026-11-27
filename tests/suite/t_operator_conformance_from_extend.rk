@@ -1,0 +1,63 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+// An empty operator conformance answers with the type's own method:
+// `V2 implements Mul<V2> { }` beside `extend V2 { func mul(…) }`. A call
+// through a `T: Mul<T>` bound asked for the conformance's method by the name
+// a method written in the block is filed under, and natively nothing by that
+// name existed (#1946).
+
+import time.Duration
+
+struct V2 {
+    x: i64
+    y: i64
+}
+
+extend V2 {
+    public func add(self, other: V2) -> V2 {
+        return V2(x: self.x + other.x, y: self.y + other.y)
+    }
+
+    public func mul(self, other: V2) -> V2 {
+        return V2(x: self.x * other.x, y: self.y * other.y)
+    }
+}
+
+V2 implements Add<V2> { }
+V2 implements Mul<V2> { }
+
+func dbl<T: Add<T>>(x: T) -> T {
+    return x.add(x)
+}
+
+func sq<T: Mul<T>>(x: T) -> T {
+    return x.mul(x)
+}
+
+test "a bound reaches a conformance answered by an extend method" {
+    let v = sq(V2(x: 3, y: 4))
+    assert v.x == 9
+    assert v.y == 16
+    let w = dbl(V2(x: 3, y: 4))
+    assert w.x == 6
+    assert w.y == 8
+}
+
+test "primitives still answer through the same bound" {
+    assert dbl(21) == 42
+    assert sq(9) == 81
+    assert dbl(1.5) == 3.0
+    assert sq(1.5) == 2.25
+    let d = 3 * Duration.seconds(2)
+    assert d.as_seconds() == 6
+}
+
+test "the operator and the method call reach the same method" {
+    let a = V2(x: 2, y: 5)
+    let b = a * a
+    let c = a.mul(a)
+    assert b.x == c.x
+    assert b.y == c.y
+    let s = a + a
+    assert s.x == 4
+}

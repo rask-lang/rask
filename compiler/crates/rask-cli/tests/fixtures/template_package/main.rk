@@ -1,0 +1,24 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Two instances of one template at types that share a name, one from a
+// sub-module: each call reaches its own copy.
+import std.reflect
+import helpers
+
+struct Item {
+    a: i64
+    b: i64
+    c: i64
+}
+
+func names<T>(v: T) -> string {
+    mut out = ""
+    comptime for f in reflect.fields<T>() {
+        out = "{out}{f.name},"
+    }
+    return out
+}
+
+func main() {
+    println(names(Item(a: 1, b: 2, c: 3)))
+    println(names(helpers.Item(id: 1, tag: "t")))
+}

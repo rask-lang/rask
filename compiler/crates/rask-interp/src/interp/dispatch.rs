@@ -22,13 +22,18 @@ impl Interpreter {
     /// else, with no `mutate` marker, so the binding is read back out before
     /// the scope is popped. Whether the closure was *allowed* to write is the
     /// checker's business, and it already enforces `mutate`.
+    ///
+    /// The element comes back even when the call fails: a panic after the
+    /// closure wrote `x = 99` leaves 99 behind, as the closure works on the
+    /// element in place natively (#1926). The caller writes it back and then
+    /// passes the failure on.
     pub(crate) fn call_closure_keeping_arg(
         &mut self,
         func: Value,
         args: Vec<Value>,
-    ) -> Result<(Value, Option<Value>), RuntimeError> {
-        if let Value::Closure { params, body, captured_env, lent, generics, wraps_ok, .. } = func {
-            self.enter_closure(&captured_env, &lent, &generics);
+    ) -> (Result<Value, RuntimeError>, Option<Value>) {
+        if let Value::Closure { params, body, captured_env, lent, generics, ret, .. } = &func {
+            self.enter_closure(captured_env, lent, generics);
             let first = params.first().cloned();
             for (param, arg) in params.iter().zip(args.into_iter()) {
                 self.env.define(param.clone(), arg.copy_on_bind());
@@ -38,12 +43,11 @@ impl Interpreter {
                 diag.error
             });
             let final_arg = first.and_then(|name| self.env.get(&name));
+            // A `try` in the body leaves the closure, as a `return` does,
+            // with the error as its result (#1781).
+            let value = self.closure_outcome(&body, result, *ret);
             self.leave_closure();
-            let value = match result {
-                Ok(v) | Err(RuntimeError::Return(v)) => closure_result(v, wraps_ok),
-                Err(e) => return Err(e),
-            };
-            return Ok((value, final_arg));
+            return (value, final_arg);
         }
         // A named function does declare `mutate`: lend it storage for the
         // argument, and read that back.
@@ -57,12 +61,13 @@ impl Interpreter {
                 depth: self.call_depth,
                 callee: d.name.clone(),
                 slots: vec![Some(cell.clone())],
+                depths: Vec::new(),
             });
             cell
         });
         let value = self.call_value(func, args);
         self.lent_args = None;
-        Ok((value?, lent.and_then(|cell| cell.get())))
+        (value, lent.and_then(|cell| cell.get()))
     }
 
     /// Call a value, keeping where the failure happened.
@@ -108,10 +113,10 @@ impl Interpreter {
         args: Vec<Value>,
         places: Vec<Option<crate::env::Slot>>,
     ) -> Result<Value, RuntimeError> {
-        let Value::Closure { params, body, captured_env, lent, generics, wraps_ok, .. } = closure else {
+        let Value::Closure { params, body, captured_env, lent, generics, ret, .. } = &closure else {
             return self.call_value(closure, args);
         };
-        self.enter_closure(&captured_env, &lent, &generics);
+        self.enter_closure(captured_env, lent, generics);
         for (i, (param, arg)) in params.iter().zip(args.into_iter()).enumerate() {
             match places.get(i).cloned().flatten() {
                 Some(cell) => self.env.define_lent(param.clone(), cell),
@@ -126,23 +131,26 @@ impl Interpreter {
             self.failed_call_span = Some(diag.span);
             diag.error
         });
+        // A `try` in the body leaves the closure, as a `return` does, with
+        // the error as its result. Escaping it left the function that
+        // called the closure instead (#1781).
+        let value = self.closure_outcome(&body, result, *ret);
         self.leave_closure();
-        match result {
-            Ok(v) | Err(RuntimeError::Return(v)) => Ok(closure_result(v, wraps_ok)),
-            Err(e) => Err(e),
-        }
+        value
     }
 
     pub(crate) fn call_value(&mut self, func: Value, args: Vec<Value>) -> Result<Value, RuntimeError> {
-        match func {
+        let mut func = func;
+        match &mut func {
             Value::Function { name, generics } => {
-                if let Some(decl) = self.functions.get(&name).cloned() {
-                    self.call_function(&decl, args, generics).map_err(|diag| diag.error)
+                if let Some(decl) = self.functions.get(name.as_str()).cloned() {
+                    self.call_function(&decl, args, generics.take()).map_err(|diag| diag.error)
                 } else {
-                    Err(RuntimeError::UndefinedFunction(name))
+                    Err(RuntimeError::UndefinedFunction(std::mem::take(name)))
                 }
             }
             Value::Builtin(kind) => {
+                let kind = *kind;
                 // Handle async builtins separately as they need mutable access
                 if kind == BuiltinKind::SequenceYield {
                     return Ok(self.run_yield_body(args));
@@ -153,7 +161,7 @@ impl Interpreter {
                 self.call_builtin(kind, args)
             }
             Value::ModuleFunction { module, function } => {
-                self.call_module_method(&module, &function, args)
+                self.call_module_method(module, function, args)
             }
             Value::EnumConstructor {
                 enum_name,
@@ -161,21 +169,24 @@ impl Interpreter {
                 field_count,
                 variant_index,
             } => {
-                if args.len() != field_count {
+                if args.len() != *field_count {
                     return Err(RuntimeError::ArityMismatch {
-                        expected: field_count,
+                        expected: *field_count,
                         got: args.len(),
                     });
                 }
                 Ok(Value::Enum {
-                    name: enum_name,
-                    variant: variant_name,
+                    name: std::mem::take(enum_name),
+                    variant: std::mem::take(variant_name),
                     fields: args,
-                    variant_index,
+                    variant_index: *variant_index,
                     origin: None,
                 })
             }
-            closure @ Value::Closure { .. } => self.call_closure(closure, args, Vec::new()),
+            closure @ Value::Closure { .. } => {
+                let closure = std::mem::replace(closure, Value::Unit);
+                self.call_closure(closure, args, Vec::new())
+            }
             Value::NominalConstructor { type_name } => {
                 if args.len() != 1 {
                     return Err(RuntimeError::ArityMismatch {
@@ -184,7 +195,7 @@ impl Interpreter {
                     });
                 }
                 Ok(Value::Nominal {
-                    type_name,
+                    type_name: std::mem::take(type_name),
                     inner: Box::new(args.into_iter().next().unwrap()),
                 })
             }
@@ -278,39 +289,6 @@ impl Interpreter {
                     _ => Err(RuntimeError::TypeError(
                         "format() first argument must be a string".into(),
                     )),
-                }
-            }
-            BuiltinKind::Min => {
-                if args.len() != 2 {
-                    return Err(RuntimeError::ArityMismatch { expected: 2, got: args.len() });
-                }
-                match Self::value_cmp(&args[0], &args[1]) {
-                    Some(std::cmp::Ordering::Greater) => Ok(args.into_iter().nth(1).unwrap()),
-                    _ => Ok(args.into_iter().next().unwrap()),
-                }
-            }
-            BuiltinKind::Max => {
-                if args.len() != 2 {
-                    return Err(RuntimeError::ArityMismatch { expected: 2, got: args.len() });
-                }
-                match Self::value_cmp(&args[0], &args[1]) {
-                    Some(std::cmp::Ordering::Less) => Ok(args.into_iter().nth(1).unwrap()),
-                    _ => Ok(args.into_iter().next().unwrap()),
-                }
-            }
-            BuiltinKind::Clamp => {
-                if args.len() != 3 {
-                    return Err(RuntimeError::ArityMismatch { expected: 3, got: args.len() });
-                }
-                let value = &args[0];
-                let lo = &args[1];
-                let hi = &args[2];
-                if Self::value_cmp(value, lo) == Some(std::cmp::Ordering::Less) {
-                    Ok(args.into_iter().nth(1).unwrap())
-                } else if Self::value_cmp(value, hi) == Some(std::cmp::Ordering::Greater) {
-                    Ok(args.into_iter().nth(2).unwrap())
-                } else {
-                    Ok(args.into_iter().next().unwrap())
                 }
             }
             BuiltinKind::Skip => {
@@ -429,6 +407,7 @@ impl Interpreter {
             Value::Vec(_) => "Vec".to_string(),
             Value::Map(_) => "Map".to_string(),
             Value::Rack(_) => "Rack".to_string(),
+            Value::Staged(_) => "Staged".to_string(),
             Value::Duration(_) => "Duration".to_string(),
             Value::Instant(_) => "Instant".to_string(),
             Value::File(_) => "File".to_string(),
@@ -471,7 +450,7 @@ impl Interpreter {
                 crate::build_context::call_method(state, method, args)
                     .map_err(RuntimeError::Generic)
             }
-            Value::RawPtr(p) => crate::ptr::call_ptr_method(p, method, args),
+            Value::RawPtr(p) => crate::ptr::call_ptr_method(p, method, args, self.types.target()),
             Value::SimdF32x8(data) => match method {
                 "sum" => {
                     let sum: f32 = data.iter().sum();
@@ -884,70 +863,40 @@ impl Interpreter {
         };
 
         let closure = args[2].clone();
+        if !matches!(closure, Value::Closure { .. }) {
+            return Err(RuntimeError::TypeError("step: body must be a closure".into()));
+        }
 
         let state = self.build_state.as_ref().ok_or_else(|| {
             RuntimeError::Generic("step() used outside build script".into())
         })?;
 
-        // Check if step cache exists and inputs haven't changed
-        if let Some(ref cache_dir) = state.step_cache_dir {
-            let current_hash = build_context::hash_inputs(
-                &state.package_dir,
-                &inputs,
-                &state.tool_versions,
-            ).map_err(RuntimeError::Generic)?;
-
-            if let Some(cached_hash) = build_context::load_step_hash(cache_dir, &name) {
-                if cached_hash == current_hash {
-                    // Inputs unchanged — skip this step
-                    return Ok(Value::Unit);
+        // ST1: a step whose inputs hash as they did when it last succeeded
+        // doesn't run again.
+        let cached = match &state.step_cache_dir {
+            Some(cache_dir) => {
+                let current = build_context::hash_inputs(&state.package_dir, &inputs, &state.tool_versions)
+                    .map_err(RuntimeError::Generic)?;
+                if build_context::load_step_hash(cache_dir, &name) == Some(current) {
+                    return Ok(Value::ok(Value::Unit));
                 }
+                Some((cache_dir.clone(), current))
             }
+            None => None,
+        };
 
-            // Run the closure body
-            let result = match closure {
-                Value::Closure { params, body, captured_env, lent, generics, .. } => {
-                    if !params.is_empty() {
-                        return Err(RuntimeError::TypeError(
-                            "step body closure must take no parameters".into(),
-                        ));
-                    }
-                    self.enter_closure(&captured_env, &lent, &generics);
-                    let result = self.eval_expr(&body);
-                    self.leave_closure();
-                    result
-                }
-                _ => return Err(RuntimeError::TypeError("step: body must be a closure".into())),
-            };
-
-            // Save hash on success
-            match &result {
-                Ok(_) => {
-                    if let Some(ref cache_dir) = self.build_state.as_ref().and_then(|s| s.step_cache_dir.as_ref()) {
-                        let _ = build_context::save_step_hash(cache_dir, &name, current_hash);
-                    }
-                }
-                Err(_) => {} // Don't cache failed steps
-            }
-
-            result.map_err(|d| d.error)
-        } else {
-            // No cache dir configured — always run
-            match closure {
-                Value::Closure { params, body, captured_env, lent, generics, .. } => {
-                    if !params.is_empty() {
-                        return Err(RuntimeError::TypeError(
-                            "step body closure must take no parameters".into(),
-                        ));
-                    }
-                    self.enter_closure(&captured_env, &lent, &generics);
-                    let result = self.eval_expr(&body);
-                    self.leave_closure();
-                    result.map_err(|d| d.error)
-                }
-                _ => Err(RuntimeError::TypeError("step: body must be a closure".into())),
-            }
+        // The body's own `void or Error` is the step's.
+        let result = self.call_value(closure, Vec::new())?;
+        let failed = matches!(&result, Value::Enum { name, variant, .. } if name == "Result" && variant == "Err");
+        // A body that ran off its end gave back nothing; that's success.
+        let result = match result {
+            r @ Value::Enum { .. } if matches!(&r, Value::Enum { name, .. } if name == "Result") => r,
+            _ => Value::ok(Value::Unit),
+        };
+        if let (Some((cache_dir, hash)), false) = (cached, failed) {
+            let _ = build_context::save_step_hash(&cache_dir, &name, hash);
         }
+        Ok(result)
     }
 }
 
@@ -1020,12 +969,41 @@ impl Interpreter {
 }
 
 
-/// What a closure call hands back. One whose type returns a `T or E` treats a
-/// bare value as the success side, the way a function declared that way does.
-pub(crate) fn closure_result(value: Value, wraps_ok: bool) -> Value {
-    if wraps_ok && !matches!(&value, Value::Enum { name, .. } if name == "Result") {
-        Value::ok(value)
-    } else {
-        value
+impl Interpreter {
+    /// What a closure call hands back, given how its body ended. Call it
+    /// before leaving the closure: the body's type is read in its frame.
+    ///
+    /// A `try` that left hands back the error, already the result's shape.
+    /// Otherwise the value takes the optional layers the closure's type
+    /// declares beyond what the returned expression's type has (`|k| -> i64?
+    /// { return k }` hands back `some(k)`, #2044), and in a `T or E` closure a
+    /// bare value is the success side. The same rules a function's declared
+    /// return applies.
+    pub(crate) fn closure_outcome(
+        &mut self,
+        body: &rask_ast::expr::Expr,
+        ended: Result<Value, RuntimeError>,
+        ret: crate::value::ClosureRet,
+    ) -> Result<Value, RuntimeError> {
+        let (value, have) = match ended {
+            // A body the checker put on the error side, as it does a `return`
+            // (#2021): `|x| Bad(code: x)` in a `func(i64) -> i64 or Bad` slot.
+            Ok(v) if self.err_returns.contains(&body.id) => return Ok(Value::err(v)),
+            Ok(v) => (v, self.static_option_depth(body)),
+            Err(RuntimeError::Return(v)) => (v, self.returned_depth.take()),
+            Err(RuntimeError::TryError(v)) => return Ok(v),
+            Err(e) => return Err(e),
+        };
+        if ret.wraps_ok && matches!(&value, Value::Enum { name, .. } if name == "Result") {
+            return Ok(value);
+        }
+        let value = match ret.layers {
+            Some(want) => {
+                let have = have.unwrap_or_else(|| super::call::option_depth(&value));
+                (have..want).fold(value, |v, _| Value::some(v))
+            }
+            None => value,
+        };
+        Ok(if ret.wraps_ok { Value::ok(value) } else { value })
     }
 }

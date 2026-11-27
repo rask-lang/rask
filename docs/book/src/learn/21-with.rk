@@ -1,0 +1,56 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// 21. Changing an item in a Vec
+//
+// One change to an item in a Vec is one line: `team[i].health -= 3`. For
+// several, you'd want a name for the item. But a Player is too big to copy
+// (step 19), so `let p = team[i]` would be a second name for an item the Vec
+// owns, and a change through either name would change both. That doesn't
+// compile.
+//
+// `with team[i] as p { ... }` names the item where it sits: changing `p`
+// changes the item in the Vec. While the block runs, the Vec can't grow or
+// shrink, because a Vec that grows may move its items somewhere else in
+// memory, and `p` would be left pointing at the old place.
+
+struct Player {
+    name: string
+    health: i32
+    alive: bool
+}
+
+func rest(mutate team: Vec<Player>, i: usize) {
+    with team[i] as p {
+        p.health += 10
+        p.alive = true
+    }
+}
+
+// Positions in a Vec are `usize`, an unsigned integer as wide as a memory
+// address. `len()` gives one too.
+//
+// Your turn: `hit` takes `damage` off player i. If that leaves them at zero
+// or below, their health is 0 and they're no longer alive.
+
+func hit(mutate team: Vec<Player>, i: usize, damage: i32) {
+    todo()
+}
+
+test "hit" {
+    mut team = Vec.from([
+        Player(name: "Ada", health: 10, alive: true)
+        Player(name: "Alan", health: 10, alive: true)
+    ])
+    hit(mutate team, 1, 4)
+    assert team[1].health == 6
+    assert team[1].alive
+    hit(mutate team, 1, 9)
+    assert team[1].health == 0
+    assert !team[1].alive
+    assert team[0].health == 10
+    rest(mutate team, 1)
+    assert team[1].alive
+}
+
+// new: with
+// test-specs: skip: an exercise; tests/tour_gate.sh checks it fails as shipped

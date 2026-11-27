@@ -112,7 +112,9 @@ test "a value that is already there wins over the cancel" {
         ensure tx.close()
         tx.send(7)!
         let h = spawn {
-            time.sleep(Duration.millis(40))
+            // The cancel ends this sleep with an error, which is the point of
+            // the test, so the error is dropped on purpose.
+            let _ = time.sleep(Duration.millis(40))
             return receive_one(rx)
         }
         // Cancelled while asleep: the sleep ends early, and the receive finds
@@ -125,7 +127,7 @@ test "outside a task nothing is cancelled" {
     mut (tx, rx) = Channel<i64>.buffered(1)
     tx.send(3)!
     assert receive_one(rx) == "value 3"
-    tx.close()
+    tx.close()!
 }
 
 func main() {}

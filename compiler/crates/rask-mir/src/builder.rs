@@ -34,8 +34,10 @@ impl BlockBuilder {
             }],
             entry_block,
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
-            source_file: None,
+            param_modes: Vec::new(),
+            item_mode_from_body: false,
         };
 
         Self {
@@ -107,7 +109,9 @@ impl BlockBuilder {
         }
     }
 
-    pub fn add_param(&mut self, name: String, ty: MirType) -> LocalId {
+    /// A parameter, with how it is passed. Every parameter has a mode: what
+    /// the call does with an argument is read off it (`params_a_callee_keeps`).
+    pub fn add_param(&mut self, name: String, ty: MirType, mode: rask_ast::ty::ParamMode) -> LocalId {
         let id = LocalId(self.next_local_id);
         self.next_local_id += 1;
         let local = MirLocal {
@@ -117,6 +121,7 @@ impl BlockBuilder {
             is_param: true,
         };
         self.function.params.push(local.clone());
+        self.function.param_modes.push(mode);
         self.function.locals.push(local);
         id
     }
@@ -263,6 +268,11 @@ impl BlockBuilder {
     pub fn block_terminator_kind(&self, block: BlockId) -> Option<MirTerminatorKind> {
         self.function.blocks.get(block.0 as usize)
             .map(|b| b.terminator.kind.clone())
+    }
+
+    /// A block's terminator, as written so far.
+    pub fn block_terminator(&self, block: BlockId) -> MirTerminator {
+        self.function.blocks[block.0 as usize].terminator.clone()
     }
 
     /// Get the destination local of the last Call statement in the current block.

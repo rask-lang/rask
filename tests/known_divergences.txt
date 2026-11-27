@@ -48,6 +48,8 @@
 #     identity all answer what native answers. The file grew from 6 tests to 16
 #     while it was open; all 16 pass on both backends.
 
+t_rack_link_copies.rk            # interp array/copy/clone links unrecorded — #1803 (interp run)
+
 # --- shared / both-backend bugs ---
 # (t_parse_float was the previous one, fixed in #610: a float payload sits in a
 #  Result slot as an f64, and the parse adapter was writing it at the declared
@@ -136,7 +138,6 @@
 # A stdlib function imported by name instead of spelled `module.f(...)`. Found
 # writing suite coverage for the UNTESTED list (2026-10-20); each file witnesses
 # one bug, and the qualified spelling works on both backends in every case.
-t_fs_handle_imported_ensure.rk   # imported create_file/open — #1601 (native run)
 t_json_imported_calls.rk         # imported encode_pretty not expanded — #1603 (native compile)
 t_random_range_imported.rk       # imported random.range result type open — #1604 (both check)
 
@@ -146,7 +147,6 @@ t_stdout_handle_test_output.rk   # handle writes not captured — #1605 (interp 
 
 # A range with 128-bit bounds: the interpreter range holds i64s.
 t_range_over_i128.rk             # interp range over i128 — #1619 (interp run)
-t_comptime_n_array_param.rk       # comptime N from an array argument left unbound — #1623 (native run)
 
 # A program's conformance to a stdlib interface: the interface's default
 # methods aren't copied into it, so `io.Reader` asks for `read_text`.

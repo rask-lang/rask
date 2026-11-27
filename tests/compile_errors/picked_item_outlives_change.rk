@@ -1,0 +1,75 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Rejects: changing a vector while an item picked or looked up from it is
+// still in use, and returning an item picked from an array or a struct vector
+//
+// Spec: type.sequence (SEQ50), mem.borrowing (S1, S3, S5)
+//
+// `find`, `max_by_key` and the other picks answer with the element where the
+// vector keeps it, the same as `get`. `rows.clear()` while `best` still reads
+// that element freed it under `best`, and returning one gave the caller a
+// second owner of the vector's element. An array holds its elements in place
+// the same way. A vector a call hands back is nobody else's, so a pick over
+// one answers with an item the caller owns.
+//
+// One marker per rejection, on the line the compiler points at.
+
+struct Row {
+    name: string
+    tags: Vec<string>
+}
+
+func load() -> Vec<Row> {
+    return [Row(name: "a", tags: ["x"]), Row(name: "b", tags: ["y", "z"])]
+}
+
+func best_of(rows: Vec<Row>) -> Row? {
+    // ERROR: `rows.max_by_key(…)` hands back what `rows` still holds [E0879]
+    return rows.max_by_key(|r| r.tags.len())
+}
+
+func first_tagged(rows: [Row; 2]) -> Row? {
+    // ERROR: `rows.find(…)` hands back what `rows` still holds [E0879]
+    return rows.find(|r| r.tags.len() > 0)
+}
+
+func cleared_under_pick() -> string {
+    mut rows = load()
+    let best = rows.max_by_key(|r| r.tags.len())
+    // ERROR: `rows` written over while `best` views it [E0958]
+    rows.clear()
+    return (best ?? Row(name: "", tags: Vec.new())).name.clone()
+}
+
+func cleared_under_get() -> u64 {
+    mut vs: Vec<Vec<i64>> = [[1], [2, 3]]
+    let first = vs.get(0)
+    // ERROR: `vs` written over while `first` views it [E0958]
+    vs.clear()
+    return (first ?? Vec.new()).len()
+}
+
+// A vector a call returned owns its items, so the pick is the caller's; a
+// change after the view's last read is fine; an array pick can be read.
+func fresh_best() -> Row? {
+    return load().max_by_key(|r| r.tags.len())
+}
+
+func drained_best(mutate rows: Vec<Row>) -> Row? {
+    return rows.take_all().filter(|r| r.name != "").max_by_key(|r| r.tags.len())
+}
+
+func read_then_clear() -> u64 {
+    mut rows = load()
+    let n = (rows.max_by_key(|r| r.tags.len()) ?? Row(name: "", tags: Vec.new())).tags.len()
+    rows.clear()
+    return n
+}
+
+func array_name(rows: [Row; 2]) -> string {
+    if rows.enumerate().find(|p| p.1.name == "b")? as p {
+        return p.1.name.clone()
+    }
+    return ""
+}
+
+func main() {}

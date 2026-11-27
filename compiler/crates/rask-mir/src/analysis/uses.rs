@@ -41,7 +41,7 @@ pub enum Named<'a> {
 /// Visit everything an rvalue reads.
 fn visit_rvalue_named<'a>(rv: &'a MirRValue, f: &mut impl FnMut(Named<'a>)) {
     match rv {
-        MirRValue::Use(o) | MirRValue::Deref(o) => f(Named::Operand(o)),
+        MirRValue::Use(o) | MirRValue::Deref(o) | MirRValue::WrapSome(o) => f(Named::Operand(o)),
         MirRValue::Ref(id) => f(Named::Local(*id)),
         MirRValue::FuncAddr(_) => {}
         MirRValue::BinaryOp { left, right, .. } => {
@@ -101,7 +101,8 @@ fn visit_stmt_named<'a>(stmt: &'a MirStmt, f: &mut impl FnMut(Named<'a>)) {
             captures.iter().for_each(|c| f(Named::Local(c.local_id)));
         }
         MirStmtKind::LoadCapture { env_ptr, .. } => f(Named::Local(*env_ptr)),
-        MirStmtKind::ClosureDrop { closure, .. } | MirStmtKind::ClosureRetain { closure, .. } => f(Named::Local(*closure)),
+        MirStmtKind::BindPlace { addr, .. } => f(Named::Local(*addr)),
+        MirStmtKind::ClosureDrop { closure, .. } => f(Named::Local(*closure)),
         MirStmtKind::ResourceConsume { resource_id } => f(Named::Local(*resource_id)),
         MirStmtKind::ArrayStore { base, index, value, .. } => {
             f(Named::Local(*base));
@@ -120,7 +121,7 @@ fn visit_stmt_named<'a>(stmt: &'a MirStmt, f: &mut impl FnMut(Named<'a>)) {
         MirStmtKind::RcInc { local }
         | MirStmtKind::RcDec { local }
         | MirStmtKind::RcDecContents { local }
-        | MirStmtKind::RcIncContents { local } => f(Named::Local(*local)),
+        | MirStmtKind::RcIncContents { local, .. } => f(Named::Local(*local)),
         MirStmtKind::ReleaseSlot { addr, .. } => f(Named::Local(*addr)),
         // Bookkeeping: an arm copies the value into the frame's unwind record
         // and nothing reads it there but a panic. Counted as a read, every
@@ -134,9 +135,70 @@ fn visit_stmt_named<'a>(stmt: &'a MirStmt, f: &mut impl FnMut(Named<'a>)) {
         | MirStmtKind::GlobalRef { .. }
         | MirStmtKind::EnsurePush { .. }
         | MirStmtKind::EnsurePop
-        | MirStmtKind::EnsureHookPop
         | MirStmtKind::UnwindArm { .. }
         | MirStmtKind::UnwindDisarm { .. } => {}
+        MirStmtKind::EnsureHookPop { kept } => kept.iter().for_each(|l| f(Named::Local(*l))),
+    }
+}
+
+/// Every local a function's body names anywhere: read, written, or held for
+/// bookkeeping (an unwind arm, a zeroed literal, a resource slot). A local
+/// outside this set is one a pass left behind (SSA keeps each original after
+/// renaming it into versions), and nothing needs storage for it.
+pub fn mentioned_locals(func: &crate::MirFunction) -> std::collections::HashSet<LocalId> {
+    let mut seen = std::collections::HashSet::new();
+    for block in &func.blocks {
+        for stmt in &block.statements {
+            visit_stmt_mentions(stmt, &mut |id| { seen.insert(id); });
+        }
+        visit_terminator_operands(&block.terminator, &mut |op| {
+            if let Some(id) = operand_local(op) {
+                seen.insert(id);
+            }
+        });
+    }
+    seen
+}
+
+/// The reads `visit_stmt_uses` reports, plus what it leaves out on purpose:
+/// destinations and bookkeeping. No `_` arm, so a new statement kind has to
+/// say what it names.
+fn visit_stmt_mentions(stmt: &MirStmt, f: &mut impl FnMut(LocalId)) {
+    visit_stmt_uses(stmt, f);
+    match &stmt.kind {
+        MirStmtKind::Assign { dst, .. }
+        | MirStmtKind::ClosureCreate { dst, .. }
+        | MirStmtKind::LoadCapture { dst, .. }
+        | MirStmtKind::BindPlace { dst, .. }
+        | MirStmtKind::GlobalRef { dst, .. }
+        | MirStmtKind::InterfaceBox { dst, .. }
+        | MirStmtKind::Phi { dst, .. } => f(*dst),
+        MirStmtKind::Call { dst, .. }
+        | MirStmtKind::ClosureCall { dst, .. }
+        | MirStmtKind::InterfaceCall { dst, .. } => dst.iter().for_each(|d| f(*d)),
+        MirStmtKind::ResourceRegister { dst, slot, .. } => {
+            f(*dst);
+            slot.iter().for_each(|s| f(*s));
+        }
+        MirStmtKind::ClosureDrop { made, .. } => made.iter().for_each(|m| f(*m)),
+        MirStmtKind::UnwindArm { value, .. } => f(*value),
+        MirStmtKind::ZeroAggregate { local } => f(*local),
+        MirStmtKind::Guarded { body, .. } => body.iter().for_each(|s| visit_stmt_mentions(s, f)),
+        MirStmtKind::Store { .. }
+        | MirStmtKind::ResourceConsume { .. }
+        | MirStmtKind::EnsurePush { .. }
+        | MirStmtKind::EnsurePop
+        | MirStmtKind::EnsureHookRegister { .. }
+        | MirStmtKind::EnsureHookPop { .. }
+        | MirStmtKind::UnwindDisarm { .. }
+        | MirStmtKind::ArrayStore { .. }
+        | MirStmtKind::InterfaceDrop { .. }
+        | MirStmtKind::RcInc { .. }
+        | MirStmtKind::RcDec { .. }
+        | MirStmtKind::RcDecContents { .. }
+        | MirStmtKind::RcIncContents { .. }
+        | MirStmtKind::ReleaseSlot { .. }
+        | MirStmtKind::MovedOut { .. } => {}
     }
 }
 
@@ -190,7 +252,7 @@ fn visit_operand_local_mut(op: &mut MirOperand, f: &mut impl FnMut(&mut LocalId,
 
 fn visit_rvalue_locals_mut(rv: &mut MirRValue, f: &mut impl FnMut(&mut LocalId, UseKind)) {
     match rv {
-        MirRValue::Use(o) | MirRValue::Deref(o) => visit_operand_local_mut(o, f),
+        MirRValue::Use(o) | MirRValue::Deref(o) | MirRValue::WrapSome(o) => visit_operand_local_mut(o, f),
         MirRValue::Ref(id) => f(id, UseKind::AddressOf),
         MirRValue::FuncAddr(_) => {}
         MirRValue::BinaryOp { left, right, .. } => {
@@ -240,7 +302,8 @@ pub fn visit_stmt_use_locals_mut(
             }
         }
         MirStmtKind::LoadCapture { env_ptr, .. } => f(env_ptr, UseKind::Value),
-        MirStmtKind::ClosureDrop { closure, .. } | MirStmtKind::ClosureRetain { closure, .. } => {
+        MirStmtKind::BindPlace { addr, .. } => f(addr, UseKind::Value),
+        MirStmtKind::ClosureDrop { closure, .. } => {
             f(closure, UseKind::Value)
         }
         MirStmtKind::ResourceConsume { resource_id } => f(resource_id, UseKind::Value),
@@ -261,7 +324,7 @@ pub fn visit_stmt_use_locals_mut(
         MirStmtKind::RcInc { local }
         | MirStmtKind::RcDec { local }
         | MirStmtKind::RcDecContents { local }
-        | MirStmtKind::RcIncContents { local } => f(local, UseKind::Value),
+        | MirStmtKind::RcIncContents { local, .. } => f(local, UseKind::Value),
         // The variable's storage: a `mutate` parameter's pointer, or a local a
         // closure reaches by address, which `addr_taken` keeps in memory. The
         // release reads what that storage holds, so loading the local first
@@ -280,9 +343,9 @@ pub fn visit_stmt_use_locals_mut(
         | MirStmtKind::GlobalRef { .. }
         | MirStmtKind::EnsurePush { .. }
         | MirStmtKind::EnsurePop
-        | MirStmtKind::EnsureHookPop
         | MirStmtKind::UnwindArm { .. }
         | MirStmtKind::UnwindDisarm { .. } => {}
+        MirStmtKind::EnsureHookPop { kept } => kept.iter_mut().for_each(|l| f(l, UseKind::AddressOf)),
     }
 }
 
@@ -356,6 +419,7 @@ pub fn stmt_def(stmt: &MirStmt) -> Option<LocalId> {
         | MirStmtKind::Phi { dst, .. }
         | MirStmtKind::ClosureCreate { dst, .. }
         | MirStmtKind::LoadCapture { dst, .. }
+        | MirStmtKind::BindPlace { dst, .. }
         | MirStmtKind::ResourceRegister { dst, .. }
         | MirStmtKind::GlobalRef { dst, .. }
         | MirStmtKind::InterfaceBox { dst, .. } => Some(*dst),

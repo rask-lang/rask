@@ -73,6 +73,199 @@ const NEEDS_INSTANTIATION: &str =
     "is a generic instantiation, and the walk would read the declaration's type \
      parameters rather than what this instantiation substituted for them";
 
+/// A type as reflection spells it — `i64 or Shape`, the language's own
+/// spelling (`TypeExpr::source`) — with the names the program declared,
+/// never the symbols the compiler filed them under. A package's `Pos` is
+/// merged as `Pos_geo` and a program type shadowing the stdlib's is
+/// `ParseError#57`; `name_of`, `type_name` and `return_type_name` say `Pos`
+/// and `ParseError`, as a printed value does.
+pub fn type_label(types: &TypeTable, ty: &Type) -> TypeExpr {
+    types.display_type_names(ty).to_type_expr()
+}
+
+/// `type_label` for a type as written, which may still say `Pos_geo`. A
+/// spelling that resolves to nothing (a template's bare `T`) is kept.
+pub fn written_label(types: &TypeTable, ty: &TypeExpr) -> TypeExpr {
+    resolve_type_expr(ty, types).map(|t| type_label(types, &t)).unwrap_or_else(|_| ty.clone())
+}
+
+/// A declared type with an instantiation's arguments put in, labelled.
+/// `subst` is the arguments as written, by parameter name.
+pub fn substituted_type_expr(types: &TypeTable, declared: &Type, subst: &[(String, TypeExpr)]) -> TypeExpr {
+    type_label(types, declared)
+        .substitute(&|n| subst.iter().find(|(p, _)| p == n).map(|(_, a)| written_label(types, a)))
+}
+
+/// `substituted_type_expr`, spelled.
+pub fn substituted_label(types: &TypeTable, declared: &Type, subst: &[(String, TypeExpr)]) -> String {
+    substituted_type_expr(types, declared, subst).source()
+}
+
+/// What a value is when a format reads it off the wire: the part of the type
+/// that decides how its text is checked and written.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WireKind {
+    Text,
+    Bool,
+    F32,
+    F64,
+    I8,
+    I16,
+    I32,
+    I64,
+    Isize,
+    U8,
+    U16,
+    U32,
+    U64,
+    Usize,
+    /// Anything else: a struct, a list, a map, an enum. Written as JSON.
+    Other,
+}
+
+impl WireKind {
+    /// The variant of `reflect.WireKind` that says this.
+    pub fn variant(self) -> &'static str {
+        match self {
+            WireKind::Text => "Text",
+            WireKind::Bool => "Bool",
+            WireKind::F32 => "F32",
+            WireKind::F64 => "F64",
+            WireKind::I8 => "I8",
+            WireKind::I16 => "I16",
+            WireKind::I32 => "I32",
+            WireKind::I64 => "I64",
+            WireKind::Isize => "Isize",
+            WireKind::U8 => "U8",
+            WireKind::U16 => "U16",
+            WireKind::U32 => "U32",
+            WireKind::U64 => "U64",
+            WireKind::Usize => "Usize",
+            WireKind::Other => "Other",
+        }
+    }
+
+    fn of(ty: &TypeExpr) -> WireKind {
+        match ty.bare_name() {
+            Some("string") => WireKind::Text,
+            Some("bool") => WireKind::Bool,
+            Some("f32") => WireKind::F32,
+            Some("f64") => WireKind::F64,
+            Some("i8") => WireKind::I8,
+            Some("i16") => WireKind::I16,
+            Some("i32") => WireKind::I32,
+            Some("i64") => WireKind::I64,
+            Some("isize") => WireKind::Isize,
+            Some("u8") => WireKind::U8,
+            Some("u16") => WireKind::U16,
+            Some("u32") => WireKind::U32,
+            Some("u64") => WireKind::U64,
+            Some("usize") => WireKind::Usize,
+            _ => WireKind::Other,
+        }
+    }
+}
+
+/// How a format reads and writes a field (std.encoding/E12b, E12d): what the
+/// decoder reads it as, whether that is a `T?`, and whether its type writes
+/// its own `decode` or `encode`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WireForm {
+    pub kind: WireKind,
+    pub optional: bool,
+    /// The field's type has its own `decode` (`reflect.has_decode`).
+    pub own_decode: bool,
+    /// The field's type has its own `encode` (`reflect.has_encode`).
+    pub own_encode: bool,
+}
+
+impl WireForm {
+    fn of(wire: &TypeExpr, own: (bool, bool)) -> WireForm {
+        let (own_decode, own_encode) = own;
+        match wire {
+            TypeExpr::Optional(inner) => WireForm { kind: WireKind::of(inner), optional: true, own_decode, own_encode },
+            _ => WireForm { kind: WireKind::of(wire), optional: false, own_decode, own_encode },
+        }
+    }
+}
+
+/// Does the type write its own `decode`, and its own `encode`?
+fn own_codec(types: &TypeTable, ty: &Type) -> (bool, bool) {
+    let id = match ty {
+        Type::Named(id) => Some(*id),
+        Type::UnresolvedNamed(name) => types.get_type_id(name),
+        _ => None,
+    };
+    match id {
+        Some(id) => (types.custom_decode(id).is_some(), types.custom_encode(id).is_some()),
+        None => (false, false),
+    }
+}
+
+/// How a format reads and writes a declared type. The wire kind is what a
+/// decoder reads it as: the type itself, unless it decodes through its own
+/// `decode`, then what that takes, and so on down. Looks through `T?`.
+pub fn wire_form(types: &TypeTable, declared: &Type, subst: &[(String, TypeExpr)]) -> WireForm {
+    // A field typed by a type parameter is asked about what the instance put
+    // there: `Holder<Port>.x` is a `Port`, with a `Port`'s codec, not a bare
+    // `T` that decodes as itself.
+    if !subst.is_empty() {
+        return wire_written_form(types, &substituted_type_expr(types, declared, subst));
+    }
+    WireForm::of(&substituted_type_expr(types, &wire_type(types, declared), subst), own_codec(types, declared))
+}
+
+/// `reflect.DecodeWire<T>` and `reflect.EncodeWire<T>` (std.reflect): what `T`'s
+/// own `decode` takes, or its own `encode` answers, as a type a generic call
+/// can name. One step, since a format reads `W` the way it reads any type and
+/// asks again when `W` has a codec of its own. A type with no `decode` (or
+/// `encode`) is read (written) as itself, so the answer is `T`.
+pub fn wire_step(types: &TypeTable, ty: &TypeExpr, decode: bool) -> TypeExpr {
+    let Ok(resolved) = resolve_type_expr(ty, types) else { return ty.clone() };
+    let id = match &resolved {
+        Type::Named(id) => Some(*id),
+        Type::UnresolvedNamed(name) => types.get_type_id(name),
+        _ => None,
+    };
+    let wire = id.and_then(|id| {
+        if decode {
+            types.custom_decode(id).map(|c| &c.wire)
+        } else {
+            types.custom_encode(id).map(|c| &c.wire)
+        }
+    });
+    match wire {
+        Some(w) => type_label(types, w),
+        None => ty.clone(),
+    }
+}
+
+/// `wire_form` for a type as written, which the interpreter has instead of a
+/// declared `Type`.
+pub fn wire_written_form(types: &TypeTable, ty: &TypeExpr) -> WireForm {
+    match resolve_type_expr(ty, types) {
+        Ok(resolved) => WireForm::of(&type_label(types, &wire_type(types, &resolved)), own_codec(types, &resolved)),
+        Err(_) => WireForm::of(&written_label(types, ty), (false, false)),
+    }
+}
+
+fn wire_type(types: &TypeTable, ty: &Type) -> Type {
+    match ty {
+        Type::Result { ok, err } if matches!(**err, Type::None) => {
+            Type::Result { ok: Box::new(wire_type(types, ok)), err: err.clone() }
+        }
+        Type::Named(id) => match types.custom_decode(*id) {
+            Some(custom) => wire_type(types, &custom.wire),
+            None => ty.clone(),
+        },
+        Type::UnresolvedNamed(name) => match types.get_type_id(name).and_then(|id| types.custom_decode(id)) {
+            Some(custom) => wire_type(types, &custom.wire),
+            None => ty.clone(),
+        },
+        _ => ty.clone(),
+    }
+}
+
 /// Fold `reflect.<method><T>()` to its constant.
 ///
 /// `ty` is `T` as written at the call site, already substituted by
@@ -82,7 +275,7 @@ pub fn answer(method: &str, ty: &TypeExpr, decls: &dyn ReflectDecls) -> ReflectA
     use ReflectAnswer::*;
     let head = ty.name().unwrap_or_default();
     match method {
-        "name_of" => Str(ty.source()),
+        "name_of" => Str(written_label(decls.type_table(), ty).source()),
         "is_struct" => Bool(decls.declares_struct(&head)),
         "is_enum" => Bool(decls.declares_enum(&head)),
         "is_optional" => Bool(optional_payload(ty).is_some()),
@@ -90,6 +283,18 @@ pub fn answer(method: &str, ty: &TypeExpr, decls: &dyn ReflectDecls) -> ReflectA
         "is_map" => Bool(head == "Map"),
         "is_integer" => Bool(ty.bare_name().is_some_and(is_integer)),
         "is_float" => Bool(matches!(ty.bare_name(), Some("f32" | "f64"))),
+
+        // std.encoding/E12b, E12d: does the type write its own `decode` or
+        // `encode`? A format library asks before it reads or writes a value
+        // the way it would a struct.
+        "has_decode" | "has_encode" => {
+            let types = decls.type_table();
+            let Ok(resolved) = resolve_type_expr(ty, types) else {
+                return Unsupported(NOT_A_TYPE);
+            };
+            let (decode, encode) = own_codec(types, &resolved);
+            Bool(if method == "has_decode" { decode } else { encode })
+        }
 
         // mem.resource-types: the annotation is the whole answer.
         "is_resource" => Bool(decls.is_resource(&head)),
@@ -109,7 +314,7 @@ pub fn answer(method: &str, ty: &TypeExpr, decls: &dyn ReflectDecls) -> ReflectA
             };
             match method {
                 "is_copy" => Bool(types.is_copy(&resolved)),
-                _ => match types.size_align(&resolved) {
+                _ => match types.size_align(&resolved, &rask_layout::no_params) {
                     Some((size, align)) => Int(if method == "size_of" { size } else { align } as u64),
                     None => Unsupported(NEEDS_INSTANTIATION),
                 },
@@ -186,7 +391,7 @@ fn flatness(ty: &TypeExpr, decls: &dyn ReflectDecls, seen: &mut Vec<String>) -> 
     // FL3: a reference into a container is never flat — a `Link` is an
     // address. Answering here also terminates the walk: it is generic, and the
     // generic arm below would return Unknown.
-    if base == "Link" || is_heap_backed(base) || decls.is_resource(base) {
+    if base == "Link" || is_heap_backed(base, decls) || decls.is_resource(base) {
         return Flatness::NotFlat;
     }
 
@@ -242,8 +447,19 @@ fn is_flat_primitive(name: &str) -> bool {
 
 /// FL1: the types that own or point at heap memory. A runtime handle's
 /// storage is the runtime's; a struct holding one is found through its fields.
-fn is_heap_backed(name: &str) -> bool {
-    name == "string" || rask_stdlib::is_runtime_handle(name)
+///
+/// The walk reads written types, so the name is resolved through the
+/// checker's table and the declaration it names is asked. A name with no
+/// declaration can still be a compiler-provided handle (`Shared`).
+fn is_heap_backed(name: &str, decls: &dyn ReflectDecls) -> bool {
+    if name == "string" {
+        return true;
+    }
+    let table = decls.type_table();
+    match table.get_type_id(name) {
+        Some(id) => table.is_handle(id),
+        None => rask_stdlib::spelled_handle(name).is_some(),
+    }
 }
 
 // ─── Questions the checker's type table answers ─────────────────────
@@ -284,7 +500,6 @@ fn concrete<'t>(types: &'t TypeTable, ty: &TypeExpr, method: &str) -> Result<Con
             .iter()
             .filter_map(|a| match a {
                 GenericArg::Type(t) => Some((**t).clone()),
-                GenericArg::ConstUsize(_) => None,
             })
             .collect(),
         _ => Vec::new(),
@@ -322,6 +537,22 @@ fn concrete<'t>(types: &'t TypeTable, ty: &TypeExpr, method: &str) -> Result<Con
 
 /// A declared type's name, as the id it resolves to — so two spellings of one
 /// type compare equal.
+/// The name a written type's declaration is filed under: `Response` for
+/// `h.Response` under `import http as h`. A backend that keeps declarations by
+/// bare name asks this instead of reading the spelling, which says where the
+/// program reached the type from and not which type it is.
+pub fn declared_name(types: &TypeTable, ty: &TypeExpr) -> Option<String> {
+    Some(types.type_name(declared_type(types, ty)?).to_string())
+}
+
+/// The declaration a written type names, by identity. What a backend that lays
+/// the type out asks: the layout is found by this id, never by a name read back
+/// off it.
+pub fn declared_type(types: &TypeTable, ty: &TypeExpr) -> Option<TypeId> {
+    let resolved = named(types, resolve_type_expr(ty, types).ok()?);
+    types.conformance_target(&resolved)
+}
+
 fn named(types: &TypeTable, ty: Type) -> Type {
     match &ty {
         Type::UnresolvedNamed(n) => types.get_type_id(n).map(Type::Named).unwrap_or(ty),
@@ -390,7 +621,7 @@ pub fn methods(types: &TypeTable, ty: &TypeExpr) -> Result<Vec<MethodFact>, Stri
         let fact = MethodFact {
             is_public: types.method_is_public(c.id, &name),
             param_count: sig.params.len(),
-            return_type_name: types.resolve_type_names(&ret).to_type_expr().to_string(),
+            return_type_name: type_label(types, &ret).source(),
             name,
         };
         // The stdlib's declarations are read once as stubs and once with
@@ -415,7 +646,7 @@ pub fn interfaces(types: &TypeTable, ty: &TypeExpr) -> Result<Vec<String>, Strin
     }
     let mut out: Vec<String> = Vec::new();
     for iface in written {
-        let name = iface.to_string();
+        let name = written_label(types, &iface).source();
         if satisfies(types, &c.ty, &iface) && !out.contains(&name) {
             out.push(name);
         }
@@ -437,6 +668,60 @@ pub fn implements(types: &TypeTable, ty: &TypeExpr, iface: &TypeExpr) -> Result<
     let resolved = resolve_type_expr(ty, types)
         .map_err(|_| format!("reflect.implements<{}, …>(): no type by that name", ty.source()))?;
     Ok(satisfies(types, &resolved, iface))
+}
+
+/// One parameter of a function type, as `reflect.params<F>()` reports it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ParamFact {
+    /// Position in the parameter list. A function type has no parameter
+    /// names (`func(mutate Pos, Vel)`), so this is how one is told apart.
+    pub index: usize,
+    /// The parameter's type, for `param.is<T>()`.
+    pub ty: Type,
+    pub type_name: String,
+    /// Borrowed, `mutate` or `take` — part of the type (type.functions/FT1).
+    pub mode: rask_ast::ty::ParamMode,
+}
+
+/// `reflect.params<F>()`: each parameter of the function type `F`, in order.
+///
+/// `F` reaches here as a function type: written out, or a type parameter a
+/// caller filled by passing a named function (`run(drift)` makes `F` drift's
+/// type). A function item can't be a type argument itself, and a closure's
+/// type is a function type like any other, so it reflects the same way.
+pub fn params(types: &TypeTable, ty: &TypeExpr) -> Result<Vec<ParamFact>, String> {
+    let resolved = resolve_type_expr(ty, types)
+        .map_err(|_| format!("reflect.params<{}>(): no type by that name", ty.source()))?;
+    let Type::Fn { params, .. } = resolved else {
+        return Err(format!(
+            "reflect.params<{}>(): `{}` isn't a function type — this asks about `func(…)`",
+            ty.source(),
+            ty.source()
+        ));
+    };
+    Ok(params
+        .into_iter()
+        .enumerate()
+        .map(|(index, p)| {
+            let ty = named(types, p.ty);
+            ParamFact {
+                index,
+                type_name: type_label(types, &ty).source(),
+                ty,
+                mode: p.mode,
+            }
+        })
+        .collect())
+}
+
+/// `param.is<T>()`: whether the parameter's type is exactly `T`. The mode
+/// isn't part of the question; `is_mutate` and `is_take` answer that.
+///
+/// Exact, not "satisfies": `is<Pos>()` on a `Pos?` parameter is false. A
+/// name that resolves to no type is false too — nothing has a type that
+/// doesn't exist.
+pub fn param_is(types: &TypeTable, param: &Type, candidate: &TypeExpr) -> bool {
+    resolve_type_expr(candidate, types).is_ok_and(|t| named(types, t) == *param)
 }
 
 /// `reflect.has_field<T>(name)`: the struct's field names, in declaration
@@ -503,7 +788,7 @@ mod tests {
     }
 
     fn ask(method: &str, ty: TypeExpr) -> ReflectAnswer {
-        answer(method, &ty, &Decls(TypeTable::new()))
+        answer(method, &ty, &Decls(TypeTable::new(rask_ast::Target::LP64)))
     }
 
     #[test]

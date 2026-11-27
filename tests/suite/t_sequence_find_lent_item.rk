@@ -1,0 +1,94 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A terminal that returns an item the sequence only lent keeps its own
+// reference to what the item holds (#1871).
+//
+// A yield lends its item for one call (type.sequence/SEQ34), and the sequence
+// that made it releases it afterwards. The loop body `Sequence.find` is written
+// with took the item as its own: it released a miss and handed a hit on without
+// a reference, so the string inside a `(i64, string)` the vector still held was
+// freed under it. The second probe printed garbage, the last entry's string
+// came back empty, and valgrind counted 14 invalid reads. `max_by_key` has the
+// same shape. Strings under sixteen bytes live inside the value, so the ones
+// here are long.
+
+import sequence.Sequence
+
+func long(i: i64) -> string {
+    return "long-heap-string-number-{i}-xxxxxxxxxxxxxxxxxxxx"
+}
+
+func probe(v: Vec<(i64, string)>, want: i64) -> string {
+    let hit = v.as_sequence().find(|e| e.0 == want)
+    if hit? as h {
+        return h.1
+    }
+    return "none"
+}
+
+func table() -> Vec<(i64, string)> {
+    mut v: Vec<(i64, string)> = Vec.new()
+    v.push((1, long(1)))
+    v.push((2, long(2)))
+    v.push((3, long(3)))
+    return v
+}
+
+test "type.sequence/SEQ34 — find over lent tuples leaves the vector intact" {
+    let v = table()
+    assert probe(v, 2) == long(2)
+    assert probe(v, 2) == long(2)
+    assert probe(v, 9) == "none"
+    assert v[0].1 == long(1)
+    assert v[1].1 == long(2)
+    assert v[2].1 == long(3)
+}
+
+test "type.sequence/SEQ34 — max_by_key over lent tuples leaves the vector intact" {
+    let v = table()
+    let best = v.as_sequence().max_by_key(|e| e.0)
+    if best? as b {
+        assert b.1 == long(3)
+    } else {
+        assert false
+    }
+    let again = v.as_sequence().max_by_key(|e| e.0)
+    if again? as b {
+        assert b.1 == long(3)
+    } else {
+        assert false
+    }
+    assert v[2].1 == long(3)
+}
+
+func rows() -> Sequence<(i64, string)> {
+    return |yield| {
+        if !yield((1, long(1))) { return }
+        if !yield((2, long(2))) { return }
+    }
+}
+
+test "type.sequence/SEQ34 — to_vec keeps what a map made, and a yield lends so it is cloned first" {
+    let a = (0..3).map(|i| (i, long(i))).to_vec()
+    assert a.len() == 3
+    assert a[2].1 == long(2)
+    let b = rows().map(|r| r.clone()).to_vec()
+    assert b.len() == 2
+    assert b[1].1 == long(2)
+    mut total = 0
+    for r in rows() {
+        total = total + r.1.len()
+    }
+    assert total == long(1).len() + long(2).len()
+}
+
+test "type.sequence/SEQ34 — find over items the chain made" {
+    let hit = (0..4).map(|i| (i, long(i))).find(|e| e.0 == 2)
+    if hit? as h {
+        assert h.1 == long(2)
+    } else {
+        assert false
+    }
+    let miss = (0..4).map(|i| (i, long(i))).find(|e| e.0 == 9)
+    assert miss is none
+}

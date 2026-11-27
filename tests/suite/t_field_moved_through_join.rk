@@ -1,0 +1,109 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A field moved out of a struct on one branch, with something else on the
+// other, joined into one value.
+//
+// `pick(take h)` returns `h.label` on one branch and a new box on the other.
+// Inlined into a loop, the joined result was handed to `push`, and the struct
+// it came from counted as handed over whole, so `h.name` was never released.
+// Only a name that holds the field on every path was known to take the field
+// out; the join holds it on the paths where the struct is still ours, and the
+// field now leaves under the same flag.
+//
+// `if c { h.label } else { Tag(…) }` also took the first arm's type and boxed
+// neither arm, so the `else` value was a bare struct where the box goes.
+// The strings are long enough to live on the heap.
+
+interface Label {
+    func text(self) -> string
+}
+
+struct Tag { name: string }
+Tag implements Label {
+    func text(self) -> string { return self.name }
+}
+
+struct Holder { label: any Label, name: string }
+
+struct Bag { items: Vec<string>, name: string }
+
+func mk(i: i64) -> Holder {
+    return Holder(
+        label: Tag(name: "label-{i}-padded-long-enough-for-heap"),
+        name: "holder-name-{i}-padded-long-enough-for-heap",
+    )
+}
+
+func bag(i: i64) -> Bag {
+    return Bag(items: ["item-{i}-padded-long-enough-for-heap"], name: "bag-name-{i}-padded-long-enough-for-heap")
+}
+
+func pick(take h: Holder, k: i64) -> any Label {
+    if k == 0 {
+        return h.label
+    }
+    return Tag(name: "other-{h.name}")
+}
+
+func pick_items(take b: Bag, k: i64) -> Vec<string> {
+    if k == 0 {
+        return b.items
+    }
+    return ["other-{b.name}"]
+}
+
+func either(take h: Holder, c: bool) -> any Label {
+    let r: any Label = if c { h.label } else { Tag(name: "fresh-label-padded-long-enough-heap") }
+    return r
+}
+
+func reversed(c: bool) -> string {
+    let h = mk(8)
+    let r: any Label = if c { Tag(name: "fresh-label-padded-long-enough-heap") } else { h.label }
+    return r.text()
+}
+
+func matched(k: i64) -> string {
+    let h = mk(9)
+    let r = match k {
+        0 => h.label,
+        1 => Tag(name: "one-label-padded-long-enough-heap"),
+        _ => Tag(name: "many-label-padded-long-enough-heap"),
+    }
+    return r.text()
+}
+
+test "an inlined move-out handed to push in a loop" {
+    mut keep: Vec<any Label> = Vec.new()
+    for i in 0..4 {
+        keep.push(pick(mk(i), i % 2))
+    }
+    assert keep[0].text() == "label-0-padded-long-enough-for-heap"
+    assert keep[1].text() == "other-holder-name-1-padded-long-enough-for-heap"
+    assert keep[3].text() == "other-holder-name-3-padded-long-enough-for-heap"
+}
+
+test "a vector field moved out through a join" {
+    mut keep: Vec<Vec<string>> = Vec.new()
+    for i in 0..4 {
+        keep.push(pick_items(bag(i), i % 2))
+    }
+    assert keep[2][0] == "item-2-padded-long-enough-for-heap"
+    assert keep[3][0] == "other-bag-name-3-padded-long-enough-for-heap"
+}
+
+test "an if joins a field with a new box" {
+    mut keep: Vec<any Label> = Vec.new()
+    keep.push(either(mk(5), true))
+    keep.push(either(mk(6), false))
+    assert keep[0].text() == "label-5-padded-long-enough-for-heap"
+    assert keep[1].text() == "fresh-label-padded-long-enough-heap"
+    assert reversed(true) == "fresh-label-padded-long-enough-heap"
+    assert reversed(false) == "label-8-padded-long-enough-for-heap"
+}
+
+test "a match joins a field with new boxes" {
+    assert matched(0) == "label-9-padded-long-enough-for-heap"
+    assert matched(1) == "one-label-padded-long-enough-heap"
+    assert matched(2) == "many-label-padded-long-enough-heap"
+}

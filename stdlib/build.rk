@@ -1,0 +1,98 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+// What a build script's `func build(ctx: BuildContext)` gets (struct.build).
+// Declared here so a build script type-checks like any other program; the
+// interpreter, which runs build scripts, answers every method itself, so
+// each is `@builtin`.
+//
+// The spec's fuller shape (a `Target` with arch/os/env, `ProfileInfo`,
+// `features`, `compile_c` taking options) isn't implemented yet; this
+// declares what the interpreter does today.
+
+/// Why a build action failed: the command, file or tool and what it said.
+public struct BuildError {
+    public reason: string
+}
+
+BuildError implements Error {
+    func message(self) -> string {
+        return self.reason
+    }
+}
+
+/// The package being built and the places a build script writes to.
+public struct BuildContext {
+    public package_name: string
+    public package_version: string
+    public package_dir: Path
+    public profile: string
+    /// The target triple being built for.
+    public target: string
+    /// The triple of the machine the build runs on.
+    public host: string
+    /// Where `write_source` puts generated `.rk` files (`.rk-gen/`).
+    public gen_dir: Path
+    public out_dir: Path
+}
+
+extend BuildContext {
+    /// Write a `.rk` file into `gen_dir`, compiled with the package.
+    @builtin
+    public func write_source(self, name: string, code: string) -> void or BuildError {}
+
+    /// Write a file into `out_dir`.
+    @builtin
+    public func write_file(self, name: string, data: string) -> void or BuildError {}
+
+    /// Mark a file as an input: changing it reruns the build script.
+    @builtin
+    public func declare_dependency(self, path: string) -> void or BuildError {}
+
+    /// An environment variable, if set.
+    @builtin
+    public func env(self, name: string) -> string? {}
+
+    /// Print a build warning.
+    @builtin
+    public func warning(self, msg: string) {}
+
+    /// Run a program in the package directory; an error when it exits non-zero.
+    @builtin
+    public func exec(self, program: string, args: Vec<string>) -> void or BuildError {}
+
+    /// Run a program and capture what it printed, trimmed.
+    @builtin
+    public func exec_output(self, program: string, args: Vec<string>) -> string or BuildError {}
+
+    /// Look a program up on `PATH`.
+    @builtin
+    public func find_program(self, name: string) -> Path? {}
+
+    /// Whether `target` differs from `host`.
+    @builtin
+    public func is_cross_compiling(self) -> bool {}
+
+    /// Compile C sources to objects linked into the package.
+    @builtin
+    public func compile_c(self, sources: Vec<string>, flags: Vec<string>) -> void or BuildError {}
+
+    /// Link with a system library (`-l`).
+    @builtin
+    public func link_library(self, name: string) {}
+
+    /// Add a library search path (`-L`).
+    @builtin
+    public func link_search_path(self, path: string) {}
+
+    /// Take a library's link flags from pkg-config.
+    @builtin
+    public func pkg_config(self, name: string) -> void or BuildError {}
+
+    /// Record a tool's version, so a step reruns when the tool changes.
+    @builtin
+    public func tool_version(self, program: string, flag: string) -> string or BuildError {}
+
+    /// Run `body` unless `inputs` are unchanged since it last succeeded.
+    @builtin
+    public func step(self, name: string, inputs: Vec<string>, body: func() -> void or Error) -> void or Error {}
+}

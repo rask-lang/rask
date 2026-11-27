@@ -1,0 +1,114 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A link inside a container element of struct type (#1804).
+//
+// A `Vec<Link<T>>` loses the entry when its node is deleted. A `Vec<Cursor>`
+// can't: the element carries other data, so the link inside it is nulled
+// instead, the way a struct field's is. Neither backend recorded those links,
+// so a delete left every one of them naming the freed node.
+import memory.Link
+import memory.Rack
+
+struct Leaf {
+    id: i32
+}
+
+struct Edge {
+    weight: i32
+    to: Link<Leaf>?
+}
+
+struct Many {
+    id: i32
+    edges: Vec<Edge>
+}
+
+func to_id(e: Edge) -> i32 {
+    if e.to? as l {
+        return l.id
+    }
+    return -1
+}
+
+func main() {}
+
+test "a pushed element's link is nulled, and the element stays" {
+    mut leaves: Rack<Leaf> = Rack.new()
+    let a = leaves.insert(Leaf(id: 1))
+    let b = leaves.insert(Leaf(id: 2))
+    mut v: Vec<Edge> = Vec.new()
+    v.push(Edge(weight: 5, to: a))
+    v.push(Edge(weight: 6, to: b))
+    leaves.delete(a)
+    assert v.len() == 2
+    assert to_id(v[0]) == -1
+    assert v[0].weight == 5
+    assert to_id(v[1]) == 2
+}
+
+test "an element replaced, or written through its index, is recorded" {
+    mut leaves: Rack<Leaf> = Rack.new()
+    let a = leaves.insert(Leaf(id: 1))
+    let b = leaves.insert(Leaf(id: 2))
+    let c = leaves.insert(Leaf(id: 3))
+    mut v: Vec<Edge> = Vec.new()
+    v.push(Edge(weight: 1, to: none))
+    v.push(Edge(weight: 2, to: none))
+    v[0] = Edge(weight: 1, to: b)
+    v[1].to = c
+    leaves.delete(b)
+    leaves.delete(c)
+    assert to_id(v[0]) == -1
+    assert to_id(v[1]) == -1
+    leaves.delete(a)
+}
+
+test "a clone of the vector is an edge holder of its own" {
+    mut leaves: Rack<Leaf> = Rack.new()
+    let a = leaves.insert(Leaf(id: 1))
+    mut v: Vec<Edge> = Vec.new()
+    v.push(Edge(weight: 1, to: a))
+    let copy = v.clone()
+    leaves.delete(a)
+    assert to_id(v[0]) == -1
+    assert to_id(copy[0]) == -1
+}
+
+test "a map value's link is nulled" {
+    mut leaves: Rack<Leaf> = Rack.new()
+    let a = leaves.insert(Leaf(id: 1))
+    let b = leaves.insert(Leaf(id: 2))
+    mut m: Map<i32, Edge> = Map.new()
+    m.insert(1, Edge(weight: 1, to: a))
+    m.insert(2, Edge(weight: 2, to: b))
+    leaves.delete(a)
+    assert m.len() == 2
+    if m.get(1)? as e {
+        assert to_id(e) == -1
+    } else {
+        assert false
+    }
+    if m.get(2)? as e {
+        assert to_id(e) == 2
+    } else {
+        assert false
+    }
+}
+
+test "a node's vector of edges, and its snapshot" {
+    mut leaves: Rack<Leaf> = Rack.new()
+    let a = leaves.insert(Leaf(id: 1))
+    let b = leaves.insert(Leaf(id: 2))
+    mut nodes: Rack<Many> = Rack.new()
+    let h = nodes.insert(Many(id: 1, edges: Vec.new()))
+    h.edges.push(Edge(weight: 1, to: a))
+    h.edges.push(Edge(weight: 2, to: b))
+    let snap = nodes.snapshot()
+    leaves.delete(a)
+    assert h.edges.len() == 2
+    assert to_id(h.edges[0]) == -1
+    assert to_id(h.edges[1]) == 2
+    for n in snap.nodes() {
+        assert n.edges.len() == 2
+    }
+}

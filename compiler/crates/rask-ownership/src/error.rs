@@ -26,6 +26,11 @@ pub enum MoveReason {
     /// put and the thing it pointed at was freed, so every name for it is dead.
     /// The move checker is only the mechanism that proves it (analysis.fourth-option).
     LinkDeleted,
+    /// A `Link<T>` killed by a delete that named no node: `clear`, or a call
+    /// to something declared `deleting`. Its node may well be alive, but which
+    /// nodes went can't be known from here, so every local link into the rack
+    /// is dead (mem.parameters/PM9).
+    LinkRevoked,
     /// A `Link<T>` moved into another name the ordinary way. Nothing was deleted —
     /// links are affine among locals so that two names for one node can't drift
     /// apart, and this is that rule firing, not a use after free.
@@ -63,6 +68,29 @@ pub enum OwnershipErrorKind {
     #[error("a closure handed to C as a function pointer captures `{captured}`")]
     CCallbackCaptures {
         captured: String,
+    },
+
+    /// conc.async/S5: a task that leaves its block names something it only
+    /// borrows.
+    #[error("a task that outlives this block reads `{name}`, which is only borrowed")]
+    TaskCapturesBorrow {
+        name: String,
+        lender: Lender,
+    },
+
+    /// mem.value/VS11: `[x; n]` copies `x` into every slot, and `x` moves.
+    #[error("`[x; n]` repeats a `{ty}`, which isn't Copy")]
+    RepeatNotCopy {
+        ty: String,
+        reason: MoveReason,
+    },
+
+    /// mem.closures/CV4: a carrying closure holds a value that can't be
+    /// cloned, so the closure itself couldn't be.
+    #[error("a closure that carries its captures can't hold `{captured}`: `{ty}` isn't Cloneable")]
+    CarriesUncloneable {
+        captured: String,
+        ty: String,
     },
 
     /// mem.borrowing/S5: `mut x = value.field` on a non-Copy field — a second,
@@ -162,16 +190,15 @@ pub enum OwnershipErrorKind {
         clone_form: Option<String>,
     },
 
-    /// mem.borrowing/E4: `let x = collection[key]` on an element that isn't
-    /// Copy. Indexing hands the element back in place, so the binding is a
-    /// second name for storage the collection still owns.
-    #[error("`{elem_ty}` isn't Copy, so `{binding}` would be a second name for the same element")]
-    NonCopyElementCopiedOut {
+    /// mem.borrowing/E4, S5: `mut x = collection[key]` (or a lookup or pick)
+    /// on an element that isn't Copy. The binding would be a second writable
+    /// name for storage the collection still owns.
+    #[error("`{binding}` and `{call}` would be the same `{elem_ty}`, both writable")]
+    MutableElementView {
         binding: String,
         elem_ty: String,
-        /// The collection being indexed, when it has a printable name.
-        /// Not called `source`: `thiserror` reads that name as the error cause.
-        collection: Option<String>,
+        /// `rows[…]`, `rows.get(…)`: the read that lent the element.
+        call: String,
     },
 
     /// mem.ownership/O11: a `const` can't be given away.
@@ -189,15 +216,20 @@ pub enum OwnershipErrorKind {
         sink: Option<String>,
     },
 
-    /// type.sequence/SEQ47: `to_vec` over a chain that only lends its items,
-    /// of a type that isn't Copy. The chain owns nothing it could move into
-    /// the Vec, and `to_vec` doesn't deep-clone on its own.
-    #[error("`to_vec` has nothing it may move — `{elem}` is lent, not owned")]
-    ToVecOfLentItems {
+    /// type.sequence/SEQ34, SEQ47: a terminal that keeps items (`to_vec`,
+    /// `to_map`, `reduce`, or a pick like `find` over a sequence that isn't
+    /// a collection) handed items that aren't Copy and that the chain only
+    /// lends. It owns nothing it could keep, and it doesn't deep-clone on its
+    /// own.
+    #[error("`{terminal}` has nothing it may keep — `{elem}` is lent, not owned")]
+    KeepsLentItems {
+        terminal: String,
         /// The item type, as written for the reader.
         elem: String,
-        /// The adapter nearest the source, which is what lends.
-        adapter: String,
+        /// What the items come from: `rows`, `vecs()`, `s`.
+        lender: String,
+        /// The lender is a collection, which still holds every item.
+        collection: bool,
     },
 
     /// type.sequence/SEQ47: `Vec.zip` over elements that aren't Copy. It
@@ -309,6 +341,28 @@ pub enum OwnershipErrorKind {
         name: String,
     },
 
+    /// S5: `p.f` written over while `name`, a view of it, is still in scope.
+    #[error("`{path}` written over while `{name}` views it")]
+    ViewOutlivedReplace {
+        name: String,
+        path: String,
+        /// Where the view was bound.
+        viewed_at: Span,
+        /// The view is of an element (`rows[i]`, `rows.get(i)!`, a pick),
+        /// and the write reaches some element of the same collection.
+        element: bool,
+    },
+
+    /// `let name = p.f` moved the field out, and this reads it (or the value
+    /// around it) before the refill puts one back.
+    #[error("`{path}` read while `{name}` has it")]
+    TakenFieldRead {
+        path: String,
+        name: String,
+        /// The read that moved it out.
+        taken_at: Span,
+    },
+
     /// #804: a `mutate` parameter was consumed and nothing put back, so the caller
     /// is left holding a value that moved out from under it.
     #[error("`{name}` was consumed and not replaced before returning")]
@@ -331,6 +385,46 @@ pub enum OwnershipErrorKind {
     #[error("this `Shared` is task-local and cannot be sent")]
     LocalSharedSent {
         name: String,
+    },
+
+    /// conc.async/B4: two arguments a callee may use at the same time conflict.
+    #[error("these arguments may run at the same time: {what}")]
+    ParallelArgsConflict {
+        what: String,
+        other_span: Span,
+    },
+
+    /// mem.racks/RK16: a borrowing task, or the code beside it, shares a rack
+    /// with the other side and writes through a link or a rack, or stores a link.
+    #[error("a task that shares a rack with the code beside it changes it")]
+    SharedGraphWrite {
+        what: String,
+    },
+
+    /// mem.racks/RK20: a function a `Staged` buffer keeps captured a link or a
+    /// `Local` box.
+    #[error("the function a `Staged` buffer keeps can't hold a link")]
+    StagedFnHoldsLink,
+
+    /// conc.async/B2: a borrowing task, or the code before its join, writes a
+    /// place the other side touches.
+    #[error("a task and the code before its join both touch `{name}`, and one writes it")]
+    SideConflict {
+        name: String,
+        /// The other side writes it too, rather than only reading.
+        other_writes: bool,
+        other_span: Span,
+    },
+
+    /// conc.async/B3: a borrowing task and the code beside it each name
+    /// something that has to stay on one thread.
+    #[error("a task and the code beside it both name a value that has to stay on one thread")]
+    SideTaskBound {
+        name: String,
+        other: String,
+        other_span: Span,
+        /// One of them is a function value the checker can't see into.
+        function_value: bool,
     },
 
     /// mem.ownership/T2: a value carrying a `Link` captured by a task block.
@@ -484,6 +578,34 @@ pub enum OwnershipErrorKind {
         ty: Option<String>,
     },
 
+    /// A `Heap` read out of an aggregate this frame owns was given away. The
+    /// aggregate's release frees it too: `if (*first).next? as n { drop(n) }`
+    /// freed the block twice.
+    #[error("cannot give away `{name}` — `{from}` still holds it")]
+    GiveAwayHeldPart {
+        name: String,
+        /// The place `name` reads, rendered: `(*first).next`.
+        from: String,
+        /// The `? as` or pattern that bound it.
+        bound_at: Span,
+        sink: Option<String>,
+    },
+
+    /// The place a held part reads was given away, moved, replaced or
+    /// resized while the part was still live: `if (*first).next? as n {
+    /// drop(first); use(n) }` read a freed box.
+    #[error("cannot {operation} `{owner}` while `{part}` reads a box inside it")]
+    PartOwnerChanged {
+        /// The place being changed, rendered: `first`, `s.next`.
+        owner: String,
+        /// "give away", "move", "replace", or the resizing method.
+        operation: String,
+        part: String,
+        /// What `part` reads, rendered: `(*first).next`.
+        from: String,
+        part_at: Span,
+    },
+
     /// A part matched out of a borrowed value was given away. `match s {
     /// Full(c) => close(c) }` with `s` only lent: `c` is the caller's too,
     /// so consuming it closes a handle they still hold.
@@ -502,8 +624,10 @@ pub enum OwnershipErrorKind {
     #[error("cannot give away `{name}` — the loop only lends it out of `{from}`")]
     ConsumeLoopItem {
         name: String,
-        /// The collection the loop walks.
+        /// The collection or sequence the loop walks.
         from: String,
+        /// `from` is a sequence: its yield lends the item for one call.
+        by_sequence: bool,
         /// The `for` statement.
         loop_at: Span,
         sink: Option<String>,
@@ -550,6 +674,15 @@ pub enum OwnershipErrorKind {
         ty: String,
         /// Where the closure is.
         closure_at: Span,
+    },
+
+    /// A place an `ensure` still needs was given away while the ensure was
+    /// scheduled to run (ctrl.ensure/C6).
+    #[error("`{name}` is given away while an `ensure` still needs it")]
+    EnsureReadsMoved {
+        name: String,
+        why: EnsureHold,
+        ensure_at: Span,
     },
 
     /// C4: an ensured resource is consumed on some paths but not all, and the
@@ -662,10 +795,13 @@ pub enum OwnershipErrorKind {
         name: String,
     },
 
-    /// SL2: scope-limited closure escapes its scope
-    #[error("closure `{name}` captures scoped borrow and cannot escape")]
+    /// SL2 / MC3: a closure that points at what it captured outlives one of
+    /// those. `points_at` is the local it points at, when a local's block is
+    /// what limits it; otherwise the limit is a borrow it captured.
+    #[error("closure `{name}` outlives what it points at")]
     ScopeLimitedClosureEscapes {
         name: String,
+        points_at: Option<String>,
     },
 
     /// A spawned task writes a capture nothing reads back. The task works on a
@@ -712,6 +848,17 @@ pub enum OwnershipErrorKind {
         take_at: Span,
     },
 
+    /// conc.async/S5 per instantiation: a leaving task in a generic body reads
+    /// a borrowed `x: T`, and this call makes `T` a type that moves.
+    #[error("a task in `{}` would carry `{name}`, a borrowed `{type_arg}`", chain.last().map(String::as_str).unwrap_or("?"))]
+    TaskBorrowInGenericInstance {
+        chain: Vec<String>,
+        name: String,
+        lender: Lender,
+        type_arg: String,
+        read_at: Span,
+    },
+
     /// mem.resources/RC5: `for x in v.take_all()` over elements that must be
     /// consumed. The loop owns the drained vector, so leaving it early drops
     /// what's left.
@@ -746,6 +893,17 @@ pub enum OwnershipErrorKind {
     },
 }
 
+/// Who a borrowed name belongs to.
+#[derive(Debug, Clone)]
+pub enum Lender {
+    /// A borrowed or `mutate` parameter.
+    Caller,
+    /// A `for` item; the collection it's read out of.
+    Loop(String),
+    /// A `with … as` binding; the place it reaches into.
+    With(String),
+}
+
 /// Where a value is handed: every place it gets a new holder. The ownership
 /// pass asks one question at each (`check_flow`), and the messages name the
 /// destination from this.
@@ -766,6 +924,10 @@ pub enum Sink {
     Heap,
     /// A `take` parameter: `eat(…)`, `out.push(…)`, a channel send.
     TakeArg { callee: String },
+    /// A closure that outlives its frame, carrying the value (mem.closures/CM2).
+    Closure,
+    /// The value of a `with` block, which outlives the binding it reads.
+    WithValue { binding: String },
 }
 
 /// What happened to the value a pointer points into (mem.unsafe/PT3).
@@ -869,3 +1031,15 @@ impl std::fmt::Display for OwnershipError {
 }
 
 impl std::error::Error for OwnershipError {}
+
+/// Why a place an `ensure` holds on to can't be given away (ctrl.ensure/C6).
+#[derive(Debug, Clone, PartialEq)]
+pub enum EnsureHold {
+    /// The cleanup reads it.
+    Reads,
+    /// It is part of what the cleanup consumes, named here.
+    PartOf(String),
+    /// The cleanup also consumes this other binding, which cancelling would
+    /// leave alone.
+    AlsoCleans(String),
+}

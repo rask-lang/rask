@@ -42,6 +42,10 @@
 // when a running fiber is cut off — come from the seed. Everything else, the
 // queues and the parking and the pinning, is what ships (#1381).
 
+#if defined(__linux__) && !defined(_GNU_SOURCE)
+#define _GNU_SOURCE  // pthread_getattr_np
+#endif
+
 #include "fiber.h"
 #include "rask_runtime.h"
 #include "sim.h"
@@ -49,6 +53,7 @@
 #include <poll.h>
 #include <sys/epoll.h>
 #include <sys/eventfd.h>
+#include <sys/mman.h>
 
 #include <stdlib.h>
 #include <stdio.h>
@@ -444,11 +449,11 @@ static void fiber_yield(void) {
 }
 
 static void fiber_main(void *arg) {
-    rask_fiber_started();
+    GreenTask *t = (GreenTask *)arg;
+    rask_fiber_started(&t->fiber);
     // A fresh fiber stack reads as zeros, which hides a slot codegen forgot to
     // write exactly the way a fresh thread stack does.
     rask_poison_stack();
-    GreenTask *t = (GreenTask *)arg;
 
     rask_panic_install();
     jmp_buf *jb = rask_panic_jmpbuf();
@@ -687,57 +692,6 @@ void rask_preempt_point(void) {
     switch_to_worker(t, SWITCH_PREEMPTED);
 }
 
-// ─── Stack overflow ─────────────────────────────────────────
-//
-// A fiber that runs into its guard page faults on a stack it can't push
-// another frame on, so the handler runs on a stack of its own (sigaltstack,
-// one per worker) and says what happened before the process dies. Any other
-// fault goes to whatever handler was there before.
-
-static struct sigaction prev_segv;
-static struct sigaction prev_bus;
-
-static void overflow_handler(int sig, siginfo_t *info, void *uctx) {
-    GreenTask *t = tl_current_task;
-    if (t && info && rask_fiber_in_guard(&t->fiber, info->si_addr)) {
-        char msg[160];
-        int n = snprintf(msg, sizeof(msg),
-                         "task %lld overflowed its stack (1 MiB) — "
-                         "unbounded recursion?\n",
-                         (long long)rask_task_id(t->task));
-        if (n > 0) {
-            ssize_t ignored = write(2, msg, (size_t)n);
-            (void)ignored;
-        }
-        signal(SIGABRT, SIG_DFL);
-        abort();
-    }
-    struct sigaction *prev = sig == SIGSEGV ? &prev_segv : &prev_bus;
-    if (prev->sa_flags & SA_SIGINFO) {
-        if (prev->sa_sigaction) {
-            prev->sa_sigaction(sig, info, uctx);
-            return;
-        }
-    } else if (prev->sa_handler != SIG_IGN && prev->sa_handler != SIG_DFL) {
-        prev->sa_handler(sig);
-        return;
-    }
-    signal(sig, SIG_DFL);
-    raise(sig);
-}
-
-static pthread_once_t overflow_once = PTHREAD_ONCE_INIT;
-
-static void install_overflow_handler(void) {
-    struct sigaction sa;
-    memset(&sa, 0, sizeof(sa));
-    sa.sa_sigaction = overflow_handler;
-    sa.sa_flags = SA_SIGINFO | SA_ONSTACK;
-    sigemptyset(&sa.sa_mask);
-    sigaction(SIGSEGV, &sa, &prev_segv);
-    sigaction(SIGBUS, &sa, &prev_bus);
-}
-
 // ─── Deadlock ───────────────────────────────────────────────
 //
 // Every task parked and nothing left that could wake one: no worker running a
@@ -889,6 +843,7 @@ static GreenTask *find_work(GreenScheduler *s, Worker *w) {
 }
 
 static void *worker_entry(void *arg) {
+    rask_fp_reset();
     Worker *w = (Worker *)arg;
     GreenScheduler *s = w->sched;
     tl_worker = w;
@@ -896,11 +851,7 @@ static void *worker_entry(void *arg) {
     rask_poison_stack();
     rask_fiber_init_thread(&w->fiber);
 
-    stack_t alt;
-    alt.ss_size = 64 * 1024;
-    alt.ss_sp = malloc(alt.ss_size);
-    alt.ss_flags = 0;
-    if (alt.ss_sp) sigaltstack(&alt, NULL);
+    rask_stack_guard_thread_init();
 
     int idle_spins = 0;
 
@@ -976,11 +927,7 @@ static void *worker_entry(void *arg) {
         idle_spins = 0;
     }
 
-    if (alt.ss_sp) {
-        stack_t off = { .ss_flags = SS_DISABLE };
-        sigaltstack(&off, NULL);
-        free(alt.ss_sp);
-    }
+    rask_thread_end();
     tl_worker = NULL;
     return NULL;
 }
@@ -1026,7 +973,7 @@ static void sim_worker_entry(void *arg) {
 // ─── Public API ─────────────────────────────────────────────
 
 void rask_runtime_init(int64_t worker_count) {
-    if (g_sched) return; // already initialized
+    rask_scope_enter();
 
     GreenScheduler *s = (GreenScheduler *)calloc(1, sizeof(GreenScheduler));
     if (!s) {
@@ -1095,8 +1042,6 @@ void rask_runtime_init(int64_t worker_count) {
         close(s->epfd);
         s->epfd = -1;
     }
-
-    pthread_once(&overflow_once, install_overflow_handler);
 
     g_sched = s;
 #ifdef RASK_SIM
@@ -1210,6 +1155,7 @@ void rask_runtime_shutdown(void) {
     free(s->workers);
     free(s);
     g_sched = NULL;
+    rask_scope_leave();
 }
 
 // ─── Parking ────────────────────────────────────────────────

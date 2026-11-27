@@ -216,8 +216,12 @@ impl Interpreter {
             "clone" | "to_vec" => {
                 let guard = v.lock().unwrap();
                 let cloned = crate::value::VecData {
-                    items: guard.items.iter().map(Value::clone_as_element).collect(),
+                    items: guard.items.iter().map(Value::deep_clone).collect(),
                     bound: guard.bound,
+                    freed: false,
+                    cursors: Default::default(),
+                    // `clone` of an array is an array; `to_vec` makes a Vec.
+                    array: guard.array && method == "clone",
                 };
                 Ok(Value::Vec(Arc::new(Mutex::new(cloned))))
             }
@@ -244,15 +248,17 @@ impl Interpreter {
                 }
                 Ok(Value::Map(map))
             }
-            "set" => {
+            "replace" => {
                 let idx = self.expect_int(&args, 0)? as usize;
                 let val = args.into_iter().nth(1).unwrap_or(Value::Unit).copy_on_bind();
                 let mut vec = v.lock().unwrap();
                 if idx >= vec.len() {
                     return Err(RuntimeError::IndexOutOfBounds { index: idx as i64, len: vec.len() });
                 }
-                vec[idx] = val;
-                Ok(Value::Unit)
+                let old = std::mem::replace(&mut vec[idx], val.clone());
+                drop(vec);
+                crate::rack::register_element(v, &val);
+                Ok(old)
             }
             "insert" => {
                 let idx = self.expect_int(&args, 0)? as usize;
@@ -261,7 +267,9 @@ impl Interpreter {
                 if idx > vec.len() {
                     return Err(RuntimeError::IndexOutOfBounds { index: idx as i64, len: vec.len() });
                 }
-                vec.insert(idx, item);
+                vec.insert(idx, item.clone());
+                drop(vec);
+                crate::rack::register_element(v, &item);
                 Ok(Value::Unit)
             }
             "remove" | "remove_at" => {
@@ -270,6 +278,7 @@ impl Interpreter {
                 if idx >= vec.len() {
                     return Err(RuntimeError::IndexOutOfBounds { index: idx as i64, len: vec.len() });
                 }
+                vec.removed_at(idx);
                 let removed = vec.remove(idx);
                 Ok(removed)
             }
@@ -394,7 +403,7 @@ impl Interpreter {
                 // Custom comparison via closure — accepts Ordering enum or Int
                 vec.sort_by(|a, b| {
                     match self.call_value(closure.clone(), vec![a.clone(), b.clone()]) {
-                        Ok(Value::Enum { name, variant, .. }) if name == "Ordering" => {
+                        Ok(Value::Enum { ref name, ref variant, .. }) if name == "Ordering" => {
                             match variant.as_str() {
                                 "Less" => std::cmp::Ordering::Less,
                                 "Greater" => std::cmp::Ordering::Greater,
@@ -543,15 +552,15 @@ impl Interpreter {
                     return Ok(Value::none());
                 };
                 let (result, written) =
-                    self.call_closure_keeping_arg(closure.clone(), vec![item])?;
-                // What the closure left in its parameter is the new element.
-                // This used to be dropped, so `modify` never modified (#843).
+                    self.call_closure_keeping_arg(closure.clone(), vec![item]);
+                // What the closure left in its parameter is the new element,
+                // also when it then failed (#843, #1926).
                 if let Some(new_item) = written {
                     if let Some(slot) = v.lock().unwrap().get_mut(index) {
                         *slot = new_item;
                     }
                 }
-                Ok(Value::some(result))
+                Ok(Value::some(result?))
             }
             _ => Err(RuntimeError::NoSuchMethod {
                 ty: "Vec".to_string(),
@@ -576,7 +585,7 @@ impl Interpreter {
                 // than being copied into it — links must observe writes made
                 // through any other link to the same node.
                 let node = match item {
-                    Value::Struct(st) => st,
+                    Value::Struct(ref st) => st.clone(),
                     other => {
                         return Err(RuntimeError::TypeError(format!(
                             "rack.insert() expects a struct node, found {}",
@@ -594,7 +603,7 @@ impl Interpreter {
                 // (`Node { prev: list.tail, .. }`). Record them now — the
                 // struct literal that built it registered what it could see,
                 // but the node's own identity only exists from here.
-                crate::rack::register_nested(&Value::Struct(Arc::clone(&node)), 0);
+                crate::rack::register_nested(&Value::Struct(Arc::clone(&node)));
                 Ok(Value::Link { rack_id, node })
             }
             "delete" => {
@@ -662,6 +671,20 @@ impl Interpreter {
                     });
                 Ok(option_value(found))
             }
+            "staged" => {
+                let rack = s.lock().unwrap();
+                Ok(Value::Staged(Arc::new(Mutex::new(crate::value::StagedData {
+                    rack_id: rack.rack_id,
+                    epoch: rack.epoch,
+                    ops: Vec::new(),
+                }))))
+            }
+            "apply" => {
+                let Some(Value::Staged(ops)) = &args.into_iter().next() else {
+                    return Err(RuntimeError::TypeError("rack.apply() expects a Staged buffer".to_string()));
+                };
+                self.apply_staged(s, &ops)
+            }
             // Every node dies, so every edge pointing into this rack must be
             // nulled. Truncating the slots would leave root edges and
             // cross-rack edges pointing at freed nodes — the one thing the
@@ -682,6 +705,151 @@ impl Interpreter {
                 method
             ))),
         }
+    }
+
+    /// `Staged<T>` methods: each records a change and does nothing else
+    /// (mem.racks/RK17).
+    pub(crate) fn call_staged_method(
+        &mut self,
+        s: &Arc<Mutex<crate::value::StagedData>>,
+        method: &str,
+        args: Vec<Value>,
+    ) -> Result<Value, RuntimeError> {
+        use crate::value::{StagedKind, StagedOp};
+        let key = |args: &[Value]| -> Result<u64, RuntimeError> {
+            args.first()
+                .ok_or_else(|| RuntimeError::TypeError("Staged: missing key".to_string()))?
+                .as_u64()
+                .map_err(RuntimeError::TypeError)
+        };
+        let node_at = |args: &[Value], i: usize| -> Result<Arc<Mutex<StructData>>, RuntimeError> {
+            args.get(i).and_then(link_node).ok_or_else(|| {
+                RuntimeError::TypeError(format!("Staged.{method}() expects a Link"))
+            })
+        };
+        match method {
+            "delete" => {
+                let op = StagedOp { key: key(&args)?, kind: StagedKind::Delete(node_at(&args, 1)?) };
+                s.lock().unwrap().ops.push(op);
+                Ok(Value::Unit)
+            }
+            "insert" => {
+                let k = key(&args)?;
+                let value = args.into_iter().nth(1).unwrap_or(Value::Unit);
+                s.lock().unwrap().ops.push(StagedOp { key: k, kind: StagedKind::Insert(value) });
+                Ok(Value::Unit)
+            }
+            "relink" => {
+                let k = key(&args)?;
+                let node = node_at(&args, 1)?;
+                let to = node_at(&args, 2)?;
+                let f = args.into_iter().nth(3).unwrap_or(Value::Unit);
+                // The compiler refuses a literal that captured a link (E0963);
+                // this is the closure value it couldn't see into.
+                if matches!(f, Value::Closure { task_bound: true, .. }) {
+                    return Err(RuntimeError::Panic(
+                        "relink: the function captured a link or a `Local` box. Pass the link it \
+                         needs as `to`, which the apply checks [mem.racks/RK20]"
+                            .to_string(),
+                    ));
+                }
+                s.lock().unwrap().ops.push(StagedOp { key: k, kind: StagedKind::Relink { node, to, f } });
+                Ok(Value::Unit)
+            }
+            "append" => {
+                let Some(Value::Staged(other)) = &args.into_iter().next() else {
+                    return Err(RuntimeError::TypeError("Staged.append() expects a Staged buffer".to_string()));
+                };
+                if Arc::ptr_eq(s, other) {
+                    return Ok(Value::Unit);
+                }
+                let (rack_id, epoch, ops) = {
+                    let mut o = other.lock().unwrap();
+                    (o.rack_id, o.epoch, std::mem::take(&mut o.ops))
+                };
+                let mut me = s.lock().unwrap();
+                if rack_id != me.rack_id {
+                    return Err(RuntimeError::Panic(
+                        "append: the two buffers were made for different racks [mem.racks/RK21]".to_string(),
+                    ));
+                }
+                // The older of the two answers for both.
+                me.epoch = me.epoch.min(epoch);
+                me.ops.extend(ops);
+                Ok(Value::Unit)
+            }
+            "len" => Ok(Value::int(s.lock().unwrap().ops.len() as i64)),
+            _ => Err(RuntimeError::NoSuchMethod { ty: "Staged".to_string(), method: method.to_string() }),
+        }
+    }
+
+    /// `rack.apply(ops)` (mem.racks/RK18, RK19): sort by key, keeping the
+    /// recorded order for equal keys; inserts and relinks in that order; then
+    /// every delete. The deletes wait so that no slot this apply frees is
+    /// reused by it, no relink meets a half-deleted node, and an inserted
+    /// node's link to a dying one is nulled by the ordinary fixup.
+    fn apply_staged(
+        &mut self,
+        rack: &Arc<Mutex<RackData>>,
+        ops: &Arc<Mutex<crate::value::StagedData>>,
+    ) -> Result<Value, RuntimeError> {
+        use crate::value::StagedKind;
+        let (rack_id, epoch) = {
+            let r = rack.lock().unwrap();
+            (r.rack_id, r.epoch)
+        };
+        let mut recorded = {
+            let mut o = ops.lock().unwrap();
+            if o.rack_id != rack_id {
+                return Err(RuntimeError::Panic(
+                    "apply: this buffer was made for a different rack [mem.racks/RK21]".to_string(),
+                ));
+            }
+            if o.epoch != epoch {
+                return Err(RuntimeError::Panic(
+                    "apply: the rack deleted nodes after this buffer was made, so a link it holds \
+                     may name a freed node. Make the buffer after the last delete, or apply it \
+                     first [mem.racks/RK21]"
+                        .to_string(),
+                ));
+            }
+            std::mem::take(&mut o.ops)
+        };
+        // A stable sort keeps recording order among equal keys.
+        recorded.sort_by_key(|op| op.key);
+        let contains = |node: &Arc<Mutex<StructData>>| rack.lock().unwrap().index_of(node).is_some();
+        let doomed: std::collections::HashSet<usize> = recorded
+            .iter()
+            .filter_map(|op| match &op.kind {
+                StagedKind::Delete(n) if contains(n) => Some(crate::value::node_key(n)),
+                _ => None,
+            })
+            .collect();
+        let mut deletes = Vec::new();
+        for op in recorded {
+            match op.kind {
+                StagedKind::Insert(value) => {
+                    self.call_rack_method(rack, "insert", vec![value])?;
+                }
+                StagedKind::Relink { node, to, f } => {
+                    let alive = |n: &Arc<Mutex<StructData>>| {
+                        contains(n) && !doomed.contains(&crate::value::node_key(n))
+                    };
+                    if alive(&node) && alive(&to) {
+                        let place = crate::env::Slot::Var(Arc::new(Mutex::new(Value::Struct(Arc::clone(&node)))));
+                        let to = Value::Link { rack_id, node: to };
+                        self.call_closure(f, vec![Value::Struct(node), to.clone()], vec![Some(place), None])?;
+                    }
+                }
+                StagedKind::Delete(node) => deletes.push(node),
+            }
+        }
+        for node in deletes {
+            if contains(&node) {
+                crate::rack::delete_node(rack, &node);
+            }
+        }
+        Ok(Value::Unit)
     }
 
     /// `Link<T>` methods. Deliberately almost empty: a link's whole interface
@@ -719,6 +887,10 @@ impl Interpreter {
                 let h = crate::builtins::fnv1a(&(slot as u64).to_le_bytes());
                 Ok(Value::Int(h as i64, crate::value::IntKind::U64))
             }
+            // A copy of the link names the same node (RK2). Falling through
+            // copied the node instead, so a struct's derived clone held a node
+            // no rack knew about and kept it after the delete (#2070).
+            "clone" if args.is_empty() => Ok(Value::Link { rack_id, node: Arc::clone(node) }),
             _ => {
                 // Fall through to the node's own methods, so `l.take_damage(3)`
                 // works the way `l.health` does.
@@ -783,7 +955,7 @@ impl Interpreter {
                 Ok(Value::vec(pairs))
             }
             // Deep, for the same reason as `Vec.clone`.
-            "clone" => Ok(Value::Map(Arc::clone(m)).clone_as_element()),
+            "clone" => Ok(Value::Map(Arc::clone(m)).deep_clone()),
             "modify_with_default" => {
                 let key = args.get(0).cloned().unwrap_or(Value::Unit);
                 let factory = args.get(1).ok_or(RuntimeError::ArityMismatch {
@@ -806,14 +978,14 @@ impl Interpreter {
                 };
 
                 let (result, written) =
-                    self.call_closure_keeping_arg(modifier.clone(), vec![value_to_modify])?;
+                    self.call_closure_keeping_arg(modifier.clone(), vec![value_to_modify]);
                 // The spec's own example for this is
                 // `|u| { u.last_seen = now(); u.visit_count += 1 }` — the whole
                 // reason the entry API exists is that the write lands (#843).
                 if let Some(new_value) = written {
                     self.map_insert(&m, key, new_value)?;
                 }
-                Ok(result)
+                result
             }
             "take_all" => {
                 let items: MapData = std::mem::take(&mut *m.lock().unwrap());
@@ -851,13 +1023,14 @@ impl Interpreter {
                 match found {
                     Some(v) => {
                         let (result, written) =
-                            self.call_closure_keeping_arg(closure.clone(), vec![v])?;
+                            self.call_closure_keeping_arg(closure.clone(), vec![v]);
                         // Same as `Vec.modify`: keep what the closure left
-                        // behind, which is the whole point of the name (#843).
+                        // behind, which is the whole point of the name (#843),
+                        // even when it then failed (#1926).
                         if let Some(new_value) = written {
                             self.map_insert(&m, key, new_value)?;
                         }
-                        Ok(option_of(Some(result)))
+                        Ok(option_of(Some(result?)))
                     }
                     None => Ok(option_of(None)),
                 }
@@ -904,7 +1077,7 @@ impl Interpreter {
                     .ok_or_else(|| RuntimeError::TypeError("Vec.from requires 1 argument".to_string()))?;
 
                 match arr {
-                    Value::Vec(v) => {
+                    Value::Vec(ref v) => {
                         let vec = v.lock().unwrap();
                         let cloned = vec.clone();
                         Ok(Value::Vec(Arc::new(Mutex::new(cloned))))
@@ -1016,7 +1189,7 @@ impl Interpreter {
                     got: 0,
                 })?;
                 match arr {
-                    Value::Vec(v) => {
+                    Value::Vec(ref v) => {
                         let vec = v.lock().unwrap().items.clone();
                         let pairs = Arc::new(Mutex::new(MapData::with_capacity(vec.len())));
                         for item in vec.iter() {
@@ -1080,12 +1253,6 @@ impl Interpreter {
                     got: 0,
                 })?;
                 Ok(Value::Atomic(Arc::new(Mutex::new(value))))
-            }
-            // `default()` is primitive payloads only, and 0 is what every one
-            // of them starts at — `false` included, once the checker has said
-            // the payload is a bool.
-            (TypeConstructorKind::Atomic, "default") => {
-                Ok(Value::Atomic(Arc::new(Mutex::new(Value::int(0)))))
             }
             _ => Err(RuntimeError::NoSuchMethod {
                 ty: format!("{:?}", kind),

@@ -36,6 +36,11 @@ fn edit_distance(a: &str, b: &str) -> usize {
 ///
 /// Returns `Some("did you mean `closest`?")` if a close match is found.
 pub fn did_you_mean<'a>(name: &str, candidates: impl IntoIterator<Item = &'a str>) -> Option<String> {
+    closest(name, candidates).map(|c| format!("did you mean `{}`?", c))
+}
+
+/// The candidate a typo of `name` most likely meant, never `name` itself.
+pub fn closest<'a>(name: &str, candidates: impl IntoIterator<Item = &'a str>) -> Option<String> {
     let max_distance = match name.len() {
         0..=2 => 1,
         3..=5 => 2,
@@ -45,6 +50,9 @@ pub fn did_you_mean<'a>(name: &str, candidates: impl IntoIterator<Item = &'a str
     let mut best: Option<(&str, usize)> = None;
 
     for candidate in candidates {
+        if candidate == name {
+            continue;
+        }
         // Quick length check to avoid computing distance for very different strings
         let len_diff = name.len().abs_diff(candidate.len());
         if len_diff > max_distance {
@@ -53,13 +61,16 @@ pub fn did_you_mean<'a>(name: &str, candidates: impl IntoIterator<Item = &'a str
 
         let dist = edit_distance(name, candidate);
         if dist <= max_distance {
-            if best.is_none() || dist < best.unwrap().1 {
+            // Ties go to the name that sorts first, so the answer doesn't
+            // depend on the order candidates come in: callers pass hash-map
+            // keys, and the suggestion changed from run to run.
+            if best.is_none_or(|(b, d)| (dist, candidate) < (d, b)) {
                 best = Some((candidate, dist));
             }
         }
     }
 
-    best.map(|(closest, _)| format!("did you mean `{}`?", closest))
+    best.map(|(closest, _)| closest.to_string())
 }
 
 #[cfg(test)]

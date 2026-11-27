@@ -23,7 +23,7 @@ use std::collections::HashMap;
 
 use crate::function::{BlockId, LocalId, MirBlock, MirFunction, MirLocal};
 use crate::lower::{const_slot_name, CONST_SLOT_PREFIX};
-use crate::operand::{FunctionRef, MirOperand, MirRValue};
+use crate::operand::{MirOperand, MirRValue};
 use crate::stmt::{MirStmt, MirStmtKind, MirTerminator, MirTerminatorKind};
 use crate::types::MirType;
 
@@ -32,13 +32,17 @@ use crate::types::MirType;
 /// one symbol to link against rather than a conditional one.
 pub const CONST_FREE_FN: &str = "rask_const_free";
 
-/// Add `rask_const_free` to the program.
-pub fn add_const_free(fns: &mut Vec<MirFunction>) {
+/// Add `rask_const_free` to the program. `thunks` names each const's init
+/// thunk, as lowering made them.
+pub fn add_const_free(fns: &mut Vec<MirFunction>, thunks: &std::collections::HashSet<String>) {
     if fns.iter().any(|f| f.name == CONST_FREE_FN) {
         return;
     }
-    let mut owned: Vec<(String, &'static str, MirType)> = Vec::new();
+    let mut owned: Vec<(String, Release, MirType)> = Vec::new();
     for func in fns.iter() {
+        if !thunks.contains(&func.name) {
+            continue;
+        }
         if let Some((slot, free_fn, ty)) = const_a_thunk_owns(func) {
             owned.push((slot, free_fn, ty));
         }
@@ -49,23 +53,29 @@ pub fn add_const_free(fns: &mut Vec<MirFunction>) {
     fns.push(build(&owned));
 }
 
+/// How the value in a const's slot is given back.
+enum Release {
+    /// Passed to this runtime free.
+    Call(&'static str),
+    /// A heap closure: a const holding a function (`const PICK: func() -> i64
+    /// = answer`) is one with nothing captured, since a const can't capture.
+    Closure,
+}
+
 /// The const this init thunk builds, if the thing it built is ours to free.
 ///
 /// Reads the thunk rather than the declaration: which release a value wants is
-/// decided by the constructor that made it (`elem_strs::CTORS`), and the
+/// decided by the constructor that made it (its call's shape), and the
 /// declaration only says what type it is. `const S: Shared<i64> = Shared.local(0)`
 /// and `Shared.new(0)` are one declared type over two runtime objects with two
 /// different releases.
-fn const_a_thunk_owns(func: &MirFunction) -> Option<(String, &'static str, MirType)> {
-    if !func.name.starts_with("__rask_const_init__") {
-        return None;
-    }
-
+fn const_a_thunk_owns(func: &MirFunction) -> Option<(String, Release, MirType)> {
     // Which locals hold the address of which slot, and which hold the result of
     // which call.
     let mut slot_of: HashMap<LocalId, String> = HashMap::new();
-    let mut made_by: HashMap<LocalId, &str> = HashMap::new();
+    let mut made_by: HashMap<LocalId, &crate::FunctionRef> = HashMap::new();
     let mut copied_from: HashMap<LocalId, LocalId> = HashMap::new();
+    let mut closures: std::collections::HashSet<LocalId> = std::collections::HashSet::new();
     let mut stored: Option<(String, LocalId)> = None;
 
     for block in &func.blocks {
@@ -76,8 +86,11 @@ fn const_a_thunk_owns(func: &MirFunction) -> Option<(String, &'static str, MirTy
                         slot_of.insert(*dst, rest.to_string());
                     }
                 }
+                MirStmtKind::ClosureCreate { dst, heap: true, .. } => {
+                    closures.insert(*dst);
+                }
                 MirStmtKind::Call { dst: Some(d), func: f, .. } => {
-                    made_by.insert(*d, f.name.as_str());
+                    made_by.insert(*d, f);
                 }
                 MirStmtKind::Assign { dst, rvalue: MirRValue::Use(MirOperand::Local(src)) } => {
                     copied_from.insert(*dst, *src);
@@ -95,7 +108,7 @@ fn const_a_thunk_owns(func: &MirFunction) -> Option<(String, &'static str, MirTy
     let (slot, mut value) = stored?;
     // Walk back through the copies to the call that produced it.
     for _ in 0..func.locals.len().max(1) {
-        if made_by.contains_key(&value) {
+        if made_by.contains_key(&value) || closures.contains(&value) {
             break;
         }
         match copied_from.get(&value) {
@@ -103,13 +116,16 @@ fn const_a_thunk_owns(func: &MirFunction) -> Option<(String, &'static str, MirTy
             None => return None,
         }
     }
-    let ctor = made_by.get(&value)?;
     let ty = func
         .locals
         .iter()
         .find(|l| l.id == value)
         .map(|l| l.ty.clone())
         .unwrap_or(MirType::I64);
+    if closures.contains(&value) {
+        return Some((slot, Release::Closure, ty));
+    }
+    let ctor = made_by.get(&value)?;
 
     // A const whose value doesn't fit the slot is copied to the heap and the
     // slot holds that block — a `string` const is a 16-byte header, a struct
@@ -121,15 +137,15 @@ fn const_a_thunk_owns(func: &MirFunction) -> Option<(String, &'static str, MirTy
     // const, say — is the "where did a value go after it crossed into an
     // aggregate" question (#1035), and freeing the header doesn't answer it or
     // make it worse.
-    if *ctor == "rask_alloc" || *ctor == "rask_alloc_aligned" {
-        return Some((slot, "rask_free", MirType::Ptr));
+    if ctor.name == "rask_alloc" || ctor.name == "rask_alloc_aligned" {
+        return Some((slot, Release::Call("rask_free"), MirType::Ptr));
     }
 
-    let free_fn = crate::elem_strs::free_fn(ctor)?;
-    Some((slot, free_fn, ty))
+    let free_fn = crate::container_drop::free_for(ctor)?;
+    Some((slot, Release::Call(free_fn), ty))
 }
 
-fn build(owned: &[(String, &'static str, MirType)]) -> MirFunction {
+fn build(owned: &[(String, Release, MirType)]) -> MirFunction {
     let mut locals: Vec<MirLocal> = Vec::new();
     let mut statements: Vec<MirStmt> = Vec::new();
     let mut next = 0u32;
@@ -140,7 +156,7 @@ fn build(owned: &[(String, &'static str, MirType)]) -> MirFunction {
         id
     };
 
-    for (slot, free_fn, ty) in owned {
+    for (slot, release, ty) in owned {
         let addr = fresh(&mut locals, MirType::Ptr);
         statements.push(MirStmt::dummy(MirStmtKind::GlobalRef {
             dst: addr,
@@ -151,10 +167,13 @@ fn build(owned: &[(String, &'static str, MirType)]) -> MirFunction {
             dst: value,
             rvalue: MirRValue::Deref(MirOperand::Local(addr)),
         }));
-        statements.push(MirStmt::dummy(MirStmtKind::Call {
-            dst: None,
-            func: FunctionRef::internal(free_fn.to_string()),
-            args: vec![MirOperand::Local(value)],
+        statements.push(MirStmt::dummy(match release {
+            Release::Call(free_fn) => MirStmtKind::Call {
+                dst: None,
+                func: crate::container_drop::free_call(free_fn),
+                args: vec![MirOperand::Local(value)],
+            },
+            Release::Closure => MirStmtKind::ClosureDrop { closure: value, made: None },
         }));
     }
 
@@ -170,7 +189,9 @@ fn build(owned: &[(String, &'static str, MirType)]) -> MirFunction {
         }],
         entry_block: BlockId(0),
         is_extern_c: true,
+        span: rask_ast::Span::new(0, 0),
         inline_hint: false,
-        source_file: None,
+        param_modes: Vec::new(),
+        item_mode_from_body: false,
     }
 }

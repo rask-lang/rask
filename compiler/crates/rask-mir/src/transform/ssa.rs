@@ -290,7 +290,7 @@ fn rename_rvalue(rv: &mut MirRValue, version_stack: &[Vec<LocalId>], num_orig_lo
         MirRValue::Use(op) => rename_operand(op, version_stack, num_orig_locals),
         MirRValue::Ref(id) => *id = current_version(*id, version_stack, num_orig_locals),
         MirRValue::FuncAddr(_) => {}
-        MirRValue::Deref(op) => rename_operand(op, version_stack, num_orig_locals),
+        MirRValue::Deref(op) | MirRValue::WrapSome(op) => rename_operand(op, version_stack, num_orig_locals),
         MirRValue::BinaryOp { left, right, .. } => {
             rename_operand(left, version_stack, num_orig_locals);
             rename_operand(right, version_stack, num_orig_locals);
@@ -388,7 +388,7 @@ fn rename_stmt(
                 return Some(orig);
             }
         }
-        MirStmtKind::LoadCapture { dst, env_ptr, .. } => {
+        MirStmtKind::LoadCapture { dst, env_ptr, .. } | MirStmtKind::BindPlace { dst, addr: env_ptr } => {
             *env_ptr = current_version(*env_ptr, version_stack, num_orig_locals);
             let orig = dst.0 as usize;
             if orig < num_orig_locals {
@@ -399,7 +399,7 @@ fn rename_stmt(
                 return Some(orig);
             }
         }
-        MirStmtKind::ClosureDrop { closure, .. } | MirStmtKind::ClosureRetain { closure, .. } => {
+        MirStmtKind::ClosureDrop { closure, .. } => {
             *closure = current_version(*closure, version_stack, num_orig_locals);
         }
         MirStmtKind::ResourceRegister { dst, .. } => {
@@ -464,7 +464,7 @@ fn rename_stmt(
         MirStmtKind::RcInc { local }
         | MirStmtKind::RcDec { local }
         | MirStmtKind::RcDecContents { local }
-        | MirStmtKind::RcIncContents { local } => {
+        | MirStmtKind::RcIncContents { local, .. } => {
             *local = current_version(*local, version_stack, num_orig_locals);
         }
         MirStmtKind::ZeroAggregate { local: addr }
@@ -481,7 +481,12 @@ fn rename_stmt(
         MirStmtKind::UnwindArm { value, .. } => {
             *value = current_version(*value, version_stack, num_orig_locals);
         }
-        MirStmtKind::EnsureHookPop | MirStmtKind::UnwindDisarm { .. } => {}
+        MirStmtKind::EnsureHookPop { kept } => {
+            for l in kept.iter_mut() {
+                *l = current_version(*l, version_stack, num_orig_locals);
+            }
+        }
+        MirStmtKind::UnwindDisarm { .. } => {}
     }
     None
 }
@@ -807,8 +812,10 @@ mod tests {
             blocks,
             entry_block: block(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
-            source_file: None,
+            param_modes: Vec::new(),
+            item_mode_from_body: false,
         }
     }
 
@@ -995,8 +1002,10 @@ mod tests {
             ],
             entry_block: block(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
-            source_file: None,
+            param_modes: Vec::new(),
+            item_mode_from_body: false,
         };
         construct(&mut func);
 

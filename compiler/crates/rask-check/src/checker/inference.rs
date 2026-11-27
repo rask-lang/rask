@@ -20,6 +20,10 @@ pub enum TypeConstraint {
         span: Span,
         /// V5: Self type at constraint creation site (for private field checks)
         self_type: Option<Type>,
+        /// The receiver is the object of an `a?.b`: once its type is known,
+        /// peel exactly one optional layer, or reject a non-optional. A plain
+        /// `.b` never looks through an optional (it may be absent).
+        through_chain: bool,
     },
     /// AT6/AT8: `result` is `base.assoc` read through the applied interface
     /// `bound` — the bound a generic callee put on the parameter `base` stands
@@ -237,7 +241,7 @@ impl InferenceContext {
     }
 
     /// Create a fresh type variable for an unsuffixed literal.
-    /// After constraint solving, unresolved literal vars default to i32/f64.
+    /// After constraint solving, unresolved literal vars default to i64/f64.
     pub fn fresh_literal_var(&mut self, kind: LiteralKind) -> Type {
         let id = TypeVarId(self.next_var);
         self.next_var += 1;
@@ -272,23 +276,24 @@ impl InferenceContext {
 
     /// The type an unsuffixed literal takes when nothing else decides it.
     ///
-    /// i32 is the default (type.primitives/L1), but only where the value fits:
-    /// `const big = 3000000000` used to keep the low 32 bits and print
-    /// -1294967296. Past that the narrowest type that holds it wins, which is
-    /// how `18446744073709551615` on its own comes out a `u64` rather than an
-    /// `i128`.
+    /// i64 is the default (type.primitives/L1), but only where the value fits:
+    /// past `i64::MAX` the narrowest type that holds it wins, which is how
+    /// `18446744073709551615` on its own comes out a `u64` rather than an
+    /// `i128`. i32 used to be the default, and counters and totals overflowed
+    /// far from the literal that picked the width (#1935).
     ///
     /// The one answer for every place that needs it: defaulting, an early bind
     /// that can't wait for defaulting, and an error naming the literal's type.
     /// The error used to say `i64` while the literal became an `i32` (#1523).
+    /// Later passes read the type this settles on from the node-type table;
+    /// none of them picks a default of its own.
     pub fn literal_default(&self, id: TypeVarId, kind: LiteralKind) -> Type {
         match kind {
             LiteralKind::Integer => match self.literal_int_values.get(&id) {
-                Some(&v) if i32::try_from(v).is_ok() => Type::I32,
                 Some(&v) if i64::try_from(v).is_ok() => Type::I64,
                 Some(&v) if u64::try_from(v).is_ok() => Type::U64,
                 Some(_) => Type::I128,
-                None => Type::I32,
+                None => Type::I64,
             },
             LiteralKind::Float => Type::F64,
         }
@@ -305,9 +310,18 @@ impl InferenceContext {
     /// resolves to, if it's still an unbound variable, that's what needs the
     /// default.
     pub fn apply_literal_defaults(&mut self) {
+        self.apply_literal_defaults_where(|_| true);
+    }
+
+    /// `apply_literal_defaults` for the literal vars `wanted` picks. A method
+    /// call on a literal receiver (`3.75.powi(2)`) can't be resolved until the
+    /// receiver has a type, but its argument literals must stay open until it
+    /// is, or they default on their own and then fail the method's signature.
+    pub fn apply_literal_defaults_where(&mut self, wanted: impl Fn(TypeVarId) -> bool) {
         let pending: Vec<(TypeVarId, LiteralKind)> = self
             .literal_vars
             .iter()
+            .filter(|(&id, _)| wanted(id))
             .map(|(&id, &kind)| (id, kind))
             .collect();
         let mut defaults: HashMap<TypeVarId, Type> = HashMap::new();
@@ -318,12 +332,16 @@ impl InferenceContext {
             // concrete type isn't a variable and needs nothing.
             let Type::Var(tail) = self.apply(&Type::Var(var_id)) else { continue };
             // Two literals can land on the same variable — a wide one and a
-            // narrow one. Take the wider, so nothing gets truncated.
+            // narrow one. Take the wider, so nothing gets truncated. A float
+            // outranks every integer: `let a = 3` times `let b = 2.5` is
+            // `3.0 * 2.5` (type.primitives/CV1a). Ranked equal, the answer was
+            // whichever literal the hash map visited first, and native printed
+            // `7` or `7.5` from one run to the next.
             let rank = |t: &Type| match t {
-                Type::I32 => 0,
-                Type::I64 => 1,
-                Type::U64 => 2,
-                Type::I128 => 3,
+                Type::I64 => 0,
+                Type::U64 => 1,
+                Type::I128 => 2,
+                Type::F64 => 3,
                 _ => 0,
             };
             match defaults.get(&tail) {
@@ -404,7 +422,7 @@ impl InferenceContext {
             },
             Type::Array { elem, len } => Type::Array {
                 elem: Box::new(self.apply(elem)),
-                len: *len,
+                len: len.map(|t| self.apply(t)),
             },
             // These three carry a type and used to fall through to the clone,
             // so a variable inside one stayed spelled as a variable even after
@@ -412,7 +430,19 @@ impl InferenceContext {
             // came back "type is still open here" (#970) — the element had
             // settled, the `*T` around it just never heard.
             Type::RawPtr(inner) => Type::RawPtr(Box::new(self.apply(inner))),
-            Type::Union(members) => Type::Union(members.iter().map(|t| self.apply(t)).collect()),
+            // A solved variable can make two members one (`Mm | ?T` with
+            // `?T = Mm`); the duplicate goes, and a union left with one
+            // member is that member.
+            Type::Union(members) => {
+                let mut out: Vec<Type> = Vec::with_capacity(members.len());
+                for m in members {
+                    let m = self.apply(m);
+                    if !out.contains(&m) {
+                        out.push(m);
+                    }
+                }
+                if out.len() == 1 { out.pop().unwrap() } else { Type::Union(out) }
+            }
             Type::SimdVector { elem, lanes } => Type::SimdVector {
                 elem: Box::new(self.apply(elem)),
                 lanes: *lanes,
@@ -429,7 +459,6 @@ impl InferenceContext {
     fn apply_generic_arg(&self, arg: &GenericArg) -> GenericArg {
         match arg {
             GenericArg::Type(ty) => GenericArg::Type(Box::new(self.apply(ty))),
-            GenericArg::ConstUsize(n) => GenericArg::ConstUsize(*n),
         }
     }
 
@@ -464,7 +493,6 @@ impl InferenceContext {
     fn occurs_in_generic_arg(&self, var: TypeVarId, arg: &GenericArg) -> bool {
         match arg {
             GenericArg::Type(ty) => self.occurs_in(var, ty),
-            GenericArg::ConstUsize(_) => false,
         }
     }
 }

@@ -224,7 +224,7 @@ func read_config(file: File) -> Config or FileError {
 | **RC2** | `Rack<Resource>` | No | `delete` frees the node rather than handing it back, so nothing can consume one |
 | **RC3** | `Map<K, Resource>` | Yes, and the `Map` is owed | Same as `Vec`. `insert` hands back the value it replaces, so that one is owed too |
 | **RC4** | `Resource?` | Yes | Must match and consume |
-| **RC5: Nothing loses an element** | `Vec`, `Map` | | A method that would drop an element (`clear`, `set`, `remove_where`, writing over `v[i]`) or hand out a copy of one (`get`, `first`, `clone`) is refused, and so is a `for` over `take_all()`, which drops the rest on an early exit. The method says which it does (`@drops_elements`, `@copies_elements`); the element's linearity rules it out. A generic body is checked against each type it's called with |
+| **RC5: Nothing loses an element** | `Vec`, `Map` | | A method that would drop an element (`clear`, `remove_where`, writing over `v[i]`) or hand out a copy of one (`get`, `first`, `clone`) is refused, and so is a `for` over `take_all()`, which drops the rest on an early exit. The method says which it does (`@drops_elements`, `@copies_elements`); the element's linearity rules it out. A generic body is checked against each type it's called with |
 
 A container of things that must be consumed must be consumed itself, the way a
 `Heap` must. Elements come out one at a time with `pop` and `remove`, which hand

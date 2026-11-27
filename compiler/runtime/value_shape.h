@@ -20,22 +20,30 @@ struct RaskJsonField {
 
 // One enum variant: its tag, and its payload as a struct whose field offsets
 // count from the start of the enum. NULL payload for a variant with none.
+// `name` is the variant's wire name; `bare` marks a lone unnamed payload,
+// written as the value itself rather than an object of fields (std.encoding/E23).
 struct RaskJsonVariant {
     int64_t tag;
     RaskJsonShape *payload;
+    char *name;
+    int bare;
 };
 
 struct RaskJsonShape {
     int64_t kind;
-    int64_t slot;                 // struct/enum byte size, or element/value slot width
+    int64_t slot;                 // struct/enum byte size, or element/value/array element slot width
     int64_t payload_offset;       // T? and T or E: where the payload sits, past the tag
     int      is_static;           // primitive singletons are never freed
     RaskJsonShape *elem;          // Vec element / Map value / T? payload / T of `T or E`
     RaskJsonShape *err;           // E of `T or E`
     RaskJsonShape *key;           // Map key; NULL for a string key, all JSON has
     RaskJsonFill generate;        // a generated type: writes one at its argument
-    // What a Vec element or Map value owns, in the form every container
-    // constructor takes, so the container the decoder builds frees it.
+    RaskJsonCustom custom;        // a custom decode: takes the wire value and the slot
+    int64_t wire_size;            // a custom decode: bytes the wire value takes
+    // What a Vec element, Map value or custom decode's wire value owns, in
+    // the form every container constructor takes: the container the decoder
+    // builds frees it, and a decode that fails partway releases what it had
+    // already built with it.
     const int32_t *elem_owned;
     int64_t n_elem_owned;
     int64_t elem_align;
@@ -47,6 +55,8 @@ struct RaskJsonShape {
     int32_t vcap;
     int64_t tag_offset;           // enum: where the tag sits, and how wide it is
     int64_t tag_width;
+    char *tag_key;                // enum: the `@tag` field, NULL for external tagging
+    int64_t count;                // fixed array: how many elements
 };
 
 #endif

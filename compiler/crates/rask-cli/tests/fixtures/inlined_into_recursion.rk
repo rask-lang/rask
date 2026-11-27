@@ -1,0 +1,18 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+func leaf(k: i64) -> i64 {
+    mut a: [i64; 600] = [0; 600]
+    a[k % 600] = k
+    return a[k % 600]
+}
+
+func rec(n: i64) -> i64 {
+    if n == 0 {
+        return leaf(7)
+    }
+    return rec(n - 1) + 1
+}
+
+func main() {
+    println("start")
+    println("{rec(3000)}")
+}

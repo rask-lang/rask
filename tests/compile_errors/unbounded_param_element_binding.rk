@@ -1,0 +1,36 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A type parameter without a `Copy` bound is assumed to move
+// (type.generics/G1a), so binding `v[i]` of a `Vec<T>` is a view of the slot,
+// the same as for a `Vec<Vec<i64>>` (mem.borrowing/E4). Writing over the slot
+// while the view lives frees what it reads (E0958). The checker told "an
+// inference variable that never settled" apart from nothing, and a type
+// parameter was filed under it, so the generic body was accepted and native
+// read freed memory (#1865).
+
+func grab<T>(mutate v: Vec<T>, take x: T) -> T {
+    let old = v[0]
+    // ERROR: `T` isn't known to be Copy, so `old` views the slot being written over [E0958]
+    v[0] = x
+    return old
+}
+
+// Fine: with the bound the element copies.
+func grab_copy<T: Copy>(mutate v: Vec<T>, take x: T) -> T {
+    let old = v[0]
+    v[0] = x
+    return old
+}
+
+// Fine: `replace` hands the old element over.
+func grab_replace<T>(mutate v: Vec<T>, take x: T) -> T {
+    return v.replace(0, x)
+}
+
+func main() {
+    mut w: Vec<Vec<i64>> = [[1]]
+    let n: Vec<i64> = [2]
+    let o = grab_replace(mutate w, n)
+    mut k: Vec<i64> = [5]
+    let p = grab_copy(mutate k, 6)
+    println("{o.len()} {p}")
+}

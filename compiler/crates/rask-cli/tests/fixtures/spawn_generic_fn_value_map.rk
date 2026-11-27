@@ -10,7 +10,7 @@ struct Node {
 
 func launch<X>(x: X) -> i64 {
     let c = || {
-        let y = x
+        look(x)
         return 1
     }
     return spawn { c() }.join()!
@@ -27,3 +27,6 @@ func main() {
         println("{links.map(launch).to_vec()[0]}")
     }
 }
+
+// Reads its argument without keeping it, so the closure captures it.
+func look<T>(x: T) {}

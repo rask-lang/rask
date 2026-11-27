@@ -1,0 +1,107 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+// A `mutate` argument that is a field of a collection element writes into the
+// element. Natively the field was copied into a scratch slot and the callee
+// wrote the copy, so `setit(mutate v[0].f, 12)` left `v[0].f` alone (#2020).
+// A method's `mutate self` on such a field is the same write: `rows[0].inner
+// .tick()` left the count where it was, directly and through an interface's
+// default method (#1990).
+
+struct Inner {
+    a: i64
+    b: i64
+    c: i64
+}
+
+struct Row {
+    n: i64
+    inner: Inner
+    items: Vec<i64>
+    name: string
+    f: func() -> i64
+}
+
+interface Ticks {
+    func tick(mutate self)
+
+    func tick_twice(mutate self) {
+        self.tick()
+        self.tick()
+    }
+}
+
+Inner implements Ticks {
+    func tick(mutate self) {
+        self.a = self.a + 1
+    }
+}
+
+func bump(mutate x: i64) {
+    x += 1
+}
+
+func widen(mutate i: Inner) {
+    i.c = 99
+}
+
+func grow(mutate v: Vec<i64>) {
+    v.push(7)
+}
+
+func rename(mutate s: string) {
+    s = "renamed"
+}
+
+func setit(mutate g: func() -> i64, n: i64) {
+    g = || n
+}
+
+func row(n: i64) -> Row {
+    return Row(n: n, inner: Inner(a: 1, b: 2, c: 3), items: Vec.new(), name: "x", f: || 1)
+}
+
+test "a scalar field of a vector element" {
+    mut v: Vec<Row> = Vec.new()
+    v.push(row(1))
+    bump(mutate v[0].n)
+    bump(mutate v[0].inner.b)
+    assert v[0].n == 2
+    assert v[0].inner.b == 3
+}
+
+test "a struct, vector and string field of a vector element" {
+    mut v: Vec<Row> = Vec.new()
+    v.push(row(1))
+    widen(mutate v[0].inner)
+    grow(mutate v[0].items)
+    rename(mutate v[0].name)
+    assert v[0].inner.c == 99
+    assert v[0].items.len() == 1
+    assert v[0].name == "renamed"
+}
+
+test "a closure field of a vector element" {
+    mut v: Vec<Row> = Vec.new()
+    v.push(row(1))
+    setit(mutate v[0].f, 12)
+    assert (v[0].f)() == 12
+}
+
+test "fields of a map value" {
+    mut m: Map<string, Row> = Map.new()
+    m.insert("k", row(5))
+    bump(mutate m["k"].n)
+    widen(mutate m["k"].inner)
+    assert m["k"].n == 6
+    assert m["k"].inner.c == 99
+}
+
+test "a method on a struct field of a vector element" {
+    mut rows: Vec<Row> = Vec.new()
+    rows.push(row(1))
+    rows[0].inner.tick()
+    assert rows[0].inner.a == 2
+    rows[0].inner.tick_twice()
+    assert rows[0].inner.a == 4
+    assert rows[0].inner.c == 3
+}

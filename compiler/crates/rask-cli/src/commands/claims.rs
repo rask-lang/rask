@@ -109,7 +109,7 @@ fn package_claims_into(path: &str, format: Format, mode: ClaimsMode, results: &m
         return ClaimsOutcome::Held;
     }
     let runs = claim_runs(&plan);
-    let input = rask_compiler::emit::BackEnd::of(&compiled.result, None, None);
+    let input = rask_compiler::emit::BackEnd::of(&compiled.result);
     let entry = rask_compiler::emit::Entry::Claims(&runs);
     let lowered = match rask_compiler::emit::lower(&input, &entry) {
         Ok(lowered) => lowered,
@@ -187,14 +187,15 @@ fn package_claims_into(path: &str, format: Format, mode: ClaimsMode, results: &m
 /// the MIR of every function it reaches, the runtime it links against, and
 /// the compiler that made the rest. A comment edit elsewhere in the package
 /// leaves it alone; a change to anything the claim calls doesn't.
-fn verdict_key(claim: &ClaimPlan, reached: &std::collections::BTreeMap<&str, &rask_mir::MirFunction>) -> u64 {
+fn verdict_key(claim: &ClaimPlan, reached: &std::collections::BTreeMap<String, Option<&rask_mir::MirFunction>>) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
     claim.name.hash(&mut h);
     claim.seed.hash(&mut h);
     claim.budget.hash(&mut h);
-    for f in reached.values() {
-        f.to_string().hash(&mut h);
+    for (name, f) in reached {
+        name.hash(&mut h);
+        f.map(|f| f.to_string()).hash(&mut h);
     }
     runtime_fingerprint().hash(&mut h);
     super::cache::compiler_fingerprint().hash(&mut h);
@@ -776,12 +777,44 @@ fn compile_claims(path: &str, claim_sources: &[(PathBuf, String)], plan: &mut Pl
     let output = rask_compiler::compile_package_with(&mut pkg.ctx, &pkg.config, |_, _| {});
     if !variant.quiet {
         for diag in &output.diagnostics {
+            // The package was compiled, and its warnings shown, by the command
+            // that got here; this compile is the package again with the claims
+            // on top. A warning about the package's own code would be the same
+            // one a second time.
+            if diag.severity == rask_diagnostics::Severity::Warning && !about_claims(diag, &pkg.claims_files) {
+                continue;
+            }
             let diag = point_at_input(diag, plan, pkg.runner_file, &pkg.claims_files);
             crate::show_diagnostic_multi(&diag, &pkg.sources);
         }
     }
     let result = output.result?;
     Some(Compiled { result, link_opts: pkg.link_opts, sources: pkg.sources, claims_files: pkg.claims_files })
+}
+
+/// `path` as reached from `base`, with `..` for each directory of `base` it
+/// isn't under. Both are absolute and canonical.
+fn relative_to(path: &Path, base: &Path) -> PathBuf {
+    let p: Vec<_> = path.components().collect();
+    let b: Vec<_> = base.components().collect();
+    let shared = p.iter().zip(&b).take_while(|(x, y)| x == y).count();
+    let mut out = PathBuf::new();
+    for _ in shared..b.len() {
+        out.push("..");
+    }
+    for c in &p[shared..] {
+        out.push(c);
+    }
+    out
+}
+
+/// Whether a diagnostic's primary label is in one of the claims files.
+fn about_claims(diag: &rask_diagnostics::Diagnostic, claims_files: &[u16]) -> bool {
+    diag.labels
+        .iter()
+        .find(|l| l.style == rask_diagnostics::LabelStyle::Primary)
+        .or_else(|| diag.labels.first())
+        .is_some_and(|l| claims_files.contains(&l.span.file_id))
 }
 
 /// An error inside a generated case function is about one of the claim's
@@ -892,6 +925,8 @@ struct Record {
     tried: u64,
     distinct: u64,
     discarded: u64,
+    /// Refused by a type's own `decode`, apart from what the claim discards.
+    refused: u64,
     over_budget: u64,
     /// Met another task, the clock or simulated I/O, so the schedule was sampled.
     scheduled: bool,
@@ -917,6 +952,7 @@ impl Record {
             tried: n("tried"),
             distinct: n("distinct"),
             discarded: n("discarded"),
+            refused: n("refused"),
             over_budget: n("over_budget"),
             scheduled: json.contains("\"scheduled\":true"),
             budget_input: s("budget_input"),
@@ -1003,7 +1039,17 @@ fn run_claims(
         path.strip_prefix(root).unwrap_or(path).display().to_string()
     };
     if format == Format::Human {
-        let files: Vec<String> = plan.files.iter().map(|f| f.display().to_string()).collect();
+        // Relative to where the command ran, like the path it was given: an
+        // absolute one is different on every machine that runs it.
+        let cwd = std::env::current_dir().ok().and_then(|d| d.canonicalize().ok());
+        let files: Vec<String> = plan
+            .files
+            .iter()
+            .map(|f| match &cwd {
+                Some(d) => relative_to(f, d).display().to_string(),
+                None => f.display().to_string(),
+            })
+            .collect();
         println!("{} {}", "Claims".green().bold(), files.join(", "));
     }
     let mut all_held = true;
@@ -1038,6 +1084,17 @@ fn run_claims(
                 error: Some(error.clone()),
                 ..result(claim, "false", format!("false: {input}"))
             });
+            continue;
+        }
+        // A claim most of whose inputs a `decode` turned away says almost
+        // nothing about the type, however many it tried (type.claims/IN4).
+        if mostly_refused(summary) {
+            all_held = false;
+            report_mostly_refused(claim, summary, compiled);
+            results.push(result(claim, "vacuous", verdict(summary)));
+            if format == Format::Human {
+                println!("  {:<24} {}", claim.name, verdict(summary));
+            }
             continue;
         }
         held.push(summary.clone());
@@ -1126,7 +1183,7 @@ fn thousands(n: u64) -> String {
 
 /// The verdict line for a claim that held (type.claims/V2, V3).
 fn verdict(r: &Record) -> String {
-    let held = r.tried - r.discarded - r.over_budget;
+    let held = r.tried - r.discarded - r.refused - r.over_budget;
     let mut line = if r.mode == "all" {
         format!("checked all {}", count(r.distinct, "input"))
     } else {
@@ -1134,6 +1191,9 @@ fn verdict(r: &Record) -> String {
     };
     if r.discarded > 0 {
         line.push_str(&format!(", {} discarded", r.discarded));
+    }
+    if r.refused > 0 {
+        line.push_str(&format!(", {} refused by `decode`", r.refused));
     }
     if r.scheduled {
         line.push_str(", schedules sampled too");
@@ -1278,6 +1338,42 @@ fn report_false(claim: &ClaimPlan, input: &str, error: &str, shown: &str, compil
     crate::show_diagnostic_multi(&diag, &compiled.sources);
 }
 
+/// A claim has to hold for at least one input in this many that it tried
+/// (type.claims/IN4).
+const MIN_ACCEPTED_ONE_IN: u64 = 10;
+
+/// Did a type's own `decode` refuse so many inputs that fewer than one in
+/// `MIN_ACCEPTED_ONE_IN` got past it? Only what `decode` itself turned away
+/// counts: an input the claim then discards with its own `return` (CL5) or one
+/// that ran past the step budget did get past `decode`, so a claim that skips
+/// most inputs by its own precondition is not this.
+fn mostly_refused(r: &Record) -> bool {
+    r.refused > 0 && (r.tried - r.refused) * MIN_ACCEPTED_ONE_IN < r.tried
+}
+
+/// E0975: a claim that held only for the few inputs a `decode` let through.
+fn report_mostly_refused(claim: &ClaimPlan, r: &Record, compiled: &Compiled) {
+    let span = Span { file_id: compiled.claims_files[claim.file], ..claim.span };
+    let accepted = r.tried - r.refused;
+    let diag = rask_diagnostics::Diagnostic::error(format!("claim `{}` holds for almost no inputs", claim.name))
+        .with_code("E0975")
+        .with_primary(span, format!(
+            "a type's own `decode` refused {} of the {} tried, so the claim ran on {}",
+            r.refused, r.tried, count(accepted, "input")
+        ))
+        .with_note(
+            "a claim that holds for almost nothing passes without saying anything about the type: \
+             random input rarely satisfies what `decode` checks"
+                .to_string(),
+        )
+        .with_help(
+            "build the type's values another way: declare `T implements claims.Generate` in the claims \
+             source, which a claim uses in place of `decode` (type.claims/IN2, IN4), or narrow the claim's \
+             inputs to types whose decode accepts most of what is drawn",
+        );
+    crate::show_diagnostic_multi(&diag, &compiled.sources);
+}
+
 /// E0953: under `--claims=strict`, a claim that held but wasn't checked in full.
 fn report_not_strict(claim: &ClaimPlan, r: &Record, compiled: &Compiled) {
     let span = Span { file_id: compiled.claims_files[claim.file], ..claim.span };
@@ -1397,7 +1493,7 @@ pub(super) fn reach(path: &str) -> Option<(PathBuf, Vec<ReachedClaim>)> {
     };
     let compiled = compile_claims(path, &sources, &mut plan, Variant::default())?;
     let runs = claim_runs(&plan);
-    let input = rask_compiler::emit::BackEnd::of(&compiled.result, None, None);
+    let input = rask_compiler::emit::BackEnd::of(&compiled.result);
     let entry = rask_compiler::emit::Entry::Claims(&runs);
     let lowered = match rask_compiler::emit::lower(&input, &entry) {
         Ok(l) => l,
@@ -1462,7 +1558,7 @@ pub(super) fn verdicts(path: &str, variant: Variant) -> Option<Vec<(String, bool
         return Some(Vec::new());
     }
     let runs = claim_runs(&plan);
-    let input = rask_compiler::emit::BackEnd::of(&compiled.result, None, None);
+    let input = rask_compiler::emit::BackEnd::of(&compiled.result);
     let entry = rask_compiler::emit::Entry::Claims(&runs);
     let lowered = rask_compiler::emit::lower(&input, &entry).ok()?;
     let bin = link_claims(&input, &entry, lowered, &compiled.link_opts)?;

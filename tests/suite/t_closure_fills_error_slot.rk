@@ -96,3 +96,19 @@ test "a heap handed through a take function value is freed once" {
     hand_on(eat_one)
     hand_on(|take h| drop(h))
 }
+
+// A closure whose body is the error value hands back the error side, the way
+// `return` of one does. Natively the error's bytes were read as the success
+// value; the interpreter handed back an `ok` holding the error (#2021).
+func apply_res(f: func(i64) -> i64 or Refused, x: i64) -> i64 {
+    return f(x) catch e => e.at * 100
+}
+
+test "a closure whose body is the error value fails" {
+    assert apply_res(|x| Refused(at: x), 4) == 400
+    assert apply_res(|x| {
+        let y = x + 1
+        Refused(at: y)
+    }, 4) == 500
+    assert apply_res(|x| x + 1, 4) == 5
+}

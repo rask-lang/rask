@@ -313,6 +313,37 @@ impl TypeExpr {
         }
     }
 
+    /// The same type with every named type `f` answers for replaced, the
+    /// arguments first: `f` is given a type's path and its arguments, already
+    /// rewritten, and answers what stands in its place, or `None` to keep it.
+    pub fn replace_named(&self, f: &dyn Fn(&[String], &[TypeExpr]) -> Option<TypeExpr>) -> TypeExpr {
+        let sub = |t: &TypeExpr| t.replace_named(f);
+        let sub_box = |t: &TypeExpr| Box::new(t.replace_named(f));
+        match self {
+            TypeExpr::Named { path, args } => {
+                let args: Vec<TypeExpr> = args.iter().map(sub).collect();
+                match f(path, &args) {
+                    Some(to) => to,
+                    None => TypeExpr::Named { path: path.clone(), args },
+                }
+            }
+            TypeExpr::Int(_) | TypeExpr::Unit | TypeExpr::NoneType | TypeExpr::NoReturn => self.clone(),
+            TypeExpr::Optional(inner) => TypeExpr::Optional(sub_box(inner)),
+            TypeExpr::RawPtr(inner) => TypeExpr::RawPtr(sub_box(inner)),
+            TypeExpr::Any(inner) => TypeExpr::Any(sub_box(inner)),
+            TypeExpr::Result { ok, err } => TypeExpr::Result { ok: sub_box(ok), err: sub_box(err) },
+            TypeExpr::Union(ts) => TypeExpr::Union(ts.iter().map(sub).collect()),
+            TypeExpr::Tuple(ts) => TypeExpr::Tuple(ts.iter().map(sub).collect()),
+            TypeExpr::Array { elem, len } => TypeExpr::Array { elem: sub_box(elem), len: len.clone() },
+            TypeExpr::FixedCount { count, elem } => {
+                TypeExpr::FixedCount { count: count.clone(), elem: sub_box(elem) }
+            }
+            TypeExpr::Func { params, ret } => {
+                TypeExpr::Func { params: params.iter().map(|p| p.map(sub)).collect(), ret: sub_box(ret) }
+            }
+        }
+    }
+
     /// Every named type's path, outermost first: `Vec<time.Duration>?` gives
     /// `["Vec"]` then `["time", "Duration"]`.
     pub fn walk_paths(&self, f: &mut dyn FnMut(&[String])) {
@@ -334,6 +365,34 @@ impl TypeExpr {
             TypeExpr::Func { params, ret } => {
                 params.iter().for_each(|p| p.ty.walk_paths(f));
                 ret.walk_paths(f);
+            }
+        }
+    }
+
+    /// Every array length written as a name, outermost first: `[[u8; C]; R]`
+    /// gives `R` then `C`.
+    pub fn walk_array_lengths(&self, f: &mut dyn FnMut(&str)) {
+        match self {
+            TypeExpr::Array { elem, len } => {
+                if len.parse::<usize>().is_err() {
+                    f(len);
+                }
+                elem.walk_array_lengths(f);
+            }
+            TypeExpr::Named { args, .. } => args.iter().for_each(|a| a.walk_array_lengths(f)),
+            TypeExpr::Int(_) | TypeExpr::Unit | TypeExpr::NoneType | TypeExpr::NoReturn => {}
+            TypeExpr::Optional(inner) | TypeExpr::RawPtr(inner) | TypeExpr::Any(inner) => {
+                inner.walk_array_lengths(f)
+            }
+            TypeExpr::Result { ok, err } => {
+                ok.walk_array_lengths(f);
+                err.walk_array_lengths(f);
+            }
+            TypeExpr::Union(ts) | TypeExpr::Tuple(ts) => ts.iter().for_each(|t| t.walk_array_lengths(f)),
+            TypeExpr::FixedCount { elem, .. } => elem.walk_array_lengths(f),
+            TypeExpr::Func { params, ret } => {
+                params.iter().for_each(|p| p.ty.walk_array_lengths(f));
+                ret.walk_array_lengths(f);
             }
         }
     }

@@ -1,0 +1,21 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// json.encode escapes every control character, as JSON requires. Natively it
+// escaped only quote, backslash, newline, carriage return and tab, so any other
+// byte below 0x20 went out raw and the text wasn't valid JSON.
+
+import json
+
+struct Msg {
+    text: string
+}
+
+test "control characters come out escaped" {
+    let m = Msg(text: "a\u{1}b\u{8}c\u{c}d\u{1f}e")
+    assert json.encode(m) == "{{\"text\":\"a\\u0001b\\bc\\fd\\u001fe\"}}"
+}
+
+test "escaped control characters decode back to the same string" {
+    let m = Msg(text: "a\u{1}b\u{8}c\u{c}d\u{1f}e\n\t\"\\")
+    let back = try json.decode<Msg>(json.encode(m))
+    assert back.text == m.text
+}

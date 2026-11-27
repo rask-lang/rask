@@ -3,6 +3,7 @@
 //! Concurrency lowering: Shared read/write blocks, Mutex lock blocks.
 
 use super::{LoweringError, MirLowerer, TypedOperand};
+use crate::operand::Mint;
 use crate::{
     operand::MirConst, FunctionRef,
     MirOperand, MirRValue, MirStmt, MirStmtKind, MirTerminator, MirTerminatorKind, MirType,
@@ -19,12 +20,12 @@ use rask_ast::{NodeId, Span};
 /// so there's nothing to unlock on the way out.
 pub(super) struct BoxWithSyms {
     /// Takes exclusive access, returns the payload's address.
-    pub acquire: &'static str,
+    pub acquire: Mint,
     /// The payload's address again, for the write-back — acquire consumed its own
     /// result. Must not re-take access.
-    pub data: &'static str,
+    pub data: Mint,
     /// Drops access. `None` when the box holds none.
-    pub release: Option<&'static str>,
+    pub release: Option<Mint>,
 }
 
 /// Which synchronization a `Shared<T, S>` takes (`conc.sync/SH1`). The strategy
@@ -65,6 +66,15 @@ impl SharedStrategy {
         }
     }
 
+    /// What gives back one handle on a box of this strategy.
+    pub(super) fn release(self) -> &'static str {
+        rask_stdlib::handles::shared_release(Some(match self {
+            SharedStrategy::Local => "Local",
+            SharedStrategy::Readers => "Readers",
+            SharedStrategy::Mutex => "Mutex",
+        }))
+    }
+
     /// The acquire/data/release triple for a `with` block over this strategy.
     /// `write` picks the exclusive side where the strategy has two.
     pub(super) fn with_syms(self, write: bool) -> BoxWithSyms {
@@ -89,51 +99,51 @@ impl SharedStrategy {
     }
 
     /// Acquire and release for an inline guard access. `Local` takes no lock,
-    /// so it has nothing to give back — the name that used to stand there,
+    /// so it has nothing to give back. The name that used to stand there,
     /// `Cell_noop_release`, was declared nowhere and codegen stopped at
     /// "Function not found" for every inline `.read()`/`.write()` chain on a
     /// `Shared<T, Local>`.
-    pub(super) fn guard_syms(self, write: bool) -> (&'static str, Option<&'static str>) {
+    pub(super) fn guard_syms(self, write: bool) -> (Mint, Option<Mint>) {
         match self {
-            SharedStrategy::Local => ("Cell_acquire", None),
-            SharedStrategy::Mutex => ("Mutex_acquire", Some("Mutex_release")),
+            SharedStrategy::Local => (BoxWithSyms::CELL.acquire, None),
+            SharedStrategy::Mutex => (BoxWithSyms::MUTEX.acquire, BoxWithSyms::MUTEX.release),
             SharedStrategy::Readers => {
-                if write {
-                    ("Shared_write_acquire", Some("Shared_release"))
-                } else {
-                    ("Shared_read_acquire", Some("Shared_release"))
-                }
+                let syms = if write { BoxWithSyms::SHARED_WRITE } else { BoxWithSyms::SHARED_READ };
+                (syms.acquire, syms.release)
             }
         }
     }
 }
 
 impl BoxWithSyms {
+    // Each strategy's acquire and data are the declared `Shared.read`: the
+    // payload's address, which the box keeps owning. The release hands the
+    // access back and keeps nothing.
     pub(super) const MUTEX: Self = Self {
-        acquire: "Mutex_acquire",
-        data: "Mutex_data",
-        release: Some("Mutex_release"),
+        acquire: Mint::like("rask_mutex_acquire", "Shared_read").box_payload(),
+        data: Mint::like("rask_mutex_data", "Shared_read"),
+        release: Some(Mint::borrowing("rask_mutex_release")),
     };
 
-    /// `Cell_acquire` and `Cell_data` both land on `rask_cell_get` — the slot's
-    /// address, no lock involved. They stay distinct MIR names so this path and
-    /// the `cell.get()` path (CE6, which copies out) can't drift into each other.
+    /// Acquire and data are both `rask_cell_get`, the slot's address with no
+    /// lock involved. The acquire hands it back as the access; `cell.get()`
+    /// (CE6) is the same call loading the value out.
     pub(super) const CELL: Self = Self {
-        acquire: "Cell_acquire",
-        data: "Cell_data",
+        acquire: Mint::like("rask_cell_get", "Shared_read").box_payload(),
+        data: Mint::like("rask_cell_get", "Shared_read"),
         release: None,
     };
 
     pub(super) const SHARED_READ: Self = Self {
-        acquire: "Shared_read_acquire",
-        data: "Shared_data",
-        release: Some("Shared_release"),
+        acquire: Mint::like("rask_shared_read_acquire", "Shared_read").box_payload(),
+        data: Mint::like("rask_shared_data", "Shared_read"),
+        release: Some(Mint::borrowing("rask_shared_release")),
     };
 
     pub(super) const SHARED_WRITE: Self = Self {
-        acquire: "Shared_write_acquire",
-        data: "Shared_data",
-        release: Some("Shared_release"),
+        acquire: Mint::like("rask_shared_write_acquire", "Shared_write").box_payload(),
+        data: Mint::like("rask_shared_data", "Shared_read"),
+        release: Some(Mint::borrowing("rask_shared_release")),
     };
 
     /// ST1–ST3. `release` is the *commit*: it copies the working copy back and
@@ -141,48 +151,28 @@ impl BoxWithSyms {
     /// chains through (ST2); a panic skips it and the runtime's unwind drain runs
     /// the discard the acquire registered instead (ST3).
     pub(super) const MUTEX_STAGED: Self = Self {
-        acquire: "Mutex_staged_acquire",
-        data: "Mutex_staged_data",
-        release: Some("Mutex_staged_commit"),
+        acquire: Mint::like("rask_mutex_staged_acquire", "Shared_read").box_payload(),
+        data: Mint::like("rask_mutex_staged_data", "Shared_read"),
+        release: Some(Mint::borrowing("rask_mutex_staged_commit")),
     };
 
     pub(super) const SHARED_STAGED: Self = Self {
-        acquire: "Shared_staged_acquire",
-        data: "Shared_staged_data",
-        release: Some("Shared_staged_commit"),
+        acquire: Mint::like("rask_shared_staged_acquire", "Shared_staged").box_payload(),
+        data: Mint::like("rask_shared_staged_data", "Shared_staged"),
+        release: Some(Mint::borrowing("rask_shared_staged_commit")),
     };
 }
 
 impl<'a> MirLowerer<'a> {
-    /// Extract the inner type name from a Shared/Mutex expression — the `T` in
-    /// `Shared<T>`/`Mutex<T>`, whether the checker left it a resolved `Generic`
-    /// or an `UnresolvedGeneric`.
-    pub(super) fn resolve_shared_inner_type_name(&self, object: &Expr) -> Option<String> {
-        if let Some(raw_ty) = self.ctx.lookup_raw_type(object.id) {
-            let args = match raw_ty {
-                rask_types::Type::UnresolvedGeneric { args, .. }
-                | rask_types::Type::Generic { args, .. } => Some(args),
-                _ => None,
-            };
-            if let Some(args) = args {
-                if let Some(rask_types::GenericArg::Type(inner)) = args.first() {
-                    if let rask_types::Type::UnresolvedNamed(name) = inner.as_ref() {
-                        return Some(name.clone());
-                    }
-                    if let Some(prefix) = super::MirContext::type_prefix(inner, self.ctx.type_names) {
-                        return Some(prefix);
-                    }
-                }
-            }
+
+    /// Type argument `i` of a sync box's type: the `T` (0) or the strategy
+    /// (1) of `Shared<T, S>`, the `T` of `Mutex<T>`.
+    pub(super) fn sync_type_arg(&self, object: &Expr, i: usize) -> Option<rask_types::Type> {
+        let ty = self.checked_type_of(object)?;
+        let (_, args) = self.generic_head(&ty)?;
+        match args.get(i)? {
+            rask_types::GenericArg::Type(t) => Some((**t).clone()),
         }
-        if let Some(var_name) = object.name() {
-            if let Some(full_type) = self.meta(var_name).and_then(|m| m.full_type.as_ref()) {
-                if let Some(inner) = full_type.args().first() {
-                    return Some(inner.to_string());
-                }
-            }
-        }
-        None
     }
 
     /// The strategy of a `Shared<T, S>` receiver — the second type argument.
@@ -192,28 +182,10 @@ impl<'a> MirLowerer<'a> {
     /// you didn't need costs time, and one you did need and skipped costs
     /// correctness (SH8).
     pub(super) fn shared_strategy(&self, object: &Expr) -> SharedStrategy {
-        if let Some(raw_ty) = self.ctx.lookup_raw_type(object.id) {
-            let args = match raw_ty {
-                rask_types::Type::UnresolvedGeneric { args, .. }
-                | rask_types::Type::Generic { args, .. } => Some(args.as_slice()),
-                _ => None,
-            };
-            if let Some(rask_types::GenericArg::Type(s)) = args.and_then(|a| a.get(1)) {
-                if let Some(name) = super::MirContext::type_prefix(s, self.ctx.type_names) {
-                    return SharedStrategy::from_name(&name);
-                }
-            }
-        }
-        // The declared spelling, when the checker's type didn't survive:
-        // "Shared<Queue, Mutex>" -> Mutex.
-        if let Some(var_name) = object.name() {
-            if let Some(full) = self.meta(var_name).and_then(|m| m.full_type.as_ref()) {
-                if let [_, strategy] = full.args() {
-                    return SharedStrategy::from_name(strategy.bare_name().unwrap_or_default());
-                }
-            }
-        }
-        SharedStrategy::Readers
+        self.sync_type_arg(object, 1)
+            .and_then(|s| super::MirContext::type_prefix(&s, self.ctx.type_names))
+            .map(|name| SharedStrategy::from_name(&name))
+            .unwrap_or(SharedStrategy::Readers)
     }
 
     /// The MIR type of what a sync box holds: the `T` of `Mutex<T>`/`Shared<T>`.
@@ -223,14 +195,7 @@ impl<'a> MirLowerer<'a> {
     /// loaded eight bytes out of it, which for a `Mutex<string>` is the string's
     /// first half read as a pointer.
     pub(super) fn resolve_sync_payload_mir(&self, object: &Expr) -> Option<MirType> {
-        let raw_ty = self.ctx.lookup_raw_type(object.id)?;
-        let args = match raw_ty {
-            rask_types::Type::UnresolvedGeneric { args, .. }
-            | rask_types::Type::Generic { args, .. } => args,
-            _ => return None,
-        };
-        let rask_types::GenericArg::Type(inner) = args.first()? else { return None };
-        Some(self.ctx.type_to_mir(inner))
+        Some(self.ctx.type_to_mir(&self.sync_type_arg(object, 0)?))
     }
 
     /// Lower `with <box> as v { body }` for a box whose payload is reached by
@@ -263,36 +228,43 @@ impl<'a> MirLowerer<'a> {
     ) -> Result<TypedOperand, LoweringError> {
         let (box_op, _) = self.lower_expr(object)?;
 
-        // A payload that lives in its own storage is aliased through the pointer
-        // acquire hands back; anything word-sized is loaded into the local
-        // (codegen does the load), which is why it needs writing back.
-        let inner_type_name = self.resolve_shared_inner_type_name(object);
+        // The binding is the box's payload where it sits. A payload with its own
+        // storage is aliased through the pointer acquire hands back. A
+        // word-sized one is bound to the payload's slot (`BindPlace`), the way
+        // `with v[i] as x` binds an element: acquire would load it, and a copy
+        // written back on exit dropped the value `x = new` replaced (#2039).
         let guard_ty = self.resolve_sync_payload_mir(object).unwrap_or_else(|| crate::fallback::unknown_type("lower/concurrency:278"));
         let by_address = guard_ty.passed_by_address();
 
         let guard_local = self.builder.alloc_local(binding_name.to_string(), guard_ty.clone());
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-            dst: Some(guard_local),
-            func: FunctionRef::internal(syms.acquire.to_string()),
+            dst: by_address.then_some(guard_local),
+            func: syms.acquire.call(),
             args: vec![box_op.clone()],
         }));
+        if !by_address {
+            let slot = self.builder.alloc_temp(MirType::Ptr);
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                dst: Some(slot),
+                func: syms.data.call(),
+                args: vec![box_op.clone()],
+            }));
+            self.bind_place(guard_local, slot);
+        }
 
         let saved_binding = self.locals.insert(binding_name.to_string(), (guard_local, guard_ty.clone()));
         // The binding shadows any outer name for the block only, metadata
         // included.
         let saved_meta = self.local_meta.remove(binding_name);
-        if let Some(ref type_name) = inner_type_name {
-            self.meta_mut(binding_name).type_prefix = Some(type_name.clone());
-        }
-        // Bound by address, the binding is the box's own payload, so `p = v`
-        // replaces what the box holds. It used to rebind the local, and the
-        // box kept its old value.
+        self.meta_mut(binding_name).checked_type = self.sync_type_arg(object, 0);
+        // The binding is the box's own payload, so `p = v` replaces what the
+        // box holds. It used to rebind the local, and the box kept its old
+        // value.
         if by_address {
             self.meta_mut(binding_name).assigns_through = true;
         }
-        let writeback = (!by_address).then(|| guard_ty.size());
         let depth = self.ensure_stack.len();
-        self.push_guard_cleanup(&box_op, guard_local, writeback, syms);
+        self.push_guard_cleanup(&box_op, syms);
 
         let result = self.lower_block(body);
 
@@ -318,7 +290,7 @@ impl<'a> MirLowerer<'a> {
         // be lowered somewhere. Without a fresh block it landed on top of the
         // body's own terminator and erased it.
         if self.builder.current_block_unterminated() {
-            self.emit_loop_cleanup(depth);
+            self.emit_scope_cleanup(depth);
         } else {
             let unreachable = self.builder.create_block();
             self.builder.switch_to_block(unreachable);
@@ -336,16 +308,9 @@ impl<'a> MirLowerer<'a> {
         result
     }
 
-    /// Schedule "write the guard back, then unlock" as a scope cleanup, the same
-    /// shape `ensure` uses: the main flow skips the block, and every exit path
-    /// chains through it.
-    fn push_guard_cleanup(
-        &mut self,
-        box_op: &MirOperand,
-        guard_local: crate::LocalId,
-        writeback: Option<u32>,
-        syms: &BoxWithSyms,
-    ) {
+    /// Schedule the unlock as a scope cleanup, the same shape `ensure` uses:
+    /// the main flow skips the block, and every exit path chains through it.
+    fn push_guard_cleanup(&mut self, box_op: &MirOperand, syms: &BoxWithSyms) {
         let cleanup_block = self.builder.create_block();
         let continue_block = self.builder.create_block();
 
@@ -353,25 +318,10 @@ impl<'a> MirLowerer<'a> {
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: continue_block }));
 
         self.builder.switch_to_block(cleanup_block);
-        if let Some(size) = writeback {
-            let slot = self.builder.alloc_temp(MirType::Ptr);
-            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                dst: Some(slot),
-                func: FunctionRef::internal(syms.data.to_string()),
-                args: vec![box_op.clone()],
-            }));
-            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-                addr: slot,
-                offset: 0,
-                value: MirOperand::Local(guard_local),
-                store_size: size,
-                field: None,
-            }));
-        }
         if let Some(release) = syms.release {
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: None,
-                func: FunctionRef::internal(release.to_string()),
+                func: release.call(),
                 args: vec![box_op.clone()],
             }));
         }
@@ -381,20 +331,9 @@ impl<'a> MirLowerer<'a> {
         self.builder.switch_to_block(continue_block);
     }
 
-    /// True when `object` is a `Shared<T, S>`. Reads the checker's type
-    /// (resolved `Generic` or `UnresolvedGeneric`) so it covers a field
-    /// receiver like `self.store`; falls back to a tracked `type_prefix` on a
-    /// local.
+    /// True when `object` is a `Shared<T, S>`, by the checker's type.
     pub(super) fn is_shared_expr(&self, object: &Expr) -> bool {
-        let from_type = self.ctx.lookup_raw_type(object.id)
-            .and_then(|ty| super::MirContext::type_prefix(ty, self.ctx.type_names))
-            .is_some_and(|p| p.trim() == "Shared");
-        from_type
-            || object
-                .name()
-                .and_then(|var_name| self.meta(var_name))
-                .and_then(|m| m.type_prefix.as_deref())
-                .is_some_and(|p| p == "Shared")
+        self.type_base_of(object).as_deref() == Some("Shared")
     }
 
     /// If `object` is a no-arg guard access on a `Shared` — `shared.read()`,
@@ -404,7 +343,7 @@ impl<'a> MirLowerer<'a> {
     pub(super) fn sync_guard<'e>(
         &self,
         object: &'e Expr,
-    ) -> Option<(&'e Expr, &'static str, Option<&'static str>)> {
+    ) -> Option<(&'e Expr, Mint, Option<Mint>)> {
         let ExprKind::MethodCall { object: box_obj, method, args, .. } = &object.kind else {
             return None;
         };
@@ -450,45 +389,35 @@ impl<'a> MirLowerer<'a> {
     pub(super) fn acquire_sync_guard(
         &mut self,
         box_obj: &Expr,
-        acquire: &str,
+        acquire: Mint,
     ) -> Result<(MirOperand, String, crate::LocalId, MirType), LoweringError> {
         let (box_op, _) = self.lower_expr(box_obj)?;
-        let inner_name = self.resolve_shared_inner_type_name(box_obj);
-        let guard_ty = match self.resolve_sync_payload_mir(box_obj) {
-            Some(ty @ MirType::Struct(_)) => ty,
-            _ => MirType::Ptr,
-        };
+        // The guard has the payload's own type: codegen reads it to decide
+        // whether to alias the payload where it sits (one passed by address)
+        // or load it (a word). Typing every non-struct payload `Ptr` loaded a
+        // string's first word and handed that to `string_len` (#1997).
+        let guard_ty = self.resolve_sync_payload_mir(box_obj).unwrap_or(MirType::Ptr);
         let guard_name = format!("__lock_guard_{}", self.closure_counter);
         self.closure_counter += 1;
         let guard_local = self.builder.alloc_local(guard_name.clone(), guard_ty.clone());
-        // Codegen loads through the acquire result for a non-struct payload, so
-        // the guard already holds the value here — no deref at this level.
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(guard_local),
-            func: FunctionRef::internal(acquire.to_string()),
+            func: acquire.call(),
             args: vec![box_op.clone()],
         }));
         self.locals.insert(guard_name.clone(), (guard_local, guard_ty.clone()));
-        if let Some(n) = &inner_name {
-            self.meta_mut(&guard_name).type_prefix = Some(n.clone());
-        }
-        // What the payload holds, when the payload is a collection. The guard is
-        // a synthetic local with no checker type of its own, so
-        // `self.counters.lock().get(k)` on a `Mutex<Map<string, u64>>` had
-        // nothing to resolve the value type from once `.lock()` desugared away.
-        if let Some(elem) = self.ctx.lookup_raw_type(box_obj.id)
-            .and_then(|ty| self.collection_elem_of_checker_type(ty))
-        {
-            self.meta_mut(&guard_name).elem_type = Some(elem);
-        }
+        // The guard is a name lowering made up, so it carries the payload's
+        // type itself: `self.counters.lock().get(k)` on a
+        // `Mutex<Map<string, u64>>` resolves the value type from it.
+        self.meta_mut(&guard_name).checked_type = self.sync_type_arg(box_obj, 0);
         Ok((box_op, guard_name, guard_local, guard_ty))
     }
 
     pub(super) fn lower_sync_guard_access(
         &mut self,
         box_obj: &Expr,
-        acquire: &str,
-        release: Option<&str>,
+        acquire: Mint,
+        release: Option<Mint>,
         ret_hint: Option<MirType>,
         make_op: impl FnOnce(Expr) -> Expr,
     ) -> Result<TypedOperand, LoweringError> {
@@ -509,7 +438,7 @@ impl<'a> MirLowerer<'a> {
         if let Some(release) = release {
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: None,
-                func: FunctionRef::internal(release.to_string()),
+                func: release.call(),
                 args: vec![box_op],
             }));
         }
@@ -602,7 +531,7 @@ impl<'a> MirLowerer<'a> {
                         addr: buf,
                         offset: 0,
                         value,
-                        store_size: elem.size(),
+                        store_size: rask_layout::size_of(&elem, self.ctx.target()),
                         field: None,
                     }));
                     probes.push(Probe::Send { tx, buf, arm: i });
@@ -627,13 +556,20 @@ impl<'a> MirLowerer<'a> {
         // a channel closing mid-wait is noticed.
         let any_open = self.builder.alloc_temp(MirType::Bool);
         // `T or SelectError` when the select can wait; the checker's type.
-        let wrapped = match (default_arm, self.lookup_expr_type(expr)) {
-            (None, Some(ty @ MirType::Result { .. })) => Some(ty),
+        let select_ty = self.lookup_expr_type(expr);
+        let wrapped = match (default_arm, &select_ty) {
+            (None, Some(ty @ MirType::Result { .. })) => Some(ty.clone()),
             _ => None,
         };
-        let result_local = self
-            .builder
-            .alloc_temp(wrapped.clone().unwrap_or(MirType::I64));
+        // The checker's type, so a string an arm hands out is held by a
+        // string local. Typed `i64`, the copy into it took no reference and
+        // the arm's release freed what the select returned (#1983).
+        let result_ty = select_ty.unwrap_or(MirType::Void);
+        let result_local = self.builder.alloc_temp(if matches!(result_ty, MirType::Void) {
+            MirType::I64
+        } else {
+            result_ty.clone()
+        });
         // How many arms this round has probed — the cycle stops once every
         // arm's had exactly one turn, wherever it started.
         let visited = self.builder.alloc_temp(MirType::I64);
@@ -645,7 +581,7 @@ impl<'a> MirLowerer<'a> {
         self.builder.switch_to_block(poll_block);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(epoch),
-            func: FunctionRef::internal("rask_select_epoch".to_string()),
+            func: FunctionRef::reading("rask_select_epoch"),
             args: vec![],
         }));
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
@@ -675,7 +611,7 @@ impl<'a> MirLowerer<'a> {
             let start = self.builder.alloc_temp(MirType::I64);
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: Some(start),
-                func: FunctionRef::internal("rask_select_rotate".to_string()),
+                func: FunctionRef::reading("rask_select_rotate"),
                 args: vec![MirOperand::Constant(MirConst::Int(probes.len() as i64))],
             }));
             let cases = (0..probes.len()).map(|i| (i as u64, probe_blocks[i])).collect();
@@ -698,7 +634,7 @@ impl<'a> MirLowerer<'a> {
                     let status = self.builder.alloc_temp(MirType::I64);
                     self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                         dst: Some(status),
-                        func: FunctionRef::internal("rask_channel_try_recv_into".to_string()),
+                        func: FunctionRef::reading("rask_channel_try_recv_into"),
                         args: vec![rx.clone(), MirOperand::Local(addr)],
                     }));
                     (status, *match probe { Probe::Recv { arm, .. } => arm, _ => unreachable!() })
@@ -712,7 +648,7 @@ impl<'a> MirLowerer<'a> {
                     let status = self.builder.alloc_temp(MirType::I64);
                     self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                         dst: Some(status),
-                        func: FunctionRef::internal("rask_channel_try_send_ptr".to_string()),
+                        func: FunctionRef::reading("rask_channel_try_send_ptr"),
                         args: vec![tx.clone(), MirOperand::Local(addr)],
                     }));
                     (status, *arm)
@@ -818,7 +754,7 @@ impl<'a> MirLowerer<'a> {
             let cancelled = self.builder.alloc_temp(MirType::I64);
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: Some(cancelled),
-                func: FunctionRef::internal("rask_select_wait".to_string()),
+                func: FunctionRef::reading("rask_select_wait"),
                 args: vec![MirOperand::Local(epoch)],
             }));
             let cancelled_block = self.builder.create_block();
@@ -843,30 +779,35 @@ impl<'a> MirLowerer<'a> {
         }
 
         // Arm bodies. A receive arm binds its value from the probe's buffer.
-        let mut result_ty = MirType::Void;
         for (i, arm) in arms.iter().enumerate() {
             self.builder.switch_to_block(arm_blocks[i]);
             if let Some(Probe::Recv { buf, elem, binding, .. }) =
                 probes.iter().find(|p| matches!(p, Probe::Recv { arm, .. } if *arm == i))
             {
-                let bound = self.builder.alloc_local(binding.clone(), elem.clone());
+                // The value left the channel: the binding owns it, the way
+                // `v.remove(i)` owns what it took. Read as a plain index, it
+                // was a view of the buffer and nothing ever released it
+                // (#1983).
+                let addr = self.builder.alloc_temp(MirType::Ptr);
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                    dst: bound,
-                    rvalue: MirRValue::ArrayIndex {
-                        base: MirOperand::Local(*buf),
-                        index: MirOperand::Constant(MirConst::Int(0)),
-                        elem_size: elem.size(),
-                    },
+                    dst: addr,
+                    rvalue: MirRValue::Ref(*buf),
+                }));
+                let bound = self.builder.alloc_local(binding.clone(), elem.clone());
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                    dst: Some(bound),
+                    func: crate::runtime_ops::field_take(),
+                    args: vec![
+                        MirOperand::Local(addr),
+                        MirOperand::Constant(MirConst::Int(rask_layout::size_of(elem, self.ctx.target()) as i64)),
+                    ],
                 }));
                 self.locals.insert(binding.clone(), (bound, elem.clone()));
             }
             let (arm_val, arm_ty) = self.lower_expr(&arm.body)?;
             if wrapped.is_some() {
                 self.store_result_arm(result_local, 0, arm_val, &arm_ty);
-            } else {
-                if !matches!(arm_ty, MirType::Void) {
-                    result_ty = arm_ty;
-                }
+            } else if !matches!(result_ty, MirType::Void) {
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                     dst: result_local,
                     rvalue: MirRValue::Use(arm_val),
@@ -891,15 +832,15 @@ impl<'a> MirLowerer<'a> {
         sel_ty: &MirType,
         variant: &str,
     ) -> Result<(), LoweringError> {
-        let (err, err_ty) = self.lower_enum_variant_path("SelectError", variant).ok_or_else(|| {
+        let declared = match sel_ty {
+            MirType::Result { err, .. } => Some((**err).clone()),
+            _ => None,
+        };
+        let (err, err_ty) = declared.and_then(|t| self.lower_enum_variant(&t, variant)).ok_or_else(|| {
             LoweringError::InvalidConstruct(format!(
                 "SelectError.{variant} missing — stdlib/builtins.rk declares it"
             ))
         })?;
-        let err_ty = match sel_ty {
-            MirType::Result { err, .. } => (**err).clone(),
-            _ => err_ty,
-        };
         self.store_result_arm(result, 1, err, &err_ty);
         Ok(())
     }
@@ -917,7 +858,7 @@ impl<'a> MirLowerer<'a> {
 
     /// Element type behind a `Receiver<T>` expression, defaulting to a word.
     fn channel_elem_type(&self, channel: &Expr) -> MirType {
-        let args = match self.ctx.lookup_raw_type(channel.id) {
+        let args = match self.ctx.lookup_raw_type(channel.id).as_deref() {
             Some(rask_types::Type::UnresolvedGeneric { args, .. }) => args.clone(),
             Some(rask_types::Type::Generic { args, .. }) => args.clone(),
             _ => return MirType::I64,

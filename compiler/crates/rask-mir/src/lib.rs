@@ -8,7 +8,10 @@
 //! optimization; `transform::ssa::destruct` lowers back before codegen.
 
 pub mod analysis;
+pub mod assign_shapes;
 pub mod c_call;
+pub mod call_abi;
+pub mod runtime_ops;
 mod builder;
 pub mod dispatch_trace;
 pub mod elem_strs;
@@ -23,20 +26,34 @@ mod operand;
 mod program;
 mod stmt;
 pub mod transform;
+
+/// The largest frame a function pushes before it checks the stack limit.
+/// A bigger one is checked by a trampoline first (codegen's
+/// `define_frame_trampoline`), and the inliner keeps a callee that big out of
+/// its callers so the check stays at the callee's own entry. What a frame
+/// pushes unchecked comes out of the room the limit keeps for the C runtime,
+/// so this stays a small part of it.
+pub const FRAME_CHECKED_IN_PLACE: u32 = 16 * 1024;
 mod types;
 
 pub mod layout_check;
 pub mod bitfields;
+pub mod link_holders;
 pub mod lower;
 mod const_free;
 mod container_drop;
 pub mod own_names;
+pub mod parse_runtime;
 mod interface_drop;
 
 pub use builder::BlockBuilder;
 pub use closures::{insert_all_closure_drops, optimize_all_closures};
 pub use const_free::{add_const_free, CONST_FREE_FN};
-pub use container_drop::{insert_container_drops, ENV_DROP_SUFFIX};
+
+/// The runtime call lowering makes to ask whether a resource was consumed on
+/// the path just taken. The drop pass finds the flag by this symbol.
+pub const RESOURCE_IS_CONSUMED: &str = "rask_resource_is_consumed";
+pub use container_drop::insert_container_drops;
 pub use interface_drop::insert_interface_drops;
 pub use transform::clone_elision::elide_clones;
 pub use transform::string_append::optimize_string_concat;
@@ -45,10 +62,10 @@ pub use function::{BlockId, MirBlock, MirFunction, MirLocal};
 pub use transform::inline::InlineRegion;
 pub use operand::{BinOp, FieldAccess, FunctionRef, LocalId, MirConst, MirOperand, MirRValue, UnaryOp};
 pub use rask_ast::expr::ConvertKind;
-pub use stmt::{lay_out_captures, CaptureAccess, ClosureCapture, FieldSlot, MirStmt, MirStmtKind, MirTerminator, MirTerminatorKind, Span, UnwindRelease};
+pub use stmt::{lay_out_captures, BoxRelease, CaptureAccess, ClosureCapture, FieldSlot, MirStmt, MirStmtKind, MirTerminator, MirTerminatorKind, Span, UnwindRelease};
 pub use lower::{ComptimeGlobalMeta, Folded, FoldedForm, FoldedNode, FoldedStmt, folded_symbol};
 pub use program::MirProgram;
-pub use types::{spawn_payload_is_boxed, tuple_offsets, ContainerKind, FieldTypes, MirType, StructLayoutId, EnumLayoutId};
+pub use types::{link_slots, rack_holding_structs, CopyLayouts, spawn_payload_is_boxed, ContainerKind, FieldTypes, LinkSlot, MirType, StructLayoutId, EnumLayoutId};
 
 /// What `malloc` and a Cranelift stack slot guarantee without help. A type
 /// aligned past this (`@align(64)`) needs an aligned allocation on the heap

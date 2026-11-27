@@ -120,7 +120,7 @@ An inferred private signature is not an unbounded hazard, and the spec shouldn't
 | Example | Inferred As | Why |
 |---------|-------------|-----|
 | `func double(x) { x * 2 }` | `<T: Numeric>(x: T) -> T` | `*` desugars to `.mul()` |
-| `func get_port() { 8080 }` | `() -> i32` | Literal default, no interface usage |
+| `func get_port() { 8080 }` | `() -> i64` | Literal default, no interface usage |
 | `func greet(name) { println("Hi, {name}") }` | `(name: string)` | String interpolation constrains type |
 | `func len(items) { items.len() }` | `(items: Vec<i64>) -> usize`, at the first call site | `.len()` names no interface, so nothing solves the shape — GC13 |
 
@@ -131,6 +131,7 @@ An inferred private signature is not an unbounded hazard, and the spec shouldn't
 | **PC1: Single letters are type params** | A single uppercase letter in a signature type position (`T`, `U`, `K`, `V`, …) is always a type parameter — resolved without scope lookup, so imports can never change a signature's meaning. Explicit `<T>` stays optional |
 | **PC2: Other names must resolve** | Any name longer than one letter in a signature must name a declared type. Unknown name is an immediate error with a "did you mean" suggestion — a typo never silently becomes a generic, and never silently becomes nothing |
 | **PC3: Single letters reserved** | Declaring a struct, enum, interface, union, or type alias with a single-letter name is a compile error |
+| **PC4: A declared parameter has a name of its own** | A type parameter written in `<…>` can't reuse the name of a type in scope where it's written: one its package declares, or one it imports from another package. `func f<Meters>(m: Meters)` next to a `struct Meters` is a compile error; which of the two `Meters` means would otherwise depend on what else is declared. A dependency answers to its own names, never the app's. A stdlib type's name is fine (`func first<Output>(…)`): the program never wrote that type, and the parameter wins |
 
 Signature positions: function parameters, return types, struct fields, enum payloads.
 

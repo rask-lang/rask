@@ -44,6 +44,7 @@ public interface Generate {
 
 /// What a generator draws from. Every choice comes out of the claim's own,
 /// so a generated input shrinks and replays like any other.
+@lang(choices)
 public struct Choices { }
 
 extend Choices {

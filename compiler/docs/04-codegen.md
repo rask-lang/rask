@@ -270,8 +270,10 @@ public func push(mutate self, take value: T)` in `stdlib/collections.rk` gives
 registers, and the declared types say how arguments and the result cross (a `T`
 goes by address, a `string` comes back through an out-parameter, and so on).
 What the types can't say goes on the attribute (`panics: true`, `returns: …`).
-Names MIR mints for itself, and compiler types with no stdlib file, live in a
-small internal table next to it.
+Every other runtime call (an element access, a `Shared` strategy's verb, an
+`Atomic<T>` method, a raw pointer's) is made by its C symbol: lowering names
+the symbol and puts a `CallAbi` on the call saying how its operands cross, and
+codegen declares it from the header prototype.
 
 
 ## Linking (`rask-cli/src/commands/link.rs`)

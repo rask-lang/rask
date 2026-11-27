@@ -1,0 +1,37 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A test that panics inside `using ThreadPool` skips the block's end. The next
+// test has to find the pool closed: natively it found the first test's pool
+// still open, so a pool spawn the checker couldn't see ran instead of panicking.
+import thread.ThreadPool
+
+func job() -> i64 {
+    return ThreadPool.spawn { return 5 }.join()!
+}
+
+test "panics inside the pool block" {
+    using ThreadPool(workers: 2) {
+        assert job() == 5
+        panic("boom")
+    }
+}
+
+func zero() -> i64 {
+    return 0
+}
+
+// Named inside a block, so the checker passes it, and called after the block
+// is gone: only the runtime can catch that (conc.async/CC3).
+test "outside any block, a stored call panics" {
+    mut f: func() -> i64 = zero
+    using ThreadPool(workers: 1) {
+        f = job
+    }
+    let v = f()
+    println("got {v} without a pool")
+}
+
+test "a fresh block works" {
+    using ThreadPool(workers: 3) {
+        assert job() == 5
+    }
+}

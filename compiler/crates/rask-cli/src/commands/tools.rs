@@ -264,6 +264,26 @@ pub fn cmd_lint(path: &str, format: Format, rules: Vec<String>, excludes: Vec<St
 ///
 /// The same translation `import c` compiles, formatted, so a library's binding
 /// can be read, reviewed and committed.
+/// `target` as a path from `dir`: `../include/s.h` from `src/`.
+fn relative_from(target: &std::path::Path, dir: &std::path::Path) -> String {
+    let absolute = |p: &std::path::Path| {
+        let p = if p.as_os_str().is_empty() { std::path::Path::new(".") } else { p };
+        std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf())
+    };
+    let (target, dir) = (absolute(target), absolute(dir));
+    let t: Vec<_> = target.components().collect();
+    let d: Vec<_> = dir.components().collect();
+    let common = t.iter().zip(&d).take_while(|(a, b)| a == b).count();
+    let mut rel = std::path::PathBuf::new();
+    for _ in common..d.len() {
+        rel.push("..");
+    }
+    for c in &t[common..] {
+        rel.push(c);
+    }
+    rel.to_string_lossy().replace('\\', "/")
+}
+
 pub fn cmd_bindc(header: &str, out: Option<&str>, check: Option<&str>, hiding: &[String]) {
     let path = std::path::Path::new(header);
     if !path.is_file() {
@@ -273,7 +293,12 @@ pub fn cmd_bindc(header: &str, out: Option<&str>, check: Option<&str>, hiding: &
     let cfg = rask_comptime::CfgConfig::from_host("debug", Vec::new());
     let dirs = std::collections::HashMap::new();
     let cx = rask_compiler::c_import::Context { source_dirs: &dirs, arch: &cfg.arch, os: &cfg.os };
-    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| header.to_string());
+    // The header as the file being written reaches it: its `header:` and
+    // `@inline_from` are read beside that file. Printed, it's as written.
+    let name = match out.or(check) {
+        Some(file) => relative_from(path, std::path::Path::new(file).parent().unwrap_or(std::path::Path::new(""))),
+        None => header.to_string(),
+    };
     let translation = match rask_compiler::c_import::translate(&name, path, hiding, &cx) {
         Ok(t) => t,
         Err(e) => {

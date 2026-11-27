@@ -1,0 +1,164 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// An `ensure` body can read a variable however many ensures there are and
+// whatever the variable holds.
+//
+// Two ensures that both read `w` crashed natively: the analysis that places
+// releases treated the ensure bodies as alternative ways out, so each body
+// released `w` after reading it, and the second one read it freed. A value
+// holding a rack was worse: it's released where its scope ends, and that was
+// placed before any ensure body ran, so even one ensure read a freed rack.
+// A plain `Vec` or `Map` had the first problem in a second pass, which frees
+// a container kept in a slot at the end of every ensure body.
+//
+// Each value is released at the end of the last ensure body that reads it.
+// Released at the end of the whole chain instead, a value made after an early
+// return leaked: that end is shared with the early return's chain, where the
+// value doesn't exist yet, so neither pass could release it there.
+//
+// What an ensure body makes for itself is released at the end of that body.
+// Nothing released it once a call in the body was inlined there: the callee's
+// own Vec and strings now lived in the body, whose end released only what
+// came from before the ensure.
+
+import memory.Rack
+
+struct Names {
+    list: Vec<string>
+}
+
+struct Room {
+    name: string
+}
+
+struct World {
+    rooms: Rack<Room>
+}
+
+func count(n: Names, mutate seen: Vec<u64>) {
+    seen.push(n.list.len())
+}
+
+func room_names(w: World) -> string {
+    mut out = ""
+    for r in w.rooms.nodes() {
+        out = "{out}[{r.name}]"
+    }
+    return out
+}
+
+func two_ensures(mutate seen: Vec<u64>) {
+    mut n = Names(list: Vec.new())
+    ensure count(n, mutate seen)
+    ensure count(n, mutate seen)
+    n.list.push("a string long enough to live on the heap")
+    n.list.push("and another one just as long as the first")
+}
+
+func plain_containers(mutate seen: Vec<u64>) {
+    mut v: Vec<string> = Vec.new()
+    mut m: Map<string, i64> = Map.new()
+    ensure seen.push(v.len() + m.len())
+    ensure seen.push(v.len() + m.len())
+    v.push("a heap string that is definitely long enough to allocate")
+    m.insert("another key long enough to sit on the heap", 1)
+}
+
+func after_an_early_return(early: bool, mutate seen: Vec<u64>) {
+    mut x: Vec<string> = Vec.new()
+    x.push("a heap string that is long enough to allocate one")
+    ensure seen.push(x.len())
+    if early {
+        return
+    }
+    mut y: Vec<string> = Vec.new()
+    y.push("a heap string that is long enough to allocate two")
+    ensure seen.push(y.len())
+    mut n = Names(list: Vec.new())
+    n.list.push("a third heap string, held in a struct this time")
+    ensure count(n, mutate seen)
+}
+
+func lengths(n: i64) -> u64 {
+    mut v: Vec<string> = Vec.new()
+    for i in 0..n {
+        v.push("a heap string long enough to allocate, number {i}")
+    }
+    return v.len()
+}
+
+func made_in_the_body(early: bool, mutate seen: Vec<u64>) -> string {
+    ensure seen.push(lengths(2))
+    if early {
+        return "an early result that is long enough for the heap"
+    }
+    mut w: Vec<string> = Vec.new()
+    w.push("a heap string read by the second ensure only")
+    ensure seen.push(w.len() + lengths(3))
+    return "a late result that is long enough for the heap too"
+}
+
+func bound_in_a_body(mutate out: Vec<u64>) {
+    ensure out.push(1)
+    ensure {
+        let v: Vec<string> = ["a name string long enough for the heap {out.len()}"]
+        out.push(v.len())
+    }
+}
+
+func rack_in_ensure(mutate out: Vec<string>) {
+    mut w = World(rooms: Rack.new())
+    ensure out.push(room_names(w))
+    w.rooms.insert(Room(name: "hall"))
+    w.rooms.insert(Room(name: "cellar"))
+}
+
+test "two ensures read the same value" {
+    mut seen: Vec<u64> = Vec.new()
+    two_ensures(mutate seen)
+    assert seen.len() == 2
+    assert seen[0] == 2
+    assert seen[1] == 2
+}
+
+test "an ensure reads a value holding a rack" {
+    mut out: Vec<string> = Vec.new()
+    rack_in_ensure(mutate out)
+    assert out.len() == 1
+    assert out[0].contains("[hall]")
+    assert out[0].contains("[cellar]")
+}
+
+test "two ensures read a plain Vec and Map" {
+    mut seen: Vec<u64> = Vec.new()
+    plain_containers(mutate seen)
+    assert seen.len() == 2
+    assert seen[0] == 2
+    assert seen[1] == 2
+}
+
+test "a value made after an early return is released once" {
+    mut seen: Vec<u64> = Vec.new()
+    after_an_early_return(false, mutate seen)
+    after_an_early_return(true, mutate seen)
+    assert seen.len() == 4
+}
+
+test "what an ensure body makes is released there" {
+    mut seen: Vec<u64> = Vec.new()
+    let a = made_in_the_body(false, mutate seen)
+    let b = made_in_the_body(true, mutate seen)
+    assert a.starts_with("a late")
+    assert b.starts_with("an early")
+    assert seen.len() == 3
+    assert seen[0] == 4
+    assert seen[1] == 2
+    assert seen[2] == 2
+}
+
+test "a value one body binds is released once, before the next body runs" {
+    mut out: Vec<u64> = Vec.new()
+    bound_in_a_body(mutate out)
+    assert out.len() == 2
+    assert out[0] == 1
+    assert out[1] == 1
+}

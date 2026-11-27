@@ -78,8 +78,10 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
-            source_file: None,
+            param_modes: Vec::new(),
+            item_mode_from_body: false,
         };
 
         let mut gen = CodeGenerator::new(crate::BuildMode::Debug).unwrap();
@@ -101,8 +103,10 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
-            source_file: None,
+            param_modes: Vec::new(),
+            item_mode_from_body: false,
         };
 
         let mut gen = CodeGenerator::new(crate::BuildMode::Debug).unwrap();
@@ -137,8 +141,10 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
-            source_file: None,
+            param_modes: Vec::new(),
+            item_mode_from_body: false,
         };
 
         let mut gen = CodeGenerator::new(crate::BuildMode::Debug).unwrap();
@@ -178,8 +184,10 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
-            source_file: None,
+            param_modes: Vec::new(),
+            item_mode_from_body: false,
         };
 
         let main_fn = MirFunction {
@@ -196,8 +204,10 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
-            source_file: None,
+            param_modes: Vec::new(),
+            item_mode_from_body: false,
         };
 
         let mut gen = CodeGenerator::new(crate::BuildMode::Debug).unwrap();
@@ -219,8 +229,10 @@ mod tests {
             blocks: vec![block(0, vec![], ret(None))],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
-            source_file: None,
+            param_modes: Vec::new(),
+            item_mode_from_body: false,
         };
 
         let main_fn = MirFunction {
@@ -235,8 +247,10 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
-            source_file: None,
+            param_modes: Vec::new(),
+            item_mode_from_body: false,
         };
 
         let mut gen = CodeGenerator::new(crate::BuildMode::Debug).unwrap();
@@ -285,8 +299,10 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
-            source_file: None,
+            param_modes: Vec::new(),
+            item_mode_from_body: false,
         };
 
         let mut gen = CodeGenerator::new(crate::BuildMode::Debug).unwrap();
@@ -353,8 +369,10 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
-            source_file: None,
+            param_modes: Vec::new(),
+            item_mode_from_body: false,
         };
 
         let mut gen = CodeGenerator::new(crate::BuildMode::Debug).unwrap();
@@ -396,8 +414,10 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
-            source_file: None,
+            param_modes: Vec::new(),
+            item_mode_from_body: false,
         };
 
         let run_fn = MirFunction {
@@ -438,8 +458,10 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
-            source_file: None,
+            param_modes: Vec::new(),
+            item_mode_from_body: false,
         };
 
         let mut gen = CodeGenerator::new(crate::BuildMode::Debug).unwrap();
@@ -466,8 +488,10 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
-            source_file: None,
+            param_modes: Vec::new(),
+            item_mode_from_body: false,
         };
 
         let mut gen = CodeGenerator::new(crate::BuildMode::Debug).unwrap();
@@ -509,8 +533,10 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
-            source_file: None,
+            param_modes: Vec::new(),
+            item_mode_from_body: false,
         };
 
         let mut gen = CodeGenerator::new(crate::BuildMode::Debug).unwrap();
@@ -538,8 +564,10 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
-            source_file: None,
+            param_modes: Vec::new(),
+            item_mode_from_body: false,
         };
 
         let mut gen = CodeGenerator::new(crate::BuildMode::Debug).unwrap();
@@ -567,8 +595,10 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
-            source_file: None,
+            param_modes: Vec::new(),
+            item_mode_from_body: false,
         };
 
         let mut gen = CodeGenerator::new(crate::BuildMode::Debug).unwrap();
@@ -591,8 +621,10 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
-            source_file: None,
+            param_modes: Vec::new(),
+            item_mode_from_body: false,
         };
 
         let mut gen = CodeGenerator::new(crate::BuildMode::Debug).unwrap();
@@ -632,8 +664,10 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
-            source_file: None,
+            param_modes: Vec::new(),
+            item_mode_from_body: false,
         };
 
         let mono = mono_with_point_struct();
@@ -671,8 +705,10 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
-            source_file: None,
+            param_modes: Vec::new(),
+            item_mode_from_body: false,
         };
 
         let mono = mono_with_point_struct();
@@ -709,8 +745,10 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
-            source_file: None,
+            param_modes: Vec::new(),
+            item_mode_from_body: false,
         };
 
         let mono = mono_with_result_enum();
@@ -761,8 +799,10 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
-            source_file: None,
+            param_modes: Vec::new(),
+            item_mode_from_body: false,
         };
 
         let mono = mono_with_result_enum();
@@ -799,8 +839,10 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
-            source_file: None,
+            param_modes: Vec::new(),
+            item_mode_from_body: false,
         };
 
         let mono = mono_with_point_struct();
@@ -832,8 +874,10 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
-            source_file: None,
+            param_modes: Vec::new(),
+            item_mode_from_body: false,
         };
 
         let mut gen = CodeGenerator::new(crate::BuildMode::Debug).unwrap();
@@ -867,8 +911,10 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
-            source_file: None,
+            param_modes: Vec::new(),
+            item_mode_from_body: false,
         };
 
         let mut gen = CodeGenerator::new(crate::BuildMode::Debug).unwrap();
@@ -898,8 +944,10 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
-            source_file: None,
+            param_modes: Vec::new(),
+            item_mode_from_body: false,
         };
 
         let mut gen = CodeGenerator::new(crate::BuildMode::Debug).unwrap();
@@ -930,8 +978,10 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
-            source_file: None,
+            param_modes: Vec::new(),
+            item_mode_from_body: false,
         };
 
         let mut gen = CodeGenerator::new(crate::BuildMode::Debug).unwrap();
@@ -962,8 +1012,10 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
-            source_file: None,
+            param_modes: Vec::new(),
+            item_mode_from_body: false,
         };
 
         let mut gen = CodeGenerator::new(crate::BuildMode::Debug).unwrap();
@@ -1002,8 +1054,10 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
-            source_file: None,
+            param_modes: Vec::new(),
+            item_mode_from_body: false,
         };
 
         let mono = mono_with_point_struct();
@@ -1040,8 +1094,10 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
-            source_file: None,
+            param_modes: Vec::new(),
+            item_mode_from_body: false,
         };
 
         let mono = mono_with_result_enum();
@@ -1087,8 +1143,10 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
-            source_file: None,
+            param_modes: Vec::new(),
+            item_mode_from_body: false,
         };
 
         let mut gen = CodeGenerator::new(crate::BuildMode::Debug).unwrap();
@@ -1120,8 +1178,10 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
-            source_file: None,
+            param_modes: Vec::new(),
+            item_mode_from_body: false,
         };
 
         let mut gen = CodeGenerator::new(crate::BuildMode::Debug).unwrap();
@@ -1150,8 +1210,10 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
-            source_file: None,
+            param_modes: Vec::new(),
+            item_mode_from_body: false,
         };
 
         let mut gen = CodeGenerator::new(crate::BuildMode::Debug).unwrap();
@@ -1182,8 +1244,10 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
-            source_file: None,
+            param_modes: Vec::new(),
+            item_mode_from_body: false,
         };
 
         let mut gen = CodeGenerator::new(crate::BuildMode::Debug).unwrap();
@@ -1216,8 +1280,10 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
-            source_file: None,
+            param_modes: Vec::new(),
+            item_mode_from_body: false,
         };
 
         let mut gen = gen_with_stdlib();
@@ -1246,8 +1312,10 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
-            source_file: None,
+            param_modes: Vec::new(),
+            item_mode_from_body: false,
         };
 
         let mut gen = gen_with_stdlib();
@@ -1266,8 +1334,10 @@ mod tests {
             blocks: vec![block(0, vec![], ret(None))],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
-            source_file: None,
+            param_modes: Vec::new(),
+            item_mode_from_body: false,
         };
 
         let caller_fn = MirFunction {
@@ -1282,8 +1352,10 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
-            source_file: None,
+            param_modes: Vec::new(),
+            item_mode_from_body: false,
         };
 
         let mut gen = gen_with_stdlib();
@@ -1307,7 +1379,7 @@ mod tests {
             (LocalId(1), MirType::U8, false, true),
             (LocalId(2), MirType::I32, false, true),
             (LocalId(3), MirType::F64, true, false),
-        ]);
+        ], rask_ast::Target::LP64);
         let offsets: Vec<u32> = caps.iter().map(|c| c.offset).collect();
         assert_eq!(offsets, vec![0, 8, 12, 16]);
 
@@ -1351,8 +1423,10 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
-            source_file: None,
+            param_modes: Vec::new(),
+            item_mode_from_body: false,
         };
 
         let main_fn = MirFunction {
@@ -1376,14 +1450,16 @@ mod tests {
                         dst: Some(LocalId(1)),
                         closure: LocalId(0),
                         args: vec![MirOperand::Constant(MirConst::Int(42))],
-                        taken: Vec::new(),
+                        modes: vec![rask_ast::ty::ParamMode::Borrow; 1],
                     }),
                 ], ret(Some(local_op(1)))),
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
-            source_file: None,
+            param_modes: Vec::new(),
+            item_mode_from_body: false,
         };
 
         let mut gen = CodeGenerator::new(crate::BuildMode::Debug).unwrap();
@@ -1431,8 +1507,10 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
-            source_file: None,
+            param_modes: Vec::new(),
+            item_mode_from_body: false,
         };
 
         let main_fn = MirFunction {
@@ -1458,6 +1536,7 @@ mod tests {
                                 by_ref: false,
                                 copy: true,
                                 lent: false,
+                                owns: None,
                             },
                         ],
                         heap: false,
@@ -1467,14 +1546,16 @@ mod tests {
                         dst: Some(LocalId(2)),
                         closure: LocalId(1),
                         args: vec![],
-                        taken: Vec::new(),
+                        modes: vec![rask_ast::ty::ParamMode::Borrow; 0],
                     }),
                 ], ret(Some(local_op(2)))),
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
-            source_file: None,
+            param_modes: Vec::new(),
+            item_mode_from_body: false,
         };
 
         let mut gen = CodeGenerator::new(crate::BuildMode::Debug).unwrap();
@@ -1525,8 +1606,10 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
-            source_file: None,
+            param_modes: Vec::new(),
+            item_mode_from_body: false,
         };
 
         let make_fn = MirFunction {
@@ -1544,7 +1627,7 @@ mod tests {
                         dst: LocalId(1),
                         func_name: "make_closure__closure_0".to_string(),
                         captures: vec![
-                            ClosureCapture { local_id: LocalId(0), offset: 0, size: 8, by_ref: false, copy: true, lent: false },
+                            ClosureCapture { local_id: LocalId(0), offset: 0, size: 8, by_ref: false, copy: true, lent: false, owns: None },
                         ],
                         heap: true,
                         task_bound: false,
@@ -1553,8 +1636,10 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
-            source_file: None,
+            param_modes: Vec::new(),
+            item_mode_from_body: false,
         };
 
         let main_fn = MirFunction {
@@ -1572,14 +1657,16 @@ mod tests {
                         dst: Some(LocalId(1)),
                         closure: LocalId(0),
                         args: vec![],
-                        taken: Vec::new(),
+                        modes: vec![rask_ast::ty::ParamMode::Borrow; 0],
                     }),
                 ], ret(Some(local_op(1)))),
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
-            source_file: None,
+            param_modes: Vec::new(),
+            item_mode_from_body: false,
         };
 
         let mut gen = CodeGenerator::new(crate::BuildMode::Debug).unwrap();
@@ -1620,8 +1707,10 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
-            source_file: None,
+            param_modes: Vec::new(),
+            item_mode_from_body: false,
         };
 
         let main_fn = MirFunction {
@@ -1639,7 +1728,7 @@ mod tests {
                         dst: LocalId(1),
                         func_name: "main__closure_0".to_string(),
                         captures: vec![
-                            ClosureCapture { local_id: LocalId(0), offset: 0, size: 8, by_ref: false, copy: true, lent: false },
+                            ClosureCapture { local_id: LocalId(0), offset: 0, size: 8, by_ref: false, copy: true, lent: false, owns: None },
                         ],
                         heap: true,
                         task_bound: false,
@@ -1652,8 +1741,10 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
-            source_file: None,
+            param_modes: Vec::new(),
+            item_mode_from_body: false,
         };
 
         let mut gen = CodeGenerator::new(crate::BuildMode::Debug).unwrap();
@@ -1704,8 +1795,10 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
-            source_file: None,
+            param_modes: Vec::new(),
+            item_mode_from_body: false,
         };
 
         let outer_fn = MirFunction {
@@ -1725,7 +1818,7 @@ mod tests {
                         dst: LocalId(2),
                         func_name: "main__closure_1".to_string(),
                         captures: vec![
-                            ClosureCapture { local_id: LocalId(1), offset: 0, size: 8, by_ref: false, copy: true, lent: false },
+                            ClosureCapture { local_id: LocalId(1), offset: 0, size: 8, by_ref: false, copy: true, lent: false, owns: None },
                         ],
                         heap: false,
                         task_bound: false,
@@ -1734,14 +1827,16 @@ mod tests {
                         dst: Some(LocalId(3)),
                         closure: LocalId(2),
                         args: vec![],
-                        taken: Vec::new(),
+                        modes: vec![rask_ast::ty::ParamMode::Borrow; 0],
                     }),
                 ], ret(Some(local_op(3)))),
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
-            source_file: None,
+            param_modes: Vec::new(),
+            item_mode_from_body: false,
         };
 
         let main_fn = MirFunction {
@@ -1760,7 +1855,7 @@ mod tests {
                         dst: LocalId(1),
                         func_name: "main__closure_0".to_string(),
                         captures: vec![
-                            ClosureCapture { local_id: LocalId(0), offset: 0, size: 8, by_ref: false, copy: true, lent: false },
+                            ClosureCapture { local_id: LocalId(0), offset: 0, size: 8, by_ref: false, copy: true, lent: false, owns: None },
                         ],
                         heap: false,
                         task_bound: false,
@@ -1769,14 +1864,16 @@ mod tests {
                         dst: Some(LocalId(2)),
                         closure: LocalId(1),
                         args: vec![],
-                        taken: Vec::new(),
+                        modes: vec![rask_ast::ty::ParamMode::Borrow; 0],
                     }),
                 ], ret(Some(local_op(2)))),
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
-            source_file: None,
+            param_modes: Vec::new(),
+            item_mode_from_body: false,
         };
 
         let all_fns = [inner_fn.clone(), outer_fn.clone(), main_fn.clone()];
@@ -1820,8 +1917,10 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
-            source_file: None,
+            param_modes: Vec::new(),
+            item_mode_from_body: false,
         };
 
         let main_fn = MirFunction {
@@ -1860,7 +1959,7 @@ mod tests {
                         dst: Some(LocalId(2)),
                         closure: LocalId(1),
                         args: vec![local_op(0)],
-                        taken: Vec::new(),
+                        modes: vec![rask_ast::ty::ParamMode::Borrow; 1],
                     }),
                     assign(0, MirRValue::BinaryOp {
                         op: BinOp::Add,
@@ -1873,8 +1972,10 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
-            source_file: None,
+            param_modes: Vec::new(),
+            item_mode_from_body: false,
         };
 
         let all_fns = [closure_fn.clone(), main_fn.clone()];
@@ -1921,8 +2022,10 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
-            source_file: None,
+            param_modes: Vec::new(),
+            item_mode_from_body: false,
         };
 
         let sub_fn = MirFunction {
@@ -1948,8 +2051,10 @@ mod tests {
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
-            source_file: None,
+            param_modes: Vec::new(),
+            item_mode_from_body: false,
         };
 
         let main_fn = MirFunction {
@@ -1990,14 +2095,16 @@ mod tests {
                         dst: Some(LocalId(2)),
                         closure: LocalId(1),
                         args: vec![MirOperand::Constant(MirConst::Int(10))],
-                        taken: Vec::new(),
+                        modes: vec![rask_ast::ty::ParamMode::Borrow; 1],
                     }),
                 ], ret(Some(local_op(2)))),
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
-            source_file: None,
+            param_modes: Vec::new(),
+            item_mode_from_body: false,
         };
 
         let all_fns = [add_fn.clone(), sub_fn.clone(), main_fn.clone()];
@@ -2021,49 +2128,32 @@ mod tests {
 
     fn dummy_mono() -> rask_mono::MonoProgram {
         rask_mono::MonoProgram {
-            instantiated_node_types: Default::default(),
-            node_origins: Default::default(),
-            instantiated_call_targets: Default::default(),
-            instantiated_operator_targets: Default::default(),
-            instantiated_error_wraps: Default::default(),
-            instantiated_fallback_keeps_shape: Default::default(),
-            instantiated_err_returns: Default::default(),
-        instantiated_escaping_closures: Default::default(),
-        instantiated_lent_captures: Default::default(),
-        instantiated_field_reuses: Default::default(),
-        instantiated_return_moves: Default::default(),
-        instantiated_task_bound_closures: Default::default(),
-        vtable_symbols: Default::default(),
+        vtables: Default::default(),
+        symbols: Default::default(),
+        roots: Vec::new(),
             functions: vec![],
             struct_layouts: vec![],
             enum_layouts: vec![],
             type_names: Default::default(),
-            call_rewrites: std::collections::HashMap::new(),
+            handle_releases: Default::default(),
             map_key_fns: std::collections::HashMap::new(),
             decode_defaults: std::collections::HashMap::new(),
             claim_generators: std::collections::HashMap::new(),
+            custom_decodes: std::collections::HashMap::new(),
+            custom_encodes: std::collections::HashMap::new(),
         }
     }
 
     /// MonoProgram with a Point { x: i32, y: i32 } struct at index 0.
     fn mono_with_point_struct() -> rask_mono::MonoProgram {
         rask_mono::MonoProgram {
-            instantiated_node_types: Default::default(),
-            node_origins: Default::default(),
-            instantiated_call_targets: Default::default(),
-            instantiated_operator_targets: Default::default(),
-            instantiated_error_wraps: Default::default(),
-            instantiated_fallback_keeps_shape: Default::default(),
-            instantiated_err_returns: Default::default(),
-        instantiated_escaping_closures: Default::default(),
-        instantiated_lent_captures: Default::default(),
-        instantiated_field_reuses: Default::default(),
-        instantiated_return_moves: Default::default(),
-        instantiated_task_bound_closures: Default::default(),
-        vtable_symbols: Default::default(),
+        vtables: Default::default(),
+        symbols: Default::default(),
+        roots: Vec::new(),
             functions: vec![],
             struct_layouts: vec![
                 rask_layout::StructLayout {
+                    key: None,
                     name: "Point".to_string(),
                     size: 8,
                     align: 4,
@@ -2100,10 +2190,12 @@ mod tests {
             ],
             enum_layouts: vec![],
             type_names: Default::default(),
-            call_rewrites: std::collections::HashMap::new(),
+            handle_releases: Default::default(),
             map_key_fns: std::collections::HashMap::new(),
             decode_defaults: std::collections::HashMap::new(),
             claim_generators: std::collections::HashMap::new(),
+            custom_decodes: std::collections::HashMap::new(),
+            custom_encodes: std::collections::HashMap::new(),
         }
     }
 
@@ -2111,23 +2203,15 @@ mod tests {
     fn mono_with_result_enum() -> rask_mono::MonoProgram {
         rask_mono::MonoProgram {
             type_names: Default::default(),
-            instantiated_node_types: Default::default(),
-            node_origins: Default::default(),
-            instantiated_call_targets: Default::default(),
-            instantiated_operator_targets: Default::default(),
-            instantiated_error_wraps: Default::default(),
-            instantiated_fallback_keeps_shape: Default::default(),
-            instantiated_err_returns: Default::default(),
-        instantiated_escaping_closures: Default::default(),
-        instantiated_lent_captures: Default::default(),
-        instantiated_field_reuses: Default::default(),
-        instantiated_return_moves: Default::default(),
-        instantiated_task_bound_closures: Default::default(),
-        vtable_symbols: Default::default(),
+            handle_releases: Default::default(),
+        vtables: Default::default(),
+        symbols: Default::default(),
+        roots: Vec::new(),
             functions: vec![],
             struct_layouts: vec![],
             enum_layouts: vec![
                 rask_layout::EnumLayout {
+                    key: None,
                     name: "Result".to_string(),
                     size: 8,
                     align: 4,
@@ -2182,10 +2266,11 @@ mod tests {
                     attrs: vec![],
                 },
             ],
-            call_rewrites: std::collections::HashMap::new(),
             map_key_fns: std::collections::HashMap::new(),
             decode_defaults: std::collections::HashMap::new(),
             claim_generators: std::collections::HashMap::new(),
+            custom_decodes: std::collections::HashMap::new(),
+            custom_encodes: std::collections::HashMap::new(),
         }
     }
 }

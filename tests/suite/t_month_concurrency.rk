@@ -38,7 +38,7 @@ test "conc.async — a thread runs and join waits for it" {
     Thread.spawn {
         let _ = tx.send(42)
         return
-    }.join()
+    }.join()!
     mut got = 0
     if rx.receive() is i64 as v {
         got = v
@@ -51,7 +51,7 @@ test "conc.async — a thread computing through a function" {
     Thread.spawn {
         let _ = tx.send(sum_to(10))
         return
-    }.join()
+    }.join()!
     mut got = 0
     if rx.receive() is i64 as v {
         got = v
@@ -65,7 +65,7 @@ test "conc.async — a thread capturing a surrounding binding" {
     Thread.spawn {
         let _ = tx.send(k * 6)
         return
-    }.join()
+    }.join()!
     mut got = 0
     if rx.receive() is i64 as v {
         got = v
@@ -84,9 +84,9 @@ test "conc.async — three threads, each joined, results drained" {
     ensure h2.detach()
     let h3 = Thread.spawn { let _ = tc.send(300); return }
     ensure h3.detach()
-    h1.join()
-    h2.join()
-    h3.join()
+    h1.join()!
+    h2.join()!
+    h3.join()!
     mut total = 0
     mut n = 0
     while rx.try_receive() is i64 as v {
@@ -111,7 +111,7 @@ test "conc.async — a handle joined after other work" {
     ensure h.detach()
     // Independent work while the thread runs.
     let local = sum_to(4)
-    h.join()
+    h.join()!
     mut got = 0
     if rx.receive() is i64 as v {
         got = v
@@ -138,7 +138,7 @@ test "conc.sync — a thread owning a Mutex reports its result" {
             let _ = tx.send(v)
         }
         return
-    }.join()
+    }.join()!
     mut got = 0
     if rx.receive() is i64 as v {
         got = v
@@ -188,7 +188,7 @@ test "conc.channels — a producer thread and a counted drain" {
             i = i + 1
         }
         return
-    }.join()
+    }.join()!
     mut total = 0
     mut n = 0
     while rx.try_receive() is i64 as v {
@@ -216,7 +216,7 @@ test "conc.async — a thread moving a Vec in with own" {
         }
         let _ = tx.send(acc)
         return
-    }.join()
+    }.join()!
     mut got = 0
     if rx.receive() is i64 as v {
         got = v

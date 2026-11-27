@@ -1,0 +1,33 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A module const holding a function, called by its name. Natively the call
+// went to a function called `PICK`, which doesn't exist, and codegen failed
+// with "Function not found".
+
+func answer() -> i64 {
+    return 42
+}
+
+func double(x: i64) -> i64 {
+    return x * 2
+}
+
+const PICK: func() -> i64 = answer
+const TWICE: func(i64) -> i64 = double
+
+test "a const holding a function is called through" {
+    assert PICK() == 42
+    assert TWICE(PICK()) == 84
+    assert "{PICK() + 1}" == "43"
+}
+
+// At compile time too: the evaluator had no value for a function, so `PICK`
+// was undefined inside `comptime`.
+comptime func twice_pick() -> i64 {
+    return PICK() * 2
+}
+
+test "a const holding a function, called at compile time" {
+    assert comptime { PICK() + 1 } == 43
+    assert comptime { TWICE(21) } == 42
+    assert twice_pick() == 84
+}

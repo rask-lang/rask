@@ -41,7 +41,7 @@ test "index-taking mutators take any integer" {
     v.push(3)
 
     let i: u64 = 0
-    v.set(i, 99)
+    v[i] = 99
     assert v.get(0)! == 99
 
     v.insert(i, 55)

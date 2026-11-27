@@ -27,6 +27,9 @@ pub struct PayloadField {
     /// What the declaration named it; a positional payload's index.
     pub name: String,
     pub type_name: String,
+    /// What a decoder reads the payload as (`FieldInfo.wire_kind` and
+    /// `wire_optional`).
+    pub wire: rask_check::reflect::WireForm,
     /// From the start of the enum value, the same origin a struct field's
     /// offset counts from.
     pub offset: u32,
@@ -42,6 +45,13 @@ pub fn variant_facts(
     types: &TypeTable,
     subst: &[(String, TypeExpr)],
 ) -> Vec<VariantFact> {
+    // The type each payload was declared with. A shared layout — which an
+    // instance keeps when its arguments fit, `Answer<f64>` — holds a word
+    // where the declaration says `T`, and the name read off it was `i64`.
+    let declared = layout.key.as_ref().and_then(|k| match types.get(k.id) {
+        Some(rask_types::TypeDef::Enum { variants, .. }) => Some(variants),
+        _ => None,
+    });
     layout
         .variants
         .iter()
@@ -51,16 +61,20 @@ pub fn variant_facts(
             fields: v
                 .fields
                 .iter()
-                .map(|f| PayloadField {
-                    name: f.name.clone(),
-                    type_name: types
-                        .resolve_type_names(&f.ty)
-                        .to_type_expr()
-                        .substitute(&|n| subst.iter().find(|(p, _)| p == n).map(|(_, a)| a.clone()))
-                        .to_string(),
-                    offset: v.payload_offset + f.offset,
-                    size: f.size,
-                    has_default: f.has_declared_default,
+                .enumerate()
+                .map(|(i, f)| {
+                    let written = declared
+                        .and_then(|vs| vs.iter().find(|(n, _)| *n == v.name))
+                        .and_then(|(_, payload)| payload.get(i))
+                        .unwrap_or(&f.ty);
+                    PayloadField {
+                        name: f.name.clone(),
+                        type_name: rask_check::reflect::substituted_label(types, written, subst),
+                        wire: rask_check::reflect::wire_form(types, written, subst),
+                        offset: v.payload_offset + f.offset,
+                        size: f.size,
+                        has_default: f.has_declared_default,
+                    }
                 })
                 .collect(),
         })

@@ -4,6 +4,7 @@
 use rask_ast::decl::{BenchmarkDecl, ConstDecl, DeclKind, Decl, EnumDecl, FnDecl, TestDecl, Variant};
 use rask_ast::stmt::Stmt;
 use rask_ast::stmt::StmtKind;
+use std::sync::Arc;
 
 use crate::value::{BuiltinKind, ModuleKind, Value};
 
@@ -77,13 +78,13 @@ impl Interpreter {
             let entry = self.enums.entry(name.clone()).or_insert_with(|| {
                 let mut implemented = decl.clone();
                 implemented.methods.retain(|m| !m.body_lives_elsewhere());
-                implemented
+                Arc::new(implemented)
             });
             let methods = entry.methods.clone();
             if !methods.is_empty() {
                 let type_methods = self.methods.entry(name.clone()).or_default();
                 for m in methods {
-                    type_methods.entry(m.name.clone()).or_insert(m);
+                    type_methods.entry(m.name.clone()).or_insert(Arc::new(m));
                 }
             }
         }
@@ -92,7 +93,7 @@ impl Interpreter {
         // their values are built by `Value::some`/`none`/`ok`/`err`.
         self.enums.insert(
             "Ordering".to_string(),
-            EnumDecl {
+            Arc::new(EnumDecl {
                 name: "Ordering".to_string(),
                 type_params: vec![],
                 variants: rask_stdlib::ORDERING_VARIANTS
@@ -110,14 +111,14 @@ impl Interpreter {
                 attrs: vec![],
                 doc: None,
                 backing_type: None,
-            },
+            }),
         );
         // Same rule for `extend` blocks — the body is where most of the
         // stdlib's real Rask code lives (`IoError.message`, `Method.to_string`).
         for (type_name, methods) in rask_stdlib::modules::impl_methods() {
             let type_methods = self.methods.entry(type_name.clone()).or_default();
             for m in methods {
-                type_methods.entry(m.name.clone()).or_insert_with(|| m.clone());
+                type_methods.entry(m.name.clone()).or_insert_with(|| Arc::new(m.clone()));
             }
         }
     }
@@ -132,13 +133,23 @@ impl Interpreter {
 
         self.register_stdlib_enums();
 
-        // Field offsets and sizes for `reflect.fields<T>()`, from the one
-        // implementation both backends read (#1104). Kept alongside the
-        // declarations because a generic instantiation's layout is computed on
-        // demand, with the arguments the call site wrote.
+        // `reflect.fields<T>()` finds a declaration here and asks the checker's
+        // table for its layout, the one both backends read (#1104), with the
+        // arguments the call site wrote.
         self.type_decls = decls.to_vec();
-        let (_, _, cache) = rask_mono::compute_declared_layouts(decls, &self.types);
-        self.layout_cache = cache;
+
+        for decl in decls {
+            let fns: Vec<&FnDecl> = match &decl.kind {
+                DeclKind::Fn(f) => vec![f],
+                DeclKind::Impl(i) => i.methods.iter().collect(),
+                _ => Vec::new(),
+            };
+            for f in fns {
+                if let Some((template, bound)) = self.copies_of.get(&f.id) {
+                    self.template_copies.entry(*template).or_default().push((bound.clone(), Arc::new(f.clone())));
+                }
+            }
+        }
 
         for decl in decls {
             match &decl.kind {
@@ -152,17 +163,36 @@ impl Interpreter {
                     if f.attrs.iter().any(|a| a.is("test")) {
                         test_fns.push(f.clone());
                     }
-                    let fn_name = f.name.clone();
-                    self.functions.insert(fn_name, f.clone());
+                    // One entry per declaration, keyed the way monomorphization
+                    // names them: a program function named like a stdlib one
+                    // keeps the name, and the stdlib's goes by `name~std`
+                    // (#1706). A call finds its entry through the declaration
+                    // the checker resolved it to (`named_function`).
+                    let std_key = rask_types::conformance_symbol(&f.name, "std");
+                    let key = match self.functions.get(&f.name) {
+                        Some(other) if other.id != f.id => {
+                            if rask_stdlib::is_stdlib_span(decl.span) {
+                                std_key
+                            } else {
+                                let stdlib_one = self.functions.remove(&f.name).expect("checked above");
+                                self.function_keys.insert(stdlib_one.id, std_key.clone());
+                                self.functions.insert(std_key, stdlib_one);
+                                f.name.clone()
+                            }
+                        }
+                        _ => f.name.clone(),
+                    };
+                    self.function_keys.insert(f.id, key.clone());
+                    self.functions.insert(key, Arc::new(f.clone()));
                 }
                 DeclKind::Enum(e) => {
                     let base_name = e.name.clone();
-                    self.enums.insert(base_name.clone(), e.clone());
+                    self.enums.insert(base_name.clone(), Arc::new(e.clone()));
                     // Register enum methods (e.g., @message-generated message())
                     if !e.methods.is_empty() {
                         let type_methods = self.methods.entry(base_name).or_default();
                         for method in &e.methods {
-                            type_methods.insert(method.name.clone(), method.clone());
+                            type_methods.insert(method.name.clone(), Arc::new(method.clone()));
                         }
                     }
                 }
@@ -205,7 +235,7 @@ impl Interpreter {
                             Some(pkg) => rask_types::conformance_symbol(&name, pkg),
                             None => name,
                         };
-                        type_methods.insert(key, method.clone());
+                        type_methods.insert(key, Arc::new(method.clone()));
                     }
                 }
                 DeclKind::Import(import) => {
@@ -260,7 +290,7 @@ impl Interpreter {
                     if !s.methods.is_empty() {
                         let type_methods = self.methods.entry(base_name).or_default();
                         for method in &s.methods {
-                            type_methods.insert(method.name.clone(), method.clone());
+                            type_methods.insert(method.name.clone(), Arc::new(method.clone()));
                         }
                     }
                 }
@@ -334,12 +364,6 @@ impl Interpreter {
         self.env
             .define("unreachable".to_string(), Value::Builtin(BuiltinKind::Unreachable));
         self.env
-            .define("min".to_string(), Value::Builtin(BuiltinKind::Min));
-        self.env
-            .define("max".to_string(), Value::Builtin(BuiltinKind::Max));
-        self.env
-            .define("clamp".to_string(), Value::Builtin(BuiltinKind::Clamp));
-        self.env
             .define("skip".to_string(), Value::Builtin(BuiltinKind::Skip));
         self.env
             .define("expect_fail".to_string(), Value::Builtin(BuiltinKind::ExpectFail));
@@ -402,13 +426,29 @@ impl Interpreter {
         }
 
         // Evaluate top-level const declarations after builtins are registered
+        self.const_facts = std::sync::Arc::new(rask_ast::comptime_if::const_facts(
+            top_level_consts.iter().map(|c| {
+                (
+                    c.name.as_str(),
+                    &c.init,
+                    c.ty.as_ref().and_then(|t| t.bare_name()),
+                )
+            }),
+        ));
         for c in &top_level_consts {
-            let value = self.eval_expr(&c.init)
+            let mut value = self.eval_expr(&c.init)
                 .map_err(|diag| RuntimeError::Generic(format!("Error evaluating const {}: {}", c.name, diag.error)))?;
+            // The declared type decides what an unsuffixed literal is, as it
+            // does for `let`: `const F: f64 = 7` is 7.0.
+            if let Some(ty) = &c.ty {
+                value = super::exec_stmt::auto_wrap_for_annotation(
+                    value, ty, self.static_option_depth(&c.init),
+                );
+            }
             self.env.define(c.name.clone(), value);
         }
 
-        let entry = entry_fn.or_else(|| self.functions.get("main").cloned());
+        let entry = entry_fn.or_else(|| self.functions.get("main").map(|f| (**f).clone()));
 
         Ok(RegisteredProgram {
             entry_fn: entry,
@@ -422,7 +462,7 @@ impl Interpreter {
     pub(super) fn run_single_test(&mut self, name: &str, body: &[Stmt]) -> TestResult {
         let start = crate::Stopwatch::start();
         let mut errors: Vec<String> = Vec::new();
-        let mut ensures: Vec<&Stmt> = Vec::new();
+        let mut ensures: Vec<super::call::Scheduled> = Vec::new();
         let mut skipped: Option<String> = None;
         let mut expect_fail = false;
 
@@ -435,7 +475,7 @@ impl Interpreter {
 
         for stmt in body {
             if matches!(&stmt.kind, StmtKind::Ensure { .. }) {
-                ensures.push(stmt);
+                ensures.push(self.schedule_ensure(stmt));
             } else {
                 match self.exec_stmt(stmt) {
                     Ok(_) => {}
@@ -487,19 +527,25 @@ impl Interpreter {
                                 }
                                 _ => v.clone(),
                             };
-                            let detail = self.describe_error_value(&err);
-                            errors.push(prefix_origin(
-                                &origin,
-                                format!(
-                                    "{}: {}",
-                                    rask_stdlib::panic_messages::TRY_PROPAGATED_NOWHERE, detail
+                            // A panic inside `message()` is the test's panic.
+                            errors.push(match self.describe_error_value(&err) {
+                                Ok(detail) => prefix_origin(
+                                    &origin,
+                                    format!(
+                                        "{}: {}",
+                                        rask_stdlib::panic_messages::TRY_PROPAGATED_NOWHERE, detail
+                                    ),
                                 ),
-                            ));
+                                Err(e) => e.to_string(),
+                            });
                         }
                         break;
                     }
-                    Err(e) => {
-                        errors.push(format!("{}", e));
+                    // A panic says where, as native's does (#1971).
+                    Err(diag) => {
+                        // The test's panic ends here, an overflow's too.
+                        self.overflow_unwinding = false;
+                        errors.push(self.panic_message(&diag));
                         break;
                     }
                 }
@@ -562,8 +608,10 @@ impl Interpreter {
             Err(diag) if matches!(&diag.error, RuntimeError::TestExpectFail) => {
                 expect_fail = true;
             }
-            Err(e) => {
-                errors.push(format!("{}", e));
+            Err(diag) => {
+                // The test's panic ends here, an overflow's too.
+                self.overflow_unwinding = false;
+                errors.push(self.panic_message(&diag));
             }
         }
 

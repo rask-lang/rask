@@ -14,6 +14,7 @@ impl fmt::Display for MirType {
             MirType::Container(crate::ContainerKind::Vec) => write!(f, "vec"),
             MirType::Container(crate::ContainerKind::Map) => write!(f, "map"),
             MirType::Container(crate::ContainerKind::Rack) => write!(f, "rack"),
+            MirType::Container(crate::ContainerKind::Handle(release)) => write!(f, "handle<{release}>"),
             MirType::Bool => write!(f, "bool"),
             MirType::I8 => write!(f, "i8"),
             MirType::I16 => write!(f, "i16"),
@@ -146,6 +147,7 @@ impl fmt::Display for MirRValue {
             MirRValue::Use(op) => write!(f, "{}", op),
             MirRValue::Ref(id) => write!(f, "&_{}", id.0),
             MirRValue::FuncAddr(name) => write!(f, "&fn {}", name),
+            MirRValue::WrapSome(op) => write!(f, "Some({})", op),
             MirRValue::Deref(op) => write!(f, "*{}", op),
             MirRValue::BinaryOp { op, left, right } => {
                 write!(f, "{} {} {}", left, op, right)
@@ -224,6 +226,13 @@ impl fmt::Display for MirStmt {
                 for (i, cap) in captures.iter().enumerate() {
                     if i > 0 { write!(f, ", ")?; }
                     write!(f, "_{}@{}", cap.local_id.0, cap.offset)?;
+                    let flags: Vec<&str> = [(cap.by_ref, "ref"), (cap.copy, "copy"), (cap.lent, "lent"), (cap.owns.is_some(), "owns")]
+                        .into_iter()
+                        .filter_map(|(on, name)| on.then_some(name))
+                        .collect();
+                    if !flags.is_empty() {
+                        write!(f, " {}", flags.join(" "))?;
+                    }
                 }
                 write!(f, "])")
             }
@@ -237,6 +246,7 @@ impl fmt::Display for MirStmt {
                 }
                 write!(f, ")")
             }
+            MirStmtKind::BindPlace { dst, addr } => write!(f, "_{} = place *_{}", dst.0, addr.0),
             MirStmtKind::LoadCapture { dst, env_ptr, offset, access } => {
                 let how = match access {
                     crate::CaptureAccess::Value => "",
@@ -250,15 +260,14 @@ impl fmt::Display for MirStmt {
                 write!(f, "ensure_hook_register({}, [{}])", thunk,
                     captures.iter().map(|c| format!("_{}", c.local_id.0)).collect::<Vec<_>>().join(", "))
             }
-            MirStmtKind::EnsureHookPop => write!(f, "ensure_hook_pop()"),
+            MirStmtKind::EnsureHookPop { .. } => write!(f, "ensure_hook_pop()"),
             MirStmtKind::UnwindArm { slot, value, .. } => write!(f, "unwind_arm({}, _{})", slot, value.0),
             MirStmtKind::UnwindDisarm { slot } => write!(f, "unwind_disarm({})", slot),
             MirStmtKind::ClosureDrop { closure, made } => match made {
                 Some(m) if m != closure => write!(f, "closure_drop(_{}) made _{}", closure.0, m.0),
                 _ => write!(f, "closure_drop(_{})", closure.0),
             },
-            MirStmtKind::ClosureRetain { closure, .. } => write!(f, "closure_retain(_{})", closure.0),
-            MirStmtKind::ArrayStore { base, index, elem_size, value } => {
+            MirStmtKind::ArrayStore { base, index, elem_size, value, .. } => {
                 write!(f, "*(_{}+{}*{}) = {}", base.0, index, elem_size, value)
             }
             MirStmtKind::GlobalRef { dst, name } => {
@@ -267,21 +276,24 @@ impl fmt::Display for MirStmt {
             MirStmtKind::InterfaceBox { dst, value, concrete_type, interface_name, .. } => {
                 write!(f, "_{} = interface_box({}, {} as any {})", dst.0, value, concrete_type, interface_name)
             }
-            MirStmtKind::InterfaceCall { dst, interface_object, method_name, vtable_offset, args } => {
+            MirStmtKind::InterfaceCall { dst, interface_object, method_name, vtable_offset, args, takes_receiver } => {
                 if let Some(d) = dst {
                     write!(f, "_{} = ", d.0)?;
                 }
-                write!(f, "interface_call(_{}.{}@{}", interface_object.0, method_name, vtable_offset)?;
+                write!(f, "interface_call{}(_{}.{}@{}", if *takes_receiver { "_taking" } else { "" }, interface_object.0, method_name, vtable_offset)?;
                 for arg in args {
                     write!(f, ", {}", arg)?;
                 }
                 write!(f, ")")
             }
-            MirStmtKind::InterfaceDrop { interface_object, owns: false } => {
+            MirStmtKind::InterfaceDrop { interface_object, release: crate::BoxRelease::Borrows } => {
                 write!(f, "interface_drop(_{})", interface_object.0)
             }
-            MirStmtKind::InterfaceDrop { interface_object, owns: true } => {
+            MirStmtKind::InterfaceDrop { interface_object, release: crate::BoxRelease::Owns } => {
                 write!(f, "interface_drop_owned(_{})", interface_object.0)
+            }
+            MirStmtKind::InterfaceDrop { interface_object, release: crate::BoxRelease::Taken } => {
+                write!(f, "interface_drop_taken(_{})", interface_object.0)
             }
             MirStmtKind::Phi { dst, args } => {
                 write!(f, "_{} = phi [", dst.0)?;
@@ -300,7 +312,7 @@ impl fmt::Display for MirStmt {
             MirStmtKind::RcDecContents { local } => {
                 write!(f, "rc_dec_contents(_{})", local.0)
             }
-            MirStmtKind::RcIncContents { local } => {
+            MirStmtKind::RcIncContents { local, .. } => {
                 write!(f, "rc_inc_contents(_{})", local.0)
             }
             MirStmtKind::ReleaseSlot { addr, offset, ty } => {

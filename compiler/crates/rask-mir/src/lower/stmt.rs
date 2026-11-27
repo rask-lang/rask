@@ -12,7 +12,7 @@ use crate::{
 };
 use rask_ast::ty::TypeExpr;
 use rask_ast::{
-    expr::{Expr, ExprKind, Pattern, UnaryOp},
+    expr::{Expr, ExprKind, Pattern, PatternKind, UnaryOp},
     stmt::{ForBinding, Stmt, StmtKind, TuplePat},
 };
 
@@ -40,7 +40,7 @@ impl<'a> MirLowerer<'a> {
     fn vec_tuple_elem_type(&self, iter_expr: &Expr) -> Option<MirType> {
         use rask_types::{GenericArg, Type};
         let ty = self.ctx.lookup_raw_type(iter_expr.id)?;
-        let args = match ty {
+        let args = match &*ty {
             Type::Generic { args, .. } | Type::UnresolvedGeneric { args, .. } => args,
             _ => return None,
         };
@@ -71,7 +71,7 @@ impl<'a> MirLowerer<'a> {
     fn map_entry_pair_types(&self, iter_expr: &Expr) -> Vec<MirType> {
         use rask_types::{GenericArg, Type};
         let pair = self.ctx.lookup_raw_type(iter_expr.id).and_then(|ty| {
-            let args = match ty {
+            let args = match &*ty {
                 Type::Generic { args, .. } | Type::UnresolvedGeneric { args, .. } => args,
                 _ => return None,
             };
@@ -85,32 +85,36 @@ impl<'a> MirLowerer<'a> {
         pair.unwrap_or_else(|| vec![MirType::I64, MirType::I64])
     }
 
-    /// OPT6/#380: wrap a bare `T` operand into `Some(T)` when it's stored into an
-    /// `Option<T>` place. Returns the value unchanged when no wrap applies.
+    /// OPT6/#380: wrap a value stored into an optional place in the layers the
+    /// place has and the value doesn't. Returns the value unchanged when no
+    /// wrap applies.
+    ///
+    /// Layers are counted, as everywhere else (`coerce_into_wrapper`). This
+    /// used to wrap whenever the value wasn't an option at all, which is one
+    /// layer and only from zero: in a generic body instantiated with an
+    /// optional `T`, `best = x` into a `T?` stored an `i64?` into an `i64??`
+    /// unwrapped, and `max_by_key` over optional items answered `none` inside
+    /// the `some` (#2044).
     pub(super) fn wrap_for_option_place(
         &mut self,
         val_op: MirOperand,
         val_ty: MirType,
         place_ty: &MirType,
     ) -> (MirOperand, MirType) {
-        // The checker already accepted this assignment, so an `Option<T>` place
-        // with a non-`Option` value is a widen. Don't require the inner MIR type
-        // to match `val_ty` — handles carry an inconsistent repr (`handle` vs the
-        // raw `i64` an insert returns), which would spuriously skip the wrap.
-        if let MirType::Option(inner) = place_ty {
-            // A niche option is niche-optimized in the layout: the value *is*
-            // `Some`, the reserved word is `None`. So a bare handle or link
-            // stored straight in is already the `Some` repr — a tag + payload
-            // wrap would be both wrong and 8 bytes too big for the slot.
-            let niche = inner.is_niche_payload();
-            if !niche && !matches!(val_ty, MirType::Option(_)) {
-                let wrap_local = self.builder.alloc_temp(place_ty.clone());
-                self.store_wrapper_tag(wrap_local, place_ty, rask_mono::runtime_abi::RASK_TAG_PRESENT);
-                self.store_wrapper_payload(wrap_local, place_ty, val_op, inner);
-                return (MirOperand::Local(wrap_local), place_ty.clone());
-            }
+        if !matches!(place_ty, MirType::Option(_)) {
+            return (val_op, val_ty);
         }
-        (val_op, val_ty)
+        let wraps = Self::wrapper_layers(place_ty).0.len() > Self::wrapper_layers(&val_ty).0.len();
+        if !wraps {
+            return (val_op, val_ty);
+        }
+        let op = self.coerce_into_wrapper(
+            rask_ast::coercion::CoercionSite::Assignment,
+            val_op,
+            &val_ty,
+            place_ty,
+        );
+        (op, place_ty.clone())
     }
 
     /// Project a nested place (`base.f.g`, tuples included) to a base local plus
@@ -134,7 +138,7 @@ impl<'a> MirLowerer<'a> {
                     // the same way, and `n.field = v` is one store rather than a
                     // write into a copy.
                     MirType::Link(ref sid) => Some((id, 0, ty.clone(), sid.byte_size)),
-                    MirType::Struct(_) | MirType::Tuple(_) => Some((id, 0, ty.clone(), ty.size())),
+                    MirType::Struct(_) | MirType::Tuple(_) => Some((id, 0, ty.clone(), rask_layout::size_of(&ty, self.ctx.target()))),
                     _ => None,
                 }
             }
@@ -168,7 +172,7 @@ impl<'a> MirLowerer<'a> {
             op: rask_ast::expr::UnaryOp::Deref, operand,
         } = &cur.kind {
             let operand_is_raw = matches!(
-                self.ctx.lookup_raw_type(operand.id).map(|t| self.ctx.type_to_mir(t)),
+                self.ctx.lookup_raw_type(operand.id).map(|t| self.ctx.type_to_mir(&t)),
                 Some(MirType::RawPtr)
             );
             if operand_is_raw {
@@ -179,44 +183,19 @@ impl<'a> MirLowerer<'a> {
         cur
     }
 
-    /// True when `expr` refers to a `Vec` collection (by local metadata or the
-    /// type checker's recorded type).
+    /// True when `expr` is a `Vec`.
     pub(crate) fn is_vec_expr(&self, expr: &Expr) -> bool {
-        if let ExprKind::Ident(name) = &expr.kind {
-            if self.meta(name).and_then(|m| m.type_prefix.as_deref()) == Some("Vec") {
-                return true;
-            }
-        }
-        // The checker records an instantiated Vec as a generic, and `type_prefix`
-        // renders that as `Vec<T>` — so comparing the whole string only ever
-        // matched the bare-`Vec` spelling the `meta` path above supplies. Every
-        // Vec reached through a field, an index, or a binding read as "not a Vec"
-        // and lost its element write-back. Compare the base name, the way
-        // `receiver_method_mutates` already does.
-        self.ctx
-            .lookup_raw_type(expr.id)
-            .and_then(|ty| super::MirContext::type_prefix(ty, self.ctx.type_names))
-            .is_some_and(|p| p == "Vec")
+        self.type_base_of(expr).as_deref() == Some("Vec")
     }
 
-    /// True when `expr` refers to a `Map`. Same two sources as `is_vec_expr`,
-    /// and the same base-name comparison — the checker spells an instantiated
-    /// one `Map<K, V>`.
+    /// True when `expr` is a `Map`.
     pub(crate) fn is_map_expr(&self, expr: &Expr) -> bool {
-        if let ExprKind::Ident(name) = &expr.kind {
-            if self.meta(name).and_then(|m| m.type_prefix.as_deref()) == Some("Map") {
-                return true;
-            }
-        }
-        self.ctx
-            .lookup_raw_type(expr.id)
-            .and_then(|ty| super::MirContext::type_prefix(ty, self.ctx.type_names))
-            .is_some_and(|p| p == "Map")
+        self.type_base_of(expr).as_deref() == Some("Map")
     }
 
     /// Peel a `.f.g.h` chain off a place, returning what it's rooted at and the
     /// field names in outermost-last order.
-    fn peel_field_path(expr: &Expr) -> (&Expr, Vec<&str>) {
+    pub(crate) fn peel_field_path(expr: &Expr) -> (&Expr, Vec<&str>) {
         let mut fields = Vec::new();
         let mut base = expr;
         while let ExprKind::Field { object, field } = &base.kind {
@@ -235,7 +214,7 @@ impl<'a> MirLowerer<'a> {
     /// The size comes from the layout, not from the field type's nominal size.
     /// A niche-packed `Handle?` is 8 bytes where its type reports 16, and a
     /// 16-byte copy from an integer sentinel dereferences it.
-    fn field_path_offset_ty(&self, base_ty: &MirType, fields: &[&str]) -> Option<(u32, u32, MirType)> {
+    pub(crate) fn field_path_offset_ty(&self, base_ty: &MirType, fields: &[&str]) -> Option<(u32, u32, MirType)> {
         let mut offset = 0;
         let mut ty = base_ty.clone();
         let mut size = None;
@@ -248,13 +227,93 @@ impl<'a> MirLowerer<'a> {
         Some((offset, size?, ty))
     }
 
+    /// Store `val_op` at `offset` into the aggregate `base` holds the address
+    /// of, `fty` wide: what a field assignment comes to once its place is an
+    /// address. Edges go through the rack, and the value the slot is about to
+    /// lose is released.
+    #[allow(clippy::too_many_arguments)]
+    fn store_into_place(
+        &mut self,
+        base: crate::LocalId,
+        offset: u32,
+        fty: MirType,
+        fsize: u32,
+        slot: Option<crate::FieldSlot>,
+        val_op: MirOperand,
+        val_ty: MirType,
+        target: &Expr,
+        reuses_old: bool,
+        holder: Option<&ElementHolder>,
+    ) -> Result<(), LoweringError> {
+        // An edge write is not a plain store: the rack
+        // records who points at whom, so `delete` can find
+        // this slot later and null it (mem.racks/RK3). The
+        // runtime does the recording and the store together,
+        // which is also what makes re-pointing an edge forget
+        // its old target.
+        if fty.is_link_slot() {
+            // A bare `none` on the right lowers as a tagged
+            // option whenever the checker hasn't settled its
+            // type, and the field is a niche — it wants the
+            // sentinel word. Without this, `n.peer = none`
+            // stored the *address* of the tagged local and
+            // the rack recorded an edge to the stack.
+            let val_op = self.wrap_sum_field_value(
+                Some(&fty), fty.niche_none(), &val_ty, val_op,
+            );
+            self.emit_link_store(base, MirOperand::Constant(MirConst::Int(offset as i64)), val_op, holder);
+            return Ok(());
+        }
+        self.emit_aggregate_edge_stores(base, MirOperand::Constant(MirConst::Int(offset as i64)), &fty, &val_op, true, holder);
+        // The store may switch a variant whose payload holds
+        // links: the live one's go before, the new one's after.
+        let guarded = match &val_op {
+            MirOperand::Local(v) if self.ctx.mir_has_guarded_link(&fty) => {
+                let addr = self.emit_address_at(
+                    MirOperand::Local(base),
+                    MirOperand::Constant(MirConst::Int(offset as i64)),
+                );
+                self.emit_link_guarded(MirOperand::Local(addr), *v, false);
+                Some((addr, *v))
+            }
+            _ => None,
+        };
+        // The value the slot is about to lose. A field
+        // assignment is always a replacement — a struct
+        // literal builds the slot on a different path — so
+        // there is no "is this the first write" to get
+        // wrong here, which is why this is lowering's job
+        // rather than a pass's (#1198).
+        if let Some(old) = self.replaced_slot_type(target, reuses_old, &fty) {
+            self.builder.push_stmt(MirStmt::dummy(
+                MirStmtKind::ReleaseSlot { addr: base, offset, ty: old },
+            ));
+        }
+        // The field's own width, not None. Codegen only
+        // copies the bytes when the size says the value is
+        // wider than a pointer; with no size it stored the
+        // 8-byte pointer instead, so `s.text = "lit"` left
+        // the address of the constant in a 16-byte string
+        // field and the field read back as garbage.
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+            addr: base,
+            offset,
+            value: val_op,
+            store_size: fsize,
+            field: slot,
+        }));
+        if let Some((addr, v)) = guarded {
+            self.emit_link_guarded(MirOperand::Local(addr), v, true);
+        }
+        Ok(())
+    }
+
     /// What a field slot holds that has to be given back before it is written
     /// over, or `None` when it holds nothing the release walks.
     ///
-    /// A container's kind comes from the checker's type of the place, through
-    /// the head name rather than `Display`, because a resolved generic renders
-    /// as `<type#7><i64>`; the field's MIR type can be a bare `Ptr` where
-    /// lowering only had an address. A string, struct, enum or
+    /// A container or a self-freeing handle comes from the checker's type of
+    /// the place: the field's MIR type can be a bare `Ptr` where lowering only
+    /// had an address. A string, struct, enum or
     /// tuple the field's own MIR type already says, and codegen walks it for
     /// whatever it holds. Leaving the aggregates out leaked the old value of
     /// `self.active = MemTable.new()` (tiered_store).
@@ -269,31 +328,63 @@ impl<'a> MirLowerer<'a> {
             return None;
         }
         if let Some(ty) = self.ctx.lookup_raw_type(target.id) {
-            if let Some(head) = self.head_name(&ty) {
-                if let Some(kind) = crate::ContainerKind::from_head(&head) {
-                    return Some(MirType::Container(kind));
-                }
+            if let container @ MirType::Container(_) = self.ctx.type_to_mir(&ty) {
+                return Some(container);
             }
         }
         // A closure in a field is the aggregate's, released with it (#1253),
         // so writing a new one over it gives the old one back the same way.
-        // Left out, `p.run = || …` leaked the closure it replaced.
-        matches!(
-            fty,
-            MirType::Buffer | MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_)
-                | MirType::FuncPtr(_)
-        )
+        // Left out, `p.run = || …` leaked the closure it replaced. An array's
+        // elements are walked like a tuple's; left out, `b.v = [s1, s2]` on a
+        // `[string; 2]` field leaked the strings it replaced. A box or a
+        // `Heap` block in a field is the aggregate's the same way; left out,
+        // `h.label = Tag(…)` leaked the box it replaced.
+        // An optional or a result whose payload is Copy: reading one out
+        // (`take self.spare`) copies it with references of its own, so what the
+        // slot holds is still its own to give back. A non-Copy payload may have
+        // moved out, and which paths it did is the ownership pass's to say
+        // (`field_reuses`), so those stay as they were.
+        let copy_payload = matches!(fty, MirType::Option(_) | MirType::Result { .. })
+            && self.ctx.lookup_raw_type(target.id).is_some_and(|t| match &*t {
+                rask_types::Type::Result { ok, err } => {
+                    self.ctx.type_defs.is_copy(ok) && self.ctx.type_defs.is_copy(err)
+                }
+                _ => false,
+            });
+        (copy_payload
+            || matches!(
+                fty,
+                MirType::Buffer | MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_)
+                    | MirType::Array { .. } | MirType::FuncPtr(_)
+                    | MirType::InterfaceObject { .. } | MirType::Heap(_)
+            ))
         .then(|| fty.clone())
     }
 
     /// What writing over a variable reached through a pointer — a `mutate`
     /// parameter, a closure's capture — gives back: the value it held, which
-    /// `mem.parameters/PM2` says is always there. A struct or enum, a string,
-    /// a container. A scalar holds nothing to give back.
-    fn released_on_overwrite(&self, target: &Expr, reuses_old: bool, ty: &MirType) -> Option<MirType> {
-        self.replaced_slot_type(target, reuses_old, ty).filter(|t| {
-            matches!(t, MirType::Struct(_) | MirType::Enum(_) | MirType::Buffer | MirType::Container(_))
-        })
+    /// `mem.parameters/PM2` says is always there. A struct or enum, a tuple
+    /// or an array, a string, a container. A scalar holds nothing to give
+    /// back.
+    /// `closures`: whether a closure held there is this write's to give back.
+    fn released_on_overwrite(&self, target: &Expr, reuses_old: bool, ty: &MirType, closures: bool) -> Option<MirType> {
+        self.replaced_slot_type(target, reuses_old, ty)
+            .filter(|t| {
+                matches!(
+                    t,
+                    MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_) | MirType::Array { .. }
+                        | MirType::Buffer | MirType::Container(_)
+                        | MirType::InterfaceObject { .. }
+                ) || (closures && matches!(t, MirType::FuncPtr(_)))
+            })
+            // An optional or a result holds what it wraps, and the slot is
+            // always filled (`none` counts): `best = x` in a loop body over a
+            // `T?` captured by address replaced the hit it held without
+            // giving it back (`max_by_key`, #1871).
+            .or_else(|| {
+                (!reuses_old && matches!(ty, MirType::Option(_) | MirType::Result { .. }))
+                    .then(|| ty.clone())
+            })
     }
 
     /// Byte offset, MIR type and recorded byte size of `field` within an
@@ -315,7 +406,7 @@ impl<'a> MirLowerer<'a> {
             let ty = self.ctx.type_to_mir(&fl.ty);
             return Some((fl.offset, ty, fl.size));
         }
-        if let Some((_, ety, Some(off), Some(fsize))) = Self::resolve_tuple_field(oty, field) {
+        if let Some((_, ety, Some(off), Some(fsize))) = Self::resolve_tuple_field(oty, field, self.ctx.target()) {
             return Some((off, ety, fsize));
         }
         None
@@ -355,49 +446,206 @@ impl<'a> MirLowerer<'a> {
     /// leave the rack holding the address of a dead frame. `insert` records the
     /// node's own copy from the same descriptor.
     pub(crate) fn emit_struct_link_registration(&mut self, dst: crate::LocalId, ty: &MirType) {
+        if self.ctx.struct_carries_links(ty) {
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                dst: None,
+                func: FunctionRef::runtime("rask_link_register_struct".to_string()),
+                args: vec![MirOperand::Local(dst)],
+            }));
+        }
+        // Links behind a tag go by the variant that is live (#1801).
+        if matches!(
+            ty,
+            MirType::Struct(_) | MirType::Tuple(_) | MirType::Array { .. } | MirType::Enum(_)
+                | MirType::Option(_) | MirType::Result { .. }
+        ) && self.ctx.mir_has_guarded_link(ty)
+        {
+            self.emit_link_guarded(MirOperand::Local(dst), dst, true);
+        }
+    }
+
+    /// If `target`'s place is rooted at a `mutate` parameter holding a link by
+    /// address, load the link into a local typed as the link and bind the name
+    /// to it; hands back the name and its old binding to restore once the
+    /// place is resolved.
+    fn node_through_mutate_link(&mut self, target: &Expr) -> Option<(String, (crate::LocalId, MirType))> {
+        let mut root = target;
+        while let ExprKind::Field { object, .. } = &root.kind {
+            root = object;
+        }
+        let ExprKind::Ident(name) = &root.kind else { return None };
+        let link_ty = self.meta(name).and_then(|m| m.scalar_through_ptr.clone())?;
+        let link_ty = match link_ty {
+            MirType::Link(_) => link_ty,
+            _ => return None,
+        };
+        let saved = self.locals.get(name).cloned()?;
+        let node = self.builder.alloc_temp(link_ty.clone());
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: node,
+            rvalue: MirRValue::Deref(MirOperand::Local(saved.0)),
+        }));
+        self.locals.insert(name.clone(), (node, link_ty));
+        Some((name.clone(), saved))
+    }
+
+    /// Record (`reg`) or forget the links behind a tag in the value at `addr`,
+    /// whose type is `value`'s. Forget before a store that may switch the
+    /// variant, record after it.
+    pub(crate) fn emit_link_guarded(&mut self, addr: MirOperand, value: crate::LocalId, reg: bool) {
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+            dst: None,
+            func: FunctionRef::runtime("rask_link_guarded".to_string()),
+            args: vec![addr, MirOperand::Local(value), MirOperand::Constant(MirConst::Int(reg as i64))],
+        }));
+    }
+
+    /// `place = value` where the value is an aggregate with edges inside it —
+    /// `h.cur = Cursor(at: b)`. The plain store that follows copies the bytes
+    /// and tells the rack nothing, so the slot kept its record on the old
+    /// target and the new one never heard about it (#1795).
+    ///
+    /// Each link goes through the rack first, which forgets the old target and
+    /// records the new one; the store then writes the same word again. A
+    /// container of links inside the aggregate is about to be replaced
+    /// wholesale, so its records are dropped and the incoming one's are made,
+    /// as a direct container field assignment does.
+    ///
+    /// `offset` is where the aggregate starts inside `base`; it is a value
+    /// rather than a constant because an array element's offset can be.
+    ///
+    /// `old_held` is false when the release pass decides the old value's
+    /// fate: freeing its containers drops their records, and a container
+    /// handed on keeps them.
+    fn emit_aggregate_edge_stores(
+        &mut self,
+        base: crate::LocalId,
+        offset: MirOperand,
+        ty: &MirType,
+        value: &MirOperand,
+        old_held: bool,
+        holder: Option<&ElementHolder>,
+    ) {
         if !self.ctx.struct_carries_links(ty) {
             return;
         }
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-            dst: None,
-            func: FunctionRef::internal("Link_register_struct".to_string()),
-            args: vec![MirOperand::Local(dst)],
+        use rask_mono::runtime_abi::{RASK_RACK_FIELD_LINK, RASK_RACK_FIELD_MAP, RASK_RACK_FIELD_VEC};
+        let ctx = self.ctx;
+        let slots = crate::types::link_slots_by(ty, &|id| ctx.struct_link_slots(id as usize), ctx.target());
+        for slot in slots {
+            let incoming = self.emit_word_at(value.clone(), MirOperand::Constant(MirConst::Int(slot.offset as i64)));
+            let at = self.emit_offset_plus(&offset, slot.offset);
+            let (forget, register) = match slot.kind {
+                k if k == RASK_RACK_FIELD_LINK as i32 => {
+                    self.emit_link_store(base, at, incoming, holder);
+                    continue;
+                }
+                k if k == RASK_RACK_FIELD_VEC as i32 => ("rask_link_forget_vec", "rask_link_register_vec"),
+                k if k == RASK_RACK_FIELD_MAP as i32 => ("rask_link_forget_map", "rask_link_register_map"),
+                _ => continue,
+            };
+            let mut calls = Vec::with_capacity(2);
+            if old_held {
+                calls.push((forget, self.emit_word_at(MirOperand::Local(base), at)));
+            }
+            calls.push((register, incoming));
+            for (func, arg) in calls {
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                    dst: None,
+                    func: FunctionRef::runtime(func.to_string()),
+                    args: vec![arg],
+                }));
+            }
+        }
+    }
+
+    /// `offset + k`, folded when `offset` is a constant.
+    fn emit_offset_plus(&mut self, offset: &MirOperand, k: u32) -> MirOperand {
+        if let MirOperand::Constant(MirConst::Int(c)) = offset {
+            return MirOperand::Constant(MirConst::Int(c + k as i64));
+        }
+        if k == 0 {
+            return offset.clone();
+        }
+        let sum = self.builder.alloc_temp(MirType::I64);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: sum,
+            rvalue: MirRValue::BinaryOp {
+                op: crate::operand::BinOp::Add,
+                left: offset.clone(),
+                right: MirOperand::Constant(MirConst::Int(k as i64)),
+            },
         }));
+        MirOperand::Local(sum)
+    }
+
+    /// `from + at`, as an address.
+    fn emit_address_at(&mut self, from: MirOperand, at: MirOperand) -> crate::LocalId {
+        let addr = self.builder.alloc_temp(MirType::Ptr);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: addr,
+            rvalue: MirRValue::BinaryOp { op: crate::operand::BinOp::Add, left: from, right: at },
+        }));
+        addr
+    }
+
+    /// The word at `from + at`, by address. A field read names a field, and
+    /// these offsets can land inside a nested one or an array element.
+    fn emit_word_at(&mut self, from: MirOperand, at: MirOperand) -> MirOperand {
+        let addr = self.emit_address_at(from, at);
+        let word = self.builder.alloc_temp(MirType::Ptr);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: word,
+            rvalue: MirRValue::Deref(MirOperand::Local(addr)),
+        }));
+        MirOperand::Local(word)
     }
 
     /// Write a link into a slot through the rack, so the target learns who
     /// points at it. `base + offset` is the slot's address; the runtime writes
     /// it, unregisters whatever edge it held, and registers the new one.
-    fn emit_link_store(&mut self, base: crate::LocalId, offset: u32, value: MirOperand) {
-        // A node's own link field keeps its edge record inline in the node
-        // header, so the runtime reaches it by arithmetic instead of scanning
-        // the old target's incoming list. Only the base tells them apart: a
-        // link base means the holder is a node, anything else is foreign
-        // storage that still needs the scanned record.
-        if matches!(self.builder.local_type(base), Some(MirType::Link(_))) {
+    ///
+    /// A slot inside a vector element or map value is recorded against the
+    /// container instead: the element moves when the vector regrows and dies
+    /// with it, and a record naming the slot would outlive both (#2069). That
+    /// covers a store through an index (`holder`) and one through a binding
+    /// placed in the element.
+    fn emit_link_store(
+        &mut self,
+        base: crate::LocalId,
+        offset: MirOperand,
+        value: MirOperand,
+        holder: Option<&ElementHolder>,
+    ) {
+        // A `with v[i] as e` or `for mutate e in v` binding sits in the element.
+        let bound = self.placed_locals.get(&base).cloned().flatten();
+        if let Some(holder) = holder.or(bound.as_ref()) {
+            let slot = self.emit_address_at(MirOperand::Local(base), offset);
+            let func = if holder.map { "rask_link_set_in_map" } else { "rask_link_set_in_vec" };
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: None,
-                func: FunctionRef::internal("Link_set_node".to_string()),
-                args: vec![
-                    MirOperand::Local(base),
-                    MirOperand::Constant(MirConst::Int(offset as i64)),
-                    value,
-                ],
+                func: FunctionRef::runtime(func.to_string()),
+                args: vec![holder.coll.clone(), MirOperand::Local(slot), value],
             }));
             return;
         }
-        let slot = self.builder.alloc_temp(MirType::Ptr);
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-            dst: slot,
-            rvalue: MirRValue::BinaryOp {
-                op: crate::operand::BinOp::Add,
-                left: MirOperand::Local(base),
-                right: MirOperand::Constant(MirConst::Int(offset as i64)),
-            },
-        }));
+        // A node's own link slots keep their edge records inline in the node
+        // header, so the runtime reaches the record from the offset instead of
+        // scanning the old target's incoming list. Only the base tells them
+        // apart: a link base means the holder is a node, anything else is
+        // foreign storage that keeps a heap record.
+        if matches!(self.builder.local_type(base), Some(MirType::Link(_))) {
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                dst: None,
+                func: FunctionRef::runtime("rask_link_set_node".to_string()),
+                args: vec![MirOperand::Local(base), offset, value],
+            }));
+            return;
+        }
+        let slot = self.emit_address_at(MirOperand::Local(base), offset);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: None,
-            func: FunctionRef::internal("Link_set".to_string()),
+            func: FunctionRef::runtime("rask_link_set".to_string()),
             args: vec![MirOperand::Local(slot), value],
         }));
     }
@@ -423,8 +671,8 @@ impl<'a> MirLowerer<'a> {
                 // A `mut` can be reassigned, so whatever this name meant to
                 // `value.(name)` before, it doesn't now.
                 self.comptime_strings.remove(name);
-                let r = self.lower_binding(name, ty.as_ref(), init);
-                self.check_resource_moved(init);
+                let r = self.lower_binding(name, ty.as_ref().map(|_| stmt.id), init);
+                self.mark_consumed_by(init);
                 r
             }
 
@@ -441,13 +689,16 @@ impl<'a> MirLowerer<'a> {
                     Ok(Some(s)) => { self.comptime_strings.insert(name.clone(), s); }
                     _ => { self.comptime_strings.remove(name); }
                 }
-                let r = self.lower_binding(name, ty.as_ref(), init);
-                self.check_resource_moved(init);
+                let r = self.lower_binding(name, ty.as_ref().map(|_| stmt.id), init);
+                self.mark_consumed_by(init);
                 r
             }
 
             StmtKind::Return(opt_expr) => {
                 let mut returned_ty = None;
+                // The body's captures this return moves, marked once the
+                // value is in the slot (`MovedOut` below).
+                let mut moved_captures: Vec<crate::LocalId> = Vec::new();
                 // In a `for` body over a sequence, the loop's variables this
                 // return moves leave the frame on its early exit.
                 if let (Some(e), Some(_)) = (opt_expr, &self.seq_moved_names) {
@@ -458,10 +709,11 @@ impl<'a> MirLowerer<'a> {
                         .into_iter()
                         .flatten()
                         .filter(|name| {
-                            self.locals.get(*name).is_some_and(|(id, _)| self.addressed_captures.contains(id))
+                            self.locals.get(*name).is_some_and(|(id, _)| self.addressed_locals.contains(id))
                         })
                         .cloned()
                         .collect();
+                    moved_captures = moved.iter().filter_map(|n| self.locals.get(n).map(|(id, _)| *id)).collect();
                     if let Some(names) = self.seq_moved_names.as_mut() {
                         names.extend(moved);
                     }
@@ -472,7 +724,7 @@ impl<'a> MirLowerer<'a> {
                     // ensure is cancelled before the cleanup chain runs —
                     // without it the cleanup ran as part of returning and the
                     // caller was given a closed handle.
-                    self.check_resource_moved(e);
+                    self.mark_consumed_by(e);
                     returned_ty = Some(op_ty.clone());
                     // Wrap a bare value into whatever the return type asks for:
                     // `func -> User? { return User { ... } }` needs one layer,
@@ -483,7 +735,7 @@ impl<'a> MirLowerer<'a> {
                     // In a `for` over a sequence the body is the yield closure,
                     // whose own return type is `bool`; the `return` is the
                     // enclosing function's, so that function's type decides.
-                    let seq_ret = self.inline_return_target.as_ref().and_then(|t| t.3.clone());
+                    let seq_ret = self.inline_return_target.as_ref().and_then(|t| t.2.clone());
                     // An inlined closure's `return` answers the closure, not
                     // the function it was inlined into, so the enclosing
                     // function's type has no say in its shape: the slot it
@@ -500,25 +752,19 @@ impl<'a> MirLowerer<'a> {
                     // bare 3 the caller read as a string.
                     let final_op = if inlined_closure {
                         op
-                    } else if self.ctx.err_returns.contains(&e.id) {
-                        self.build_err(op, &op_ty, &ret_ty).ok_or_else(|| {
-                            LoweringError::InvalidConstruct(format!(
-                                "a return on the error side of `{}`, which has none", ret_ty
-                            ))
-                        })?
                     } else {
-                        self.coerce_into_wrapper(
-                            rask_ast::coercion::CoercionSite::Return,
-                            op, &op_ty, &ret_ty,
-                        )
+                        self.shape_returned(e.id, op, &op_ty, &ret_ty)?
                     };
                     Some(final_op)
-                } else {
+                } else if self.inline_return_target.as_ref().is_some_and(|t| t.2.is_none()) {
+                    // An inlined closure's empty `return` answers the closure.
                     None
+                } else {
+                    self.empty_return_value()
                 };
                 // Inside an inlined closure (e.g. fold callback), redirect
                 // return to an assignment + goto instead of a real return.
-                if let Some((dst_local, cont_block, writeback_depth, seq_ret)) = self.inline_return_target.clone() {
+                if let Some((dst_local, cont_block, seq_ret)) = self.inline_return_target.clone() {
                     if let Some(val) = value {
                         // `return x` from a function that answers `T?` hands
                         // back a bare payload, and the slot it lands in is the
@@ -543,13 +789,21 @@ impl<'a> MirLowerer<'a> {
                             rvalue: MirRValue::Use(val),
                         }));
                     }
+                    // The body reaches the frame's variable through a borrowed
+                    // capture, which reads as a view: the slot would get a copy
+                    // with references of its own while the frame, told the
+                    // variable moved, released nothing, and the original's
+                    // strings and vectors leaked. Marked here, the capture
+                    // hands its value on instead.
+                    for local in moved_captures {
+                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::MovedOut { local }));
+                    }
                     self.inline_return_taken =
                         Some(returned_ty.unwrap_or(MirType::Void));
-                    self.emit_write_backs_above(writeback_depth);
                     self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: cont_block }));
                 } else {
                     let value = match (value, opt_expr) {
-                        (Some(v), Some(e)) => Some(self.retain_returned_copy_param(v, e)),
+                        (Some(v), Some(e)) => Some(self.returned_copy(v, e)),
                         (v, _) => v,
                     };
                     self.terminate_return(value);
@@ -565,8 +819,26 @@ impl<'a> MirLowerer<'a> {
                 // was dropped on the floor — native printed the old value back
                 // with no error at all (#737).
                 let target = self.peel_owned_deref(target);
+                // `c = if cond { c } else { new }`: on one way in the new value
+                // is the old one, on the other the old one is garbage. Which
+                // way is only known at run time, and the release pass can't
+                // name one holder for it, so the assignment goes into each arm:
+                // `c = c` writes nothing, and `c = new` releases the old `c`
+                // like any other write over it (#1841).
+                if let Some(split) = Self::assign_into_arms(stmt, target, value) {
+                    self.lower_expr(&split)?;
+                    return Ok(());
+                }
+                // `p = p`, `s.f = s.f`: nothing changes, and releasing the
+                // slot before the store would free the value being stored.
+                if same_place(target, value) {
+                    return Ok(());
+                }
                 let (val_op, val_ty) = self.lower_expr(value)?;
-                self.check_resource_moved(value);
+                // Before any widening into `T?`: a link stored into a slot is
+                // registered as the link, not as the optional around it.
+                let unwrapped_val = val_op.clone();
+                self.mark_consumed_by(value);
                 // OPT6/#380: widen a bare `T` into `Some(T)` when the lvalue is an
                 // `Option<T>` place (reassignment or index/field store). The checker
                 // accepts the widening; without the wrap the bare value lands in the
@@ -574,7 +846,7 @@ impl<'a> MirLowerer<'a> {
                 let place_ty = self
                     .ctx
                     .lookup_raw_type(target.id)
-                    .cloned()
+                    .map(std::borrow::Cow::into_owned)
                     .map(|t| self.ctx.type_to_mir(&t));
                 let (val_op, val_ty) = match &place_ty {
                     Some(pt) => self.wrap_for_option_place(val_op, val_ty, pt),
@@ -589,13 +861,13 @@ impl<'a> MirLowerer<'a> {
                     if let Some(func) = self
                         .ctx
                         .lookup_raw_type(target.id)
-                        .cloned()
+                        .map(std::borrow::Cow::into_owned)
                         .and_then(|t| self.ctx.container_link_forget(&t))
                     {
                         let (old_op, _) = self.lower_expr(target)?;
                         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                             dst: None,
-                            func: FunctionRef::internal(func.to_string()),
+                            func: FunctionRef::runtime(func.to_string()),
                             args: vec![old_op],
                         }));
                     }
@@ -607,20 +879,22 @@ impl<'a> MirLowerer<'a> {
                 if let Some(func) = self
                     .ctx
                     .lookup_raw_type(value.id)
-                    .cloned()
+                    .map(std::borrow::Cow::into_owned)
                     .and_then(|t| self.ctx.container_link_registration(&t))
                 {
+                    // The container itself, not the optional a `T?` place
+                    // wrapped it in: the runtime reads the handle as a vector.
                     self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                         dst: None,
-                        func: FunctionRef::internal(func.to_string()),
-                        args: vec![val_op.clone()],
+                        func: FunctionRef::runtime(func.to_string()),
+                        args: vec![unwrapped_val.clone()],
                     }));
                 }
-                // A whole struct written over a name carries whatever edges its
-                // fields hold, and a literal's fields were filled before there
-                // was a slot to record — same gap the binding path closes.
-                let struct_assigned = matches!(&target.kind, ExprKind::Ident(_))
-                    && matches!(&value.kind, ExprKind::StructLit { .. });
+                // A whole aggregate written over a name carries whatever edges
+                // its fields hold, and nothing recorded them against this slot —
+                // a literal filled its fields before it had one, and a tuple or
+                // a function result was recorded, if at all, somewhere else.
+                let struct_assigned = matches!(&target.kind, ExprKind::Ident(_));
                 // `p.x = v`, `(*p).x = v`, `p[i] = v`: the store lands at the
                 // address the pointer reaches, not in a copy of what it points
                 // at. A copy is what `(*p).y = v` wrote into, and the write
@@ -629,7 +903,7 @@ impl<'a> MirLowerer<'a> {
                     && self.through_pointer(target)
                 {
                     let (addr, ty) = self.pointer_place_address(target)?;
-                    self.emit_pointer_check(&addr, true, ty.size() as i64);
+                    self.emit_pointer_check(&addr, true, rask_layout::size_of(&ty, self.ctx.target()) as i64);
                     let addr = match addr {
                         MirOperand::Local(id) => id,
                         other => {
@@ -645,7 +919,7 @@ impl<'a> MirLowerer<'a> {
                         addr,
                         offset: 0,
                         value: val_op,
-                        store_size: ty.size(),
+                        store_size: rask_layout::size_of(&ty, self.ctx.target()),
                         field: None,
                     }));
                     return Ok(());
@@ -676,12 +950,45 @@ impl<'a> MirLowerer<'a> {
                         // A cell is an address whether or not it came from a
                         // parameter, so the scalar case doesn't need the
                         // `mutate` half of the test any more (#1011).
+                        // A local whose links the rack records by its address
+                        // is written in place, so it keeps that address for
+                        // its whole life. An `Assign` would make a new SSA
+                        // version in a new slot, leaving the old one's bytes
+                        // naming a node its record no longer covers, and the
+                        // forget at return then read a freed rack through them.
+                        //
+                        // Not a parameter: its name is the caller's storage,
+                        // so a write in place would land in the caller's slot,
+                        // and what the old value was is the caller's to free.
+                        //
+                        // A name an `ensure` reads is written in place too: the
+                        // hook holds its address, and the ensure reads whatever
+                        // it holds when the block ends. As an `Assign` the new
+                        // value was a store into that address that nothing
+                        // paired with a release of the old one (#1895). In the
+                        // hook's own copy of the body the name is the frame's
+                        // cell, an addressed local, and takes the other path
+                        // below, which releases the old value the same way.
+                        let in_place = struct_assigned
+                            && scalar_mutate.is_none()
+                            && !assigns_through
+                            && !self.builder.is_param(local_id)
+                            && !self.addressed_locals.contains(&local_id)
+                            && matches!(
+                                dst_ty,
+                                MirType::Struct(_) | MirType::Tuple(_) | MirType::Array { .. }
+                                    | MirType::Enum(_) | MirType::Option(_) | MirType::Result { .. }
+                            )
+                            && (self.ctx.mir_has_guarded_link(&dst_ty)
+                                || self.ctx.struct_carries_links(&dst_ty)
+                                || self.ensure_read_names.contains(name));
                         let store_through_ptr = scalar_mutate.is_some()
-                            || (assigns_through && mutate_param_by_pointer(&dst_ty));
+                            || (assigns_through && mutate_param_by_pointer(&dst_ty))
+                            || in_place;
                         if store_through_ptr {
                             let store_size = match &scalar_mutate {
-                                Some(sty) => sty.size(),
-                                None => dst_ty.size(),
+                                Some(sty) => rask_layout::size_of(sty, self.ctx.target()),
+                                None => rask_layout::size_of(&dst_ty, self.ctx.target()),
                             };
                             let _ = val_ty;
                             // What the caller's slot is about to lose. Same
@@ -701,15 +1008,96 @@ impl<'a> MirLowerer<'a> {
                             // A plain scalar goes through this branch too, with
                             // a cell for a destination, and a cell's contents
                             // are `container_drop`'s to place.
-                            let replaced = if assigns_through {
-                                self.released_on_overwrite(target, reuses_old, &dst_ty)
+                            //
+                            // An in-place local's old value may have been
+                            // handed on first (`v.push(t)` then `t = …`), and
+                            // then the bytes still in the slot are the new
+                            // owner's. Whether the frame still owns it is the
+                            // release pass's to say: a `ZeroAggregate` before
+                            // the store makes a new value in the slot, and that
+                            // pass releases the old one there exactly when it
+                            // is still ours — under a drop flag when that holds
+                            // on some paths only. Its vectors take their link
+                            // records with them when they're freed. A field
+                            // the new value took from the old one was zeroed by
+                            // the take, so releasing the rest is safe too.
+                            //
+                            // A `mutate` aggregate that isn't Copy is the same:
+                            // the frame holds the caller's slot for the call
+                            // (`rc_insert::held_mutate_params`), so whether the
+                            // old value is still there to release — it may have
+                            // moved out on some paths — is the release pass's
+                            // to say (#1903).
+                            let held_param = assigns_through
+                                && scalar_mutate.is_none()
+                                && self.builder.is_param(local_id)
+                                && matches!(
+                                    dst_ty,
+                                    MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_)
+                                        | MirType::Array { .. } | MirType::Option(_) | MirType::Result { .. }
+                                )
+                                && !self
+                                    .ctx
+                                    .lookup_raw_type(target.id)
+                                    .is_some_and(|t| self.ctx.type_defs.is_copy(&t));
+                            let renew = in_place || held_param;
+                            // A container `mutate` parameter given away whole is
+                            // taken (`lower_ident`), leaving its slot empty, so
+                            // the write that refills it can always release what
+                            // the slot holds: the old handle on a path that
+                            // never gave it away, nothing on one that did
+                            // (#1903).
+                            let reuses_old = reuses_old
+                                && !(scalar_mutate.is_some()
+                                    && assigns_through
+                                    && self.builder.is_param(local_id));
+                            // `c = c` (or `c = { c }`): the value is the slot.
+                            // Renewing would release it and then copy the
+                            // released bytes back.
+                            if renew && matches!(&val_op, MirOperand::Local(v) if *v == local_id) {
+                                return Ok(());
+                            }
+                            let replaced = if renew {
+                                None
+                            } else if assigns_through {
+                                self.released_on_overwrite(target, reuses_old, &dst_ty, false)
                             } else {
                                 None
                             };
+                            // A link is an edge write: through the rack, into
+                            // the caller's slot.
+                            if scalar_mutate.as_ref().is_some_and(MirType::is_link_slot) {
+                                self.emit_link_store(local_id, MirOperand::Constant(MirConst::Int(0)), val_op, None);
+                                return Ok(());
+                            }
+                            // The caller's slot keeps its address, so its edges
+                            // move with the store, as a field store's do.
+                            let guarded = match &val_op {
+                                MirOperand::Local(v)
+                                    if scalar_mutate.is_none() && self.ctx.mir_has_guarded_link(&dst_ty) =>
+                                {
+                                    self.emit_link_guarded(MirOperand::Local(local_id), *v, false);
+                                    Some(*v)
+                                }
+                                _ => None,
+                            };
+                            if scalar_mutate.is_none() {
+                                self.emit_aggregate_edge_stores(
+                                    local_id,
+                                    MirOperand::Constant(MirConst::Int(0)),
+                                    &dst_ty,
+                                    &val_op,
+                                    !in_place,
+                                    None,
+                                );
+                            }
                             if let Some(ty) = replaced {
                                 self.builder.push_stmt(MirStmt::dummy(
                                     MirStmtKind::ReleaseSlot { addr: local_id, offset: 0, ty },
                                 ));
+                            }
+                            if renew {
+                                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::ZeroAggregate { local: local_id }));
                             }
                             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
                                 addr: local_id,
@@ -718,6 +1106,9 @@ impl<'a> MirLowerer<'a> {
                                 store_size,
                                 field: None,
                             }));
+                            if let Some(v) = guarded {
+                                self.emit_link_guarded(MirOperand::Local(local_id), v, true);
+                            }
                         } else {
                             // A closure writing over a capture it reaches by
                             // address replaces the value its creating frame (or
@@ -726,8 +1117,9 @@ impl<'a> MirLowerer<'a> {
                             // `|| { line = Line { … } }` leaked the line it
                             // replaced (#1448), and a `lines()` loop body doing
                             // `block = Vec.new()` every block.
-                            let replaced = if self.addressed_captures.contains(&local_id) {
-                                self.released_on_overwrite(target, reuses_old, &dst_ty)
+                            let replaced = if self.addressed_locals.contains(&local_id) {
+                                let closures = self.placed_locals.contains_key(&local_id);
+                                self.released_on_overwrite(target, reuses_old, &dst_ty, closures)
                             } else {
                                 None
                             };
@@ -738,15 +1130,39 @@ impl<'a> MirLowerer<'a> {
                                     ty,
                                 }));
                             }
-                            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                                dst: local_id,
-                                rvalue: MirRValue::Use(val_op),
-                            }));
+                            // The value being replaced may hold links behind a
+                            // tag; they go before the new one is recorded below.
+                            if struct_assigned && self.ctx.mir_has_guarded_link(&dst_ty) {
+                                self.emit_link_guarded(MirOperand::Local(local_id), local_id, false);
+                            }
+                            // `t = a` copies the array the way `let t = a`
+                            // does; aliased, `a = …` after it changed `t`.
+                            // The `ZeroAggregate` makes a new value in the
+                            // slot, so the release pass gives back the old one
+                            // while it is still the frame's.
+                            if !self.addressed_locals.contains(&local_id)
+                                && self.reads_caller_array_slot(value, &dst_ty)
+                            {
+                                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::ZeroAggregate { local: local_id }));
+                                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+                                    addr: local_id,
+                                    offset: 0,
+                                    value: val_op,
+                                    store_size: rask_layout::size_of(&dst_ty, self.ctx.target()),
+                                    field: None,
+                                }));
+                            } else {
+                                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                                    dst: local_id,
+                                    rvalue: MirRValue::Use(val_op),
+                                }));
+                            }
                             self.retain_copy_of_place(local_id, value);
                         }
                         // After the write, not before: the slots have to hold the
-                        // links before there is anything to record.
-                        if struct_assigned {
+                        // links before there is anything to record. Through a
+                        // pointer the edge stores above already did it.
+                        if struct_assigned && !store_through_ptr {
                             let dst_ty = dst_ty.clone();
                             self.emit_struct_link_registration(local_id, &dst_ty);
                         }
@@ -784,7 +1200,7 @@ impl<'a> MirLowerer<'a> {
                                 if let Some(release) = release {
                                     self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                                         dst: None,
-                                        func: FunctionRef::internal(release.to_string()),
+                                        func: release.call(),
                                         args: vec![box_op],
                                     }));
                                 }
@@ -795,63 +1211,29 @@ impl<'a> MirLowerer<'a> {
                             if let Some(release) = release {
                                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                                     dst: None,
-                                    func: FunctionRef::internal(release.to_string()),
+                                    func: release.call(),
                                     args: vec![box_op],
                                 }));
                             }
+                        }
+                        // A `mutate h: Link<T>` holds the caller's slot. The
+                        // node is what the slot names now, read into a link
+                        // local for the length of this store, so the write is
+                        // an edge write against the node like any other.
+                        let rebound = self.node_through_mutate_link(target);
+                        let chain = self.lower_place_chain(target);
+                        if let Some((name, saved)) = rebound {
+                            self.locals.insert(name, saved);
                         }
                         // #411: a place rooted at an aggregate local (`p.x`,
                         // `ln.a.x`, tuple fields) projects straight to base+offset
                         // as one store. This avoids loading an intermediate field
                         // as a value copy and losing the write on native.
-                        if let Some((base, offset, fty, fsize)) = self.lower_place_chain(target) {
-                            // An edge write is not a plain store: the rack
-                            // records who points at whom, so `delete` can find
-                            // this slot later and null it (mem.racks/RK3). The
-                            // runtime does the recording and the store together,
-                            // which is also what makes re-pointing an edge forget
-                            // its old target.
-                            if fty.is_link_slot() {
-                                // A bare `none` on the right lowers as a tagged
-                                // option whenever the checker hasn't settled its
-                                // type, and the field is a niche — it wants the
-                                // sentinel word. Without this, `n.peer = none`
-                                // stored the *address* of the tagged local and
-                                // the rack recorded an edge to the stack.
-                                let val_op = self.wrap_sum_field_value(
-                                    Some(&fty), fty.niche_none(), &val_ty, val_op,
-                                );
-                                self.emit_link_store(base, offset, val_op);
-                                return Ok(());
-                            }
-                            // The value the slot is about to lose. A field
-                            // assignment is always a replacement — a struct
-                            // literal builds the slot on a different path — so
-                            // there is no "is this the first write" to get
-                            // wrong here, which is why this is lowering's job
-                            // rather than a pass's (#1198).
-                            if let Some(old) = self.replaced_slot_type(target, reuses_old, &fty) {
-                                self.builder.push_stmt(MirStmt::dummy(
-                                    MirStmtKind::ReleaseSlot { addr: base, offset, ty: old },
-                                ));
-                            }
-                            // The field's own width, not None. Codegen only
-                            // copies the bytes when the size says the value is
-                            // wider than a pointer; with no size it stored the
-                            // 8-byte pointer instead, so `s.text = "lit"` left
-                            // the address of the constant in a 16-byte string
-                            // field and the field read back as garbage.
+                        if let Some((base, offset, fty, fsize)) = chain {
                             let slot = self
                                 .lower_place_chain(object)
                                 .and_then(|(_, _, oty, _)| self.field_slot_of(&oty, field));
-                            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-                                addr: base,
-                                offset,
-                                value: val_op,
-                                store_size: fsize,
-                                field: slot,
-                            }));
-                            return Ok(());
+                            return self.store_into_place(base, offset, fty, fsize, slot, val_op, val_ty, target, reuses_old, None);
                         }
                         // A place rooted at an index, with any number of fields
                         // after it. #411 fixed the one-field forms; two dropped
@@ -874,58 +1256,40 @@ impl<'a> MirLowerer<'a> {
                             if let Some(map) = map {
                                 // Reading `v[i]` or `m[k]` copies the element
                                 // (value semantics for `let p = v[i]`), so a
-                                // store into that copy is lost. Lend, write,
-                                // write back: the path a `with v[i] as item`
-                                // binding uses. A Map took the plain read and
-                                // dropped the write (#1440).
-                                let (lend, write_back) = if map {
-                                    ("Map_lend", "Map_write_back")
-                                } else {
-                                    ("Vec_lend", "Vec_write_back")
-                                };
+                                // store into that copy is lost. The store goes
+                                // to the element's own address instead. A Map
+                                // took the plain read and dropped the write
+                                // (#1440).
                                 let elem_ty = self
                                     .ctx
                                     .lookup_raw_type(index_base.id)
-                                    .map(|t| self.ctx.type_to_mir(t))
+                                    .map(|t| self.ctx.type_to_mir(&t))
                                     .or_else(|| self.collection_elem_of_expr(coll));
                                 if let Some(elem_ty) = elem_ty {
                                     if let Some((offset, fsize, fty)) = self.field_path_offset_ty(&elem_ty, &path) {
                                         let slot = self.field_path_slot(&elem_ty, &path);
                                         let (coll_op, _) = self.lower_expr(coll)?;
                                         let (idx_op, _) = self.lower_expr(idx)?;
-                                        let tmp = self.builder.alloc_temp(elem_ty);
-                                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                                            dst: Some(tmp),
-                                            func: FunctionRef::internal(lend.to_string()),
-                                            args: vec![coll_op.clone(), idx_op.clone()],
-                                        }));
-                                        // The copy holds the element's own
-                                        // reference to what the field had, and
-                                        // the write-back copies bytes back
-                                        // without releasing anything. So give
-                                        // it back here, as a direct field write
-                                        // does: `lines[0].text = t` leaked the
-                                        // old text on every edit.
-                                        if let Some(old) = self.replaced_slot_type(target, reuses_old, &fty) {
-                                            self.builder.push_stmt(MirStmt::dummy(
-                                                MirStmtKind::ReleaseSlot { addr: tmp, offset, ty: old },
-                                            ));
-                                        }
-                                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-                                            addr: tmp,
-                                            offset,
-                                            value: val_op,
-                                            store_size: fsize,
-                                            field: slot,
-                                        }));
-                                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                                            dst: None,
-                                            func: FunctionRef::internal(write_back.to_string()),
-                                            args: vec![coll_op, idx_op, MirOperand::Local(tmp)],
-                                        }));
-                                        return Ok(());
+                                        let base = self.emit_element_slot(coll_op.clone(), idx_op, map);
+                                        let holder = ElementHolder { coll: coll_op, map };
+                                        return self.store_into_place(
+                                            base, offset, fty, fsize, slot, val_op, val_ty, target, reuses_old,
+                                            Some(&holder),
+                                        );
                                     }
                                 }
+                            }
+                        }
+                        // Anything else with storage of its own (`ps[1].x`,
+                        // `h.pts[1].y` through a Heap, `p.pts[1].y` through a
+                        // pointer) is stored into at its address. Reading
+                        // the object would give a copy to store into.
+                        if let Some((addr, oty)) = self.place_addr(object)? {
+                            if let (MirOperand::Local(base), Some((offset, fty, fsize))) =
+                                (&addr, self.field_offset_ty_size(&oty, field))
+                            {
+                                let slot = self.field_slot_of(&oty, field);
+                                return self.store_into_place(*base, offset, fty, fsize, slot, val_op, val_ty, target, reuses_old, None);
                             }
                         }
                         let (obj_op, obj_ty) = self.lower_expr(object)?;
@@ -960,40 +1324,147 @@ impl<'a> MirLowerer<'a> {
                     // Index assignment: a[i] = val
                     ExprKind::Index { object, index } => {
                         // A pool index is a handle, not a position. Falling through
-                        // to `Vec_set(pool, handle, v)` below used it as one, and a
+                        // to the vector store below used it as one, and a
                         // handle is `index:32 | generation:32` — so the store landed
                         // far outside the arena and `pool[h] = 7` segfaulted for any
                         // element type with no field to write (#719). The field-path
                         // case above already routed pools correctly; a bare element
                         // never reached it.
-                        let (obj_op, obj_ty) = self.lower_expr(object)?;
+                        // An array inside other storage (`self.buf[i] = b`,
+                        // `grid[0][1] = 9`) is stored into at its own address.
+                        // Reading it gives a copy, and the store landed in the
+                        // copy, so `Blocks.push` in digest lost every byte.
+                        let addressed = if self.is_fixed_array(object) { self.place_addr(object)? } else { None };
+                        let (obj_op, obj_ty) = match addressed {
+                            Some(found) => found,
+                            None => self.lower_expr(object)?,
+                        };
                         let (idx_op, _) = self.lower_expr(index)?;
 
-                        if let MirType::Array { ref elem, .. } = obj_ty {
+                        if let MirType::Array { ref elem, len } = obj_ty {
+                            self.guard_array_index(&idx_op, len);
                             // Fixed-size array: direct store at base + index * elem_size
                             if let MirOperand::Local(base_id) = obj_op {
+                                // An element that is or holds a link is an edge
+                                // write: `h.to[i] = b` must move the slot's
+                                // record like `h.to = …` does, or delete nulls
+                                // the wrong slot and teardown trusts a record
+                                // that isn't where the slot says (#1795).
+                                if elem.is_link_slot() || self.ctx.struct_carries_links(elem) {
+                                    let (root, at) = match self.lower_place_chain(object) {
+                                        Some((root, off, _, _)) => (root, off),
+                                        None => (base_id, 0),
+                                    };
+                                    let scaled = self.builder.alloc_temp(MirType::I64);
+                                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                                        dst: scaled,
+                                        rvalue: MirRValue::BinaryOp {
+                                            op: crate::operand::BinOp::Mul,
+                                            left: idx_op.clone(),
+                                            right: MirOperand::Constant(MirConst::Int(rask_layout::size_of(elem.as_ref(), self.ctx.target()) as i64)),
+                                        },
+                                    }));
+                                    let elem_at = if at == 0 {
+                                        MirOperand::Local(scaled)
+                                    } else {
+                                        let sum = self.builder.alloc_temp(MirType::I64);
+                                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                                            dst: sum,
+                                            rvalue: MirRValue::BinaryOp {
+                                                op: crate::operand::BinOp::Add,
+                                                left: MirOperand::Local(scaled),
+                                                right: MirOperand::Constant(MirConst::Int(at as i64)),
+                                            },
+                                        }));
+                                        MirOperand::Local(sum)
+                                    };
+                                    if elem.is_link_slot() {
+                                        self.emit_link_store(root, elem_at, val_op, None);
+                                        return Ok(());
+                                    }
+                                    let elem_ty = (**elem).clone();
+                                    self.emit_aggregate_edge_stores(root, elem_at, &elem_ty, &val_op, true, None);
+                                }
+                                // The element the slot is about to lose, as a
+                                // field store gives its old value back. Left
+                                // out, `a[0] = s` on a `[string; 2]` leaked the
+                                // string it replaced (#1884).
+                                //
+                                // Through a field (`s.v[1] = t`) the store lands
+                                // in a copy of `s`, which is the value from then
+                                // on; the release pass reads the write as one
+                                // into the aggregate the array sits in
+                                // (`rc_insert`, `inline_roots`), so the frame
+                                // releases that copy and not the stale original.
+                                let elem_ty = (**elem).clone();
+                                if let Some(old) = self.replaced_slot_type(target, reuses_old, &elem_ty) {
+                                    let scaled = self.builder.alloc_temp(MirType::I64);
+                                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                                        dst: scaled,
+                                        rvalue: MirRValue::BinaryOp {
+                                            op: crate::operand::BinOp::Mul,
+                                            left: idx_op.clone(),
+                                            right: MirOperand::Constant(MirConst::Int(rask_layout::size_of(&elem_ty, self.ctx.target()) as i64)),
+                                        },
+                                    }));
+                                    let at = self.builder.alloc_temp(MirType::Ptr);
+                                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                                        dst: at,
+                                        rvalue: MirRValue::BinaryOp {
+                                            op: crate::operand::BinOp::Add,
+                                            left: MirOperand::Local(base_id),
+                                            right: MirOperand::Local(scaled),
+                                        },
+                                    }));
+                                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::ReleaseSlot {
+                                        addr: at,
+                                        offset: 0,
+                                        ty: old,
+                                    }));
+                                }
                                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::ArrayStore {
                                     base: base_id,
                                     index: idx_op,
-                                    elem_size: elem.size(),
+                                    elem_size: rask_layout::size_of(elem.as_ref(), self.ctx.target()),
+                                    inline: elem.stored_inline_in_array(),
                                     value: val_op,
                                 }));
                             }
                         } else {
-                            // A map key is not a position. `Vec_set` on a map
-                            // reached the native runtime as `rask_vec_set`,
-                            // which takes arg 1 as an integer index — so
-                            // `m["a"] = 1` used the key's address as the index
-                            // and panicked with `index is 140728023345216 but
-                            // length is 8`. The interpreter accepts a map
-                            // receiver for `Vec_set`, which is why only native
-                            // failed.
-                            let setter = if self.is_map_expr(object) { "Map_set" } else { "Vec_set" };
-                            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                                dst: None,
-                                func: FunctionRef::internal(setter.to_string()),
-                                args: vec![obj_op, idx_op, val_op],
-                            }));
+                            // A map key is not a position: a vector store on
+                            // a map took the key's address as the index, and
+                            // `m["a"] = 1` panicked with `index is
+                            // 140728023345216 but length is 8`.
+                            if self.is_map_expr(object) {
+                                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                                    dst: None,
+                                    func: crate::runtime_ops::map_set(),
+                                    args: vec![obj_op, idx_op, val_op],
+                                }));
+                            } else {
+                                // `v[i] = x` is `v.replace(i, x)` with the old
+                                // element handed to a temporary the frame
+                                // releases, so a slot has one way to be written.
+                                let old = self.builder.alloc_temp(val_ty.clone());
+                                let edge = self.container_edge_call(
+                                    "Vec_replace",
+                                    &[obj_op.clone(), idx_op.clone(), unwrapped_val.clone()],
+                                );
+                                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                                    dst: Some(old),
+                                    func: FunctionRef::internal("Vec_replace".to_string()),
+                                    args: vec![obj_op, idx_op, val_op],
+                                }));
+                                // A link written into a slot is an edge its
+                                // node's delete has to reach (mem.racks/RK3).
+                                if let Some((func, args)) = edge {
+                                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                                        dst: None,
+                                        func: FunctionRef::runtime(func.to_string()),
+                                        args,
+                                    }));
+                                }
+                            }
                         }
                     }
                     // Deref assignment: *ptr = value → Store through pointer
@@ -1019,15 +1490,15 @@ impl<'a> MirLowerer<'a> {
                         let pointee = self
                             .ctx
                             .lookup_raw_type(operand.id)
-                            .and_then(|t| match t {
+                            .and_then(|t| match &*t {
                                 rask_types::Type::RawPtr(inner) => Some(self.ctx.type_to_mir(inner)),
                                 _ => None,
                             })
                             .or_else(|| place_ty.clone())
                             .unwrap_or_else(|| val_ty.clone());
                         let val_op = self.as_slot_value(val_op, &pointee);
-                        let store_size = pointee.size();
-                        if matches!(self.ctx.lookup_raw_type(operand.id), Some(rask_types::Type::RawPtr(_))) {
+                        let store_size = rask_layout::size_of(&pointee, self.ctx.target());
+                        if matches!(self.ctx.lookup_raw_type(operand.id).as_deref(), Some(rask_types::Type::RawPtr(_))) {
                             self.emit_pointer_check(&MirOperand::Local(addr_local), true, store_size as i64);
                         }
                         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
@@ -1087,7 +1558,7 @@ impl<'a> MirLowerer<'a> {
                 } else {
                     let (init_op, init_ty) = self.lower_expr(init)?;
                     let copied_from = self.reads_borrowed_storage(init)
-                        .then(|| self.ctx.lookup_raw_type(init.id).cloned())
+                        .then(|| self.ctx.lookup_raw_type(init.id).map(std::borrow::Cow::into_owned))
                         .flatten();
                     self.destructure_tuple_pattern(patterns, &init_op, &init_ty, copied_from.as_ref())
                 }
@@ -1113,7 +1584,7 @@ impl<'a> MirLowerer<'a> {
                 // side, and both tags of a flat `T? or E`.
                 let niche = self.option_niche(expr, &val_ty);
                 let is_niche = niche.is_some();
-                let test = self.emit_is_test(&val, &val_ty, niche, pattern)?;
+                let test = self.emit_is_test(expr, &val, &val_ty, niche, pattern)?;
                 let matches = test.matches;
                 self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
                     cond: MirOperand::Local(matches),
@@ -1134,7 +1605,6 @@ impl<'a> MirLowerer<'a> {
                     exit_block,
                     result_local: None,
                     ensure_depth,
-                    writeback_depth: self.pending_write_backs.len(),
                 });
                 for s in body {
                     self.lower_stmt(s)?;
@@ -1157,34 +1627,29 @@ impl<'a> MirLowerer<'a> {
                 // Marker for MIRI/analysis
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::EnsurePush { cleanup_block }));
 
-                // C1/C2: extract receiver variable from body (e.g. `ensure tx.rollback()` → "tx").
-                // Register a resource_id so consumption can be tracked at runtime.
-                let receiver_name = Self::extract_ensure_receiver(body);
-                if let Some(ref name) = receiver_name {
-                    if let Some((local_id, _)) = self.locals.get(name) {
-                        let resource_id = self.builder.alloc_local(
-                            format!("__ensure_res_{}", cleanup_block.0),
-                            MirType::I64,
-                        );
-                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::ResourceRegister {
-                            dst: resource_id,
-                            type_name: name.clone(),
-                            slot: Some(*local_id),
-                        }));
-                        self.ensure_receivers.insert(cleanup_block, (name.clone(), resource_id));
-                        // Store resource_id in local_meta so method calls on this
-                        // receiver can find it for ResourceConsume.
-                        self.meta_mut(name).resource_id = Some(resource_id);
-                    }
-                }
+                // C1/C2: an ensure the ownership pass found something to
+                // cancel gets a flag, set where that happens.
+                let flag = if self.ctx.ensure_cancels.values().any(|es| es.contains(&stmt.id)) {
+                    let receiver = self.ctx.ensure_subjects.get(&stmt.id).cloned();
+                    let slot = receiver.as_ref().and_then(|n| self.locals.get(n)).map(|(id, _)| *id);
+                    let flag = self.builder.alloc_local(format!("__ensure_res_{}", cleanup_block.0), MirType::I64);
+                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::ResourceRegister {
+                        dst: flag,
+                        type_name: receiver.unwrap_or_else(|| "ensure".to_string()),
+                        slot,
+                    }));
+                    self.ensure_flags.insert(stmt.id, flag);
+                    Some(flag)
+                } else {
+                    None
+                };
                 self.ensure_stack.push(cleanup_block);
 
                 // Reify a runtime hook so the body also runs if the scope unwinds
                 // on a native panic (ctrl.panic/U1). Registered in the main flow at
                 // schedule time; popped by the inline cleanup on a normal exit, so
                 // only a panic reaches it via rask_ensure_run_all.
-                let hook_resource = self.ensure_receivers.get(&cleanup_block).map(|(_, id)| *id);
-                let hook = self.try_reify_ensure_hook(body, else_handler, hook_resource);
+                let hook = self.try_reify_ensure_hook(body, else_handler, flag);
                 if let Some((thunk, captures)) = &hook {
                     self.builder.push_stmt(MirStmt::dummy(MirStmtKind::EnsureHookRegister {
                         thunk: thunk.clone(),
@@ -1200,18 +1665,16 @@ impl<'a> MirLowerer<'a> {
                 self.builder.switch_to_block(cleanup_block);
                 // Normal exit runs the inline cleanup — deregister the panic hook
                 // first so it can't double-run.
-                if hook.is_some() {
-                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::EnsureHookPop));
+                if let Some((_, captures)) = &hook {
+                    let kept = captures.iter().filter(|c| c.by_ref).map(|c| c.local_id).collect();
+                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::EnsureHookPop { kept }));
                 }
-                if let Some((_, resource_id)) = receiver_name
-                    .as_ref()
-                    .and_then(|_name| self.ensure_receivers.get(&cleanup_block).cloned())
-                {
+                if let Some(resource_id) = flag {
                     // Check if resource was consumed → skip cleanup
                     let consumed = self.builder.alloc_temp(MirType::I64);
                     self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                         dst: Some(consumed),
-                        func: crate::FunctionRef::internal("rask_resource_is_consumed".to_string()),
+                        func: crate::FunctionRef::reading(crate::RESOURCE_IS_CONSUMED),
                         args: vec![MirOperand::Local(resource_id)],
                     }));
                     let body_block = self.builder.create_block();
@@ -1228,13 +1691,7 @@ impl<'a> MirLowerer<'a> {
                     self.builder.switch_to_block(body_block);
                 }
 
-                for s in body {
-                    self.lower_stmt(s)?;
-                }
-
-                if let Some((param_name, handler_body)) = else_handler {
-                    self.lower_ensure_else_handler(param_name, handler_body)?;
-                }
+                self.lower_ensure_body(body, else_handler)?;
                 // Sentinel for the end of the cleanup sub-CFG: control never
                 // falls out of a cleanup block, it is spliced in at each exit.
                 if self.builder.current_block_unterminated() {
@@ -1292,13 +1749,11 @@ impl<'a> MirLowerer<'a> {
                 }
             }
 
-            // CT48/CT50/CT63: unrolled right here. By the time MIR sees a
-            // monomorphized function, mono has already substituted T to a
-            // concrete type on `reflect.fields<T>()` — that's what makes this
-            // "per instantiation" without a separate mono-side pass.
-            StmtKind::ComptimeFor { binding, iter, body } => {
-                self.lower_comptime_for(binding, iter, body)
-            }
+            // Every `comptime for` is written out before lowering, as a
+            // plain body per instance (`rask-template`, ctrl.comptime/CT50).
+            StmtKind::ComptimeFor { .. } => Err(LoweringError::InvalidConstruct(
+                "internal: a `comptime for` reached lowering without being written out".to_string(),
+            )),
         }
     }
 
@@ -1317,6 +1772,7 @@ impl<'a> MirLowerer<'a> {
     /// out, so the next one added gets it without anyone remembering to.
     fn lower_body_scoped(&mut self, body: &[Stmt]) -> Result<(), LoweringError> {
         let saved = self.comptime_strings.clone();
+        let saved_locals = self.locals.clone();
         let mut result = Ok(());
         for stmt in body {
             result = self.lower_stmt(stmt);
@@ -1325,67 +1781,8 @@ impl<'a> MirLowerer<'a> {
             }
         }
         self.comptime_strings = saved;
+        self.locals = saved_locals;
         result
-    }
-
-    /// CT48: fully unroll a `comptime for` — one copy of `body` per field,
-    /// with the loop binding tracked in `comptime_for_bindings` so `field.xxx`
-    /// and `value.(field.xxx)` inside the body splice as compile-time
-    /// constants (CT49) instead of going through normal local lookup.
-    fn lower_comptime_for(
-        &mut self,
-        binding: &ForBinding,
-        iter: &Expr,
-        body: &[Stmt],
-    ) -> Result<(), LoweringError> {
-        let name = match binding {
-            ForBinding::Single(name) => name.clone(),
-            ForBinding::Tuple(_) => {
-                return Err(LoweringError::InvalidConstruct(
-                    "comptime for requires a single binding — the iterable is a list of fields, not tuples".into(),
-                ));
-            }
-        };
-
-        let fields = self.reflect_fields_for(iter)?;
-
-        for field in fields {
-            self.comptime_for_bindings.push((name.clone(), field));
-            self.lower_body_scoped(body)?;
-            self.comptime_for_bindings.pop();
-        }
-        Ok(())
-    }
-
-    /// CT51: the iterable must be comptime-known. The only form implemented
-    /// so far — matching the interpreter (rask-interp/src/stdlib/reflect.rs)
-    /// — is `reflect.fields<T>()`, T already concrete after mono substitution.
-    fn reflect_fields_for(
-        &self,
-        iter: &Expr,
-    ) -> Result<Vec<super::ReflectFieldConst>, LoweringError> {
-        
-
-        let unsupported = || {
-            LoweringError::InvalidConstruct(
-                "comptime for requires a comptime-known iterable, e.g. reflect.fields<T>()".into(),
-            )
-        };
-
-        let ExprKind::MethodCall { object, method, type_args, .. } = &iter.kind else {
-            return Err(unsupported());
-        };
-        let is_reflect_fields = method == "fields"
-            && matches!(&object.kind, ExprKind::Ident(n) if n == "reflect");
-        if !is_reflect_fields {
-            return Err(unsupported());
-        }
-        let ty = type_args
-            .as_ref()
-            .and_then(|ta| ta.first())
-            .ok_or_else(unsupported)?;
-
-        self.reflect_field_consts(ty)
     }
 
     /// The declaration's type parameters paired with an instantiation's written
@@ -1397,11 +1794,8 @@ impl<'a> MirLowerer<'a> {
     /// worse than reporting the declared types throughout.
     fn generic_type_subst(&self, ty: &TypeExpr) -> Vec<(String, TypeExpr)> {
         use rask_types::TypeDef;
-        let (Some(base), args) = (ty.name(), ty.args()) else { return Vec::new() };
-        if args.is_empty() {
-            return Vec::new();
-        }
-        let Some(rask_types::Type::Named(id)) = self.ctx.type_defs.lookup(&base) else {
+        let args = ty.args();
+        let Ok(rask_types::Type::Generic { base: id, .. }) = rask_check::resolve_type_expr(ty, self.ctx.type_defs) else {
             return Vec::new();
         };
         let Some(TypeDef::Struct { type_params, .. }) = self.ctx.type_defs.get(id) else {
@@ -1421,27 +1815,13 @@ impl<'a> MirLowerer<'a> {
     ) -> Result<Vec<super::ReflectFieldConst>, LoweringError> {
         use rask_ast::decl::field_attrs;
 
-        // A generic instantiation is written `Ring<i64>` and its layout, when
-        // there is one, is keyed `Ring$i64` — mono's own spelling. Reflection
-        // was only ever asking under the written name, so every generic struct
-        // answered "not a struct type" (#968).
-        let base = ty.name().unwrap_or_default();
-        let arg_tys: Vec<rask_types::Type> = ty.args().iter().map(rask_layout::field_type).collect();
-        let instance = (!arg_tys.is_empty())
-            .then(|| rask_layout::generic_instance_name(&base, &arg_tys, self.ctx.type_names))
-            .flatten();
-        let found = instance.as_deref().and_then(|k| self.ctx.find_struct(k));
-
-        // No instance layout means mono decided the shared one is exact for
-        // this instantiation — it emits one exactly when an argument overflows
-        // the shared slot. `Ring<i64>` and `Ring<string>` really do have the
-        // same layout, because what varies sits behind the `Vec`'s pointer.
-        //
-        // The shared layout is still wrong about one thing: it records the
-        // field's *declared* type, so `slots` reads as `Vec<T>` where the
-        // instantiation says `Vec<i64>`. The type arguments are substituted
-        // back in below rather than reported as the placeholder.
-        let found = found.or_else(|| self.ctx.find_struct(&base));
+        // The written type resolves to a checked one, and the layout is the
+        // one that type is laid out by: an instantiation's own when mono made
+        // one, else the declaration's (#968). The shared layout records a
+        // field's declared type, `Vec<T>` where the instantiation says
+        // `Vec<i64>`, so the arguments are substituted back in below.
+        let checked = rask_check::resolve_type_expr(ty, self.ctx.type_defs).ok();
+        let found = checked.as_ref().and_then(|t| self.ctx.struct_of(t));
         let type_subst = self.generic_type_subst(ty);
 
         let Some((_, layout)) = found else {
@@ -1461,25 +1841,36 @@ impl<'a> MirLowerer<'a> {
             )));
         };
 
-        // Declaration order, not layout order. `@layout(Rask)` reorders by
-        // alignment (S1/L4), and reflection reports what the author wrote —
-        // which is also what a serializer's key order follows. The two only
-        // agreed while every field had the same alignment (#1083).
-        let mut ordered: Vec<&rask_layout::FieldLayout> = layout.fields.iter().collect();
-        ordered.sort_by_key(|fl| fl.decl_index);
+        let ordered: Vec<&rask_layout::FieldLayout> =
+            layout.fields_in_declaration_order().into_iter().map(|(_, f)| f).collect();
+
+        // The type each field was declared with. A shared layout — which an
+        // instance keeps when its arguments fit it, `Holder<f64>` — holds a
+        // word where the declaration says `T`, and the name read off it was
+        // `i64`.
+        let declared_fields = match &checked {
+            Some(rask_types::Type::Named(id) | rask_types::Type::Generic { base: id, .. }) => {
+                match self.ctx.type_defs.get(*id) {
+                    Some(rask_types::TypeDef::Struct { fields, .. }) => Some(fields),
+                    _ => None,
+                }
+            }
+            _ => None,
+        };
 
         Ok(ordered
             .into_iter()
             .map(|fl| {
-                let declared = self.ctx.type_defs.resolve_type_names(&fl.ty).to_type_expr();
-                let type_name = declared
-                    .substitute(&|name| {
-                        type_subst.iter().find(|(p, _)| p == name).map(|(_, a)| a.clone())
-                    })
-                    .to_string();
+                let declared = declared_fields
+                    .and_then(|fs| fs.iter().find(|(n, _)| *n == fl.name))
+                    .map_or(&fl.ty, |(_, t)| t);
+                let type_name =
+                    rask_check::reflect::substituted_label(self.ctx.type_defs, declared, &type_subst);
+                let wire = rask_check::reflect::wire_form(self.ctx.type_defs, declared, &type_subst);
                 super::ReflectFieldConst {
                     name: fl.name.clone(),
                     type_name,
+                    wire,
                     offset: fl.offset,
                     size: fl.size,
                     is_public: fl.is_public,
@@ -1509,20 +1900,46 @@ impl<'a> MirLowerer<'a> {
     fn try_eval_comptime_if_locally<'b>(&mut self, stmts: &'b [Stmt]) -> Option<&'b [Stmt]> {
         use rask_ast::comptime_if;
         let (cond, then_branch, else_branch) = comptime_if::parts(stmts)?;
-        let taken = comptime_if::decide(cond, &mut |fact| {
+        comptime_if::choose(cond, then_branch, else_branch, &mut |fact| {
             let answer = match &fact.kind {
-                ExprKind::MethodCall { object, method, type_args, .. } => {
-                    self.comptime_field_method_const(object, method, type_args)?
+                // A module const with a literal value.
+                ExprKind::Ident(name) => {
+                    let (own, fact) = self.const_facts.get(name)?;
+                    let still_the_const = self.locals.get(name).is_none_or(|(l, _)| own.contains(l));
+                    return still_the_const.then(|| fact.clone());
                 }
-                ExprKind::Field { object, field } => self.comptime_field_const(object.name()?, field)?,
+                // `reflect.name_of<T>()` and the other answers that are one
+                // constant. The list-valued ones build a vector, which a
+                // condition can't compare.
+                ExprKind::MethodCall { object, method, type_args, args }
+                    if matches!(&object.kind, ExprKind::Ident(n) if n == "reflect")
+                        && !matches!(method.as_str(), "fields" | "methods" | "variants" | "interfaces" | "params") =>
+                {
+                    let type_args = self.checked_type_args(type_args);
+                    self.try_lower_reflect_call(object, method, &type_args, args).ok()??
+                }
                 _ => return None,
             };
             match answer.0 {
-                MirOperand::Constant(MirConst::Bool(b)) => Some(b),
+                MirOperand::Constant(MirConst::Bool(b)) => Some(comptime_if::Fact::Bool(b)),
+                MirOperand::Constant(MirConst::Int(n)) => {
+                    // A reflect property's own type (`offset` is a `usize`).
+                    let range = match &answer.1 {
+                        MirType::U8 => comptime_if::int_range("u8"),
+                        MirType::U16 => comptime_if::int_range("u16"),
+                        MirType::U32 => comptime_if::int_range("u32"),
+                        MirType::U64 => comptime_if::int_range("u64"),
+                        MirType::I8 => comptime_if::int_range("i8"),
+                        MirType::I16 => comptime_if::int_range("i16"),
+                        MirType::I32 => comptime_if::int_range("i32"),
+                        _ => None,
+                    };
+                    Some(comptime_if::Fact::Int(n as i128, range))
+                }
+                MirOperand::Constant(MirConst::String(s)) => Some(comptime_if::Fact::Str(s)),
                 _ => None,
             }
-        })?;
-        comptime_if::branch(taken, then_branch, else_branch)
+        })
     }
 
     /// Try to evaluate a `comptime if` block at compile time.
@@ -1540,11 +1957,35 @@ impl<'a> MirLowerer<'a> {
     /// The source can be a collection slot, a `with` or `for mutate` binding,
     /// a `mutate` parameter, a field, or a local of the frame's own; all of
     /// them keep their references and can drop them while the copy lives.
-    fn retain_copy_of_place(&mut self, local: crate::LocalId, init: &Expr) {
+    /// Should `let t = init` copy an array out of a place into `t`'s own
+    /// slot? An array-to-array `Use` names the place's storage.
+    ///
+    /// A Copy array, from any place: `let t = s.one` then `s.one = …` changed
+    /// what `t` read. A whole `mutate` array parameter too, which is moved
+    /// out and refilled (`OwnershipResult::refills_after_move`). Not a non-Copy array
+    /// read out of a field or an element: unpaired with a refill that read
+    /// is a view of the slot (mem.borrowing/S1), and the checker stops it
+    /// being read once the slot is written over.
+    fn reads_caller_array_slot(&self, init: &Expr, ty: &MirType) -> bool {
+        if !matches!(ty, MirType::Array { .. }) {
+            return false;
+        }
+        let copy = self
+            .ctx
+            .lookup_raw_type(init.id)
+            .is_some_and(|t| self.ctx.type_defs.is_copy(&t));
+        match &init.kind {
+            ExprKind::Ident(name) => copy || self.meta(name).is_some_and(|m| m.assigns_through),
+            ExprKind::Field { .. } | ExprKind::Index { .. } => copy,
+            _ => false,
+        }
+    }
+
+    pub(crate) fn retain_copy_of_place(&mut self, local: crate::LocalId, init: &Expr) {
         if !self.reads_borrowed_storage(init) {
             return;
         }
-        let Some(ty) = self.ctx.lookup_raw_type(init.id).cloned() else { return };
+        let Some(ty) = self.ctx.lookup_raw_type(init.id).map(std::borrow::Cow::into_owned) else { return };
         // `v.get(i)` copies a Copy `T` out as a `T?`, which can be too wide
         // to be Copy itself. It is a copy all the same, and holds what `T`
         // holds.
@@ -1568,8 +2009,7 @@ impl<'a> MirLowerer<'a> {
             ExprKind::MethodCall { method, .. } => {
                 let Some(prefix) = self.ctx.recorded_prefix(expr.id) else { return false };
                 let name = format!("{prefix}_{method}");
-                rask_stdlib::mir_metadata::lookup(&name).is_some()
-                    && rask_stdlib::mir_metadata::returns_a_view(&name)
+                rask_stdlib::mir_metadata::declared_shape(&name).is_some_and(|s| s.returns_a_view())
             }
             _ => false,
         }
@@ -1577,6 +2017,8 @@ impl<'a> MirLowerer<'a> {
 
     /// `return p` on a Copy aggregate parameter, or on a part of one
     /// (`return w.line`), hands the caller a copy with references of its own.
+    /// So does `return x` on a name for storage held elsewhere: a `with`
+    /// binding, which is the element where it sits in its collection.
     ///
     /// The caller still owns `p`'s strings and releases them itself; a Copy
     /// argument can be passed again after the call. Returned as is, the
@@ -1586,19 +2028,35 @@ impl<'a> MirLowerer<'a> {
     /// The copy is a name of its own, so the parameter is only read, which
     /// is what a borrowed parameter is. A non-Copy parameter can only be
     /// returned when it was taken (`mem.parameters/PM6`), and moves out.
-    fn retain_returned_copy_param(&mut self, value: MirOperand, expr: &Expr) -> MirOperand {
+    ///
+    /// A Copy part of a local (`return t.a`, `return v[0]` on a fixed array)
+    /// is copied the same way, as `let x = v[0]` is. Returned as is, the
+    /// release pass read the return as handing on the whole local, and the
+    /// parts left behind were never released (#2067).
+    ///
+    /// A non-Copy part moves out instead (`return t.a`), and the release pass
+    /// empties its slot and releases the rest of the local. An aggregate part
+    /// is read as the address of its slot, so it gets its own bytes here,
+    /// ahead of the emptying (#2072).
+    fn returned_copy(&mut self, value: MirOperand, expr: &Expr) -> MirOperand {
         let mut root = expr;
-        while let ExprKind::Field { object, .. } = &root.kind {
-            root = object;
+        let mut part = false;
+        loop {
+            match &root.kind {
+                ExprKind::Field { object, .. } => root = object,
+                ExprKind::Index { object, .. } if self.is_fixed_array(object) => root = object,
+                _ => break,
+            }
+            part = true;
         }
         let ExprKind::Ident(name) = &root.kind else { return value };
         let Some(&(root_local, _)) = self.locals.get(name) else { return value };
-        if !self.builder.is_param(root_local) {
+        if !part && !self.builder.is_param(root_local) && !self.addressed_locals.contains(&root_local) {
             return value;
         }
         let MirOperand::Local(returned) = value else { return value };
-        let Some(ty) = self.ctx.lookup_raw_type(expr.id).cloned() else { return value };
-        if !self.ctx.type_defs.is_copy(&ty) {
+        let Some(ty) = self.ctx.lookup_raw_type(expr.id).map(std::borrow::Cow::into_owned) else { return value };
+        if !part && !self.ctx.type_defs.is_copy(&ty) {
             return value;
         }
         let Some(mir_ty) = self.builder.local_type(returned) else { return value };
@@ -1620,6 +2078,166 @@ impl<'a> MirLowerer<'a> {
         }));
         self.retain_bound_copy(copy, &ty);
         MirOperand::Local(copy)
+    }
+
+    /// The address of the storage a place names, and the place's type.
+    ///
+    /// Reading a field or an element gives a copy (`let p = ps[1]` is one by
+    /// definition), so anything that writes into a place has to write at its
+    /// address instead: a store, an element store, a `mutate` argument or
+    /// receiver, a `for mutate` or `with` binding. This is the one place that
+    /// works that address out, at any depth:
+    ///
+    /// - a local is its own storage; a `Heap` or link local holds the address
+    ///   of the value it names;
+    /// - `x.f` is `f`'s offset from `x`'s address;
+    /// - `a[i]` on a fixed array is `i` elements on from `a`'s address;
+    /// - `v[i]` and `m[k]` are the slot the runtime hands back;
+    /// - anything reached through a raw pointer is where the pointer says.
+    ///
+    /// `None` for a place with no storage of its own to write into (a call's
+    /// result, a temporary).
+    pub(crate) fn place_addr(&mut self, expr: &Expr) -> Result<Option<(MirOperand, MirType)>, LoweringError> {
+        if self.through_pointer(expr) {
+            let (addr, ty) = self.pointer_place_address(expr)?;
+            self.emit_pointer_check(&addr, true, rask_layout::size_of(&ty, self.ctx.target()) as i64);
+            return Ok(Some((addr, ty)));
+        }
+        let peeled = self.peel_owned_deref(expr);
+        if !std::ptr::eq(peeled, expr) {
+            return self.place_addr(peeled);
+        }
+        match &expr.kind {
+            ExprKind::Ident(name) => {
+                let Some((id, ty)) = self.locals.get(name).cloned() else { return Ok(None) };
+                Ok(match ty {
+                    MirType::Heap(inner) => Some((MirOperand::Local(id), *inner)),
+                    MirType::Link(_) => Some((MirOperand::Local(id), ty)),
+                    _ if ty.passed_by_address() => Some((MirOperand::Local(id), ty)),
+                    _ => None,
+                })
+            }
+            ExprKind::Field { object, field } => {
+                let Some((base, base_ty)) = self.place_addr(object)? else { return Ok(None) };
+                let Some((foff, fty, _)) = self.field_offset_ty_size(&base_ty, field) else { return Ok(None) };
+                let at = self.offset_address(base, MirOperand::Constant(MirConst::Int(foff as i64)));
+                Ok(Some(self.held_value(at, fty)))
+            }
+            ExprKind::Index { object, index } if self.is_fixed_array(object) => {
+                let Some((base, base_ty)) = self.place_addr(object)? else { return Ok(None) };
+                let MirType::Array { elem, len } = base_ty else { return Ok(None) };
+                let (idx_op, _) = self.lower_expr(index)?;
+                self.guard_array_index(&idx_op, len);
+                let scaled = self.builder.alloc_temp(MirType::I64);
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                    dst: scaled,
+                    rvalue: MirRValue::BinaryOp {
+                        op: crate::operand::BinOp::Mul,
+                        left: idx_op,
+                        right: MirOperand::Constant(MirConst::Int(rask_layout::size_of(elem.as_ref(), self.ctx.target()) as i64)),
+                    },
+                }));
+                let at = self.offset_address(base, MirOperand::Local(scaled));
+                Ok(Some(self.held_value(at, *elem)))
+            }
+            ExprKind::Index { object, index } => {
+                let map = if self.is_vec_expr(object) {
+                    false
+                } else if self.is_map_expr(object) {
+                    true
+                } else {
+                    return Ok(None);
+                };
+                let Some(elem_ty) = self
+                    .ctx
+                    .lookup_raw_type(expr.id)
+                    .map(|t| self.ctx.type_to_mir(&t))
+                    .or_else(|| self.collection_elem_of_expr(object))
+                else {
+                    return Ok(None);
+                };
+                let (coll_op, _) = self.lower_expr(object)?;
+                let (idx_op, _) = self.lower_expr(index)?;
+                let slot = self.emit_element_slot(coll_op, idx_op, map);
+                Ok(Some(self.held_value(slot, elem_ty)))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    /// A `Heap` or link stored in a field or element is a word pointing at
+    /// the value, and the place names the value (`o.h.x = 5` writes the
+    /// `Inner` the field points at), the same as a `Heap` or link local does.
+    fn held_value(&mut self, slot: crate::LocalId, ty: MirType) -> (MirOperand, MirType) {
+        let ty = match ty {
+            MirType::Heap(inner) => *inner,
+            MirType::Link(_) => ty,
+            _ => return (MirOperand::Local(slot), ty),
+        };
+        let word = self.builder.alloc_temp(MirType::Ptr);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign { dst: word, rvalue: MirRValue::Deref(MirOperand::Local(slot)) }));
+        (MirOperand::Local(word), ty)
+    }
+
+    /// `base + by`, as a pointer.
+    pub(crate) fn offset_address(&mut self, base: MirOperand, by: MirOperand) -> crate::LocalId {
+        let dst = self.builder.alloc_temp(MirType::Ptr);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst,
+            rvalue: MirRValue::BinaryOp { op: crate::operand::BinOp::Add, left: base, right: by },
+        }));
+        dst
+    }
+
+    /// Panic unless `0 <= index < len`, before a fixed-size array is read or
+    /// written at `index`. A vector checks inside the runtime call that
+    /// reaches its buffer; an array is plain memory with nothing in between,
+    /// so without this `a[5]` on a `[i64; 3]` read whatever came next (#1724).
+    /// A constant index the length already admits needs no check.
+    pub(crate) fn guard_array_index(&mut self, index: &MirOperand, len: u32) {
+        if let MirOperand::Constant(MirConst::Int(i)) = index {
+            if *i >= 0 && *i < i64::from(len) {
+                return;
+            }
+        }
+        use crate::operand::BinOp as Op;
+        // One unsigned compare covers both ends: a negative index is a huge
+        // unsigned one.
+        let in_range = self.builder.alloc_temp(MirType::Bool);
+        let as_unsigned = self.builder.alloc_temp(MirType::U64);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: as_unsigned,
+            rvalue: MirRValue::Cast { value: index.clone(), target_ty: MirType::U64 },
+        }));
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: in_range,
+            rvalue: MirRValue::BinaryOp {
+                op: Op::Lt,
+                left: MirOperand::Local(as_unsigned),
+                right: MirOperand::Constant(MirConst::Int(i64::from(len))),
+            },
+        }));
+        let fail = self.builder.create_block();
+        let ok = self.builder.create_block();
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
+            cond: MirOperand::Local(in_range),
+            then_block: ok,
+            else_block: fail,
+        }));
+        self.builder.switch_to_block(fail);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+            dst: None,
+            func: FunctionRef::runtime("rask_panic_index".to_string()),
+            args: vec![index.clone(), MirOperand::Constant(MirConst::Int(i64::from(len)))],
+        }));
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Unreachable));
+        self.builder.switch_to_block(ok);
+    }
+
+    pub(crate) fn is_fixed_array(&self, expr: &Expr) -> bool {
+        self.ctx
+            .lookup_raw_type(expr.id)
+            .is_some_and(|t| matches!(t.as_ref(), rask_types::Type::Array { .. }))
     }
 
     /// Retain what `local` holds when the checker says `ty` is Copy: `local`
@@ -1648,14 +2266,35 @@ impl<'a> MirLowerer<'a> {
             )
         );
         if aggregate {
-            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::RcIncContents { local }));
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::RcIncContents { local, for_hand_off: false }));
         }
     }
 
     /// Lower a let/const binding: evaluate init, assign to a new local.
-    fn lower_binding(&mut self, name: &str, ty: Option<&TypeExpr>, init: &Expr) -> Result<(), LoweringError> {
+    /// `annotated` is the statement, when it writes the binding's type: the
+    /// checker's type for the statement is that type.
+    fn lower_binding(&mut self, name: &str, annotated: Option<rask_ast::NodeId>, init: &Expr) -> Result<(), LoweringError> {
         let is_closure = matches!(&init.kind, ExprKind::Closure { .. });
         let (init_op, inferred_ty) = self.lower_expr(init)?;
+        // A container of links that arrives whole — `let w = h.v.clone()`, a
+        // `filter` result — carries edges nothing recorded, the same gap an
+        // assignment closes: every stored link is an edge, a local container's
+        // included (mem.racks/RK3). Records dedupe per (container, target), so
+        // a vector whose pushes already recorded them costs a probe per entry.
+        // Registered before any wrapping into `T?`: the runtime reads the
+        // handle as the container, and a wrapper's bytes are not one.
+        if let Some(func) = self
+            .ctx
+            .lookup_raw_type(init.id)
+            .map(std::borrow::Cow::into_owned)
+            .and_then(|t| self.ctx.container_link_registration(&t))
+        {
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                dst: None,
+                func: FunctionRef::runtime(func.to_string()),
+                args: vec![init_op.clone()],
+            }));
+        }
 
         // `let b = Heap(Big { … })` takes over the block rather than copying out
         // of it. A struct-typed destination copies its bytes on assignment,
@@ -1668,7 +2307,20 @@ impl<'a> MirLowerer<'a> {
         // is an option holding one, and taking the block's local as the binding
         // skipped the wrap: the tag was read out of the block's first word and
         // `o? as v` took the `none` branch.
-        let var_ty = ty.map(|t| self.ctx.resolve_type_expr(t)).unwrap_or(inferred_ty.clone());
+        let declared = annotated.and_then(|stmt| self.ctx.lookup_raw_type(stmt)).map(std::borrow::Cow::into_owned);
+        let var_ty = match annotated {
+            Some(stmt) => self.checked_mir_type(stmt, "annotated binding")?,
+            None => inferred_ty.clone(),
+        };
+        // The checker's type for the binding, for later uses of the name it
+        // left untyped.
+        let binding_checked = declared
+            .clone()
+            .or_else(|| self.ctx.lookup_raw_type(init.id).map(std::borrow::Cow::into_owned))
+            .filter(|t| !crate::fallback::type_is_open(t));
+        if let Some(ty) = binding_checked {
+            self.meta_mut(name).checked_type = Some(ty);
+        }
         if matches!(var_ty, MirType::Heap(_)) {
             if let MirOperand::Local(src) = init_op {
                 if matches!(self.builder.local_type(src), Some(MirType::Heap(_))) {
@@ -1715,7 +2367,7 @@ impl<'a> MirLowerer<'a> {
                 addr: cell,
                 offset: 0,
                 value: init_op,
-                store_size: var_ty.size(),
+                store_size: rask_layout::size_of(&var_ty, self.ctx.target()),
                 field: None,
             }));
             return Ok(());
@@ -1737,10 +2389,27 @@ impl<'a> MirLowerer<'a> {
             rask_ast::coercion::CoercionSite::AnnotatedBinding,
             init_op, &inferred_ty, &var_ty,
         );
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-            dst: local_id,
-            rvalue: MirRValue::Use(init_op.clone()),
-        }));
+        // `let t = a`, `let t = s.one`, `let t = g[1]` on an array: an
+        // array-to-array `Use` names the place's storage (`for mutate` and
+        // `with` bind that way on purpose). A `let` is a value, so the bytes
+        // are copied into `t`'s own slot, and the RC pass gives the copy
+        // references of its own while the place lives on. Aliased, `a = b`
+        // changed what `t` read and a swap gave `b, b` (#1877).
+        if self.reads_caller_array_slot(init, &var_ty) {
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::ZeroAggregate { local: local_id }));
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+                addr: local_id,
+                offset: 0,
+                value: init_op.clone(),
+                store_size: rask_layout::size_of(&var_ty, self.ctx.target()),
+                field: None,
+            }));
+        } else {
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                dst: local_id,
+                rvalue: MirRValue::Use(init_op.clone()),
+            }));
+        }
         self.retain_copy_of_place(local_id, init);
         // The struct may carry edges nothing has recorded — a literal writes its
         // fields before the value has anywhere to live, so there was no slot to
@@ -1751,299 +2420,18 @@ impl<'a> MirLowerer<'a> {
         // stride and dispatches methods on the right type.
         if let MirOperand::Local(src) = &init_op {
             if let Some(elem) = self.collected_elem_types.get(src).cloned() {
-                self.collected_elem_types.insert(local_id, elem.clone());
-                self.meta_mut(name).elem_type = Some(elem);
+                self.collected_elem_types.insert(local_id, elem);
             }
         }
 
-        // Track collection element types for for-in iteration heuristics
-        if let ExprKind::MethodCall { object, method, .. } = &init.kind {
-            if let Some(obj_name) = object.name() {
-                match (obj_name, method.as_str()) {
-                    ("fs", "read_lines") => {
-                        self.meta_mut(name).elem_type = Some(MirType::Buffer);
-                    }
-                    ("fs", "read_bytes") => {
-                        self.meta_mut(name).elem_type = Some(MirType::U8);
-                    }
-                    _ => {}
-                }
-            }
-            // String methods that always return Vec<string>
-            match method.as_str() {
-                "lines" | "split" | "split_whitespace" | "graphemes" => {
-                    self.meta_mut(name).elem_type = Some(MirType::Buffer);
-                }
-                _ => {}
-            }
-        }
-
-        // Track stdlib type prefix for variables assigned from type constructors,
-        // known module functions, or method calls on tracked variables,
-        // so later method calls dispatch correctly.
-        // Unwrap try/unwrap/catch to see the underlying expression. A `catch`
-        // binds the ok side exactly as `try` does; without it a file opened
-        // with `fs.open(p) catch e => { … }` had no prefix, so `f.close()`
-        // never cancelled its `ensure` and the file was closed twice.
-        let init_inner = match &init.kind {
-            ExprKind::Try { expr, .. } => expr.as_ref(),
-            ExprKind::Unwrap { expr, .. } => expr.as_ref(),
-            ExprKind::Catch { value, .. } => value.as_ref(),
-            _ => init,
-        };
-        if let ExprKind::MethodCall { object, method, .. } = &init_inner.kind {
-            if let Some(obj_name) = object.name() {
-                // What `Type.method()` returns is whatever the checker says it
-                // is. `Thread.spawn` hands back a `Handle`, not a
-                // `Thread`, and reading the prefix off the type name gave the
-                // handle `Thread_join`, which isn't known to consume it — so an
-                // `ensure t.detach()` ran after the join and freed the handle
-                // twice. The type name is the fallback for a call the checker
-                // left no type on.
-                //
-                // Not for a `T or E` or `T?`: the binding holds the wrapper, and
-                // the code that later unwraps it reads the prefix as the payload's.
-                let checked = self
-                    .ctx
-                    .lookup_raw_type(init_inner.id)
-                    .filter(|ty| !matches!(ty, rask_types::Type::Result { .. })
-                        && !ty.is_option())
-                    .and_then(|ty| super::MirContext::type_prefix(ty, self.ctx.type_names))
-                    .map(|p| p.as_str().to_string());
-                if let (true, Some(prefix)) = (super::is_type_constructor_name(obj_name), checked) {
-                    self.meta_mut(name).type_prefix = Some(prefix);
-                } else if super::is_type_constructor_name(obj_name) {
-                    // Type.method() → prefix is the type name.
-                    // Covers stdlib (Vec, Map, string) and user types (Person, Document).
-                    // Strip generic args: Map<string, JsonValue> → Map
-                    let base_name = obj_name;
-                    let is_module = rask_stdlib::mir_metadata::stdlib_module_names()
-                        .contains(base_name);
-                    if !is_module && (super::MirContext::stdlib_type_prefix(
-                        &rask_types::Type::UnresolvedNamed(base_name.to_string())
-                    ).is_some()
-                        || base_name.chars().next().map_or(false, |c| c.is_uppercase()))
-                    {
-                        self.meta_mut(name).type_prefix = Some(base_name.to_string());
-                    } else {
-                        // Module function (fs.open) → check return type prefix
-                        let func_name = format!("{}_{}", obj_name, method);
-                        if let Some(prefix) = super::func_return_type_prefix(&func_name) {
-                            self.meta_mut(name).type_prefix = Some(prefix.to_string());
-                        }
-                    }
-                } else if let Some(obj_prefix) = self.meta(obj_name).and_then(|m| m.type_prefix.clone()) {
-                    // Instance method on tracked variable (file.lines() → File_lines)
-                    let func_name = format!("{}_{}", obj_prefix, method);
-                    if let Some(prefix) = super::func_return_type_prefix(&func_name) {
-                        self.meta_mut(name).type_prefix = Some(prefix.to_string());
-                    }
-                    // Propagate full generic type through clone (Shared, Sender, Receiver)
-                    if method == "clone" {
-                        if let Some(full_ty) = self.meta(obj_name).and_then(|m| m.full_type.clone()) {
-                            self.meta_mut(name).full_type = Some(full_ty);
-                        }
-                    }
-                }
-            }
-            // Module.Type.method() pattern: http.HttpServer.listen() → prefix "HttpServer"
-            if let ExprKind::Field { object: inner_obj, field: type_name } = &object.kind {
-                if let Some(module_name) = inner_obj.name() {
-                    if !self.locals.contains_key(module_name)
-                        && super::is_type_constructor_name(module_name)
-                    {
-                        self.meta_mut(name).type_prefix = Some(type_name.clone());
-                    }
-                }
-            }
-        }
-        // Track full generic type for Shared.new(data) calls:
-        // infer inner type from the constructor argument.
-        if let ExprKind::MethodCall { object, method, args: call_args, .. } = &init.kind {
-            if let Some(obj_name) = object.name() {
-                if obj_name == "Shared" && method == "new" && !call_args.is_empty() {
-                    // Infer inner type from the first arg
-                    let inner_name = match &call_args[0].expr.kind {
-                        ExprKind::StructLit { name: sn, .. } => Some(sn.clone()),
-                        ExprKind::MethodCall { object: inner_obj, .. } => {
-                            if let Some(tn) = inner_obj.name() {
-                                if tn.chars().next().map_or(false, |c| c.is_uppercase()) {
-                                    Some(tn.to_string())
-                                } else { None }
-                            } else { None }
-                        }
-                        ExprKind::Ident(vn) => {
-                            // Look up variable type from local_meta
-                            self.meta(vn).and_then(|m| m.type_prefix.clone())
-                        }
-                        _ => None,
-                    };
-                    if let Some(inner) = inner_name {
-                        self.meta_mut(name).full_type =
-                            Some(TypeExpr::generic("Shared", vec![TypeExpr::named(inner)]));
-                    }
-                }
-            }
-        }
-        // Iterator terminal .collect() returns a Vec
-        if let ExprKind::MethodCall { method, .. } = &init.kind {
-            if method == "to_vec" {
-                self.meta_mut(name).type_prefix = Some("Vec".to_string());
-            }
-        }
-        // A task block's value is its `Handle`, which `join`/`detach` dispatch
-        // through and an `ensure` on it is cancelled by.
-        if let ExprKind::Spawn { .. } = &init.kind {
-            if let Some(prefix) = self
-                .ctx
-                .lookup_raw_type(init.id)
-                .and_then(|ty| super::MirContext::type_prefix(ty, self.ctx.type_names))
-            {
-                self.meta_mut(name).type_prefix = Some(prefix.as_str().to_string());
-            }
-        }
-        // Also track for simple function calls
-        if let ExprKind::Call { func, .. } = &init.kind {
-            if let Some(func_name) = func.name() {
-                if let Some(prefix) = super::func_return_type_prefix(func_name) {
-                    self.meta_mut(name).type_prefix = Some(prefix.to_string());
-                }
-            }
-        }
-        // Index expression: args[1] → if args has known element type, propagate it
-        if let ExprKind::Index { object, .. } = &init.kind {
-            if let Some(coll_name) = object.name() {
-                if let Some(elem_ty) = self.meta(coll_name).and_then(|m| m.elem_type.clone()) {
-                    if let Some(prefix) = self.mir_type_name(&elem_ty) {
-                        self.meta_mut(name).type_prefix = Some(prefix);
-                    }
-                }
-            }
-        }
-
-        // Aliasing a variable (`let players = __ctx_players`) carries its type
-        // metadata forward, so pool/collection indexing on the alias still
-        // resolves. Used by the hidden-param pass's SIG2 named-context alias,
-        // and correct for any `const b = a` where `a` is a tracked container.
+        // A synthesized alias (`let players = __ctx_players`, the hidden
+        // parameter pass's SIG2) has no checked type of its own: it is the
+        // source's.
         if let ExprKind::Ident(src) = &init.kind {
-            let carried = self.meta(src).map(|m| {
-                (m.type_prefix.clone(), m.full_type.clone(), m.elem_type.clone())
-            });
-            if let Some((prefix, full, elem)) = carried {
-                if let Some(p) = prefix {
-                    self.meta_mut(name).type_prefix = Some(p);
+            if self.meta(name).and_then(|m| m.checked_type.as_ref()).is_none() {
+                if let Some(ty) = self.meta(src).and_then(|m| m.checked_type.clone()) {
+                    self.meta_mut(name).checked_type = Some(ty);
                 }
-                if let Some(f) = full {
-                    self.meta_mut(name).full_type = Some(f);
-                }
-                if let Some(e) = elem {
-                    self.meta_mut(name).elem_type = Some(e);
-                }
-            }
-        }
-
-        // Fallback: derive prefix from the MIR type (catches String, Struct, Enum)
-        // or from the type annotation string (catches Ptr types like Vec<T>, Map<K,V>)
-        if self.meta(name).and_then(|m| m.type_prefix.as_ref()).is_none() {
-            if let Some(prefix) = self.mir_type_name(&var_ty) {
-                self.meta_mut(name).type_prefix = Some(prefix);
-            } else if let Some(written) = ty {
-                if let Some(prefix) = super::type_prefix_of(written) {
-                    self.meta_mut(name).type_prefix = Some(prefix);
-                }
-            }
-        }
-
-        // Track collection element types from type annotations (Vec<u8>, …)
-        if self.meta(name).and_then(|m| m.elem_type.as_ref()).is_none() {
-            if let Some(TypeExpr::Named { path, args }) = ty {
-                if let ([head], [elem]) = (path.as_slice(), args.as_slice()) {
-                    if head == "Vec" {
-                        let elem_mir = self.ctx.resolve_type_expr(elem);
-                        self.meta_mut(name).elem_type = Some(elem_mir);
-                    }
-                }
-            }
-        }
-
-        // Unannotated binding from a call: take the element type from the
-        // initializer's own type, then from the callee's declared return type.
-        //
-        // Without this `const rows = build()` where `build() -> Vec<Ranked>`
-        // left the element type unknown, so `for r in rows` typed the loop
-        // variable i64 and Vec_get's scalar deref read the element's first
-        // 8 bytes as a pointer (#478).
-        if self.meta(name).and_then(|m| m.elem_type.as_ref()).is_none() {
-            let from_init = self
-                .ctx
-                .lookup_raw_type(init.id)
-                .and_then(|t| self.vec_elem_of_checker_type(t));
-            let from_callee = || match &init.kind {
-                ExprKind::Call { func, .. } => match &func.kind {
-                    ExprKind::Ident(callee) => {
-                        let key = self.ctx.call_rewrites.get(&init.id).cloned()
-                            .unwrap_or_else(|| callee.clone());
-                        self.func_sigs.get(&key).and_then(|s| s.ret_vec_elem.clone())
-                    }
-                    _ => None,
-                },
-                ExprKind::MethodCall { object, method, args, .. } => {
-                    // `Vec.from([1, 2, 3])` — the receiver is the type name, not
-                    // a tracked local, so the prefix lookup below finds nothing.
-                    // Take the element type off the argument instead. Left
-                    // unknown, the loop element defaulted to a pointer and
-                    // `|x| { return x + 1 }` compiled to pointer arithmetic:
-                    // x + 8 instead of x + 1.
-                    if matches!(&object.kind, ExprKind::Ident(n) if n == "Vec")
-                        && method == "from"
-                    {
-                        if let Some(arg) = args.first() {
-                            if let Some(elem) = self.iterable_elem_of(&arg.expr) {
-                                return Some(elem);
-                            }
-                        }
-                    }
-                    let prefix = match &object.kind {
-                        ExprKind::Ident(n) => self.meta(n).and_then(|m| m.type_prefix.clone()),
-                        _ => None,
-                    }?;
-                    let base = prefix.as_str().trim();
-                    self.func_sigs
-                        .get(&format!("{}_{}", base, method))
-                        .and_then(|s| s.ret_vec_elem.clone())
-                }
-                _ => None,
-            };
-            if let Some(elem) = from_init.or_else(from_callee) {
-                self.meta_mut(name).elem_type = Some(elem);
-            }
-        }
-
-        // Propagate Vec element types from "self.field" to "<name>.field"
-        // so struct field access like `state.data.get(i)` finds the right type.
-        if let ExprKind::StructLit { fields, .. } = &init.kind {
-            let shared = self.ctx.shared_elem_types.borrow();
-            let mut to_add = Vec::new();
-            for field in fields {
-                let self_key = format!("self.{}", field.name);
-                if let Some(elem_ty) = shared.get(&self_key) {
-                    let var_key = format!("{}.{}", name, field.name);
-                    to_add.push((var_key, elem_ty.clone()));
-                }
-                // Also check if the source variable directly has an element type
-                if let ExprKind::Ident(src_var) = &field.value.kind {
-                    if let Some(elem_ty) = self.meta(src_var).and_then(|m| m.elem_type.as_ref())
-                        .or_else(|| shared.get(src_var))
-                    {
-                        let var_key = format!("{}.{}", name, field.name);
-                        to_add.push((var_key, elem_ty.clone()));
-                    }
-                }
-            }
-            drop(shared);
-            for (key, ty) in to_add {
-                self.meta_mut(&key).elem_type = Some(ty.clone());
-                self.ctx.record_shared_elem(key, ty);
             }
         }
 
@@ -2125,7 +2513,7 @@ impl<'a> MirLowerer<'a> {
         pattern: &Pattern,
         init: &Expr,
     ) -> Result<(), LoweringError> {
-        let Pattern::Struct { fields, .. } = pattern else {
+        let PatternKind::Struct { fields, .. } = &pattern.kind else {
             return Err(LoweringError::InvalidConstruct(
                 "destructuring binding needs a struct pattern".into(),
             ));
@@ -2135,12 +2523,12 @@ impl<'a> MirLowerer<'a> {
         // layout's are as written, so a struct-typed field there is a name
         // rather than a type the Copy rule can answer for.
         let copied_fields = if self.reads_borrowed_storage(init) {
-            self.ctx.lookup_raw_type(init.id).and_then(|t| self.struct_fields_of(t))
+            self.ctx.lookup_raw_type(init.id).and_then(|t| self.struct_fields_of(&t))
         } else {
             None
         };
         for (field_name, field_pat) in fields {
-            let Pattern::Ident(binding) = field_pat else {
+            let PatternKind::Ident(binding) = &field_pat.kind else {
                 return Err(LoweringError::InvalidConstruct(format!(
                     "field `{}` in a destructuring binding must bind a name",
                     field_name
@@ -2193,7 +2581,7 @@ impl<'a> MirLowerer<'a> {
         // e.g. Channel<T>.buffered() → (Sender<T>, Receiver<T>)
         let tuple_elems: Option<Vec<rask_types::Type>> =
             self.ctx.lookup_raw_type(init.id).and_then(|ty| {
-                if let rask_types::Type::Tuple(elems) = ty {
+                if let rask_types::Type::Tuple(elems) = &*ty {
                     Some(elems.clone())
                 } else {
                     None
@@ -2208,10 +2596,37 @@ impl<'a> MirLowerer<'a> {
             _ => None,
         };
 
+        // `let (name, list) = t` on a tuple that isn't Copy moves every part
+        // out of `t`. Each non-Copy part is taken (`rask_field_take`: the bytes go
+        // to the new name, the slot is zeroed), so the name owns what the
+        // tuple held and `t` is left holding nothing there to release. Read
+        // as a plain field copy, `name` added a reference of its own and `t`
+        // still counted as the owner, so handing `list` on made the release
+        // pass read the whole tuple as given away and nothing ever released
+        // the string (#1902); and when `t` was released later, it freed a
+        // part a new name was still using (#1870).
+        let takes_parts = matches!(&init.kind, ExprKind::Ident(_))
+            && matches!(&init_mir_ty, MirType::Tuple(_))
+            && matches!(&init_op, MirOperand::Local(_))
+            && tuple_elems.as_ref().is_some_and(|_| {
+                self.ctx
+                    .lookup_raw_type(init.id)
+                    .is_some_and(|t| !self.ctx.type_defs.is_copy(&t))
+            });
+        let part_offsets: Vec<u32> = match &mir_elem_types {
+            Some(fields) if takes_parts => rask_layout::tuple_offsets(fields, self.ctx.target()),
+            _ => Vec::new(),
+        };
+        // The tuple's own slot: reading `t` made a copy of its bytes, and a
+        // take through the copy would zero the copy, not `t`.
+        let tuple_slot = match &init.kind {
+            ExprKind::Ident(name) if takes_parts => self.locals.get(name).map(|(l, _)| *l),
+            _ => None,
+        };
+
         for (i, name) in names.iter().enumerate() {
             let elem_ty = if is_channel_create {
-                // Channel tx/rx handles are opaque i64 pointers
-                MirType::I64
+                super::channel_half_ty(if i == 0 { "rask_channel_get_tx" } else { "rask_channel_get_rx" })
             } else {
                 mir_elem_types.as_ref()
                     .and_then(|elems| elems.get(i).cloned())
@@ -2219,16 +2634,55 @@ impl<'a> MirLowerer<'a> {
                     .unwrap_or_else(|| crate::fallback::unknown_type("lower/stmt:1285"))
             };
             let local_id = self.builder.alloc_local(name.clone(), elem_ty.clone());
-            self.locals.insert(name.clone(), (local_id, elem_ty));
+            self.locals.insert(name.clone(), (local_id, elem_ty.clone()));
 
             if is_channel_create && names.len() == 2 {
                 // Extract tx (index 0) or rx (index 1) from the raw channel ptr.
-                let extract_fn = if i == 0 { "channel_tx" } else { "channel_rx" };
+                let extract_fn = if i == 0 { "rask_channel_get_tx" } else { "rask_channel_get_rx" };
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                     dst: Some(local_id),
-                    func: FunctionRef::internal(extract_fn.to_string()),
+                    func: super::channel_half(extract_fn),
                     args: vec![init_op.clone()],
                 }));
+            } else if let (true, Some(&offset), Some(base)) =
+                (takes_parts, part_offsets.get(i), tuple_slot)
+            {
+                let part_is_copy = tuple_elems
+                    .as_ref()
+                    .and_then(|e| e.get(i))
+                    .is_some_and(|t| self.ctx.type_defs.is_copy(t));
+                if part_is_copy {
+                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                        dst: local_id,
+                        rvalue: MirRValue::Field {
+                            base: init_op.clone(),
+                            field_index: i as u32,
+                            byte_offset: None,
+                            access: FieldAccess::Word,
+                        },
+                    }));
+                    if let Some(elem) = tuple_elems.as_ref().and_then(|e| e.get(i)) {
+                        self.retain_bound_copy(local_id, elem);
+                    }
+                } else {
+                    let addr = self.builder.alloc_temp(MirType::Ptr);
+                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                        dst: addr,
+                        rvalue: MirRValue::BinaryOp {
+                            op: crate::operand::BinOp::Add,
+                            left: MirOperand::Local(base),
+                            right: MirOperand::Constant(MirConst::Int(offset as i64)),
+                        },
+                    }));
+                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                        dst: Some(local_id),
+                        func: crate::runtime_ops::field_take(),
+                        args: vec![
+                            MirOperand::Local(addr),
+                            MirOperand::Constant(MirConst::Int(rask_layout::size_of(&elem_ty, self.ctx.target()) as i64)),
+                        ],
+                    }));
+                }
             } else {
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                     dst: local_id,
@@ -2244,41 +2698,6 @@ impl<'a> MirLowerer<'a> {
                 if borrowed {
                     if let Some(elem) = tuple_elems.as_ref().and_then(|e| e.get(i)) {
                         self.retain_bound_copy(local_id, elem);
-                    }
-                }
-            }
-
-            // Track type prefix so method calls get qualified names.
-            // First try type-checker info (works when types are fully resolved).
-            let mut found_prefix = false;
-            if let Some(ref elems) = tuple_elems {
-                if let Some(elem_type) = elems.get(i) {
-                    if let Some(prefix) = super::MirContext::type_prefix(elem_type, self.ctx.type_names) {
-                        self.meta_mut(name).type_prefix = Some(prefix);
-                        found_prefix = true;
-                    }
-                }
-            }
-            // Channel<T>.buffered/unbuffered returns (Sender<T>, Receiver<T>).
-            // The element size has to be recorded whether or not the checker
-            // resolved the prefixes: `rx.receive()` picks the struct-aware recv
-            // off it, and without it a 24-byte element was received into an
-            // 8-byte buffer and smashed the stack (#463).
-            if let ExprKind::MethodCall { object, method, .. } = &init.kind {
-                if let Some(type_name) = object.name() {
-                    let base = type_name;
-                    if base == "Channel" && (method == "buffered" || method == "unbuffered") {
-                        // Same source the constructor uses for its elem_size arg.
-                        let elem_size = self.generic_arg_slot_size(init.id, 0)?;
-                        self.meta_mut(name).channel_elem_size = Some(elem_size);
-                        if !found_prefix {
-                            let prefix = match i {
-                                0 => "Sender",
-                                1 => "Receiver",
-                                _ => continue,
-                            };
-                            self.meta_mut(name).type_prefix = Some(prefix.to_string());
-                        }
                     }
                 }
             }
@@ -2357,7 +2776,6 @@ impl<'a> MirLowerer<'a> {
             exit_block,
             result_local: None,
             ensure_depth,
-            writeback_depth: self.pending_write_backs.len(),
         });
 
         self.lower_body_scoped(body)?;
@@ -2370,7 +2788,25 @@ impl<'a> MirLowerer<'a> {
     }
 
     /// For loop: counter-based while for ranges, iterator protocol otherwise.
+    ///
+    /// The loop binding is scoped to the loop. Each lowering below binds it
+    /// into `locals`, and without the restore it outlived the loop: a
+    /// `let p = "outer"` before `for p in [1, 2]` read `2` afterwards.
     fn lower_for(
+        &mut self,
+        label: Option<&str>,
+        binding: &ForBinding,
+        mutate: bool,
+        iter_expr: &Expr,
+        body: &[Stmt],
+    ) -> Result<(), LoweringError> {
+        let saved_locals = self.locals.clone();
+        let result = self.lower_for_unscoped(label, binding, mutate, iter_expr, body);
+        self.locals = saved_locals;
+        result
+    }
+
+    fn lower_for_unscoped(
         &mut self,
         label: Option<&str>,
         binding: &ForBinding,
@@ -2413,7 +2849,8 @@ impl<'a> MirLowerer<'a> {
         // most common loop, so the fast path wins the tie.
         if !mutate {
             if let Some(chain) = self.try_parse_iter_chain(iter_expr) {
-                return self.lower_for_iter_chain(label, single_name, &chain, body, binding);
+                let quiet = self.ctx.quiet_loops.contains(&iter_expr.id);
+                return self.lower_for_iter_chain(label, single_name, &chain, body, binding, quiet);
             }
         }
 
@@ -2438,13 +2875,25 @@ impl<'a> MirLowerer<'a> {
         // a `Type::Generic { base: TypeId, .. }` and the literal-name test
         // missed it entirely.
         let is_map = self.ctx.lookup_raw_type(iter_expr.id).map_or(false, |ty| {
-            super::MirContext::type_prefix(ty, self.ctx.type_names)
+            super::MirContext::type_prefix(&ty, self.ctx.type_names)
                 .is_some_and(|p| p == "Map")
         });
 
         // Index-based iteration: for item in collection { ... }
         // Desugars to: _i = 0; _len = collection.len(); while _i < _len { item = collection[_i]; ...; _i += 1 }
-        let (iter_op, iter_ty) = self.lower_expr(iter_expr)?;
+        // `for mutate` over a fixed array walks the array where it sits.
+        // Reading it gives a copy, and the body's writes went into the copy:
+        // `for mutate row in grid { row[0] = 0 }` left `grid` alone.
+        let placed_array = if mutate && self.is_fixed_array(iter_expr) {
+            self.place_addr(iter_expr)?
+        } else {
+            None
+        };
+        let in_place = placed_array.is_some();
+        let (iter_op, iter_ty) = match placed_array {
+            Some(found) => found,
+            None => self.lower_expr(iter_expr)?,
+        };
 
         // LP13: the map itself, kept aside because the loop goes on to walk a
         // snapshot of its entries. `for mutate` writes back into the map, not
@@ -2463,30 +2912,28 @@ impl<'a> MirLowerer<'a> {
                 rvalue: MirRValue::Use(iter_op),
             }));
             map_local = Some(map_tmp);
-            let entries_vec = self.builder.alloc_temp(MirType::I64);
             let pair = self.map_entry_pair_types(iter_expr);
-            let args = self.map_entries_args(MirOperand::Local(map_tmp), &pair[0], &pair[1]);
-            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                dst: Some(entries_vec),
-                func: FunctionRef::internal("Map_entries".to_string()),
-                args,
-            }));
+            let entries_vec = self.emit_map_entries(MirOperand::Local(map_tmp), &pair[0], &pair[1]);
             (MirOperand::Local(entries_vec), MirType::I64)
         } else {
             (iter_op, iter_ty)
         };
 
-        let is_array = matches!(&iter_ty, MirType::Array { .. });
-        let (array_len, array_elem_size) = match &iter_ty {
-            MirType::Array { elem, len } => (Some(*len), Some(elem.size())),
-            _ => (None, None),
+        let array_len = match &iter_ty {
+            MirType::Array { len, .. } => Some(*len),
+            _ => None,
         };
 
-        let collection = self.builder.alloc_temp(iter_ty.clone());
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-            dst: collection,
-            rvalue: MirRValue::Use(iter_op),
-        }));
+        let collection = if in_place {
+            self.offset_address(iter_op, MirOperand::Constant(MirConst::Int(0)))
+        } else {
+            let collection = self.builder.alloc_temp(iter_ty.clone());
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                dst: collection,
+                rvalue: MirRValue::Use(iter_op),
+            }));
+            collection
+        };
 
         // _len = collection.len()
         let len_local = self.builder.alloc_temp(MirType::I64);
@@ -2516,20 +2963,6 @@ impl<'a> MirLowerer<'a> {
         let inc_block = self.builder.create_block();
         let exit_block = self.builder.create_block();
 
-        // For `for mutate`, create writeback blocks that call Vec_set
-        // before continuing or breaking out of the loop.
-        let (wb_block, break_wb_block) = if mutate && !is_array {
-            let wb = self.builder.create_block();
-            let break_wb = self.builder.create_block();
-            (Some(wb), Some(break_wb))
-        } else {
-            (None, None)
-        };
-
-        // continue target: writeback block (if mutate), otherwise inc_block
-        let continue_target = wb_block.unwrap_or(inc_block);
-        // break target: break-writeback block (if mutate), otherwise exit_block
-        let break_target = break_wb_block.unwrap_or(exit_block);
 
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: check_block }));
 
@@ -2580,116 +3013,58 @@ impl<'a> MirLowerer<'a> {
                 .or_else(|| self.collection_elem_of_expr(iter_expr))
                 .unwrap_or_else(|| crate::fallback::unknown_type("lower/stmt:for_loop_elem"))
         };
-        let (pair_tys, binding_ty, binding_local, elem_slot) =
+        let (pair_tys, _binding_ty, binding_local, elem_slot) =
             self.alloc_destructure_slots(&elem_ty, binding, single_name);
-        if let Some(prefix) = self.mir_type_name(&elem_ty) {
-            self.meta_mut(single_name).type_prefix = Some(prefix);
-        } else {
-            // MirType is Ptr — try to derive element prefix from iterable context.
-            // Method calls like .chunks() return Vec elements, .handles() returns Handle elements.
-            if let ExprKind::MethodCall { method, .. } = &iter_expr.kind {
-                match method.as_str() {
-                    "chunks" => {
-                        self.meta_mut(single_name).type_prefix = Some("Vec".to_string());
-                    }
-                    _ => {}
-                }
-            }
-        }
-        if let Some(elem_size) = array_elem_size {
-            // Fixed-size array: direct memory load
+        if let (MirType::Array { elem, .. }, true) = (&iter_ty, in_place) {
+            // The binding is the element where it sits.
+            let at = self.builder.alloc_temp(MirType::I64);
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                dst: elem_slot,
-                rvalue: MirRValue::ArrayIndex {
-                    base: MirOperand::Local(collection),
-                    index: MirOperand::Local(idx),
-                    elem_size,
+                dst: at,
+                rvalue: MirRValue::BinaryOp {
+                    op: crate::operand::BinOp::Mul,
+                    left: MirOperand::Local(idx),
+                    right: MirOperand::Constant(MirConst::Int(rask_layout::size_of(elem.as_ref(), self.ctx.target()) as i64)),
                 },
             }));
+            let slot = self.offset_address(MirOperand::Local(collection), MirOperand::Local(at));
+            self.bind_place(elem_slot, slot);
+        } else if let MirType::Array { elem, .. } = &iter_ty {
+            self.read_array_element(elem_slot, collection, idx, elem);
+        } else if mutate && !is_map {
+            // A `for mutate` binding is the element where it sits.
+            self.bind_element_in_place(
+                elem_slot, MirOperand::Local(collection), MirOperand::Local(idx), false,
+            );
         } else {
-            // A `for mutate` over a Vec takes each element out and writes it
-            // back (`Vec_lend` … `Vec_write_back`). A map's binding comes from
-            // its entries snapshot, and the value is lent below.
-            let read = if mutate && !is_map { "Vec_lend" } else { "Vec_index" };
+            // A map's binding comes from its entries snapshot; a `for mutate`
+            // binds the value below.
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: Some(elem_slot),
-                func: FunctionRef::internal(read.to_string()),
+                func: crate::runtime_ops::vec_index(),
                 args: vec![MirOperand::Local(collection), MirOperand::Local(idx)],
             }));
         }
 
         // Tuple destructuring: for (a, b) in collection { ... }
-        // Extract fields from the loaded element into each binding.
-        // LP13: Track value local for Map writeback (key=field0, value=field1).
-        // A `for mutate` reads the value out of the map itself rather than the
-        // snapshot, because that is the entry it writes back into.
-        let mut map_value_local = None;
+        // Extract fields from the loaded element into each binding. A `for
+        // mutate` over a map binds the value in the map itself rather than in
+        // the snapshot, because that is the entry it writes.
         if let ForBinding::Tuple(names) = binding {
-            if let Some(prefix) = self.mir_type_name(&binding_ty) {
-                self.meta_mut(single_name).type_prefix = Some(prefix);
-            }
             let lend_from = map_local.filter(|_| mutate);
-            let second = self.split_destructured_element(
-                names, &pair_tys, elem_slot, binding_local, lend_from,
-            );
-            if is_map {
-                map_value_local = second;
-            }
-        }
-
-        // The writeback the body owes its collection. `continue` and `break` pay it
-        // through the blocks below; a `return`, a `try` that propagates or a
-        // labelled jump past this loop pays it from here, because none of them
-        // passes through a block (#650). Pushed before the loop's own context,
-        // so this loop's `break` and `continue` leave it to those blocks.
-        // A map writes back into itself; everything else into the thing being
-        // walked. Handing `Map_set` the entries snapshot stored a key/value pair
-        // through a Vec pointer and segfaulted on the first iteration (#738).
-        let writeback = match map_value_local {
-            Some(value) => super::PendingWriteBack {
-                collection: MirOperand::Local(map_local.unwrap_or(collection)),
-                at: MirOperand::Local(binding_local),
-                value,
-                map: true,
-            },
-            None => super::PendingWriteBack {
-                collection: MirOperand::Local(collection),
-                at: MirOperand::Local(idx),
-                value: binding_local,
-                map: false,
-            },
-        };
-        if wb_block.is_some() {
-            self.pending_write_backs.push(writeback.clone());
+            self.split_destructured_element(names, &pair_tys, elem_slot, binding_local, lend_from);
         }
 
         let ensure_depth = self.ensure_stack.len();
         self.loop_stack.push(LoopContext {
             label: label.map(|s| s.to_string()),
-            continue_block: continue_target,
-            exit_block: break_target,
+            continue_block: inc_block,
+            exit_block,
             result_local: None,
             ensure_depth,
-            writeback_depth: self.pending_write_backs.len(),
         });
 
         self.lower_body_scoped(body)?;
-        if wb_block.is_some() {
-            self.pending_write_backs.pop();
-        }
-        self.close_loop_body(ensure_depth, continue_target);
-
-        // Writeback blocks for `for mutate`
-        if let Some(wb) = wb_block {
-            self.builder.switch_to_block(wb);
-            self.emit_write_back(&writeback);
-            self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: inc_block }));
-        }
-        if let Some(break_wb) = break_wb_block {
-            self.builder.switch_to_block(break_wb);
-            self.emit_write_back(&writeback);
-            self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: exit_block }));
-        }
+        self.close_loop_body(ensure_depth, inc_block);
 
         // inc: _i = _i + 1
         self.builder.switch_to_block(inc_block);
@@ -2741,19 +3116,15 @@ impl<'a> MirLowerer<'a> {
         } else {
             self.builder.alloc_temp(elem_ty.clone())
         };
-        if let Some(prefix) = self.mir_type_name(&binding_ty) {
-            self.meta_mut(first_name).type_prefix = Some(prefix);
-        }
         self.locals.insert(first_name.to_string(), (binding_local, binding_ty.clone()));
         (pair_tys, binding_ty, binding_local, elem_slot)
     }
 
     /// Copy each field of the element in `elem_slot` into its own binding.
     /// Field 0 goes to the binding named first, which already has a local.
-    /// Returns the local field 1 landed in — Map iteration writes back through it.
-    /// `lend_from`: the map a `for mutate (k, v)` writes back into. The value
-    /// is then lent out of it by key (`Map_lend`) instead of read off the
-    /// entries snapshot.
+    /// `lend_from`: the map a `for mutate (k, v)` writes into. The value is
+    /// then bound to the entry where it sits in the map, by key, instead of
+    /// read off the entries snapshot.
     fn split_destructured_element(
         &mut self,
         names: &[String],
@@ -2761,16 +3132,13 @@ impl<'a> MirLowerer<'a> {
         elem_slot: crate::LocalId,
         binding_local: crate::LocalId,
         lend_from: Option<crate::LocalId>,
-    ) -> Option<crate::LocalId> {
+    ) {
         let mut second = None;
         for (i, name) in names.iter().enumerate() {
             if i == 0 { continue; }
             let field_ty = pair_tys.get(i).cloned().unwrap_or_else(|| crate::fallback::unknown_type("lower/stmt:1828"));
             let field_local = self.builder.alloc_local(name.clone(), field_ty.clone());
             self.locals.insert(name.clone(), (field_local, field_ty.clone()));
-            if let Some(prefix) = self.mir_type_name(&field_ty) {
-                self.meta_mut(name).type_prefix = Some(prefix);
-            }
             if i == 1 {
                 second = Some(field_local);
                 if lend_from.is_some() {
@@ -2797,13 +3165,8 @@ impl<'a> MirLowerer<'a> {
             },
         }));
         if let (Some(map), Some(value)) = (lend_from, second) {
-            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                dst: Some(value),
-                func: FunctionRef::internal("Map_lend".to_string()),
-                args: vec![MirOperand::Local(map), MirOperand::Local(binding_local)],
-            }));
+            self.bind_element_in_place(value, MirOperand::Local(map), MirOperand::Local(binding_local), true);
         }
-        second
     }
 
 
@@ -2893,7 +3256,6 @@ impl<'a> MirLowerer<'a> {
             exit_block,
             result_local: None,
             ensure_depth,
-            writeback_depth: self.pending_write_backs.len(),
         });
 
         self.lower_body_scoped(body)?;
@@ -3129,7 +3491,6 @@ impl<'a> MirLowerer<'a> {
             exit_block,
             result_local: None,
             ensure_depth,
-            writeback_depth: self.pending_write_backs.len(),
         });
         self.lower_body_scoped(body)?;
         self.close_loop_body(ensure_depth, inc_block);
@@ -3215,7 +3576,6 @@ impl<'a> MirLowerer<'a> {
             exit_block,
             result_local: None,
             ensure_depth,
-            writeback_depth: self.pending_write_backs.len(),
         });
         self.lower_body_scoped(body)?;
         self.close_loop_body(ensure_depth, inc_block);
@@ -3260,7 +3620,6 @@ impl<'a> MirLowerer<'a> {
             exit_block,
             result_local: Some(result_local),
             ensure_depth,
-            writeback_depth: self.pending_write_backs.len(),
         });
 
         self.lower_body_scoped(body)?;
@@ -3283,14 +3642,13 @@ impl<'a> MirLowerer<'a> {
         let exit_block = ctx.exit_block;
         let result_local = ctx.result_local;
         let ensure_depth = ctx.ensure_depth;
-        let writeback_depth = ctx.writeback_depth;
 
         if let Some(val_expr) = value {
             let (val_op, _) = self.lower_expr(val_expr)?;
             // `break a` carries the resource out of the loop, so the loop's own
             // `ensure` must not still close it on the way past. Emitted before
-            // `emit_loop_cleanup` below, which is the chain that would.
-            self.check_resource_moved(val_expr);
+            // `emit_scope_cleanup` below, which is the chain that would.
+            self.mark_consumed_by(val_expr);
             if let Some(result) = result_local {
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                     dst: result,
@@ -3299,8 +3657,7 @@ impl<'a> MirLowerer<'a> {
             }
         }
 
-        self.emit_write_backs_above(writeback_depth);
-        self.emit_loop_cleanup(ensure_depth);
+        self.emit_scope_cleanup(ensure_depth);
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
             target: exit_block,
         }));
@@ -3317,10 +3674,8 @@ impl<'a> MirLowerer<'a> {
         let ctx = self.find_loop(label)?;
         let continue_block = ctx.continue_block;
         let ensure_depth = ctx.ensure_depth;
-        let writeback_depth = ctx.writeback_depth;
 
-        self.emit_write_backs_above(writeback_depth);
-        self.emit_loop_cleanup(ensure_depth);
+        self.emit_scope_cleanup(ensure_depth);
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
             target: continue_block,
         }));
@@ -3356,8 +3711,15 @@ impl<'a> MirLowerer<'a> {
         chain: &super::IterChain<'_>,
         body: &[Stmt],
         for_binding: &ForBinding,
+        quiet: bool,
     ) -> Result<(), LoweringError> {
-        let setup = self.setup_iter_chain_loop(chain)?;
+        // A loop no delete can reach can't lose an entry, so it walks the
+        // list by index with nothing recorded (mem.racks/RK16).
+        let setup = if quiet {
+            self.setup_iter_chain_loop_quiet(chain)?
+        } else {
+            self.setup_iter_chain_loop_tracked(chain)?
+        };
         let (final_op, final_ty) = self.apply_iter_adapters(
             chain, MirOperand::Local(setup.elem_local), setup.elem_ty.clone(),
             &setup,
@@ -3384,6 +3746,8 @@ impl<'a> MirLowerer<'a> {
                 super::IterAdapter::Filter { .. }
                     | super::IterAdapter::Skip { .. }
                     | super::IterAdapter::Take { .. }
+                    | super::IterAdapter::TakeWhile { .. }
+                    | super::IterAdapter::SkipWhile { .. }
             ));
         let final_ty = if consumes {
             self.handed_over_elem(chain.source, final_ty)
@@ -3395,7 +3759,7 @@ impl<'a> MirLowerer<'a> {
         if consumes {
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: Some(elem_slot),
-                func: FunctionRef::internal("Vec_move_out".to_string()),
+                func: crate::runtime_ops::vec_move_out(),
                 args: vec![MirOperand::Local(setup.collection), MirOperand::Local(setup.idx)],
             }));
         } else {
@@ -3416,7 +3780,6 @@ impl<'a> MirLowerer<'a> {
             exit_block: setup.exit_block,
             result_local: None,
             ensure_depth,
-            writeback_depth: self.pending_write_backs.len(),
         });
 
         self.lower_body_scoped(body)?;
@@ -3427,6 +3790,12 @@ impl<'a> MirLowerer<'a> {
 
         self.emit_iter_increment(setup.idx, setup.inc_block, setup.check_block);
         self.builder.switch_to_block(setup.exit_block);
+        // The loop ran off its end or broke out: either way it reaches here,
+        // and the cursor comes off the vector before anything else touches it.
+        if let Some(depth) = setup.cursor_depth {
+            self.emit_scope_cleanup(depth);
+            self.ensure_stack.truncate(depth);
+        }
         Ok(())
     }
 
@@ -3434,6 +3803,46 @@ impl<'a> MirLowerer<'a> {
     fn is_take_all_call(expr: &Expr) -> bool {
         matches!(&expr.kind, ExprKind::MethodCall { method, args, .. }
             if method == "take_all" && args.is_empty())
+    }
+
+    /// An `ensure` body, as the block it is (ctrl.ensure/EN1): what it binds
+    /// stays in it, and an `ensure` inside it runs when the body ends.
+    ///
+    /// The body is lowered into a cleanup block that control only ever enters
+    /// at a scope exit, so an inner `ensure` there is registered on the same
+    /// stack as the frame's own and nothing popped it. It stayed on the stack
+    /// for the rest of the function, and the exits of the frame ran its body
+    /// where the variables it reads don't exist (#1915: a segfault in
+    /// `rask_resource_is_consumed`).
+    ///
+    /// Shared with the hook thunk, which lowers the same body for a panic.
+    pub(super) fn lower_ensure_body(
+        &mut self,
+        body: &[Stmt],
+        else_handler: &Option<(String, Vec<Stmt>)>,
+    ) -> Result<(), LoweringError> {
+        let saved_locals = self.locals.clone();
+        let saved_strings = self.comptime_strings.clone();
+        let depth = self.ensure_stack.len();
+        let mut result = Ok(());
+        for s in body {
+            result = self.lower_stmt(s);
+            if result.is_err() {
+                break;
+            }
+        }
+        if result.is_ok() {
+            if let Some((param_name, handler_body)) = else_handler {
+                result = self.lower_ensure_else_handler(param_name, handler_body);
+            }
+        }
+        if result.is_ok() && self.builder.current_block_unterminated() {
+            self.emit_scope_cleanup(depth);
+        }
+        self.ensure_stack.truncate(depth);
+        self.locals = saved_locals;
+        self.comptime_strings = saved_strings;
+        result
     }
 
     /// ER2: route an error out of an `ensure` body into its `else |e|` handler.
@@ -3506,6 +3915,11 @@ impl<'a> MirLowerer<'a> {
 /// stores bytes through the caller's pointer so the change is visible. Scalar
 /// Copy types are passed by value — reassignment stays local (no writeback).
 pub(crate) fn mutate_param_by_pointer(ty: &MirType) -> bool {
+    // A link is one word, `Link<T>?` too — its `none` is the null address
+    // rather than a tag — and `mutate` on one reassigns it. Treated as an
+    // aggregate, the callee stored through the link itself and overwrote the
+    // node it named (#1808). A field write through it (`h.next = c`) loads the
+    // node's address from the caller's slot first (`node_through_mutate_link`).
     !matches!(
         ty,
         MirType::Void
@@ -3515,7 +3929,7 @@ pub(crate) fn mutate_param_by_pointer(ty: &MirType) -> bool {
             | MirType::F32 | MirType::F64
             | MirType::Char
             | MirType::FuncPtr(_)
-    )
+    ) && !ty.is_link_slot()
 }
 
 /// A one-word runtime handle: the local holds the handle, not the address of a
@@ -3543,4 +3957,101 @@ pub(crate) fn is_runtime_handle(ty: &MirType) -> bool {
 /// lends, and nothing reads it as a receiver.
 pub(crate) fn mutate_param_needs_own_pointer(name: &str, ty: &MirType) -> bool {
     !mutate_param_by_pointer(ty) || (name != "self" && is_runtime_handle(ty))
+}
+
+/// Do two expressions name the same place — the same binding and the same
+/// field path?
+impl MirLowerer<'_> {
+    /// `target = if cond { … tail } else { … tail }`, or a `match`, as the same
+    /// expression whose arms each end in an assignment of their own tail, or
+    /// `None` when the value isn't that shape.
+    ///
+    /// An arm that doesn't name the target builds its value from nothing the
+    /// slot holds, so its write is an ordinary one that releases the old value.
+    /// One that does (`c = Wrap(inner: c)`) keeps the statement's own id, so it
+    /// is still read as built from the old value.
+    fn assign_into_arms(stmt: &Stmt, target: &Expr, value: &Expr) -> Option<Expr> {
+        let ExprKind::Ident(name) = &target.kind else { return None };
+        // Only a value that reads the slot it writes: the others have no
+        // join with the old value to untangle.
+        let mut reads_target = false;
+        rask_ast::visit::walk_expr(value, &mut |e| {
+            if matches!(&e.kind, ExprKind::Ident(n) if n == name) {
+                reads_target = true;
+            }
+        });
+        if !reads_target {
+            return None;
+        }
+        // The arm's own statements, then the write of its tail. A bare
+        // expression body is a tail with no statements before it.
+        let arm = |branch: &Expr| -> Option<Expr> {
+            let (init, tail, span): (Vec<Stmt>, &Expr, _) = match &branch.kind {
+                ExprKind::Block(stmts) => {
+                    let (last, init) = stmts.split_last()?;
+                    let StmtKind::Expr(tail) = &last.kind else { return None };
+                    (init.to_vec(), tail, last.span)
+                }
+                _ => (Vec::new(), branch, branch.span),
+            };
+            let mut mentions = false;
+            rask_ast::visit::walk_expr(tail, &mut |e| {
+                if matches!(&e.kind, ExprKind::Ident(n) if n == name) {
+                    mentions = true;
+                }
+            });
+            let id = if mentions { stmt.id } else { rask_ast::NodeId::DUMMY };
+            let mut out = init;
+            out.push(Stmt {
+                id,
+                kind: StmtKind::Assign { target: target.clone(), value: tail.clone(), op: None },
+                span,
+            });
+            Some(Expr { id: branch.id, span: branch.span, kind: ExprKind::Block(out) })
+        };
+        let kind = match &value.kind {
+            ExprKind::If { cond, then_branch, else_branch: Some(else_branch), else_binding: None }
+                if !matches!(cond.kind, ExprKind::IsPresent { .. }) =>
+            {
+                ExprKind::If {
+                    cond: cond.clone(),
+                    then_branch: Box::new(arm(then_branch)?),
+                    else_branch: Some(Box::new(arm(else_branch)?)),
+                    else_binding: None,
+                }
+            }
+            ExprKind::Match { scrutinee, arms } => {
+                let mut split = Vec::with_capacity(arms.len());
+                for a in arms {
+                    split.push(rask_ast::expr::MatchArm {
+                        pattern: a.pattern.clone(),
+                        guard: a.guard.clone(),
+                        body: Box::new(arm(&a.body)?),
+                    });
+                }
+                ExprKind::Match { scrutinee: scrutinee.clone(), arms: split }
+            }
+            _ => return None,
+        };
+        Some(Expr { id: value.id, span: value.span, kind })
+    }
+}
+
+fn same_place(a: &Expr, b: &Expr) -> bool {
+    match (&a.kind, &b.kind) {
+        (ExprKind::Ident(x), ExprKind::Ident(y)) => x == y,
+        (ExprKind::Field { object: oa, field: fa }, ExprKind::Field { object: ob, field: fb }) => {
+            fa == fb && same_place(oa, ob)
+        }
+        _ => false,
+    }
+}
+
+/// The container an element being written into lives in: `v` in
+/// `v[i].at = b`. A link stored anywhere inside the element is recorded
+/// against it (`emit_link_store`).
+#[derive(Clone)]
+pub(crate) struct ElementHolder {
+    pub(crate) coll: MirOperand,
+    pub(crate) map: bool,
 }

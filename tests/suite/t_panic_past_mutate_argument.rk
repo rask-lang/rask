@@ -1,0 +1,284 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A `mutate` argument is the caller's slot, so when a panic unwinds out of the
+// callee, the caller's own unwinding releases what is in it, once (#1937).
+//
+// Each case runs in a task so the panic is caught at `join` and the process
+// goes on; the leak gate and memcheck run this file, and a double free or a
+// block left behind is the failure.
+
+struct World {
+    name: string
+    items: Vec<string>
+}
+
+func mk() -> World {
+    let w = World(name: "hello world, a name long enough to allocate", items: Vec.new())
+    return w
+}
+
+func boom() -> i64 {
+    panic("boom")
+}
+
+func boom_on(mutate s: string) {
+    panic("boom on a string")
+}
+
+func boom_on_world(mutate w: World) {
+    panic("boom on a world")
+}
+
+// The callee gives the argument away, then panics before putting a new one
+// back. The slot must not still name what moved out.
+func give_away(mutate w: World, mutate store: Vec<World>) {
+    store.push(w)
+    let q = boom()
+    w = World(name: "a replacement name long enough to allocate", items: Vec.new())
+}
+
+struct Holder {
+    w: World
+}
+
+func local_store(mutate w: World) {
+    mut store: Vec<World> = Vec.new()
+    store.push(w)
+    let q = boom()
+    w = mk()
+}
+
+func let_old(mutate w: World) {
+    let old = w
+    let q = boom()
+    w = mk()
+    println(old.name)
+}
+
+func into_literal(mutate w: World) {
+    let h = Holder(w: w)
+    let q = boom()
+    w = mk()
+    println(h.w.name)
+}
+
+func maybe_then_panic(mutate w: World, mutate keep: Vec<World>, c: bool) {
+    if c {
+        keep.push(w)
+    }
+    let q = boom()
+    w = mk()
+}
+
+test "a callee that moved the argument away and then panicked" {
+    mut gone = false
+    using Multitasking {
+        let h = spawn {
+            mut store: Vec<World> = Vec.new()
+            mut w = mk()
+            w.items.push("an item that is heap allocated")
+            give_away(mutate w, mutate store)
+            return 0
+        }
+        match h.join() {
+            i64 as v => { gone = false },
+            JoinError.Panicked(msg) => { gone = true },
+        }
+    }
+    assert gone
+}
+
+test "a closure that replaced its mutate parameter and then panicked" {
+    mut gone = false
+    using Multitasking {
+        let h = spawn {
+            let c = |mutate w: World| {
+                w = mk()
+                let q = boom()
+            }
+            mut w = mk()
+            c(mutate w)
+            return 0
+        }
+        match h.join() {
+            i64 as v => { gone = false },
+            JoinError.Panicked(msg) => { gone = true },
+        }
+    }
+    assert gone
+}
+
+test "a callee lent a vector element panics" {
+    mut gone = false
+    using Multitasking {
+        let h = spawn {
+            mut v: Vec<string> = Vec.new()
+            v.push("an item that is heap allocated")
+            boom_on(mutate v[0])
+            return 0
+        }
+        match h.join() {
+            i64 as v => { gone = false },
+            JoinError.Panicked(msg) => { gone = true },
+        }
+    }
+    assert gone
+}
+
+test "a callee lent a struct element panics" {
+    mut gone = false
+    using Multitasking {
+        let h = spawn {
+            mut v: Vec<World> = Vec.new()
+            v.push(mk())
+            boom_on_world(mutate v[0])
+            return 0
+        }
+        match h.join() {
+            i64 as v => { gone = false },
+            JoinError.Panicked(msg) => { gone = true },
+        }
+    }
+    assert gone
+}
+
+test "a callee lent a map value panics" {
+    mut gone = false
+    using Multitasking {
+        let h = spawn {
+            mut m: Map<string, World> = Map.new()
+            m.insert("room", mk())
+            boom_on_world(mutate m["room"])
+            return 0
+        }
+        match h.join() {
+            i64 as v => { gone = false },
+            JoinError.Panicked(msg) => { gone = true },
+        }
+    }
+    assert gone
+}
+
+test "the vector is usable after a task panicked while lent an element" {
+    mut v: Vec<string> = Vec.new()
+    v.push("an item that is heap allocated")
+    mut gone = false
+    using Multitasking {
+        let h = spawn {
+            let local: Vec<string> = ["another heap allocated item"]
+            return local.len().to<i64>()!
+        }
+        match h.join() {
+            i64 as n => { gone = n == 1 },
+            JoinError.Panicked(msg) => { gone = false },
+        }
+    }
+    v.push("grows fine")
+    assert gone
+    assert v.len() == 2
+}
+
+test "the argument moved into a local the callee made, then a panic" {
+    mut gone = false
+    using Multitasking {
+        let h = spawn {
+            mut keep: Vec<World> = Vec.new()
+            mut w = mk()
+            w.items.push("an item that is heap allocated")
+            local_store(mutate w)
+            return 0
+        }
+        match h.join() {
+            i64 as v => { gone = false },
+            JoinError.Panicked(msg) => { gone = true },
+        }
+    }
+    assert gone
+}
+
+test "the argument bound to another name, then a panic" {
+    mut gone = false
+    using Multitasking {
+        let h = spawn {
+            mut keep: Vec<World> = Vec.new()
+            mut w = mk()
+            w.items.push("an item that is heap allocated")
+            let_old(mutate w)
+            return 0
+        }
+        match h.join() {
+            i64 as v => { gone = false },
+            JoinError.Panicked(msg) => { gone = true },
+        }
+    }
+    assert gone
+}
+
+test "the argument moved into a struct literal, then a panic" {
+    mut gone = false
+    using Multitasking {
+        let h = spawn {
+            mut keep: Vec<World> = Vec.new()
+            mut w = mk()
+            w.items.push("an item that is heap allocated")
+            into_literal(mutate w)
+            return 0
+        }
+        match h.join() {
+            i64 as v => { gone = false },
+            JoinError.Panicked(msg) => { gone = true },
+        }
+    }
+    assert gone
+}
+
+test "the argument moved on one path, then a panic" {
+    mut gone = false
+    using Multitasking {
+        let h = spawn {
+            mut keep: Vec<World> = Vec.new()
+            mut w = mk()
+            w.items.push("an item that is heap allocated")
+            maybe_then_panic(mutate w, mutate keep, true)
+            return 0
+        }
+        match h.join() {
+            i64 as v => { gone = false },
+            JoinError.Panicked(msg) => { gone = true },
+        }
+    }
+    assert gone
+}
+
+test "the argument left alone on the other path, then a panic" {
+    mut gone = false
+    using Multitasking {
+        let h = spawn {
+            mut keep: Vec<World> = Vec.new()
+            mut w = mk()
+            w.items.push("an item that is heap allocated")
+            maybe_then_panic(mutate w, mutate keep, false)
+            return 0
+        }
+        match h.join() {
+            i64 as v => { gone = false },
+            JoinError.Panicked(msg) => { gone = true },
+        }
+    }
+    assert gone
+}
+
+// The same lend with no panic: a callee small enough to be inlined binds its
+// parameter to the element's address, which the vector owns and the frame
+// must not release (it did, and the vector freed the element again).
+func touch(mutate w: World) {
+    w.items.push("an item")
+}
+
+test "a struct element lent to an inlined callee survives the call" {
+    mut v: Vec<World> = Vec.new()
+    v.push(mk())
+    touch(mutate v[0])
+    touch(mutate v[0])
+    assert v[0].items.len() == 2
+    assert v[0].name == "hello world, a name long enough to allocate"
+}

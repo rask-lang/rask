@@ -57,6 +57,8 @@ extend reflect {
 | `is_integer<T>()` | `-> bool` | Whether T is an integer type (`i8`–`i64`, `u8`–`u64`, `usize`) |
 | `is_float<T>()` | `-> bool` | Whether T is `f32` or `f64` |
 | `is_flat<T>()` | `-> bool` | Whether T has no heap-backed fields recursively (no `string`, `Vec`, `Map`, `Shared`, `any Interface`, closures, resources) |
+| `has_decode<T>()` | `-> bool` | Whether T writes its own `decode` (`std.encoding/E12b`) |
+| `has_encode<T>()` | `-> bool` | Whether T writes its own `encode` (`std.encoding/E12d`) |
 
 <!-- surface -->
 ```rask
@@ -69,12 +71,20 @@ extend reflect {
     func is_integer<T>() -> bool
     func is_float<T>() -> bool
     func is_flat<T>() -> bool
+    func has_decode<T>() -> bool
+    func has_encode<T>() -> bool
 }
+
+// In type position, in a generic function that asks about codecs:
+//   reflect.DecodeWire<T>    what T's `decode` takes (T itself if it has none)
+//   reflect.EncodeWire<T>    what T's `encode` answers (T itself if it has none)
 ```
 
 These enable comptime type dispatch without string-comparing type names. Primary use cases: format libraries (`std.encoding`), relocatable memory (`mem.relocatable`).
 
 Everything here folds to a constant on both backends, and so does everything in the sections below.
+
+Every string that names a type — `name_of`, and `type_name` and `return_type_name` in the sections below — spells it the way source does (`i64 or Shape`, `Vec<Pos>?`) with the names the program declared. A type from another package is `Pos`, not the name the compiler merged it under, and a program type that shares a stdlib name is `ParseError`, not the compiler's symbol for it. The string names the type, not the spelling at the call: `Shared<i64>` is shorthand for `Shared<i64, Readers>`, and both read `Shared<i64, Readers>`, because one type has one name.
 
 `size_of` and `align_of` are the layout: the bytes the value occupies in memory, padding included (`compiler.layout`). That is the same size the 16-byte Copy threshold measures (`mem.value/VS1`), so `is_copy<T>()` is true exactly when `T` copies: `{ a: u8, b: i64 }` is 16 bytes and copies, a struct holding one of those plus a byte is 24 and moves. A generic instance has its own: `Pair<u8>` is 2 bytes.
 
@@ -113,6 +123,10 @@ extend reflect {
 struct FieldInfo {
     name: string
     type_name: string
+    wire_kind: WireKind       // what a decoder reads the field as (std.encoding/E12b)
+    wire_optional: bool       // ... and whether that is a `T?`
+    has_decode: bool          // the field's type writes its own `decode`
+    has_encode: bool          // ... or its own `encode`
     offset: usize
     size: usize
     is_public: bool
@@ -125,9 +139,28 @@ struct FieldInfo {
 
 `has_field` is a predicate, so it answers rather than refuses: an enum's payload isn't a field and a primitive has none, and both say false. `fields<T>()` on a non-struct stays a compile error, because there's no list to hand back.
 
+`wire_kind` is what the field is read as: its own type, unless that decodes through its own `decode` (`std.encoding/E12b`), in which case it is what `decode` takes, followed down a chain and through a `T?`. `WireKind.U16` for a `Port` whose `decode` takes a `u16`, with `wire_optional` true for a `Port?`. A format that checks cells or tokens by type (csv) matches on this instead of `type_name`, so it never has to know which types write their own, and it never reads a type back out of a name.
+
+```rask
+enum WireKind {
+    Text, Bool, F32, F64,
+    I8, I16, I32, I64, Isize,
+    U8, U16, U32, U64, Usize,
+    Other        // a struct, a list, a map, an enum: written as JSON
+}
+```
+
 `serial_name` equals `name` unless the field has `@rename("...")`. See `std.encoding` for field annotation semantics.
 
 `serialized` is the **inclusion decision, already made** — false for a `private` field or one marked `@no_serialize`, true otherwise. Format libraries read the one flag instead of re-deriving the rule from `is_private` and the annotations; when `std.encoding`'s policy changes, they don't.
+
+### Codecs [R6]
+
+| Rule | Description |
+|------|-------------|
+| **R6: A type's codec is data** | `has_decode<T>()`, `has_encode<T>()` and the `has_decode`/`has_encode` of a `FieldInfo` say whether a type writes its own codec (`std.encoding/E12b`, E12d), for any `T`: a field's type, a `Vec` element, a `Map` value, the top level. `reflect.DecodeWire<T>` and `reflect.EncodeWire<T>` are the types its `decode` takes and its `encode` answers, one step, usable as a type argument or an annotation. A generic function that uses any of them is written out per instance and checked there (`std.encoding/E31`), because `T.decode(wire)` has nothing to call until `T` is a type |
+
+A format library reads a value with its own `decode` by reading `reflect.DecodeWire<T>` and calling `T.decode`, and writes one by calling `value.encode()` and writing that. The worked example is in `std.encoding` ("Types With Their Own Codec"), and it runs as `tests/suite/t_format_library_codecs.rk`. csv does not need the wire as a type, only as a kind of cell, which is `wire_kind`.
 
 ### Reflection and Auto-Derived Conformances [R4]
 
@@ -221,6 +254,55 @@ struct VariantInfo {
 
 A payload field is a `FieldInfo` like a struct field's, read from the same layout. A positional payload is named by its index (`_0`, `_1`). `offset` counts from the start of the enum value, the same origin a struct field's does, so it lands after the tag. A payload has no visibility or wire annotations of its own: `is_public` is true and `serial_name` is the field's name. A generic enum reports the instantiation: `Answer<string>`'s `Yes` holds a 16-byte `string` where `Answer<i64>`'s holds 8.
 
+## Function Parameters
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `params<F>()` | `-> Vec<ParamInfo>` | Each parameter of the function type `F`, in order (compile error if `F` isn't a function type) |
+
+<!-- surface -->
+```rask
+extend reflect {
+    func params<F>() -> Vec<ParamInfo>
+}
+
+struct ParamInfo {
+    index: usize
+    type_name: string
+    is_mutate: bool
+    is_take: bool
+}
+
+extend ParamInfo {
+    func is<T>(self) -> bool
+}
+```
+
+A function's value has a function type, and a parameter's mode is part of that type (`type.functions/FT1`), so `params` reads both off it. A named function reaches `F` through a type parameter: `schedule(drift)` makes `F` drift's type, `func(mutate Pos, Vel)`. A closure's type is a function type too and reflects the same way; its captures aren't parameters and don't appear. R5 holds: a generic function reflects the signature it was instantiated with.
+
+A function type has no parameter names, so `index` tells parameters apart. Neither flag set means the parameter is borrowed.
+
+`is<T>()` asks whether the parameter's type is exactly `T`: `is<Pos>()` is false for a `Pos?`. The mode isn't part of the question. Types reach comptime code only as type arguments (`ctrl.comptime/CT66`), which is why this is a method taking `T` rather than a type stored in the struct.
+
+`is<T>()`, like `FieldInfo`'s `has<A>()` and `get<A>()`, is answered while a `comptime for` unrolls, so it's only callable on that loop's binding. On anything else — an ordinary `for` over the same `Vec`, an element held in a variable — it's a compile error (E0966). The plain fields read anywhere.
+
+<!-- test: skip -->
+```rask
+func drift(mutate p: Pos, v: Vel) {
+    p.x += v.x
+}
+
+func schedule<F>(system: F) {
+    comptime for p in reflect.params<F>() {
+        comptime if p.is<Pos>() && p.is_mutate {
+            // drift writes Pos
+        }
+    }
+}
+```
+
+Generating a call to the function from its parameters — one argument per `ParamInfo` — needs a way to splice a list of arguments, which nothing provides yet.
+
 ## Error Messages
 
 ```
@@ -259,6 +341,8 @@ WHY: Reflection operates on imported types only. Type discovery requires whole-p
 | `has_field<T>()` on a non-struct | — | `false` |
 | `methods<T>()` on a generic instantiation | R5 | Only the methods whose `extend` header and `where` clause T meets |
 | `interfaces<T>()` with derived conformances | — | Not listed; `implements` answers |
+| `params<F>()` on a non-function type | — | Compile error |
+| `is<T>()` / `has<A>()` / `get<A>()` outside a `comptime for` over the item | R1 | Compile error (E0966) |
 
 ---
 

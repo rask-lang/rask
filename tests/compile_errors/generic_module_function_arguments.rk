@@ -1,0 +1,22 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Rejects: a stdlib module function with a type parameter called with the
+// wrong number of arguments (E0310, #1561).
+//
+// `json.encode<T>(value: T)` was typed from a side table that turned every
+// single-letter type into a wildcard, and a signature holding one skipped the
+// argument count and type checks altogether. `json.encode(p, 2)` type-checked
+// and the second argument was dropped. It is checked against its declaration
+// in `json.rk` now, the way any other method is.
+
+import json
+
+struct Point {
+    x: i64
+}
+
+func main() {
+    let p = Point(x: 1)
+    // ERROR: takes 1 argument [E0310]
+    let s = json.encode(p, 2)
+    println(s)
+}

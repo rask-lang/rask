@@ -2,7 +2,7 @@
 //! The parser implementation using Pratt parsing for expressions.
 
 use rask_ast::decl::{AnnotationDecl, AssocTypeBinding, AssocTypeDecl, BenchmarkDecl, Bound, CImportDecl, ConstDecl, Decl, DeclKind, EnumDecl, ExternDecl, Field, FieldVisibility, FnDecl, ImplDecl, ImportDecl, Param, StructDecl, TestDecl, InterfaceDecl, TypeAliasDecl, TypeParam, UnionDecl, Variant};
-use rask_ast::expr::{binding, ArgMode, BinOp, CallArg, ClosureParam, Expr, ExprKind, MatchArm, Pattern, SelectArm, SelectArmKind, SpawnTarget, StringSegment, UnaryOp, WithBinding};
+use rask_ast::expr::{binding, ArgMode, BinOp, CallArg, ClosureParam, Expr, ExprKind, MatchArm, Pattern, PatternKind, SelectArm, SelectArmKind, SpawnTarget, StringSegment, UnaryOp, WithBinding};
 use rask_ast::stmt::{ForBinding, Stmt, StmtKind};
 use rask_ast::token::{IntSuffix, StrPositions, Token, TokenKind};
 use rask_ast::{NodeId, Span};
@@ -291,6 +291,76 @@ impl Parser {
         name.chars().next().map(|c| c.is_uppercase()).unwrap_or(false)
     }
 
+    /// At `{ field: …`, the Rust/Go/C# way of building a struct. A labelled
+    /// loop (`{ outer: loop`) is a block, not a field.
+    fn looks_like_brace_struct_literal(&self) -> bool {
+        self.brace_struct_literal_at(0)
+    }
+
+    /// `{ name:` at `peek(at)`, and not `{ label: loop`.
+    fn brace_struct_literal_at(&self, at: usize) -> bool {
+        if self.peek(at) != &TokenKind::LBrace {
+            return false;
+        }
+        let mut i = at + 1;
+        while self.peek(i) == &TokenKind::Newline {
+            i += 1;
+        }
+        matches!(self.peek(i), TokenKind::Ident(_))
+            && self.peek(i + 1) == &TokenKind::Colon
+            && !matches!(self.peek(i + 2), TokenKind::Loop | TokenKind::For | TokenKind::While)
+    }
+
+    /// `Point { x: 1, y: 2 }`: recorded as one error, and read as the call
+    /// `Point(x: 1, y: 2)` it means, so nothing downstream trips over it.
+    fn parse_brace_struct_literal(
+        &mut self,
+        name: String,
+        type_args: Vec<TypeExpr>,
+        start: usize,
+        name_end: usize,
+    ) -> Result<Expr, ParseError> {
+        let open = self.advance().span;
+        let args = self.parse_arg_list(false, &TokenKind::RBrace)?;
+        self.expect(&TokenKind::RBrace)?;
+        let end = self.tokens[self.pos - 1].span.end;
+
+        let fields: Vec<String> = args
+            .iter()
+            .map(|a| match &a.name {
+                Some(n) => format!("{n}: …"),
+                None => "..base".to_string(),
+            })
+            .collect();
+        let written = if type_args.is_empty() {
+            name.clone()
+        } else {
+            let args: Vec<String> = type_args.iter().map(ToString::to_string).collect();
+            format!("{name}<{}>", args.join(", "))
+        };
+        self.errors.push(ParseError {
+            span: self.span(start, open.end),
+            message: format!("a struct is built with parentheses, not braces: `{written}(…)`"),
+            hint: Some(format!("write `{written}({})`", fields.join(", "))),
+            why: Some(
+                "Rask builds a struct like a call with named arguments, so `{` always opens a block"
+                    .to_string(),
+            ),
+        });
+
+        let callee_kind = if type_args.is_empty() {
+            ExprKind::Ident(name)
+        } else {
+            ExprKind::GenericName { name, type_args }
+        };
+        let func = Expr { id: self.next_id(), kind: callee_kind, span: self.span(start, name_end) };
+        Ok(Expr {
+            id: self.next_id(),
+            kind: ExprKind::Call { func: Box::new(func), args },
+            span: self.span(start, end),
+        })
+    }
+
     /// Check for postfix operator after newlines (method chaining).
     fn peek_past_newlines_is_postfix(&self) -> bool {
         let mut pos = self.pos + 1;
@@ -350,6 +420,13 @@ impl Parser {
     }
 
     fn looks_like_generic_followed_by(&self, expected: &TokenKind) -> bool {
+        self.generic_args_end().is_some_and(|pos| &self.tokens[pos].kind == expected)
+    }
+
+    /// At a `<`: the index of the token after the `>` that would close it as
+    /// type arguments, or `None` when the scan reaches the end of the line or
+    /// leaves an enclosing group first.
+    fn generic_args_end(&self) -> Option<usize> {
         let mut pos = self.pos + 1;
         let mut depth: i32 = 1;
         let mut paren_depth: i32 = 0;
@@ -362,10 +439,7 @@ impl Parser {
                 TokenKind::GtGt => {
                     depth -= 2;
                     if depth < 0 {
-                        if pos + 1 < self.tokens.len() {
-                            return &self.tokens[pos + 1].kind == expected;
-                        }
-                        return false;
+                        return (pos + 1 < self.tokens.len()).then_some(pos + 1);
                     }
                 }
                 // Track parens/brackets so we don't scan past enclosing groups.
@@ -373,28 +447,25 @@ impl Parser {
                 TokenKind::LParen => paren_depth += 1,
                 TokenKind::RParen => {
                     paren_depth -= 1;
-                    if paren_depth < 0 { return false; }
+                    if paren_depth < 0 { return None; }
                 }
                 TokenKind::LBracket => bracket_depth += 1,
                 TokenKind::RBracket => {
                     bracket_depth -= 1;
-                    if bracket_depth < 0 { return false; }
+                    if bracket_depth < 0 { return None; }
                 }
                 // An array type's `;` sits inside its brackets:
                 // `size_of<[u16; 3]>()`.
                 TokenKind::Semi if bracket_depth > 0 => {}
                 TokenKind::Eof | TokenKind::Newline | TokenKind::Semi => {
-                    return false;
+                    return None;
                 }
                 _ => {}
             }
             pos += 1;
         }
 
-        if depth == 0 && pos < self.tokens.len() {
-            return &self.tokens[pos].kind == expected;
-        }
-        false
+        (depth == 0 && pos < self.tokens.len()).then_some(pos)
     }
 
     /// Handle `>>` splitting in generic contexts.
@@ -580,6 +651,7 @@ impl Parser {
                 decls.push(Decl {
                     id: self.next_id(),
                     kind: DeclKind::Fn(FnDecl {
+                        id: self.next_id(),
                         name: "main".to_string(),
                         type_params: vec![],
                         params: vec![],
@@ -1129,7 +1201,7 @@ impl Parser {
 
         let fn_end = self.tokens[self.pos.saturating_sub(1)].span.end;
         let fn_span = self.span(fn_start, fn_end);
-        Ok(DeclKind::Fn(FnDecl { name, type_params, params, ret_ty, body, is_pub, is_private, is_comptime, is_unsafe, abi: None, attrs, doc, span: fn_span, decl_start: fn_start }))
+        Ok(DeclKind::Fn(FnDecl { id: self.next_id(), name, type_params, params, ret_ty, body, is_pub, is_private, is_comptime, is_unsafe, abi: None, attrs, doc, span: fn_span, decl_start: fn_start }))
     }
 
     /// `using` on a signature is gone. It only ever declared a pool context, and
@@ -2337,6 +2409,7 @@ impl Parser {
 
         let fn_end = self.tokens[self.pos.saturating_sub(1)].span.end;
         Ok(FnDecl {
+            id: self.next_id(),
             name,
             type_params,
             params,
@@ -2779,6 +2852,7 @@ impl Parser {
         attrs.push(rask_ast::attr::Attr::synthetic("claim", None));
         let claim_end = self.tokens[self.pos.saturating_sub(1)].span.end;
         Ok(DeclKind::Fn(FnDecl {
+            id: self.next_id(),
             name,
             type_params,
             params,
@@ -2928,6 +3002,7 @@ impl Parser {
             }
             let body = self.parse_block_body()?;
             return Ok(DeclKind::Fn(FnDecl {
+                id: self.next_id(),
                 name,
                 type_params: vec![],
                 params,
@@ -3082,15 +3157,17 @@ impl Parser {
         let kind = match self.current_kind() {
             TokenKind::Mut => self.parse_mut_stmt()?,
             TokenKind::Let => self.parse_let_stmt()?,
+            // Recorded, and the rest read as the `let` it was meant to be:
+            // same reason as `let mut`.
             TokenKind::Const => {
-                let err = ParseError {
+                self.record_error(ParseError {
                     span: self.current().span,
                     message: "'const' is only for module-level constants".to_string(),
                     hint: Some("use 'let' for local bindings ('mut' if it needs to change)".to_string()),
                     why: None,
-                };
-                self.advance(); // consume 'const' so recovery doesn't loop
-                return Err(err);
+                });
+                self.advance();
+                self.parse_let_binding()?
             }
             TokenKind::Return => self.parse_return_stmt()?,
             TokenKind::Break => self.parse_break_stmt()?,
@@ -3272,18 +3349,26 @@ impl Parser {
     fn parse_let_stmt(&mut self) -> Result<StmtKind, ParseError> {
         self.expect(&TokenKind::Let)?;
 
-        // Catch Rust muscle memory: `let mut x = ...`
+        // Catch Rust muscle memory: `let mut x = ...`. The error is recorded
+        // and the statement is read as the `mut x = ...` it was meant to be,
+        // so `x` is still declared. Giving up on the statement left its tail
+        // to be re-read as a new one, and every later use of `x` reported
+        // "undefined symbol" on top of the one real mistake.
         if self.check(&TokenKind::Mut) {
-            let err = ParseError {
+            self.record_error(ParseError {
                 span: self.current().span,
                 message: "'let mut' is not Rask".to_string(),
                 hint: Some("'mut x = ...' declares a rebindable binding — drop the 'let'".to_string()),
                 why: None,
-            };
-            self.advance(); // consume 'mut' so recovery doesn't loop
-            return Err(err);
+            });
+            return self.parse_mut_stmt();
         }
 
+        self.parse_let_binding()
+    }
+
+    /// What follows `let`.
+    fn parse_let_binding(&mut self) -> Result<StmtKind, ParseError> {
         if self.match_token(&TokenKind::LParen) {
             let mut patterns = Vec::new();
             loop {
@@ -4018,7 +4103,7 @@ impl Parser {
 
                 // `spawn { … }` — a task block (conc.async/S1).
                 if name == "spawn" && self.allow_brace_expr && self.check(&TokenKind::LBrace) {
-                    return self.parse_spawn_block(SpawnTarget::Green, None, start);
+                    return self.parse_spawn_block(SpawnTarget::Green, None, Vec::new(), start);
                 }
 
                 // Labeled loop/for/while expression: `label: loop { ... }`
@@ -4057,7 +4142,13 @@ impl Parser {
                     // Only type names (uppercase) can have static methods or struct literals
                     let is_static_method = Self::is_type_name(&name)
                         && self.looks_like_generic_type_with_static_method();
-                    if is_generic_call || is_static_method {
+                    // `Pair<i64> { a: 1 }`, for the braces error below.
+                    let is_brace_struct = Self::is_type_name(&name)
+                        && self.allow_brace_expr
+                        && self
+                            .generic_args_end()
+                            .is_some_and(|after| self.brace_struct_literal_at(after - self.pos));
+                    if is_generic_call || is_static_method || is_brace_struct {
                         self.advance(); // consume '<'
                         loop {
                             type_args.push(self.parse_type_name()?);
@@ -4070,6 +4161,10 @@ impl Parser {
                 }
 
                 let end = self.tokens[self.pos - 1].span.end;
+
+                if Self::is_type_name(&name) && self.allow_brace_expr && self.looks_like_brace_struct_literal() {
+                    return self.parse_brace_struct_literal(name, type_args, start, end);
+                }
 
                 if type_args.is_empty() {
                     Ok(Expr { id: self.next_id(), kind: ExprKind::Ident(name), span: self.span(start, end) })
@@ -4095,6 +4190,14 @@ impl Parser {
                 // in here is what lets `i64::MIN` be written: the lexer sees
                 // 9223372036854775808 on its own, which only fits `u64`, so
                 // leaving the `-` as an operator asked for `neg` on a `u64`.
+                // A float literal folds its sign the same way, so `-3.5` is the
+                // literal a type built from literals sees (type.primitives/L9),
+                // not `neg` on one. Every float type is signed, so every
+                // suffix folds.
+                if let ExprKind::Float(v, suffix) = operand.kind {
+                    let kind = ExprKind::Float(-v, suffix);
+                    return Ok(Expr { id: self.next_id(), kind, span: self.span(start, end) });
+                }
                 if let ExprKind::Int(v, suffix) = operand.kind {
                     match suffix {
                         None => {
@@ -4587,6 +4690,7 @@ impl Parser {
         &mut self,
         target: SpawnTarget,
         receiver: Option<Box<Expr>>,
+        args: Vec<CallArg>,
         start: usize,
     ) -> Result<Expr, ParseError> {
         let block_start = self.current().span.start;
@@ -4608,7 +4712,7 @@ impl Parser {
         };
         Ok(Expr {
             id: self.next_id(),
-            kind: ExprKind::Spawn { target, receiver, body: Box::new(body) },
+            kind: ExprKind::Spawn { target, receiver, args, body: Box::new(body) },
             span: self.span(start, end),
         })
     }
@@ -4716,15 +4820,27 @@ impl Parser {
 
                 let field = self.expect_ident_or_keyword()?;
 
-                // `Thread.spawn { … }` / `ThreadPool.spawn { … }` (conc.async/S2–S3).
-                if field == "spawn" && self.allow_brace_expr && self.check(&TokenKind::LBrace) {
+                // `Thread.spawn { … }` / `ThreadPool.spawn { … }` (conc.async/S2–S3),
+                // and with arguments before the block:
+                // `ThreadPool.spawn(requires_pool: false) { … }`.
+                if field == "spawn"
+                    && self.allow_brace_expr
+                    && (self.check(&TokenKind::LBrace) || self.parens_then_brace())
+                {
                     let target = match Self::name_path(&lhs).as_deref() {
                         Some([.., last]) if last == "Thread" => Some(SpawnTarget::Thread),
                         Some([.., last]) if last == "ThreadPool" => Some(SpawnTarget::Pool),
                         _ => None,
                     };
                     if let Some(target) = target {
-                        return self.parse_spawn_block(target, Some(Box::new(lhs)), start);
+                        let args = if self.match_token(&TokenKind::LParen) {
+                            let args = self.parse_args()?;
+                            self.expect(&TokenKind::RParen)?;
+                            args
+                        } else {
+                            Vec::new()
+                        };
+                        return self.parse_spawn_block(target, Some(Box::new(lhs)), args, start);
                     }
                 }
 
@@ -4849,6 +4965,31 @@ impl Parser {
         }
     }
 
+    /// A parenthesized group at the current token with `{` right after it:
+    /// the arguments of a task block rather than a call.
+    fn parens_then_brace(&self) -> bool {
+        if !self.check(&TokenKind::LParen) {
+            return false;
+        }
+        let mut depth = 0usize;
+        let mut i = self.pos;
+        while let Some(tok) = self.tokens.get(i) {
+            match tok.kind {
+                TokenKind::LParen => depth += 1,
+                TokenKind::RParen => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return matches!(self.tokens.get(i + 1).map(|t| &t.kind), Some(TokenKind::LBrace));
+                    }
+                }
+                TokenKind::Eof => return false,
+                _ => {}
+            }
+            i += 1;
+        }
+        false
+    }
+
     fn parse_args(&mut self) -> Result<Vec<CallArg>, ParseError> {
         self.parse_args_with(false)
     }
@@ -4857,15 +4998,20 @@ impl Parser {
     /// without splitting it into interpolation segments. Only `format` wants
     /// this — its template is a compile-time input, not a string to render.
     fn parse_args_with(&mut self, raw_first_string: bool) -> Result<Vec<CallArg>, ParseError> {
+        self.parse_arg_list(raw_first_string, &TokenKind::RParen)
+    }
+
+    /// The arguments up to `close`, which is left unconsumed.
+    fn parse_arg_list(&mut self, raw_first_string: bool, close: &TokenKind) -> Result<Vec<CallArg>, ParseError> {
         let mut args = Vec::new();
         self.skip_newlines();
-        if self.check(&TokenKind::RParen) { return Ok(args); }
+        if self.check(close) { return Ok(args); }
 
         let outer_list = std::mem::replace(&mut self.in_comma_list, true);
         // Inside `f(` a `{` can't open the body of an enclosing `if`, so
         // `spawn { … }` is a value again.
         let outer_braces = std::mem::replace(&mut self.allow_brace_expr, true);
-        let result = self.parse_args_loop(raw_first_string, &mut args);
+        let result = self.parse_args_loop(raw_first_string, &mut args, close);
         self.allow_brace_expr = outer_braces;
         self.in_comma_list = outer_list;
         result?;
@@ -4876,6 +5022,7 @@ impl Parser {
         &mut self,
         raw_first_string: bool,
         args: &mut Vec<CallArg>,
+        close: &TokenKind,
     ) -> Result<(), ParseError> {
         loop {
             if raw_first_string && args.is_empty() {
@@ -4888,7 +5035,7 @@ impl Parser {
                         mode: ArgMode::Default,
                         expr: Expr { id: self.next_id(), kind: ExprKind::String(s), span },
                     });
-                    if !self.list_continues(&TokenKind::RParen)? { break; }
+                    if !self.list_continues(close)? { break; }
                     continue;
                 }
             }
@@ -4897,7 +5044,7 @@ impl Parser {
             if self.match_token(&TokenKind::DotDot) {
                 let expr = self.parse_expr()?;
                 args.push(CallArg { name: None, mode: ArgMode::Spread, expr });
-                self.list_continues(&TokenKind::RParen)?;
+                self.list_continues(close)?;
                 break;
             }
             // Capture named argument labels (name: expr)
@@ -4917,7 +5064,7 @@ impl Parser {
 
             let expr = self.parse_expr()?;
             args.push(CallArg { name: arg_name, mode, expr });
-            if !self.list_continues(&TokenKind::RParen)? { break; }
+            if !self.list_continues(close)? { break; }
         }
 
         Ok(())
@@ -5223,8 +5370,9 @@ impl Parser {
 
         // Parse additional comma-separated bindings
         while self.match_token(&TokenKind::Comma) {
-            // Use bp=22 to stop before consuming 'as' (which has bp=21)
-            let expr = self.parse_expr_bp(22)?;
+            // Stop above `as`'s power, or `rooms[1] as second` is read as a
+            // cast to a type called `second`.
+            let expr = self.parse_expr_bp(binding::CAST + 1)?;
             self.expect(&TokenKind::As)?;
             self.reject_with_binding_keyword()?;
             let name = self.expect_ident()?;
@@ -5640,6 +5788,7 @@ impl Parser {
     }
 
     fn parse_pattern(&mut self) -> Result<Pattern, ParseError> {
+        let start = self.current().span.start;
         let first = self.parse_single_pattern()?;
 
         if self.check(&TokenKind::Pipe) {
@@ -5647,13 +5796,21 @@ impl Parser {
             while self.match_token(&TokenKind::Pipe) {
                 patterns.push(self.parse_single_pattern()?);
             }
-            Ok(Pattern::Or(patterns))
+            let end = self.tokens[self.pos - 1].span.end;
+            Ok(Pattern::new(self.next_id(), PatternKind::Or(patterns), self.span(start, end)))
         } else {
             Ok(first)
         }
     }
 
     fn parse_single_pattern(&mut self) -> Result<Pattern, ParseError> {
+        let start = self.current().span.start;
+        let kind = self.parse_pattern_kind()?;
+        let end = self.tokens[self.pos - 1].span.end;
+        Ok(Pattern::new(self.next_id(), kind, self.span(start, end)))
+    }
+
+    fn parse_pattern_kind(&mut self) -> Result<PatternKind, ParseError> {
         match self.current_kind().clone() {
             TokenKind::LParen => {
                 self.advance();
@@ -5665,18 +5822,18 @@ impl Parser {
                 }
                 self.skip_newlines();
                 self.expect(&TokenKind::RParen)?;
-                Ok(Pattern::Tuple(patterns))
+                Ok(PatternKind::Tuple(patterns))
             }
             TokenKind::Ident(name) if name == "_" => {
                 self.advance();
-                Ok(Pattern::Wildcard)
+                Ok(PatternKind::Wildcard)
             }
             // OPT15: `x is none` — the absent branch named as a type. `none`
             // is a keyword, so it never reaches the identifier arm. No `as`
             // form: there's no payload to bind.
             TokenKind::None => {
                 self.advance();
-                Ok(Pattern::TypePat { ty: TypeExpr::NoneType, binding: None })
+                Ok(PatternKind::TypePat { ty: TypeExpr::NoneType, binding: None })
             }
             TokenKind::Ident(name) => {
                 self.advance();
@@ -5708,7 +5865,7 @@ impl Parser {
                     } else {
                         None
                     };
-                    return Ok(Pattern::TypePat { ty: written, binding });
+                    return Ok(PatternKind::TypePat { ty: written, binding });
                 }
                 let name = written.to_string();
 
@@ -5734,14 +5891,17 @@ impl Parser {
                     self.expect(&TokenKind::RParen)?;
                     if !rest && items.iter().all(|(l, _)| l.is_none()) {
                         let fields = items.into_iter().map(|(_, p)| p).collect();
-                        return Ok(Pattern::Constructor { name, fields });
+                        return Ok(PatternKind::Constructor { name, fields });
                     }
                     let mut fields = Vec::new();
                     for (label, pattern) in items {
                         match (label, pattern) {
                             (Some(l), p) => fields.push((l, p)),
                             // Shorthand: `x` is `x: x`.
-                            (None, Pattern::Ident(n)) => fields.push((n.clone(), Pattern::Ident(n))),
+                            (None, p @ Pattern { kind: PatternKind::Ident(_), .. }) => {
+                                let PatternKind::Ident(n) = &p.kind else { unreachable!() };
+                                fields.push((n.clone(), p));
+                            }
                             (None, _) => {
                                 return Err(ParseError {
                                     span: self.tokens[self.pos - 1].span,
@@ -5752,7 +5912,7 @@ impl Parser {
                             }
                         }
                     }
-                    Ok(Pattern::Struct { name, fields, rest })
+                    Ok(PatternKind::Struct { name, fields, rest })
                 } else if self.check(&TokenKind::As)
                     && matches!(self.peek(1), TokenKind::Ident(_))
                 {
@@ -5760,9 +5920,9 @@ impl Parser {
                     // without a constructor — interpret as a type match.
                     self.advance();
                     let binding = self.expect_ident()?;
-                    Ok(Pattern::TypePat { ty: written, binding: Some(binding) })
+                    Ok(PatternKind::TypePat { ty: written, binding: Some(binding) })
                 } else {
-                    Ok(Pattern::Ident(name))
+                    Ok(PatternKind::Ident(name))
                 }
             }
             TokenKind::Int(n, suffix) => {
@@ -5771,22 +5931,22 @@ impl Parser {
                 let start = Box::new(Expr { id: self.next_id(), kind: ExprKind::Int(n, suffix.clone()), span });
                 if self.match_token(&TokenKind::DotDotEq) {
                     let end = self.parse_single_pattern()?;
-                    if let Pattern::Literal(end_expr) = end {
-                        return Ok(Pattern::Range { start, end: end_expr });
+                    if let PatternKind::Literal(end_expr) = end.kind {
+                        return Ok(PatternKind::Range { start, end: end_expr });
                     }
                     return Err(ParseError::expected("literal", self.current_kind(), self.current().span));
                 }
-                Ok(Pattern::Literal(start))
+                Ok(PatternKind::Literal(start))
             }
             TokenKind::String(s, _) => {
                 self.advance();
                 let span = self.tokens[self.pos - 1].span.clone();
-                Ok(Pattern::Literal(Box::new(Expr { id: self.next_id(), kind: ExprKind::String(s), span })))
+                Ok(PatternKind::Literal(Box::new(Expr { id: self.next_id(), kind: ExprKind::String(s), span })))
             }
             TokenKind::Bool(b) => {
                 self.advance();
                 let span = self.tokens[self.pos - 1].span.clone();
-                Ok(Pattern::Literal(Box::new(Expr { id: self.next_id(), kind: ExprKind::Bool(b), span })))
+                Ok(PatternKind::Literal(Box::new(Expr { id: self.next_id(), kind: ExprKind::Bool(b), span })))
             }
             TokenKind::Char(c) => {
                 self.advance();
@@ -5794,12 +5954,12 @@ impl Parser {
                 let start = Box::new(Expr { id: self.next_id(), kind: ExprKind::Char(c), span });
                 if self.match_token(&TokenKind::DotDotEq) {
                     let end = self.parse_single_pattern()?;
-                    if let Pattern::Literal(end_expr) = end {
-                        return Ok(Pattern::Range { start, end: end_expr });
+                    if let PatternKind::Literal(end_expr) = end.kind {
+                        return Ok(PatternKind::Range { start, end: end_expr });
                     }
                     return Err(ParseError::expected("literal", self.current_kind(), self.current().span));
                 }
-                Ok(Pattern::Literal(start))
+                Ok(PatternKind::Literal(start))
             }
             _ => Err(ParseError::expected(
                 "pattern",

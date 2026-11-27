@@ -270,7 +270,7 @@ static void *alloc_at(int64_t size, int64_t align, void *site) {
     return ptr;
 }
 
-static void free_sized(void *ptr, int64_t size) {
+static void release_at(void *ptr, int64_t size) {
     if (!ptr) return;
     active_allocator.free(ptr, active_allocator.ctx);
     if (size > 0) stats_track_free(size);
@@ -280,7 +280,7 @@ static void free_sized(void *ptr, int64_t size) {
 static void *realloc_at(void *ptr, int64_t old_size, int64_t new_size, int64_t align,
                         void *site) {
     if (new_size <= 0) {
-        free_sized(ptr, old_size);
+        release_at(ptr, old_size);
         return NULL;
     }
     // There is no aligned `realloc`, so a block past 16 moves by hand: a
@@ -290,7 +290,7 @@ static void *realloc_at(void *ptr, int64_t old_size, int64_t new_size, int64_t a
         if (ptr) {
             int64_t keep = old_size < new_size ? old_size : new_size;
             if (keep > 0) memcpy(fresh, ptr, (size_t)keep);
-            free_sized(ptr, old_size);
+            release_at(ptr, old_size);
         }
         return fresh;
     }
@@ -326,96 +326,100 @@ void *rask_realloc_aligned(void *ptr, int64_t old_size, int64_t new_size, int64_
 
 // ─── Closure blocks ────────────────────────────────────────
 //
-// A closure block is `[block_size | env_drop | refs | flags | func_ptr |
-// captures...]` and the closure value points at `func_ptr`, so the environment is still
-// `closure + 8`. Every header word is there for the same reason: whoever frees
-// the block usually didn't build it. `let tick = counter()` hands the caller a
-// block whose capture layout only `counter` knew, so the caller can neither
-// account for the bytes nor release what the captures own.
+// A closure block is `[block_size | entries | entry_count | flags | func_ptr |
+// captures...]` and the closure value points at `func_ptr`, so the environment
+// is `closure + 8`. Every closure has the header, on the stack or the heap,
+// because whoever drops or clones a closure usually didn't build it:
+// `let tick = counter()` hands the caller a block whose capture layout only
+// `counter` knew, and a `func` parameter can be either kind.
 //
-// `env_drop` is the second — a generated `<closure>__env_drop(env)` that frees
-// each container the environment owns, or NULL when it owns none. Without it a
-// closure holding a `Vec` gave the block back and left the vector inside it,
-// which is every adapter chain capturing its source (#1045, #943).
+// `entries` is the owned-entry list of the environment (the same encoding a
+// container's element type gets, walked by `rask_owned_*_all`): what the
+// closure carried in and so owns (mem.closures/CM2). Freeing a closure releases
+// those; cloning one (CV2) copies the block and retains them, which deep-copies
+// a vector, a map or a closure and counts a string or a handle. NULL when the
+// environment owns nothing.
 //
-// `refs` is the third, and it's what lets a container hold a closure. A
-// `Vec<func>` owns its elements' blocks and has to free them, but a vector
-// *derived* from it — clone, slice, chunk, concat — copies element bytes, so
-// two vectors then name one block and whichever is freed second frees it again.
-// A deep copy isn't available: the block's env layout is known only to a
-// generated glue, so copying one means retaining whatever its captures own, and
-// there is no `env_retain` to ask. A count is: one owner logically, `env_drop`
-// runs once, and nobody needs to know what's inside. Eight bytes per closure,
-// against the alternative of refusing `.clone()` on a `Vec<func>`. The same
-// count lets a frame hand a closure it only borrows — `spawn(fs[0])` — to
-// something that will free it: the keeper gets a reference of its own
-// (`ClosureRetain` in MIR, #1386).
-//
-// `flags` is the fourth. `RASK_CLOSURE_TASK_BOUND` marks a closure that
-// captured a link or a `Local` box, which may not reach another task. The
-// checker rejects a `spawn` it can see the closure in; one that got there by a
-// return, a field or a container is invisible at the spawn, so the block says
-// so itself and `rask_task_adopt_closure` refuses it (#1356).
-//
-// A *stack*-allocated closure has no header — a non-escaping closure is just
-// `[func_ptr | captures]` in a frame — so neither of these may be called on
-// one. Nothing does: a closure that can't escape can't reach a container.
-
-// An `@align(64)` capture needs the environment on a multiple of 64, so the
-// header slides up the block until it is, leaving `lead` bytes of padding in
-// front. The free has to find the block's start again, and the code freeing a
-// closure doesn't know what it captured, so the block says: `lead` rides in the
-// top half of the flags word. A closure with no over-aligned capture has no
-// lead and pays nothing for it.
+// `flags` holds RASK_CLOSURE_TASK_BOUND (it captured a link or a `Local` box,
+// which `rask_task_adopt_closure` refuses, #1356), RASK_CLOSURE_HEAP, the
+// environment's alignment as a power of two, and in its top half the lead
+// padding an over-aligned heap environment slid the header up by. A stack
+// closure has no lead: the frame placed it aligned.
 
 #define CLOSURE_HEADER_WORDS 4
 #define CLOSURE_LEAD_SHIFT 32
+#define CLOSURE_ALIGN_SHIFT 8
+
+static int64_t *closure_header(const void *ptr) {
+    return ((int64_t *)ptr) - CLOSURE_HEADER_WORDS;
+}
 
 static int64_t *closure_block_start(int64_t *base) {
     return (int64_t *)((char *)base - (int64_t)((uint64_t)base[3] >> CLOSURE_LEAD_SHIFT));
 }
 
-void *rask_closure_alloc(int64_t block_size, void (*env_drop)(void *), int64_t flags,
-                         int64_t env_align) {
+void *rask_closure_alloc(int64_t block_size, const int32_t *entries, int64_t count,
+                         int64_t flags, int64_t env_align) {
     // The environment starts one word past the closure value.
     int64_t env_at = (CLOSURE_HEADER_WORDS + 1) * 8;
     int64_t lead = 0;
     if (env_align > 8) {
         lead = ((env_at + env_align - 1) & ~(env_align - 1)) - env_at;
     }
+    int64_t log2 = 0;
+    while ((INT64_C(1) << log2) < env_align) log2++;
     int64_t total = lead + block_size + CLOSURE_HEADER_WORDS * 8;
     char *start = (char *)rask_alloc_aligned(total, env_align);
     int64_t *base = (int64_t *)(start + lead);
     base[0] = total;
-    base[1] = (int64_t)(intptr_t)env_drop;
-    base[2] = 1;
-    base[3] = (int64_t)(((uint64_t)lead << CLOSURE_LEAD_SHIFT) | (uint32_t)flags);
+    base[1] = (int64_t)(intptr_t)entries;
+    base[2] = entries ? count : 0;
+    base[3] = (int64_t)(((uint64_t)lead << CLOSURE_LEAD_SHIFT)
+                        | (uint64_t)(log2 << CLOSURE_ALIGN_SHIFT)
+                        | (uint32_t)(flags | RASK_CLOSURE_HEAP));
     return (void *)(base + CLOSURE_HEADER_WORDS);
-}
-
-void rask_closure_retain(void *ptr) {
-    if (!ptr) return;
-    int64_t *base = ((int64_t *)ptr) - CLOSURE_HEADER_WORDS;
-    // Atomic: a spawned task can hold a reference to a block the spawning
-    // frame still holds too, and the task's is released on its own thread.
-    __atomic_add_fetch(&base[2], 1, __ATOMIC_RELAXED);
 }
 
 int rask_closure_task_bound(const void *ptr) {
     if (!ptr) return 0;
-    const int64_t *base = ((const int64_t *)ptr) - CLOSURE_HEADER_WORDS;
-    return (base[3] & RASK_CLOSURE_TASK_BOUND) != 0;
+    return (closure_header(ptr)[3] & RASK_CLOSURE_TASK_BOUND) != 0;
 }
 
+// Release what the environment owns, and give the block back if it is a heap
+// one. A stack closure's bytes belong to its frame.
 void rask_closure_free(void *ptr) {
     if (!ptr) return;
-    int64_t *base = ((int64_t *)ptr) - CLOSURE_HEADER_WORDS;
-    if (__atomic_sub_fetch(&base[2], 1, __ATOMIC_ACQ_REL) > 0) return;
-    void (*env_drop)(void *) = (void (*)(void *))(intptr_t)base[1];
-    // The environment starts one word past the closure value, which is where
-    // the captures the glue names live.
-    if (env_drop) env_drop((char *)ptr + 8);
-    rask_realloc((void *)closure_block_start(base), base[0], 0);
+    int64_t *base = closure_header(ptr);
+    const int32_t *entries = (const int32_t *)(intptr_t)base[1];
+    if (entries) rask_owned_release_all((char *)ptr + 8, entries, base[2]);
+    if (base[3] & RASK_CLOSURE_HEAP) {
+        rask_realloc((void *)closure_block_start(base), base[0], 0);
+    }
+}
+
+// A second closure with an environment of its own (mem.closures/CV2). Always a
+// heap block: the copy outlives whatever frame the source may live in.
+void *rask_closure_clone(const void *ptr) {
+    if (!ptr) return NULL;
+    int64_t *base = closure_header(ptr);
+    uint64_t flags = (uint64_t)base[3];
+    int64_t lead = (int64_t)(flags >> CLOSURE_LEAD_SHIFT);
+    int64_t align = INT64_C(1) << ((flags >> CLOSURE_ALIGN_SHIFT) & 0xff);
+    int64_t block_size = base[0] - lead - CLOSURE_HEADER_WORDS * 8;
+    const int32_t *entries = (const int32_t *)(intptr_t)base[1];
+    void *copy = rask_closure_alloc(block_size, entries, base[2],
+                                    (int64_t)(flags & RASK_CLOSURE_TASK_BOUND), align);
+    memcpy(copy, ptr, (size_t)block_size);
+    if (entries) rask_clone_contents(RASK_CLONE_CLOSURE, copy);
+    return copy;
+}
+
+// The copy's environment takes references of its own: a step of the clone
+// work list, so a closure holding a deeply nested value doesn't recurse.
+void rask_closure_retain_env(void *copy) {
+    int64_t *base = closure_header(copy);
+    const int32_t *entries = (const int32_t *)(intptr_t)base[1];
+    if (entries) rask_owned_retain_all((char *)copy + 8, entries, base[2]);
 }
 
 // ─── Trait object blocks ───────────────────────────────────
@@ -430,10 +434,6 @@ void rask_closure_free(void *ptr) {
 // release would free it again (a segfault, reproducibly). Copying the value
 // instead would mean copying whatever it holds, and Rask doesn't deep clone
 // implicitly: the cost stays visible, so the copy shares.
-//
-// Sharing rather than cloning is also what a closure block does, and for the
-// same reason — the environment's layout is known only to its generated glue,
-// as a boxed value's contents are known only to its `owned_release`.
 //
 // The vtable says how big the value is and how it aligns, and both the alloc
 // and the release read it there, so they can't disagree about where the block

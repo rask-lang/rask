@@ -53,7 +53,7 @@ impl Interpreter {
     /// variants store their name as "Shape.Circle", so the type is also tried
     /// with the variant stripped. Stub registrations have empty bodies and
     /// don't count.
-    fn user_method(&self, receiver: &Value, method: &str) -> Option<rask_ast::decl::FnDecl> {
+    fn user_method(&self, receiver: &Value, method: &str) -> Option<Arc<rask_ast::decl::FnDecl>> {
         let type_name = match receiver {
             Value::Struct(s) => s.lock().unwrap().name.clone(),
             Value::Enum { name, .. } => name.clone(),
@@ -61,7 +61,7 @@ impl Interpreter {
             _ => return None,
         };
         let conformance_key = self.conformance_method_name(method);
-        let lookup = |ms: &HashMap<String, FnDecl>| -> Option<FnDecl> {
+        let lookup = |ms: &HashMap<String, Arc<FnDecl>>| -> Option<Arc<FnDecl>> {
             conformance_key
                 .as_ref()
                 .and_then(|k| ms.get(k).cloned())
@@ -101,7 +101,7 @@ impl Interpreter {
             String::new()
         } else {
             match self.call_builtin_method(receiver.clone(), "to_string", vec![], None)? {
-                Value::String(s) => s.lock().unwrap().clone(),
+                Value::String(ref s) => s.lock().unwrap().clone(),
                 other => format!("{}", other),
             }
         };
@@ -144,7 +144,7 @@ impl Interpreter {
         // bottom of this function, so without this an `extend` block that
         // defines its own ordering was never called — the interpreter answered
         // from the field-by-field default and disagreed with native.
-        if matches!(receiver, Value::Struct(..) | Value::Enum { .. })
+        if matches!(receiver, Value::Struct(..) | Value::Enum { .. } | Value::Nominal { .. })
             && DERIVABLE_METHODS.contains(&method)
         {
             if let Some(method_fn) = self.user_method(&receiver, method) {
@@ -222,11 +222,42 @@ impl Interpreter {
             Value::Vec(v) => return self.call_vec_method(v, method, args),
             Value::Map(m) => return self.call_map_method(m, method, args),
             Value::Rack(s) => return self.call_rack_method(s, method, args),
+            Value::Staged(s) => return self.call_staged_method(s, method, args),
             Value::Link { rack_id, node } => {
                 return self.call_link_method(*rack_id, node, method, args);
             }
             Value::TypeConstructor(kind) => {
                 return self.call_type_constructor_method(kind, method, args);
+            }
+            // `T?` and `T or E` have no methods, so `.hash()` only reaches one
+            // through a bound (`K: Hashable`). The same mix the checker writes
+            // for native (`hash_by_shape`): a branch's position from 1 mixed
+            // with its payload's hash, an absent optional 0 (#1976).
+            Value::Enum { name, variant, fields, .. }
+                if method == "hash" && matches!(name.as_str(), "Option" | "Result") =>
+            {
+                let tag = match (name.as_str(), variant.as_str()) {
+                    ("Option", "None") => return Ok(Value::Int(0, crate::value::IntKind::U64)),
+                    ("Result", "Err") => 2,
+                    _ => 1,
+                };
+                let h = self.parts_hash(tag, &fields.clone())?;
+                return Ok(Value::Int(h as i64, crate::value::IntKind::U64));
+            }
+            // `a == b` on two `T or E` values reaches here only through a
+            // bound (`K: Equal`): the same branch, and equal payloads.
+            Value::Enum { name, variant, fields, .. }
+                if name == "Result" && matches!(method, "eq" | "ne") && args.len() == 1 =>
+            {
+                let eq = match args.first() {
+                    Some(Value::Enum { name: other_name, variant: other_variant, fields: other_fields, .. })
+                        if other_name == "Result" && other_variant == variant =>
+                    {
+                        self.parts_equal(&fields.clone(), &other_fields.clone())?
+                    }
+                    _ => false,
+                };
+                return Ok(Value::Bool(if method == "eq" { eq } else { !eq }));
             }
             Value::Enum { name, variant, fields, .. } if name == "Result" => {
                 return self.call_result_method(variant, fields, method, args);
@@ -263,7 +294,7 @@ impl Interpreter {
             }
             Value::Tuple(items) if method == "hash" => {
                 let h = self.parts_hash(FNV_OFFSET, &items.clone())?;
-                return Ok(Value::int(h as i64));
+                return Ok(Value::Int(h as i64, crate::value::IntKind::U64));
             }
             Value::Tuple(..) if method == "compare" => {
                 let ord = args.first()
@@ -320,7 +351,7 @@ impl Interpreter {
             Value::Struct(s) if method == "hash" => {
                 let fields: Vec<Value> = s.lock().unwrap().fields.values().cloned().collect();
                 let h = self.parts_hash(FNV_OFFSET, &fields)?;
-                return Ok(Value::int(h as i64));
+                return Ok(Value::Int(h as i64, crate::value::IntKind::U64));
             }
             // The variant's position, then the payload — what the checker writes
             // for an enum it derives, and for `T?`: absent hashes to 0.
@@ -330,7 +361,7 @@ impl Interpreter {
                 }
                 let seed = fnv_mix(FNV_OFFSET, *variant_index as u64);
                 let h = self.parts_hash(seed, &fields.clone())?;
-                return Ok(Value::int(h as i64));
+                return Ok(Value::Int(h as i64, crate::value::IntKind::U64));
             }
             Value::Struct(..) if method == "compare" => {
                 let ord = args.first()
@@ -367,6 +398,7 @@ impl Interpreter {
             }
             Value::Struct(..) if method == "clone" => return Ok(receiver.deep_clone()),
             Value::Enum { .. } if method == "clone" => return Ok(receiver.deep_clone()),
+            Value::Closure { .. } if method == "clone" => return Ok(receiver.deep_clone()),
             // E9: `.discriminant()` is the variant's *discriminant value*, and
             // E15 says `Variant = N` assigns that value — so on an enum with
             // explicit values it's N, not the position. This answered the
@@ -415,8 +447,9 @@ impl Interpreter {
             return Ok(Value::String(Arc::new(Mutex::new(format!("{}", receiver)))));
         }
 
-        // Generic clone fallback (for types that don't have explicit clone)
-        if method == "clone" {
+        // Generic clone fallback (for types that don't have explicit clone).
+        // A newtype's is its underlying value's clone, wrapped: below.
+        if method == "clone" && !matches!(receiver, Value::Nominal { .. }) {
             return Ok(receiver.clone());
         }
 
@@ -435,7 +468,7 @@ impl Interpreter {
         // block is keyed with the package that wrote it. The running package
         // decides which one this call means.
         let conformance_key = self.conformance_method_name(method);
-        let lookup = |ms: &HashMap<String, FnDecl>| -> Option<FnDecl> {
+        let lookup = |ms: &HashMap<String, Arc<FnDecl>>| -> Option<Arc<FnDecl>> {
             conformance_key
                 .as_ref()
                 .and_then(|k| ms.get(k).cloned())
@@ -487,11 +520,19 @@ impl Interpreter {
             let args = args
                 .into_iter()
                 .map(|a| match a {
-                    Value::Nominal { inner, .. } => (*inner).clone(),
+                    Value::Nominal { ref inner, .. } => (**inner).clone(),
                     other => other,
                 })
                 .collect();
-            return self.call_builtin_method((**inner).clone(), method, args, generics);
+            let answer = self.call_builtin_method((**inner).clone(), method, args, generics)?;
+            // A clone is a value of the newtype, whatever clones the inside:
+            // `Wrapped(big).clone()` runs `Big`'s own clone.
+            if method == "clone" {
+                if let Value::Nominal { type_name, .. } = &receiver {
+                    return Ok(Value::Nominal { type_name: type_name.clone(), inner: Box::new(answer) });
+                }
+            }
+            return Ok(answer);
         }
 
         Err(RuntimeError::NoSuchMethod {

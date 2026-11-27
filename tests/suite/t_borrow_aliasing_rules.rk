@@ -14,7 +14,7 @@
 //     println("{h.data.len()}")  // 2, not 1
 //
 //   E0870  two arguments of one call reaching the same storage, one writing
-//   E0871  `let x = collection[key]` where the element isn't Copy
+//   E0871  `mut x = collection[key]` where the element isn't Copy
 //   E0872  returning a borrowed parameter's non-Copy field
 //   E0873  `mut x = value.field` where the field isn't Copy
 
@@ -54,14 +54,19 @@ extend Holder {
     }
 }
 
-test "a field of an element comes out by chaining, not by binding" {
+test "a non-Copy element bound with `let` is a view, written through `with`" {
     mut rows: Vec<Row> = Vec.new()
     mut vals: Vec<i64> = Vec.new()
     vals.push(7)
     rows.push(Row(key: "a", values: vals))
-    // `let r = rows[0]` would be E0871 — `Row` holds a Vec, so the binding
-    // would share its buffer.
-    assert rows[0].key == "a"
+    // `mut r = rows[0]` would be E0871: `Row` holds a Vec, so a writable
+    // binding would share its buffer. A `let` reads the element where it sits.
+    let r = rows[0]
+    assert r.key == "a"
+    with rows[0] as w {
+        w.values.push(8)
+    }
+    assert r.values.len() == 2
     assert rows[0].values[0] == 7
 }
 

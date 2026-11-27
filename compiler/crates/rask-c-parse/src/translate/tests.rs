@@ -31,12 +31,13 @@ fn variadic_and_void_params() {
 fn structs_are_c_layout_and_capitalized() {
     let out = bind("struct point { int x; float y; };\nstruct sqlite3;");
     // C spells it with its tag, which a macro's C needs (PP4).
-    has(&out, "@layout(C)\n@c_name(\"struct point\")\npublic struct Point {\n    public x: c_int\n    public y: f32\n}");
+    has(&out, "@layout(C)\n@c_name(\"struct point\", header: \"lib.h\")\npublic struct Point {\n    public x: c_int\n    public y: f32\n}");
     has(&out, "extern \"C\" struct Sqlite3");
-    // A typedef'd one is spelled as Rask spells it, so nothing is written.
+    // A typedef'd one is spelled as Rask spells it, and still says where
+    // C finds it, for a macro from another header handed one (#1729).
     let out = bind("typedef struct Rect { int w; } Rect;\ntypedef struct { int h; } Size;");
-    has(&out, "@layout(C)\npublic struct Rect {");
-    has(&out, "@layout(C)\npublic struct Size {");
+    has(&out, "@layout(C)\n@c_name(\"Rect\", header: \"lib.h\")\npublic struct Rect {");
+    has(&out, "@layout(C)\n@c_name(\"Size\", header: \"lib.h\")\npublic struct Size {");
 }
 
 #[test]
@@ -46,7 +47,7 @@ fn unions_and_bitfields() {
     has(&out, "    @bits(1) public flag: c_uint\n    @bits(3) public kind: c_uint\n");
     // A union C knows only by its tag says how C spells it.
     let out = bind("union num { int i; float f; };");
-    has(&out, "@c_name(\"union num\")\npublic union Num {");
+    has(&out, "@c_name(\"union num\", header: \"lib.h\")\npublic union Num {");
 }
 
 #[test]
@@ -54,7 +55,7 @@ fn nested_anonymous_members_get_names() {
     let out = bind("struct Ev { int type; union { int key; float axis; }; struct { int x, y; } pos; };");
     has(&out, "@c_name(none)\npublic union Ev_anon0 {");
     has(&out, "public anon1: Ev_anon0");
-    has(&out, "@c_name(\"__typeof__(((struct Ev *)0)->pos)\")\npublic struct Ev_anon1 {");
+    has(&out, "@c_name(\"__typeof__(((struct Ev *)0)->pos)\", header: \"lib.h\")\npublic struct Ev_anon1 {");
     has(&out, "public pos: Ev_anon1");
     has(&out, "public type_: c_int");
 }

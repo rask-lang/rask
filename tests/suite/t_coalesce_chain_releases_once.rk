@@ -1,0 +1,32 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// Two `??` in a row, the second falling back to the first's result. The
+// release planner adds releases a round at a time; one round put the first
+// optional's release after the last use of `y`, and a later round, finding it
+// dead on the edge where `y` took the second optional, released it there too.
+// Natively that path freed the vector twice and crashed.
+
+func maybe(n: i64) -> Vec<string>? {
+    if n > 0 {
+        return Vec.from(["heap-{n}-padding-padding-padding-padding"])
+    }
+    return none
+}
+
+func pick(n: i64) -> string {
+    let x = maybe(n) ?? Vec.from(["fallback-padding-padding-padding-padding"])
+    let y = maybe(n - 1) ?? x
+    return y[0]
+}
+
+test "both present: the second wins" {
+    assert pick(2) == "heap-1-padding-padding-padding-padding"
+}
+
+test "second absent: falls back to the first" {
+    assert pick(1) == "heap-1-padding-padding-padding-padding"
+}
+
+test "both absent: falls back to the default" {
+    assert pick(0) == "fallback-padding-padding-padding-padding"
+}

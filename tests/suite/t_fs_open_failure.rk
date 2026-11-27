@@ -27,7 +27,7 @@ func open_result(path: string) -> string {
     }
     ensure f.close()
     let t = f.read_text()
-    f.close()
+    f.close()!
     if t is string as s {
         return "read [{s.trim()}]"
     } else as e {
@@ -41,16 +41,16 @@ func create_result(path: string) -> string {
     }
     ensure f.close()
     let _ = f.write_text("hello\n")
-    f.close()
+    f.close()!
     return "created"
 }
 
 test "std.fs — opening a file that isn't there is an error" {
-    assert open_result("/tmp/rask_t_fs_open_definitely_missing.txt") == "not found: No such file or directory (os error 2)"
+    assert open_result("/tmp/rask_t_fs_open_definitely_missing.txt") == "not found: /tmp/rask_t_fs_open_definitely_missing.txt"
 }
 
 test "std.fs — creating under a directory that isn't there is an error" {
-    assert create_result("/tmp/rask_t_fs_open_no_such_dir/f.txt") == "not found: No such file or directory (os error 2)"
+    assert create_result("/tmp/rask_t_fs_open_no_such_dir/f.txt") == "not found: /tmp/rask_t_fs_open_no_such_dir/f.txt"
 }
 
 test "std.fs — the success path still works" {

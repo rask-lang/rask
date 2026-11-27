@@ -1,0 +1,37 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A value that already is an `any Error` returned from a `T or any Error`
+// function is the error. The checker only sent types implementing `Error` to
+// the error side, and an interface object implements nothing, so it was
+// checked against the success type and refused.
+
+struct Boom {
+    n: i64
+}
+
+Boom implements Error {
+    func message(self) -> string {
+        return "boom {self.n}"
+    }
+}
+
+func make(n: i64) -> any Error {
+    return Boom(n: n)
+}
+
+func fails(n: i64) -> i64 or any Error {
+    if n > 0 {
+        return make(n)
+    }
+    return 7
+}
+
+func message_of(n: i64) -> string {
+    let v = fails(n) catch e => { return e.message() }
+    return "ok {v}"
+}
+
+test "an any Error value fills the error side" {
+    assert (fails(3) is i64) == false
+    assert message_of(3) == "boom 3"
+    assert message_of(0) == "ok 7"
+}

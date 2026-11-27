@@ -53,6 +53,7 @@ pub fn field_reuses(program: &TypedProgram, bodies: &[&[Decl]], signatures: &[&[
     for decls in signatures {
         checker.collect_signatures(decls);
     }
+    checker.infer_replaces(signatures);
     let mut finder = Finder { checker: &checker, found: HashSet::new() };
     for decls in bodies {
         for decl in decls.iter() {
@@ -98,7 +99,12 @@ impl<'c, 'a, 'e> Visit<'e> for Finder<'c, 'a> {
     fn stmt(&mut self, stmt: &'e Stmt) -> bool {
         if let StmtKind::Assign { target, value, .. } = &stmt.kind {
             if let Some(place) = place_path(target) {
-                if self.takes(value, &place) {
+                if let Some(parts) = self.field_parts_moved(value, &place) {
+                    // Only fields of the old value move, and each is read as a
+                    // take (zeroed in the old value). The assignment then
+                    // releases the rest of it like any other.
+                    self.found.extend(parts);
+                } else if self.takes(value, &place) {
                     self.found.insert(stmt.id);
                 }
             }
@@ -117,41 +123,63 @@ impl Finder<'_, '_> {
     /// at the refill as before; that convention is the callee's, and a
     /// whole-variable `b = …` after `eat(b)` relies on it.
     fn refills_in(&mut self, stmts: &[Stmt]) {
-        // Each field a `let` moved out of, with the read that moved it.
-        let mut emptied: Vec<(Vec<String>, rask_ast::NodeId)> = Vec::new();
-        for stmt in stmts {
-            match &stmt.kind {
-                StmtKind::Assign { target, .. } => {
-                    if let Some(place) = place_path(target) {
-                        if let Some(at) = emptied.iter().position(|(p, _)| *p == place) {
-                            self.found.insert(stmt.id);
-                            self.found.insert(emptied[at].1);
-                            emptied.remove(at);
-                        }
-                    }
-                }
-                StmtKind::Let { init, .. } | StmtKind::Mut { init, .. } => {
-                    if let (Some(place), ExprKind::Field { .. }) = (place_path(init), &init.kind) {
-                        emptied.push((place, init.id));
-                    }
-                }
-                _ => {}
-            }
+        for (take, refill) in refill_pairs(self.checker, stmts) {
+            self.found.insert(take);
+            self.found.insert(refill);
         }
+    }
+
+    /// The field reads in `value` that move a part of `place`, when every move
+    /// of it is such a read: `c = Cursor(label: "new", hist: c.hist)` moves
+    /// `hist` and nothing else, so the old `label` is still the old value's
+    /// to release. `None` when `place` itself moves (`c = Wrap(inner: c)`),
+    /// when the value is itself the field, or when the path goes through an
+    /// index, where one element can't be told from another.
+    fn field_parts_moved(&self, value: &Expr, place: &[String]) -> Option<Vec<NodeId>> {
+        if self.moves(value, place) {
+            return None;
+        }
+        let mut parts: Vec<NodeId> = Vec::new();
+        let mut whole = false;
+        visit::walk_expr(value, &mut |e| {
+            for c in self.owned_children(e) {
+                if !self.moves(c, place) {
+                    continue;
+                }
+                let strict_field = matches!(c.kind, ExprKind::Field { .. })
+                    && place_path(c).is_some_and(|p| {
+                        p.len() > place.len() && p[..place.len()] == *place && !p.iter().any(|s| s == "[]")
+                    });
+                if strict_field {
+                    parts.push(c.id);
+                } else {
+                    whole = true;
+                }
+            }
+        });
+        (!whole && !parts.is_empty() && !place.iter().any(|s| s == "[]")).then_some(parts)
     }
 
     /// Whether `value`, or anything in it, takes ownership of `place`.
     fn takes(&self, value: &Expr, place: &[String]) -> bool {
-        if overlaps(value, place) {
+        if self.moves(value, place) {
             return true;
         }
         let mut hit = false;
         visit::walk_expr(value, &mut |e| {
-            if !hit && self.owned_children(e).iter().any(|c| overlaps(c, place)) {
+            if !hit && self.owned_children(e).iter().any(|c| self.moves(c, place)) {
                 hit = true;
             }
         });
         hit
+    }
+
+    /// `e` names `place` (or a part of it, or something holding it) and
+    /// moves it. A Copy part is copied: `Cursor(at: c.at, …)` takes nothing
+    /// from `c`, and the old `c` still has everything to release.
+    fn moves(&self, e: &Expr, place: &[String]) -> bool {
+        overlaps(e, place)
+            && !self.checker.node_ty(&e.id).is_some_and(|t| self.checker.is_copy(t))
     }
 
     /// The direct parts of `e` it takes ownership of.
@@ -219,9 +247,264 @@ fn place_path(expr: &Expr) -> Option<Vec<String>> {
     }
 }
 
+/// The indices a place goes through, outermost last: `v[0].items[i]` is
+/// `["0", "i"]`. A literal or a plain name, which is all a refill can be shown
+/// to land on the same element; any other index reads `None`, and so does a
+/// place with none to compare.
+fn index_keys(expr: &Expr) -> Option<Vec<String>> {
+    match &expr.kind {
+        ExprKind::Ident(_) => Some(Vec::new()),
+        ExprKind::Field { object, .. } => index_keys(object),
+        ExprKind::Index { object, index } => {
+            let mut keys = index_keys(object)?;
+            keys.push(match &index.kind {
+                ExprKind::Int(n, _) => n.to_string(),
+                ExprKind::Ident(name) => name.clone(),
+                _ => return None,
+            });
+            Some(keys)
+        }
+        _ => None,
+    }
+}
+
 /// `e` names `place`, something inside it, or something holding it.
 fn overlaps(e: &Expr, place: &[String]) -> bool {
     let Some(path) = place_path(e) else { return false };
     let n = path.len().min(place.len());
     path[..n] == place[..n]
+}
+
+/// The `let x = p.f` reads in one statement list that a later `p.f = …` in
+/// the same list refills, as (the read, the refill). Such a read is a move:
+/// the slot is empty from the read to the refill, and `x` owns what it held.
+///
+/// Only when nothing between them, the refill included, can leave the list
+/// early: `return`, `break`, `continue` or `try`. On that path the refill never
+/// runs, so the read has to stay a view of a slot that's still full, and the
+/// checker holds it to that (mem.borrowing/S5). A Copy field is copied, never
+/// emptied.
+pub(crate) fn refill_pairs(checker: &OwnershipChecker<'_>, stmts: &[Stmt]) -> Vec<(NodeId, NodeId)> {
+    let moves = |e: &Expr| !checker.node_ty(&e.id).is_some_and(|t| checker.is_copy(t));
+    let mut pairs = Vec::new();
+    // Each field a `let` moved out of, with the read that moved it.
+    // With the index of every element step it went through: a refill only
+    // pairs with a read that went through the same ones.
+    let mut emptied: Vec<(Vec<String>, NodeId, Vec<String>)> = Vec::new();
+    for stmt in stmts {
+        if may_leave_early(stmt) {
+            emptied.clear();
+            continue;
+        }
+        // `a = s.f` moves the field out as well as writing `a`. A whole
+        // binding moved out any way at all is the ownership checker's to
+        // report (`OwnershipResult::refills_after_move`): it tracks moves,
+        // where this only sees shapes.
+        let moved_by_assign = match &stmt.kind {
+            StmtKind::Assign { target, value, .. }
+                if matches!(value.kind, ExprKind::Field { .. })
+                    && place_path(value).is_some()
+                    && moves(value)
+                    && place_path(value) != place_path(target) =>
+            {
+                place_path(value).zip(index_keys(value)).map(|(p, k)| (p, value.id, k))
+            }
+            _ => None,
+        };
+        match &stmt.kind {
+            StmtKind::Assign { target, .. }
+                if place_path(target).is_some_and(|p| emptied.iter().any(|(e, _, _)| *e == p)) =>
+            {
+                let place = place_path(target).unwrap_or_default();
+                let keys = index_keys(target);
+                if let Some(at) = emptied.iter().position(|(p, _, k)| *p == place && Some(k) == keys.as_ref()) {
+                    pairs.push((emptied[at].1, stmt.id));
+                    emptied.remove(at);
+                } else {
+                    // A write to the same place through other indices: which
+                    // slot is refilled can't be told, so nothing pairs.
+                    emptied.retain(|(p, _, _)| *p != place);
+                }
+            }
+            StmtKind::Let { init, .. } | StmtKind::Mut { init, .. }
+                if matches!(init.kind, ExprKind::Field { .. })
+                    && place_path(init).is_some()
+                    && moves(init) =>
+            {
+                // A second read of the same field reads the emptied slot; the
+                // latest read is the one the refill pairs with.
+                let place = place_path(init).unwrap_or_default();
+                emptied.retain(|(p, _, _)| *p != place);
+                if let Some(keys) = index_keys(init) {
+                    emptied.push((place, init.id, keys));
+                }
+            }
+            _ => {
+                // A closure called here may read the field while it's empty,
+                // and which fields it reads isn't known here.
+                if calls_a_closure(checker, stmt) {
+                    emptied.clear();
+                    continue;
+                }
+                // Anything else that writes the field, or the value around it,
+                // breaks the pair: what the refill would put back went first.
+                let written = places_written(checker, stmt);
+                emptied.retain(|(p, _, keys)| {
+                    !written.iter().any(|w| {
+                        let n = w.len().min(p.len());
+                        w[..n] == p[..n]
+                    }) && !written.iter().any(|w| w.len() == 1 && keys.contains(&w[0]))
+                });
+            }
+        }
+        if let Some((place, read, keys)) = moved_by_assign {
+            emptied.retain(|(p, _, _)| *p != place);
+            emptied.push((place, read, keys));
+        }
+    }
+    pairs
+}
+
+/// Whether `stmt` calls through a local or a parameter, a closure value, or
+/// hands one to a call that can.
+fn calls_a_closure(checker: &OwnershipChecker<'_>, stmt: &Stmt) -> bool {
+    let mut hit = false;
+    visit::walk_stmt(stmt, &mut |e| {
+        // A closure value handed to a call can be called by it.
+        let args = match &e.kind {
+            ExprKind::Call { args, .. } | ExprKind::MethodCall { args, .. } => &args[..],
+            _ => &[],
+        };
+        if args
+            .iter()
+            .any(|a| matches!(checker.node_ty(&a.expr.id), Some(rask_types::Type::Fn { .. })))
+        {
+            hit = true;
+        }
+        if let ExprKind::Call { func, .. } = &e.kind {
+            if let ExprKind::Ident(_) = &func.kind {
+                let local = checker
+                    .program
+                    .resolutions
+                    .get(&func.id)
+                    .and_then(|s| checker.program.symbols.get(*s))
+                    .is_some_and(|sym| {
+                        matches!(
+                            sym.kind,
+                            rask_resolve::SymbolKind::Variable { .. } | rask_resolve::SymbolKind::Parameter { .. }
+                        )
+                    });
+                hit |= local;
+            }
+        }
+    });
+    hit
+}
+
+/// The places `stmt` may write over: assignment targets anywhere in it, and
+/// each path a call in it may replace under a place it writes through
+/// (`OwnershipChecker::call_writes`).
+fn places_written(checker: &OwnershipChecker<'_>, stmt: &Stmt) -> Vec<Vec<String>> {
+    struct Writes<'c, 'a> {
+        checker: &'c OwnershipChecker<'a>,
+        out: Vec<Vec<String>>,
+    }
+    impl<'e> Visit<'e> for Writes<'_, '_> {
+        fn expr(&mut self, e: &'e Expr) -> bool {
+            if let ExprKind::Take { place } = &e.kind {
+                self.out.extend(self.written(place, Vec::new()));
+            }
+            for (place, under) in self.checker.call_writes(e) {
+                self.out.extend(self.written(place, under));
+            }
+            true
+        }
+        fn stmt(&mut self, s: &'e Stmt) -> bool {
+            if let StmtKind::Assign { target, .. } = &s.kind {
+                self.out.extend(self.written(target, Vec::new()));
+            }
+            true
+        }
+    }
+    impl Writes<'_, '_> {
+        /// As a path `place_path` spells, so it compares with a `let`'s.
+        fn written(&self, place: &Expr, under: Vec<String>) -> Option<Vec<String>> {
+            let (root, mut p) = self.checker.written_place(place)?;
+            p.insert(0, root);
+            p.extend(under);
+            Some(p)
+        }
+    }
+    let mut w = Writes { checker, out: Vec::new() };
+    visit::visit_stmt(stmt, &mut w);
+    w.out
+}
+
+/// Whether `stmt` can leave the statement list it's in before finishing: a
+/// `return` or `try` anywhere in it outside a closure, or a `break` or
+/// `continue` that isn't aimed at a loop inside it. A labeled one inside a
+/// loop counts, since it may name a loop further out.
+fn may_leave_early(stmt: &Stmt) -> bool {
+    struct Exits {
+        hit: bool,
+        in_loop: bool,
+    }
+    impl Exits {
+        fn body(&mut self, body: &[Stmt]) {
+            let mut inner = Exits { hit: false, in_loop: true };
+            visit::visit_body(body, &mut inner);
+            self.hit |= inner.hit;
+        }
+    }
+    impl<'e> Visit<'e> for Exits {
+        fn expr(&mut self, e: &'e Expr) -> bool {
+            match &e.kind {
+                ExprKind::Closure { .. } => false,
+                ExprKind::Try { .. } => {
+                    self.hit = true;
+                    false
+                }
+                ExprKind::Loop { body, .. } => {
+                    self.body(body);
+                    false
+                }
+                _ => !self.hit,
+            }
+        }
+        fn stmt(&mut self, s: &'e Stmt) -> bool {
+            match &s.kind {
+                StmtKind::Return(_) => self.hit = true,
+                StmtKind::Break { label, .. } | StmtKind::Continue(label)
+                    if !self.in_loop || label.is_some() =>
+                {
+                    self.hit = true
+                }
+                StmtKind::Break { .. } | StmtKind::Continue(_) => {}
+                StmtKind::While { cond, body, .. } => {
+                    visit::visit_expr(cond, self);
+                    self.body(body);
+                    return false;
+                }
+                StmtKind::WhileLet { expr, body, .. } => {
+                    visit::visit_expr(expr, self);
+                    self.body(body);
+                    return false;
+                }
+                StmtKind::Loop { body, .. } => {
+                    self.body(body);
+                    return false;
+                }
+                StmtKind::For { iter, body, .. } | StmtKind::ComptimeFor { iter, body, .. } => {
+                    visit::visit_expr(iter, self);
+                    self.body(body);
+                    return false;
+                }
+                _ => {}
+            }
+            !self.hit
+        }
+    }
+    let mut v = Exits { hit: false, in_loop: false };
+    visit::visit_stmt(stmt, &mut v);
+    v.hit
 }

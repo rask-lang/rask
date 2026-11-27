@@ -37,12 +37,16 @@ pub(super) struct PlacedCall {
     pub inside: Option<TypeId>,
     /// The receiver is a value (`p.make()`), not a type (`Point.make()`).
     pub on_value: bool,
+    /// The receiver is spelled as a type: a name that is a type and not a
+    /// local. Not `!on_value`, which also holds for a name inference hadn't
+    /// bound yet when the call was first recorded.
+    pub on_type: bool,
 }
 
 impl TypeChecker {
     /// Remember a method call for `validate_method_visibility`. A body can be
     /// inferred more than once; the first record stands.
-    pub(super) fn note_method_call(&mut self, call: NodeId, span: Span, on_value: bool) {
+    pub(super) fn note_method_call(&mut self, call: NodeId, span: Span, on_value: bool, on_type: bool) {
         if self.method_calls.iter().any(|c| c.call == call) {
             return;
         }
@@ -50,19 +54,19 @@ impl TypeChecker {
             Some(Type::Named(id)) | Some(Type::Generic { base: id, .. }) => Some(id),
             _ => None,
         };
-        self.method_calls.push(PlacedCall { call, span, inside, on_value });
+        self.method_calls.push(PlacedCall { call, span, inside, on_value, on_type });
     }
 
     /// A method with no `self` called on a value: `p.make()` for a static
     /// `make()`. Native called it and dropped the receiver; the interpreter
     /// passed the receiver as an extra argument and failed. A static method
     /// is reached through its type, `Point.make()`.
+    ///
+    /// And the other way round: a method with `self` called through its type,
+    /// `Point.show()`, which has no value to hand it.
     pub(super) fn validate_static_calls_on_values(&mut self) {
         let mut found = Vec::new();
         for placed in &self.method_calls {
-            if !placed.on_value {
-                continue;
-            }
             let Some(Callee::Method { recv, method, .. }) = self.call_targets.get(&placed.call) else {
                 continue;
             };
@@ -74,8 +78,16 @@ impl TypeChecker {
                 | Some(TypeDef::NominalAlias { methods, .. }) => methods.iter().find(|m| &m.name == method),
                 _ => None,
             };
-            if sig.is_some_and(|m| matches!(m.self_param, rask_types::SelfParam::None)) {
+            let Some(sig) = sig else { continue };
+            let is_static = matches!(sig.self_param, rask_types::SelfParam::None);
+            if placed.on_value && is_static {
                 found.push(TypeError::StaticCallOnValue {
+                    ty: self.types.type_name(id),
+                    method: method.clone(),
+                    span: placed.span,
+                });
+            } else if placed.on_type && !is_static {
+                found.push(TypeError::InstanceCallOnType {
                     ty: self.types.type_name(id),
                     method: method.clone(),
                     span: placed.span,

@@ -19,6 +19,31 @@ pub enum MapKeyFix {
     ExtendBlock,
 }
 
+/// What is wrong with a custom `decode` or `encode` (std.encoding/E12b).
+#[derive(Debug, Clone)]
+pub enum WireHookProblem {
+    /// A `decode` written with `self`: a decode builds a value, it has none yet.
+    TakesSelf,
+    /// An `encode` written without it: it writes out the value it is called on.
+    NeedsSelf,
+    /// Zero or several parameters. `decode` takes the wire value alone,
+    /// `encode` takes nothing but `self`.
+    ParamCount(usize),
+    /// The wire parameter or the receiver is `mutate` or `take`.
+    NotPlain,
+    /// `decode` doesn't return `Self or E`, or `encode` returns a `T or E` or
+    /// nothing.
+    Returns { found: String },
+    /// The wire type can't be decoded (or encoded), so nothing can read (or
+    /// write) it.
+    WireNotCodable { wire: String },
+    /// On a generic type, which isn't supported.
+    GenericType,
+    /// Its wire type is itself, or goes through a chain that comes back.
+    ChainsBack,
+}
+
+
 /// A type error.
 #[derive(Debug, thiserror::Error)]
 pub enum TypeError {
@@ -309,6 +334,10 @@ pub enum TypeError {
         fix: String,
         span: Span,
     },
+    /// `x.field` on a `T?`: the wrapper has no fields either. The test
+    /// `if x?` doesn't narrow, so the field is reached through `?.` or a bind.
+    #[error("no field `{field}` on `{receiver}`")]
+    WrapperFieldCut { field: String, receiver: Type, chained: bool, span: Span },
     #[error("missing return statement")]
     MissingReturn {
         function_name: String,
@@ -416,6 +445,12 @@ pub enum TypeError {
     MutateBoundName {
         name: String,
         from: crate::checker::BoundFrom,
+        span: Span,
+    },
+    /// `x!.f = v` where the payload is a value: `x!` reads it out, so the
+    /// write lands on the copy (OPT19).
+    #[error("cannot write into a payload `!` read out")]
+    WriteThroughForce {
         span: Span,
     },
     #[error("`string` has no `{method}` — strings are immutable")]
@@ -605,6 +640,14 @@ pub enum TypeError {
         op: &'static str,
         span: Span,
     },
+    /// The body used a loop's item as one type, and the source it walks,
+    /// which settled only after the body was checked, yields another.
+    #[error("loop yields `{yields}`, but its item is used as `{used_as}`")]
+    LoopItemMismatch {
+        yields: Type,
+        used_as: Type,
+        span: Span,
+    },
     #[error("`{found}` can't be iterated")]
     NotIterable {
         found: Type,
@@ -733,6 +776,9 @@ pub enum TypeError {
         /// shadowed by the program's own (#1329). "Missing methods" would be
         /// wrong: it may well have every one of them.
         namesake: bool,
+        /// G1: the type never declares `T implements I`. `Some(true)` when it
+        /// has every method anyway, so the declaration is all that's missing.
+        undeclared: Option<bool>,
         span: Span,
     },
     /// A bound, conformance header or cast naming an interface that doesn't exist.
@@ -902,6 +948,31 @@ pub enum TypeError {
         span: Span,
     },
 
+    /// std.encoding/E12b: the `decode` or `encode` in a `T implements Decode { }`
+    /// or `Encode { }` block isn't the shape a codec can call.
+    #[error("`{ty}`'s `{}` can't be used by a codec", hook.method())]
+    BadCustomWire {
+        ty: String,
+        hook: super::WireHook,
+        problem: WireHookProblem,
+        span: Span,
+    },
+
+    /// std.encoding/E12b: a type reads itself through its own `decode` and
+    /// would be written as its fields, which its `decode` doesn't read back.
+    #[error("`{ty}` cannot be encoded: `{owner}` decodes through its own `decode`, so its fields aren't what it reads")]
+    EncodeSkipsDecode {
+        /// The type that was asked for.
+        ty: String,
+        /// The type with the `decode`: `ty` itself, or one it holds.
+        owner: String,
+        /// `owner` is something `ty` holds, not `ty` itself.
+        through: bool,
+        /// What its `decode` takes.
+        wire: String,
+        span: Span,
+    },
+
     #[error("the `+` operator cannot be used on strings")]
     StringAddForbidden {
         span: Span,
@@ -941,6 +1012,26 @@ pub enum TypeError {
     #[error("undefined name `{name}`")]
     UndefinedName {
         name: String,
+        span: Span,
+    },
+
+    /// `Cash(amount: i32)` where `amount` is an `i32`: the colon was meant as
+    /// a type annotation, but a bare type there tests the field's type, and a
+    /// field of exactly that type always passes.
+    #[error("`{field}: {ty}` tests a type that is always there")]
+    FieldPatternExactType {
+        pattern: String,
+        field: String,
+        ty: String,
+        span: Span,
+    },
+
+    /// A use of `result` after `Job(result: IoError)`: the type test names
+    /// the field's type and binds nothing, so there is no `result` to use.
+    #[error("`{name}` is not bound by `{name}: {ty}`")]
+    NameNotBoundByTypePattern {
+        name: String,
+        ty: String,
         span: Span,
     },
 
@@ -1119,6 +1210,17 @@ pub enum TypeError {
         span: Span,
     },
 
+    /// type.errors/ER50: a call's `T or E` result is thrown away.
+    #[error("unused result of type `{ty}`")]
+    UnusedResult {
+        ty: String,
+        /// The call as the fix will write it: `save(…)`, `….write_text(…)`.
+        call: String,
+        /// The enclosing function can pass this error on, so `try` is offered.
+        can_try: bool,
+        span: Span,
+    },
+
     /// SP1/SP2: step direction doesn't match range direction (warning)
     #[error("step direction mismatch — range will be empty")]
     StepDirectionMismatch {
@@ -1137,6 +1239,16 @@ pub enum TypeError {
         ty: String,
         /// The value inside, when the receiver is a `Shared` that holds one.
         payload: Option<String>,
+        span: Span,
+    },
+
+    /// `clone` on a value holding a handle that frees itself and has no
+    /// `clone` of its own: the copy would be a second owner of one block.
+    #[error("`{ty}` can't be cloned — `{handle}` has no `clone`")]
+    CloneHandle {
+        ty: String,
+        /// The handle inside, or the value itself.
+        handle: String,
         span: Span,
     },
 
@@ -1305,6 +1417,15 @@ pub enum TypeError {
         span: Span,
     },
 
+    /// A method that takes `self`, called on a type: `Meters.show()`,
+    /// `T.show()`.
+    #[error("`{method}` takes `self`, called on the type `{ty}`")]
+    InstanceCallOnType {
+        ty: String,
+        method: String,
+        span: Span,
+    },
+
     /// ctrl.flow/CF7: an `if` with no `else`, used for a value.
     #[error("an `if` without `else` has no value")]
     IfWithoutElseValue {
@@ -1316,6 +1437,52 @@ pub enum TypeError {
     #[error("`{name}` is bound twice")]
     RepeatedBinding {
         name: String,
+        span: Span,
+    },
+
+    /// type.primitives/L9: a literal pattern on a type built from literals.
+    #[error("a literal can't be a pattern for `{ty}`")]
+    LiteralPatternOnBuiltType {
+        ty: String,
+        span: Span,
+    },
+
+    /// The method is declared only in `extend` blocks whose header this
+    /// receiver doesn't fit: `flatten` is on `Sequence<Sequence<U>>`, so a
+    /// `Sequence<Vec<i64>>` doesn't have it.
+    #[error("no method `{method}` on `{ty}`")]
+    MethodNotForReceiver {
+        ty: String,
+        method: String,
+        headers: Vec<String>,
+        span: Span,
+    },
+
+    /// type.generics/GT7: more than one conformance's method takes the call.
+    #[error("this `{method}` call fits more than one of `{ty}`'s conformances")]
+    AmbiguousConformanceCall {
+        ty: String,
+        method: String,
+        candidates: Vec<String>,
+        span: Span,
+    },
+
+    /// type.generics/GT7: no conformance's method takes these arguments.
+    #[error("no `{method}` on `{ty}` takes ({})", args.join(", "))]
+    NoConformanceTakes {
+        ty: String,
+        method: String,
+        args: Vec<String>,
+        candidates: Vec<String>,
+        span: Span,
+    },
+
+    /// type.primitives/L9: a `FromLiteral`
+    /// conversion that isn't a `comptime func`.
+    #[error("`{ty}.{method}` builds literals, so it has to be a `comptime func`")]
+    LiteralConversionNotComptime {
+        ty: String,
+        method: String,
         span: Span,
     },
 
@@ -1453,6 +1620,19 @@ pub enum TypeError {
     /// An integer literal whose value doesn't fit the type it ended up with.
     /// Codegen would keep the low bits, so `let b: u8 = 300` printed 300 in
     /// the interpreter and 44 natively.
+    /// `[x; n]` whose count isn't known at compile time. The length is part
+    /// of the array's type, so a run-time count has no type to give it.
+    #[error("the count of an array repeat isn't known at compile time")]
+    ArrayRepeatCount { span: Span },
+
+    #[error("`{ty}` is over the 64 KiB a value can take")]
+    ValueTooLarge {
+        ty: Type,
+        /// The exact size, for an array; layout holds anything else at the cap.
+        bytes: Option<u64>,
+        span: Span,
+    },
+
     #[error("integer literal {literal} is out of range for `{ty}`")]
     IntLiteralOutOfRange {
         /// The literal as written (already signed, with `-` folded in).
@@ -1488,7 +1668,7 @@ pub enum TypeError {
         span: Span,
     },
 
-    /// mem.resources/RC5: `clear`, `set`, `get` and the like on a `Vec` or
+    /// mem.resources/RC5: `clear`, `get` and the like on a `Vec` or
     /// `Map` whose elements must be consumed. `copies` is a copy out (`get`),
     /// otherwise a drop (`clear`).
     #[error("`{method}` would {} a `{elem}` in a `{container}`", if *copies { "copy" } else { "drop" })]
@@ -1627,6 +1807,16 @@ pub enum TypeError {
         span: Span,
     },
 
+    /// std.reflect/R1: `has<A>()`, `get<A>()` and `is<T>()` on a reflect item
+    /// are answered while a `comptime for` unrolls, so the item has to be that
+    /// loop's binding.
+    #[error("`{method}` on a `{info}` only answers inside a `comptime for` over it")]
+    ReflectItemNotUnrolled {
+        info: &'static str,
+        method: String,
+        span: Span,
+    },
+
     /// std.collections/V1 (#310): an index expression `c[i]` whose index type
     /// doesn't match what the container accepts.
     #[error("cannot index {container} with {found}")]
@@ -1676,6 +1866,10 @@ pub enum IndexErrorKind {
     /// A `Sequence<T>` was indexed. It holds no elements — SEQ38/SEQ39 —
     /// so there is no position to read.
     NotPositioned,
+    /// A `Rack<T>` was indexed. A rack's nodes are reached through their links
+    /// (`h.field`), not by position or by link: `rack[h]` is the pool-and-handle
+    /// style a rack is set against (mem.racks).
+    NotIndexed,
     /// A range indexed a Vec or a fixed array. There is no slice type for the
     /// result to have — only a string slices to another string.
     NoSliceType,
@@ -1755,6 +1949,7 @@ impl TypeError {
             TypeError::TypeArgCount { name, params, expected, found, site, .. } => {
                 TypeError::TypeArgCount { name, params, expected, found, site, span }
             }
+            TypeError::ValueTooLarge { ty, bytes, .. } => TypeError::ValueTooLarge { ty, bytes, span },
             other => other,
         }
     }
@@ -1779,6 +1974,7 @@ impl TypeError {
             | ErrorInterfaceMissing { ty, .. }
             | InfiniteType { ty, .. }
             | IntLiteralOutOfRange { ty, .. }
+            | ValueTooLarge { ty, .. }
             | NoSuchField { ty, .. }
             | NoSuchMethod { ty, .. }
             | NotCallable { ty, .. }
@@ -1789,6 +1985,11 @@ impl TypeError {
             IncomparableOperands { left, right, .. } => {
                 *left = f(left);
                 *right = f(right);
+            }
+
+            LoopItemMismatch { yields, used_as, .. } => {
+                *yields = f(yields);
+                *used_as = f(used_as);
             }
 
             AtomicPayload { ty, .. } => *ty = f(ty),
@@ -1813,7 +2014,8 @@ impl TypeError {
             | TryErrorIntoOptional { return_ty, .. }
             | TryInNonPropagatingContext { return_ty, .. } => *return_ty = f(return_ty),
 
-            WrapperMethodCut { receiver, .. } => *receiver = f(receiver),
+            WrapperMethodCut { receiver, .. }
+            | WrapperFieldCut { receiver, .. } => *receiver = f(receiver),
 
             MissingReturn { expected_type, .. } => *expected_type = f(expected_type),
 
@@ -1902,6 +2104,7 @@ impl TypeError {
             // Carry no types.
             Undefined(..)
             | DynamicFieldNameNotComptime { .. }
+            | ReflectItemNotUnrolled { .. }
             | DuplicateConformance { .. }
             | ForeignCoreConformance { .. }
             | AmbiguousConformance { .. }
@@ -1939,6 +2142,7 @@ impl TypeError {
             | TakeSelfThroughLink { .. }
             | MutateWithBinding { .. }
             | MutateBoundName { .. }
+            | WriteThroughForce { .. }
             | StringIsImmutable { .. }
             | StringNewRemoved { .. }
             | TemporaryKept { .. }
@@ -1982,11 +2186,15 @@ impl TypeError {
             | AmbiguousLiteralOperand { .. }
             | NotSerializable { .. }
             | ExcludedFieldNeedsDefault { .. }
+            | BadCustomWire { .. }
+            | EncodeSkipsDecode { .. }
             | StringAddForbidden { .. }
             | PublicDuckInterface { .. }
             | PublicInferredError { .. }
             | NonExhaustiveMatch { .. }
             | UndefinedName { .. }
+            | FieldPatternExactType { .. }
+            | NameNotBoundByTypePattern { .. }
             | UnknownContext { .. }
             | CyclicTypeAlias { .. }
             | CallableFieldNotAMethod { .. }
@@ -2008,9 +2216,11 @@ impl TypeError {
             | NoReturnReturns { .. }
             | ZeroStep { .. }
             | StepDirectionMismatch { .. }
+            | UnusedResult { .. }
             | BareSyncAccess { .. }
             | NotAPlace { .. }
             | CloneLinear { .. }
+            | CloneHandle { .. }
             | TakeFromSharedBox { .. }
             | MultipleSyncAccesses { .. }
             | BadFieldAnnotation { .. }
@@ -2027,11 +2237,18 @@ impl TypeError {
             | LegacyWrapperConstructor { .. }
             | LegacyWrapperPattern { .. }
             | InvalidConvert { .. }
+            | ArrayRepeatCount { .. }
             | AtomicOrderDoesNotFit { .. }
             | FieldGivenTwice { .. }
+            | LiteralConversionNotComptime { .. }
+            | NoConformanceTakes { .. }
+            | AmbiguousConformanceCall { .. }
+            | MethodNotForReceiver { .. }
+            | LiteralPatternOnBuiltType { .. }
             | EntrySignature { .. }
             | ExitInEnsure { .. }
             | StaticCallOnValue { .. }
+            | InstanceCallOnType { .. }
             | RepeatedBinding { .. } => {}
         }
     }

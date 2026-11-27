@@ -65,35 +65,20 @@ struct RaskMutex {
     int64_t         data_size;
     int64_t         data_align;
     _Atomic int64_t refcount;
-    // What the payload is, so the last release can give it back. See
+    // What the payload owns, so the last release can give it back. See
     // `box_payload_free`.
-    int64_t         payload_kind;
+    RaskElemStrs    payload;
 };
 
-// A box owns its payload, and a container payload is a handle in the box's
-// slot rather than bytes the box can just free. Which container it is comes
-// from lowering at construction (`elem_strs::box_payload_kind`) — the runtime
-// is the only place that knows when the *last* reference goes, and that is
-// when the container has to be given back.
-//
-// Only a container payload is a handle. Anything else is as wide as it is,
-// which can be narrower than a word, so the kind is asked before the slot is
-// read as one.
-static void box_payload_free(int64_t payload_kind, void *data) {
-    if (!data || payload_kind == RASK_BOX_PAYLOAD_NONE) return;
-    int64_t handle = *(int64_t *)data;
-    if (!handle) return;
-    switch (payload_kind) {
-        case RASK_BOX_PAYLOAD_VEC: rask_vec_free((RaskVec *)(intptr_t)handle); break;
-        case RASK_BOX_PAYLOAD_MAP: rask_map_free((RaskMap *)(intptr_t)handle); break;
-        case RASK_BOX_PAYLOAD_CLOSURE: rask_closure_free((void *)(intptr_t)handle); break;
-        case RASK_BOX_PAYLOAD_BOX: {
-            RaskBoxHeader *inner = (RaskBoxHeader *)(intptr_t)handle;
-            inner->release(inner);
-            break;
-        }
-        default: break;
-    }
+// A box owns its payload: `Shared.mutex(Map.new())` moves the map in, and only
+// the runtime knows when the *last* reference goes, which is when the map has
+// to be given back. What the payload owns, and where, comes from lowering at
+// construction as the same element description a `Vec` of that type carries,
+// so a payload that is a struct holding a string, an optional vector or another
+// box is released the way it would be as a vector element.
+static void box_payload_free(const RaskElemStrs *payload, void *data) {
+    if (!data || !payload->offsets) return;
+    rask_owned_release_all((char *)data, payload->offsets, payload->count);
 }
 
 RaskMutex *rask_mutex_new(const void *initial_data, int64_t data_size, int64_t data_align) {
@@ -107,7 +92,7 @@ RaskMutex *rask_mutex_new(const void *initial_data, int64_t data_size, int64_t d
         .data_size = data_size,
         .data_align = data_align,
         .data = rask_alloc_aligned(data_size, data_align),
-        .payload_kind = RASK_BOX_PAYLOAD_NONE,
+        .payload = { NULL, 0, 0 },
     };
     pthread_mutex_init(&m->lock, NULL);
     atomic_store(&m->refcount, 1);
@@ -119,7 +104,7 @@ void rask_mutex_free(RaskMutex *m) {
     if (!m) return;
     if (atomic_fetch_sub(&m->refcount, 1) > 1) return;
     pthread_mutex_destroy(&m->lock);
-    box_payload_free(m->payload_kind, m->data);
+    box_payload_free(&m->payload, m->data);
     rask_free(m->data);
     rask_free(m);
 }
@@ -133,7 +118,7 @@ struct RaskShared {
     int64_t          data_size;
     int64_t          data_align;
     _Atomic int64_t  refcount;
-    int64_t          payload_kind;
+    RaskElemStrs     payload;
 };
 
 RaskShared *rask_shared_new(const void *initial_data, int64_t data_size, int64_t data_align) {
@@ -147,7 +132,7 @@ RaskShared *rask_shared_new(const void *initial_data, int64_t data_size, int64_t
         .data_size = data_size,
         .data_align = data_align,
         .data = rask_alloc_aligned(data_size, data_align),
-        .payload_kind = RASK_BOX_PAYLOAD_NONE,
+        .payload = { NULL, 0, 0 },
     };
     pthread_rwlock_init(&s->lock, NULL);
     atomic_store(&s->refcount, 1);
@@ -159,7 +144,7 @@ void rask_shared_free(RaskShared *s) {
     if (!s) return;
     if (atomic_fetch_sub(&s->refcount, 1) > 1) return;
     pthread_rwlock_destroy(&s->lock);
-    box_payload_free(s->payload_kind, s->data);
+    box_payload_free(&s->payload, s->data);
     rask_free(s->data);
     rask_free(s);
 }
@@ -345,10 +330,10 @@ void rask_shared_staged_commit(int64_t shared) {
 
 // ─── Mutex i64/ptr codegen wrappers ──────────────────────
 
-int64_t rask_mutex_new_ptr(int64_t data_ptr, int64_t data_size, int64_t payload_kind,
-                           int64_t data_align) {
+int64_t rask_mutex_new_ptr(int64_t data_ptr, int64_t data_size, const int32_t *owned,
+                           int64_t n_owned, int64_t data_align) {
     RaskMutex *m = rask_mutex_new((const void *)(intptr_t)data_ptr, data_size, data_align);
-    m->payload_kind = payload_kind;
+    m->payload = (RaskElemStrs){ owned, n_owned, data_align };
     return (int64_t)(intptr_t)m;
 }
 
@@ -408,10 +393,10 @@ void rask_mutex_drop(int64_t mutex) {
 // These work with any data size. A `try_*` closure receives a pointer to
 // the data inside the Shared, not a copy, so writes land in place.
 
-int64_t rask_shared_new_ptr(int64_t data_ptr, int64_t data_size, int64_t payload_kind,
-                            int64_t data_align) {
+int64_t rask_shared_new_ptr(int64_t data_ptr, int64_t data_size, const int32_t *owned,
+                            int64_t n_owned, int64_t data_align) {
     RaskShared *s = rask_shared_new((const void *)(intptr_t)data_ptr, data_size, data_align);
-    s->payload_kind = payload_kind;
+    s->payload = (RaskElemStrs){ owned, n_owned, data_align };
     return (int64_t)(intptr_t)s;
 }
 
@@ -491,12 +476,12 @@ typedef struct {
     int64_t       data_size;
     int64_t       data_align;
     void         *data;
-    int64_t       payload_kind;
+    RaskElemStrs  payload;
     int64_t       refcount;
 } RaskCell;
 
-int64_t rask_cell_new(int64_t data_ptr, int64_t data_size, int64_t payload_kind,
-                      int64_t data_align) {
+int64_t rask_cell_new(int64_t data_ptr, int64_t data_size, const int32_t *owned,
+                      int64_t n_owned, int64_t data_align) {
     if (data_size <= 0) rask_panic("Shared data size must be positive");
     RaskCell *c = (RaskCell *)rask_alloc(sizeof(RaskCell));
     *c = (RaskCell){
@@ -504,7 +489,7 @@ int64_t rask_cell_new(int64_t data_ptr, int64_t data_size, int64_t payload_kind,
         .data_size = data_size,
         .data_align = data_align,
         .data = rask_alloc_aligned(data_size, data_align),
-        .payload_kind = payload_kind,
+        .payload = { owned, n_owned, data_align },
         .refcount = 1,
     };
     if (data_ptr) {
@@ -571,7 +556,7 @@ void rask_cell_free(int64_t cell) {
     RaskCell *c = (RaskCell *)(intptr_t)cell;
     if (!c) return;
     if (--c->refcount > 0) return;
-    box_payload_free(c->payload_kind, c->data);
+    box_payload_free(&c->payload, c->data);
     rask_free(c->data);
     rask_free(c);
 }

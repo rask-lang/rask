@@ -1,0 +1,47 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// The `as` binding of `if x? as entry` is a copy of the payload (type.optionals/OPT19),
+// so writing it is refused. A part of it handed to a `mutate` parameter is a
+// write too, and it landed on the copy: both backends printed `1` where the
+// author expected `101` (#1872).
+
+func bump(mutate x: i64) {
+    x = x + 100
+}
+
+func through_closure() {
+    mut v: Vec<(string, i64)?> = Vec.new()
+    v.push(("a", 1))
+    v.modify(0, |mutate slot: (string, i64)?| {
+        if slot? as entry {
+            // ERROR: `entry` is a copy, the write would be lost [E0372]
+            bump(mutate entry.1)
+        }
+    })
+}
+
+// A part of a `let` and of a read-only parameter is no more writable than the
+// whole name.
+func part_of_let() {
+    let pair = ("a", 1)
+    // ERROR: `pair` is a `let` [E0302]
+    bump(mutate pair.1)
+}
+
+func part_of_param(pair: (string, i64)) {
+    // ERROR: `pair` is a borrowed parameter [E0321]
+    bump(mutate pair.1)
+}
+
+// Fine: the part of a `mut` binding is written in place.
+func part_of_mut() -> i64 {
+    mut pair = ("a", 1)
+    bump(mutate pair.1)
+    return pair.1
+}
+
+func main() {
+    through_closure()
+    part_of_let()
+    part_of_param(("b", 2))
+    println("{part_of_mut()}")
+}

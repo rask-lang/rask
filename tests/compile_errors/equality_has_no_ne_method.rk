@@ -1,0 +1,18 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Rejects: `.ne(x)` as a method on a tuple or an optional
+//
+// The Equal interface has one method, `eq`. `!=` desugars to `!a.eq(b)`, so
+// nothing ever produced a `ne` call, but the resolver used to answer a
+// hand-written one by matching the spelling on tuples, optionals and links.
+// What these types answer now is what their Equal conformance declares.
+
+func main() {
+    let pair = (1, 2)
+    let maybe: i64? = 5
+    // ERROR: a tuple answers `==` and `!=`, not a method called `ne`
+    let a = pair.ne((1, 2))
+    // ERROR: an optional answers `==` and `!=`, not a method called `ne`
+    let b = maybe.ne(5)
+    println(a)
+    println(b)
+}

@@ -10,7 +10,7 @@ struct Node {
 
 func keep<T>(x: T) -> func() -> i64 {
     return || {
-        let y = x
+        look(x)
         return 1
     }
 }
@@ -25,6 +25,9 @@ func main() {
         let f = keep(a)
         println("before")
         let t2 = spawn { f() }
-        println("{t2.join()!}")
+        t2.detach()
     }
 }
+
+// Reads its argument without keeping it, so the closure captures it.
+func look<T>(x: T) {}

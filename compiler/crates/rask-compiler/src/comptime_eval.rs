@@ -31,13 +31,31 @@ const DEFAULT_BRANCH_QUOTA: usize = 1_000;
 /// An interpreter for the program's compile-time code: its functions, the
 /// build configuration, and which expressions the checker typed as enums.
 pub fn interpreter(decls: &[Decl], typed: &TypedProgram, cfg: Option<&CfgConfig>) -> ComptimeInterpreter {
-    let mut interp = ComptimeInterpreter::new();
+    let mut interp = ComptimeInterpreter::new(typed.types.target());
     if let Some(c) = cfg {
         interp.inject_cfg(c);
     }
     interp.register_functions(decls);
     interp.know_enums(enum_refs(typed));
+    interp.know_literals(literal_calls(typed));
+    interp.know_c_macros(typed.c_macro_calls.clone());
     interp
+}
+
+/// Each literal its type builds (type.primitives/L9), as the call that builds it.
+fn literal_calls(typed: &TypedProgram) -> HashMap<rask_ast::NodeId, rask_comptime::LiteralCall> {
+    typed
+        .literal_conversions
+        .iter()
+        .filter_map(|(&node, conv)| {
+            let owner = typed.types.get(conv.ty)?.name().to_string();
+            let arg = match conv.value {
+                rask_check::LiteralValue::Int(n) => ComptimeValue::I64(n),
+                rask_check::LiteralValue::Float(x) => ComptimeValue::F64(x),
+            };
+            Some((node, rask_comptime::LiteralCall { owner, method: conv.method.clone(), arg }))
+        })
+        .collect()
 }
 
 /// Each expression the checker typed as an enum, with that enum's fieldless
@@ -70,9 +88,13 @@ pub fn fold_comptime(
 ) -> (Folded, Vec<Diagnostic>) {
     let interp = interpreter(decls, typed, cfg);
 
-    let records = mono.node_records(typed);
+    let records = rask_mono::NodeRecords::from_typed(typed);
     let type_names: HashMap<rask_types::TypeId, String> = typed.types.type_name_map();
-    let ctx = rask_mir::lower::MirContext::new(typed, &mono.struct_layouts, &mono.enum_layouts, &records, &type_names);
+    // Nominal types are what they wrap (`type Cents = i64` is an i64), the
+    // same view lowering takes, so a folded one is written as its value.
+    let nominals = crate::emit::nominal_underlying(typed);
+    let ctx = rask_mir::lower::MirContext::new(typed, &mono.struct_layouts, &mono.enum_layouts, &records, &type_names)
+        .with_nominal_underlying(&nominals);
 
     let mut fold = Fold { interp, typed, mono, ctx: &ctx, folded: Folded::default(), diags: Vec::new() };
 
@@ -108,15 +130,11 @@ pub fn fold_comptime(
         }
     }
 
-    // A generic function's copies have nodes of their own, each replacing one
-    // of the generic body's. A value folded there is the copy's value too.
-    for (&copy, &origin) in &mono.node_origins {
-        if let Some(node) = fold.folded.nodes.get(&origin).cloned() {
-            fold.folded.nodes.insert(copy, node);
-        }
-        if let Some(stmt) = fold.folded.statements.get(&origin).copied() {
-            fold.folded.statements.insert(copy, stmt);
-        }
+    // In source order, so the errors come out in the order they're written.
+    let mut literals: Vec<_> = typed.literal_conversions.iter().collect();
+    literals.sort_by_key(|(_, c)| (c.span.file_id, c.span.start));
+    for (&node, conv) in literals {
+        fold.fold_literal(node, conv);
     }
 
     // A default is a block at every use; its errors are one error, at the
@@ -127,9 +145,16 @@ pub fn fold_comptime(
 }
 
 /// Does the program have anything to fold?
-pub(crate) fn has_comptime(decls: &[Decl]) -> bool {
-    decls.iter().any(|d| matches!(&d.kind, DeclKind::Const(c) if is_comptime_init(&c.init, decls)))
+pub(crate) fn has_comptime(decls: &[Decl], typed: &TypedProgram) -> bool {
+    !typed.literal_conversions.is_empty()
+        || decls.iter().any(|d| matches!(&d.kind, DeclKind::Const(c) if is_comptime_init(&c.init, decls)))
         || !targets(decls).is_empty()
+}
+
+/// Where a recorded value came from: its node, and the span its errors go to.
+struct NodeRef {
+    id: rask_ast::NodeId,
+    span: Span,
 }
 
 /// A compile-time position: a value, or a `comptime` statement.
@@ -174,7 +199,9 @@ fn targets(decls: &[Decl]) -> Vec<Target<'_>> {
     let mut c = Collect { decls, found: Vec::new() };
     for decl in decls {
         let bodies: Vec<&[rask_ast::stmt::Stmt]> = match &decl.kind {
-            DeclKind::Fn(f) if !f.is_comptime => vec![&f.body],
+            // A generic body that asks about codecs is answered per instance,
+            // when its types are known (`rask-template`).
+            DeclKind::Fn(f) if !f.is_comptime && !rask_ast::comptime_if::is_instance_checked(f) => vec![&f.body],
             DeclKind::Struct(s) => s.methods.iter().filter(|m| !m.is_comptime).map(|m| m.body.as_slice()).collect(),
             DeclKind::Enum(e) => e.methods.iter().filter(|m| !m.is_comptime).map(|m| m.body.as_slice()).collect(),
             DeclKind::Impl(i) => i.methods.iter().filter(|m| !m.is_comptime).map(|m| m.body.as_slice()).collect(),
@@ -232,6 +259,50 @@ impl Fold<'_, '_> {
                 return None;
             }
         };
+        self.record(node.id, node.span, value, declared)
+    }
+
+    /// type.primitives/L9: a literal its type builds, through the type's
+    /// `from_literal`, recorded under the
+    /// literal's node like any other compile-time value.
+    fn fold_literal(&mut self, node: rask_ast::NodeId, conv: &rask_check::LiteralConversion) {
+        let rask_check::LiteralConversion { ty, value, method, span } = conv;
+        let Some(owner) = self.typed.types.get(*ty).map(|d| d.name().to_string()) else { return };
+        self.interp.reset_branch_count();
+        self.interp.set_quota(DEFAULT_BRANCH_QUOTA);
+        let Some(built) = self.interp.eval_literal_call(node) else { return };
+        match built {
+            Ok(v) => {
+                self.record(node, *span, v, None);
+            }
+            Err(e) => {
+                let shown = match *value {
+                    rask_check::LiteralValue::Int(n) => n.to_string(),
+                    rask_check::LiteralValue::Float(x) => format!("{x:?}"),
+                };
+                self.diags.push(
+                    Diagnostic::error(format!("`{shown}` can't be a `{owner}`: {e}"))
+                        .with_code("E0383")
+                        .with_primary(*span, format!("built by `{owner}.{}` while compiling", rask_stdlib::operators::method_display(method)))
+                        .with_why(
+                            "a literal in a slot of a type that builds itself from literals is \
+                             that type's conversion, run while compiling (type.primitives/L9). \
+                             A conversion that fails has no value to put in the program",
+                        ),
+                );
+            }
+        }
+    }
+
+    /// Write `value` out as the type `node` has and record it.
+    fn record(
+        &mut self,
+        node_id: rask_ast::NodeId,
+        span: Span,
+        value: ComptimeValue,
+        declared: Option<rask_mir::MirType>,
+    ) -> Option<ComptimeValue> {
+        let node = NodeRef { id: node_id, span };
         let checked = self.typed.node_types.get(&node.id);
         let ty = declared.unwrap_or_else(|| match checked {
             Some(t) => self.ctx.type_to_mir(t),
@@ -324,7 +395,6 @@ impl Fold<'_, '_> {
                 .iter()
                 .filter_map(|a| match a {
                     rask_types::GenericArg::Type(t) => Some(t.as_ref()),
-                    _ => None,
                 })
                 .collect(),
             _ => Vec::new(),

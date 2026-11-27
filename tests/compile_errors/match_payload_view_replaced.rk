@@ -1,0 +1,66 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// What a pattern binds out of a place is a view of that place for the arm
+// (mem.borrowing/S1), the same as `let job = self.state` is. Writing over the
+// matched place frees the payload under the binding (E0958, #1845). Native
+// read the freed vector and crashed; the interpreter printed the old value.
+
+enum State {
+    Idle
+    Running(Vec<string>)
+}
+
+struct Machine {
+    state: State
+    ticks: i64
+}
+
+extend Machine {
+    func step(mutate self) -> usize {
+        match self.state {
+            State.Running(job) => {
+                // ERROR: `job` still views `self.state` [E0958]
+                self.state = State.Idle
+                return job.len()
+            }
+            State.Idle => return 0
+        }
+    }
+
+    func step_if_let(mutate self) -> usize {
+        if self.state is State.Running(job) {
+            // ERROR: `job` still views `self.state` [E0958]
+            self.state = State.Idle
+            return job.len()
+        }
+        return 0
+    }
+
+    // Fine: another field doesn't touch the payload.
+    func tick(mutate self) -> usize {
+        match self.state {
+            State.Running(job) => {
+                self.ticks += 1
+                return job.len()
+            }
+            State.Idle => return 0
+        }
+    }
+
+    // Fine: the arm is over before the write.
+    func finish(mutate self) -> usize {
+        mut n = 0
+        match self.state {
+            State.Running(job) => {
+                n = job.len()
+            }
+            State.Idle => {}
+        }
+        self.state = State.Idle
+        return n
+    }
+}
+
+func main() {
+    mut m = Machine(state: State.Running(["abc", "d"]), ticks: 0)
+    println("{m.tick()} {m.finish()} {m.step()} {m.step_if_let()}")
+}

@@ -31,15 +31,9 @@ fn next_tmp_id() -> u64 {
 }
 
 fn rask_binary() -> PathBuf {
-    // cargo test builds into target/debug or target/release
-    let mut path = std::env::current_exe().unwrap();
-    // Walk up from the test binary to the target dir
-    path.pop(); // remove test binary name
-    if path.ends_with("deps") {
-        path.pop();
-    }
-    path.push("rask");
-    path
+    // Cargo says where it built the binary; the test's own location doesn't,
+    // since cargo's build directory layout moves between versions.
+    PathBuf::from(env!("CARGO_BIN_EXE_rask"))
 }
 
 fn runtime_dir() -> PathBuf {
@@ -951,6 +945,61 @@ fn compile_error_output(name: &str) -> (bool, String) {
     (!out.status.success(), combined)
 }
 
+/// A newtype's wrap and unwrap hints name its own wrapped type, and only show
+/// up when the other side is that type. `Money` (over `i64`) against `Board`
+/// used to suggest `.value`, which gives an `i64`, not a `Board`.
+#[test]
+fn nominal_hint_only_for_wrapped_type() {
+    let (failed, out) = compile_error_output("nominal_hint_only_for_wrapped_type.rk");
+    assert!(failed, "{out}");
+    assert!(!out.contains("underlying `Board`"), "{out}");
+    assert!(!out.contains("wrap with `Meters(...)`"), "{out}");
+    assert!(!out.contains("wrap with `Wrapped(...)`"), "{out}");
+    assert!(out.contains("use `.value` to extract the underlying `i64` from `Money`"), "{out}");
+    assert!(out.contains("wrap with `Money(...)`"), "{out}");
+    assert!(out.contains("wrap with `Names(...)`"), "{out}");
+    assert!(out.contains("wrap with `Ahead(...)`"), "{out}");
+    assert!(out.contains("use `.value` to extract the underlying `i64?` from `Opt`"), "{out}");
+}
+
+/// `Payment.Cash(amount: i32)` is E0423 on the type, once per mistake, and the
+/// arm body still sees `amount`.
+///
+/// `field: name` renames the field, so `i32` after the colon used to rename
+/// `amount` to `i32`; the arm body then failed with "undefined symbol:
+/// amount", which blames the wrong thing. A type after the colon is a type
+/// test, so on a field that holds that type and others (`result: IoError` on
+/// `i64 or IoError`) it is a real question and compiles. Only a field of
+/// exactly that type makes the test empty.
+#[test]
+fn a_type_that_tests_nothing_in_a_field_pattern_is_its_own_error() {
+    let (failed, out) = compile_error_output("pattern_field_type.rk");
+    assert!(failed, "the fixture has to fail to check:\n{out}");
+    assert_eq!(out.matches("error[E0423]").count(), 2, "one per written type, no more:\n{out}");
+    assert!(
+        out.contains("`amount: i32` tests a type the field always has, and binds nothing"),
+        "the message says the test is empty:\n{out}"
+    );
+    assert!(out.contains("write `Payment.Cash(amount)` to bind it"), "the fix is the bare field:\n{out}");
+    assert!(
+        !out.contains("undefined symbol"),
+        "the field is still bound, so nothing cascades:\n{out}"
+    );
+    // The same words on a union field are a test that binds nothing: using the
+    // name says so, and a type the field can't hold is the ordinary mismatch.
+    assert!(
+        out.contains("error[E0424]: `result` is not bound: `result: i64` tests the field's type and binds nothing"),
+        "a use of a name no pattern bound:\n{out}"
+    );
+    assert!(out.contains("`Money` is not a branch of `i64 or IoError`"), "an impossible type:\n{out}");
+    // A struct matched by position: E0416, and its fix isn't what E0423 rejects.
+    assert!(
+        out.contains("Write `n`, since the field there is already of type `i64`"),
+        "the positional fix binds the field:\n{out}"
+    );
+    assert!(!out.contains("`n: i64`"), "never the form E0423 rejects:\n{out}");
+}
+
 /// mem.unsafe, debug-mode safety: a raw-pointer access through null panics in
 /// a debug build and not in release, `@checked_unsafe` panics in both, and
 /// `@unchecked_unsafe` in neither. Both attributes used to be read by nothing,
@@ -1295,6 +1344,9 @@ fn a_type_that_contains_itself_is_rejected() {
         out.contains("Vertex -> Edge"),
         "should spell the chain for an indirect cycle: {}", out,
     );
+    // Layout and the copy rule leave a rejected type alone: `Grow<T>` drew a
+    // stream of "unresolved generic type in layout" warnings first (#1973).
+    assert!(!out.contains("warning"), "only the rejection, no layout warnings: {}", out);
 }
 
 #[test]
@@ -1375,12 +1427,12 @@ fn error_catch_void_body_blames_itself_not_a_later_use() {
     // only legal when the value's success type is actually void. When that
     // type was still open, the checker used to *decide* it from this catch's
     // own void body — so a later, correctly-typed use of the same value
-    // (`a catch _ => -1`, a real `i32` fallback) got blamed for the mismatch
+    // (`a catch _ => -1`, a real `i64` fallback) got blamed for the mismatch
     // instead of the void-bodied catch that's actually wrong.
     let (failed, out) = compile_error_output("catch_void_body_blame.rk");
     assert!(failed, "a void catch on a non-void success type must be rejected: {}", out);
     assert!(
-        out.contains("expected `i32`, found `void`"),
+        out.contains("expected `i64`, found `void`"),
         "should name the real success type, not void: {}", out,
     );
     assert!(
@@ -1732,6 +1784,123 @@ fn error_decode_bound_not_satisfied() {
     );
 }
 
+// std.encoding/E12b: the `decode` in a `Decode` block has one shape a decoder
+// can call. Each way to break it is reported once, at the method.
+#[test]
+fn error_decode_malformed() {
+    let (failed, out) = compile_error_output("decode_malformed.rk");
+    assert!(failed, "a `decode` a decoder can't call must be rejected: {}", out);
+    assert_eq!(out.matches("E0425").count(), 9, "nine shapes are E0425: {}", out);
+    for want in [
+        "`WithSelf`'s `decode` can't be used by a decoder",
+        "`decode` is written with `self`",
+        "`decode` takes 2 parameters, it needs one",
+        "the parameter is `mutate` or `take`",
+        "`decode` returns `NoReject`, it needs to return `NoReject or SomeError`",
+        "`Opaque` can't be decoded, so nothing can read it from the input",
+        "`Boxed<T>` is generic",
+        "`Loop` goes through itself",
+        "`LoopOpt` goes through itself",
+        "`Ping` goes through itself",
+    ] {
+        assert!(out.contains(want), "missing `{want}` in:\n{out}");
+    }
+    // A rejection with no `message()` has its own error, and the adapter the
+    // compiler writes beside `decode` adds none of its own.
+    assert_eq!(out.matches("E0344").count(), 1, "{}", out);
+    assert!(
+        !out.contains("E0308") && !out.contains("E0313") && !out.contains("E0361") && !out.contains("E0893"),
+        "no second error out of code the author never wrote: {}", out,
+    );
+}
+
+// std.encoding/E12b: a type that reads itself through its own `decode` isn't
+// auto-`Encode`, because the fields it would write aren't what `decode` reads.
+// Reached directly, through a `Vec` field and through a `Map` value; one that
+// writes its own `encode` is fine, and an empty `Encode` block is not.
+#[test]
+fn error_encode_skips_decode() {
+    let (failed, out) = compile_error_output("encode_skips_decode.rk");
+    assert!(failed, "writing a type that decodes through its own decode must be rejected: {}", out);
+    assert_eq!(
+        out.matches("E0426").count(), 5,
+        "`Port`, the `Listener` that holds a `Vec<Port>`, the `Routes` that holds a `Map`, and the `Flag` \
+         with an empty `Encode` block, at the block and where it is written: {}", out,
+    );
+    assert!(
+        !out.contains("E0333"),
+        "an empty `Encode` block isn't missing a method, it is the wrong block: {}", out,
+    );
+    assert!(
+        out.contains("`Port` is read as a `u16` and would be written as its fields")
+            && out.contains("`Listener` holds a `Port`"),
+        "should name the type, what it is read as, and the type it was reached through: {}", out,
+    );
+    assert!(
+        out.contains("Port implements Encode") && out.contains("func encode(self) -> u16") && out.contains("@no_encode"),
+        "should show the `encode` and the opt-out: {}", out,
+    );
+    assert!(
+        !out.contains("fields really are what gets written"),
+        "the empty block is the mistake, not a fix to offer: {}", out,
+    );
+}
+
+// std.encoding/E12b: the `encode` in an `Encode` block has one shape an encoder
+// can call. Each way to break it is reported once, at the method.
+#[test]
+fn error_encode_malformed() {
+    let (failed, out) = compile_error_output("encode_malformed.rk");
+    assert!(failed, "an `encode` an encoder can't call must be rejected: {}", out);
+    assert_eq!(out.matches("E0425").count(), 9, "nine shapes: {}", out);
+    for want in [
+        "`NoSelf`'s `encode` can't be used by an encoder",
+        "`encode` has no `self`",
+        "`encode` takes 1 parameter besides `self`, it needs none",
+        "`self` is `mutate` or `take`",
+        "`encode` returns `i64 or Why`",
+        "`encode` returns `void`",
+        "`Opaque` can't be encoded, so nothing can write it",
+        "`Boxed<T>` is generic",
+        "`Loop` goes through itself",
+        "`LoopOpt` goes through itself",
+    ] {
+        assert!(out.contains(want), "missing `{want}` in:\n{out}");
+    }
+    assert!(
+        !out.contains("E0893") && !out.contains("E0308") && !out.contains("E0313"),
+        "no second error out of code the author never wrote: {}", out,
+    );
+}
+
+// A bound on a type the checker doesn't know yet when it checks the call.
+// `Port.new(n)` on a program's own type answers through a constraint the solver
+// settles later, and `json.decode(text)` takes its target from the binding, so
+// both reach the bound as an open variable. The bound used to be dropped there
+// and the call compiled: the encoder wrote fields a `decode` can't read, the
+// decoder had no value for a private field. It is kept, and checked once the
+// type has settled.
+#[test]
+fn error_bound_on_unsettled_type() {
+    let (failed, out) = compile_error_output("bound_on_unsettled_type.rk");
+    assert!(failed, "a bound on a type settled after the call must still be checked: {}", out);
+    for (code, what) in [
+        ("E0426", "`Port` cannot be encoded"),
+        ("E0377", "`Gate` cannot be decoded"),
+        ("E0388", "`RawBuf` cannot be encoded"),
+    ] {
+        assert_eq!(out.matches(code).count(), 1, "{code} ({what}) once: {out}");
+        assert!(out.contains(what), "missing `{what}` in:\n{out}");
+    }
+    // The fix shows the block as a block: the body sits deeper than the header.
+    let depth = |needle: &str| {
+        out.lines().find(|l| l.contains(needle)).map(|l| l.len() - l.trim_start().len())
+    };
+    let header = depth("Port implements Encode {").expect("the fix shows the block");
+    let body = depth("func encode(self) -> u16 {").expect("the fix shows the method");
+    assert!(body > header, "the fix keeps its indentation ({header} vs {body}): {out}");
+}
+
 // #506: an @unimplemented stdlib *module* function is caught at the call, the
 // way a method on a receiver already was. `json.decode` used to type-check and
 // then segfault; it's implemented now, so `json.to_value` stands in.
@@ -1740,7 +1909,7 @@ fn error_unimplemented_module_fn() {
     let (failed, out) = compile_error_output("unimplemented_module_fn.rk");
     assert!(failed, "an unimplemented module function must be rejected: {}", out);
     assert!(
-        out.contains("E0353") && out.contains("json.to_value"),
+        out.contains("E0349") && out.contains("json.to_value"),
         "should name the function and the unimplemented code: {}", out,
     );
 }
@@ -2231,6 +2400,103 @@ fn main_error_return_exits_1() {
     }
 }
 
+// #2081: an error leaving main past a `using` block or an `ensure` runs the
+// cleanup first, then exits 1 with the message. Native jumped into the shared
+// cleanup without the value and returned 0.
+#[test]
+fn main_error_through_cleanup_exits_1() {
+    for (fixture, says) in [
+        ("main_error_through_using.rk", "boom"),
+        ("main_error_through_ensure.rk", "the thing failed"),
+    ] {
+        for mode in ["--interp", "--native"] {
+            let (stdout, stderr, code) = run_capture(mode, fixture);
+            assert_eq!(code, 1, "{mode} {fixture}: expected exit 1, got {code}\n{stdout}{stderr}");
+            assert!(!stdout.contains("unreachable"), "{mode} {fixture}: {stdout}");
+            assert!(stderr.contains(says), "{mode} {fixture}: should report `{says}`: {stderr}");
+        }
+    }
+    for mode in ["--interp", "--native"] {
+        let (stdout, _, _) = run_capture(mode, "main_error_through_ensure.rk");
+        let order: Vec<&str> = stdout.lines().filter(|l| *l == "cleaned up" || *l == "message asked").collect();
+        assert_eq!(order, ["cleaned up", "message asked"], "{mode}: the ensure runs before the message is asked for: {stdout}");
+    }
+}
+
+/// An error out of main whose type is a union reports the message of the
+/// member it holds. Natively the union had no type name to look `message()`
+/// up by, so the run said only "main returned an error".
+#[test]
+fn main_union_error_reports_its_members_message() {
+    for (fixture, says) in [("main_error_union_first.rk", "afail 1"), ("main_error_union_second.rk", "bfail two")] {
+        for mode in ["--interp", "--native"] {
+            let (stdout, stderr, code) = run_capture(mode, fixture);
+            assert_eq!(code, 1, "{mode} {fixture}: expected exit 1, got {code}\n{stdout}{stderr}");
+            assert!(stderr.contains(says), "{mode} {fixture}: should report `{says}`: {stderr}");
+        }
+    }
+}
+
+/// A generic error type's `message()` is found natively, and an `ensure`
+/// still runs before it. Native looked the message up by the type's name,
+/// which a generic instance doesn't have.
+#[test]
+fn main_generic_error_reports_its_message() {
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "main_error_generic.rk");
+        assert_eq!(code, 1, "{mode}: expected exit 1, got {code}\n{stdout}{stderr}");
+        assert!(stdout.contains("cleaned up"), "{mode}: the ensure runs: {stdout}");
+        assert!(stderr.contains("gen 7"), "{mode}: should report `gen 7`: {stderr}");
+    }
+}
+
+/// `try` on a stdlib call whose error is one member of a union error keeps
+/// which member it is. Natively the value came out as the union's first
+/// member.
+#[test]
+fn stdlib_error_into_union_keeps_its_member() {
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "main_error_union_from_stdlib.rk");
+        assert_eq!(code, 1, "{mode}: expected exit 1, got {code}\n{stdout}{stderr}");
+        assert!(stdout.contains("is IoError"), "{mode}: the error is the IoError member: {stdout}");
+        assert!(!stdout.contains("is Sfail"), "{mode}: {stdout}");
+        assert!(!stderr.contains("sfail"), "{mode}: reported the wrong member's message: {stderr}");
+    }
+}
+
+#[test]
+fn try_generic_error_into_union_finds_its_member() {
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "try_generic_error_into_union.rk");
+        assert_eq!(code, 0, "{mode}: expected exit 0, got {code}\n{stdout}{stderr}");
+        assert!(stdout.contains("is Gen"), "{mode}: the error is the Gen<i64> member: {stdout}");
+        assert!(!stdout.contains("is Afail"), "{mode}: {stdout}");
+        assert!(stdout.contains("uni: gen 5"), "{mode}: {stdout}");
+    }
+}
+
+/// An `any Error` out of main reports the boxed value's message, asked through
+/// its vtable once the `ensure` has run (#2097).
+#[test]
+fn main_any_error_reports_its_message() {
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "main_error_any.rk");
+        assert_eq!(code, 1, "{mode}: expected exit 1, got {code}\n{stdout}{stderr}");
+        assert!(stderr.contains("main returned an error: bfail two"), "{mode}: {stderr}");
+        let order: Vec<&str> = stdout.lines().filter(|l| *l == "cleaned up" || *l == "message asked").collect();
+        assert_eq!(order, ["cleaned up", "message asked"], "{mode}: {stdout}");
+    }
+}
+
+#[test]
+fn main_error_whose_message_panics_exits_101() {
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "main_error_message_panics.rk");
+        assert_eq!(code, 101, "{mode}: a panic in message() is a panic\n{stdout}{stderr}");
+        assert!(stderr.contains("message blew up"), "{mode}: {stderr}");
+    }
+}
+
 #[test]
 fn main_ok_return_exits_0() {
     for mode in ["--interp", "--native"] {
@@ -2387,8 +2653,15 @@ fn rack_link_cascade_delete_is_rejected() {
         text
     );
     assert!(
-        text.contains("E0328") && text.contains("`kid` names a deleted node"),
+        text.contains("E0328") && text.contains("`kid` may name a deleted node"),
         "the caller's *other* link is what dies, not just the one passed in: {}",
+        text
+    );
+    // The call picked its own victims, so `kid` may be alive: the error says
+    // the call can delete anything, not that it deleted `kid`'s node.
+    assert!(
+        text.contains("this can delete the node `kid` names") && !text.contains("the node `kid` names was deleted"),
+        "a revoked link must not be reported as a named delete: {}",
         text
     );
     // PM5: the marker follows the signature, so a `deleting` parameter takes
@@ -2789,7 +3062,7 @@ fn polymorphic_recursion_stops_at_the_depth_limit() {
     let (_stdout, stderr, code) = run_capture("--native", "polymorphic_recursion.rk");
     assert_ne!(code, 0, "native has no finite set of copies to build: {stderr}");
     assert!(stderr.contains("E0927"), "{stderr}");
-    assert!(stderr.contains("`nest<i32>` needs `nest<Vec<i32>>`"), "the chain starts readable: {stderr}");
+    assert!(stderr.contains("`nest<i64>` needs `nest<Vec<i64>>`"), "the chain starts readable: {stderr}");
     let (stdout, stderr, code) = run_capture("--interp", "polymorphic_recursion.rk");
     assert_eq!(code, 0, "{stderr}");
     assert_eq!(stdout, "0\n");
@@ -2817,7 +3090,7 @@ fn error_held_source_resized() {
     // ... plus one through an interface object, taken to resize.
     assert_eq!(out.matches("error[E0814]").count(), 3, "for mutate: {}", out);
     assert!(
-        out.contains("`wipe_twice` can resize `v`") && out.contains("`reset` can resize `h.items`"),
+        out.contains("`wipe_twice` can resize or reorder `v`") && out.contains("`reset` can resize or reorder `h.items`"),
         "the message names the callee that would resize it: {}",
         out
     );
@@ -2903,8 +3176,9 @@ fn error_rack_link_use_after_delete() {
     );
     // The intra-function sibling of the cascade hole: `t` came out of an edge, so
     // it may be a second name for whatever the delete named.
+    // It may name a different, living node, so the error says "may".
     assert!(
-        out.contains("`t` names a deleted node"),
+        out.contains("`t` may name a deleted node"),
         "a derived alias must not survive a named delete: {}",
         out
     );
@@ -4039,11 +4313,15 @@ fn bindc_writes_and_checks() {
         assert!(stdout.contains(want), "missing `{}` in:\n{}", want, stdout);
     }
 
+    // Written with `-o`: a header is named from where the file is, so the
+    // file `--check` compares is the one `-o` writes there.
     let tmp = std::env::temp_dir().join(format!("rask_bindc_{}_{}.rk", std::process::id(), next_tmp_id()));
-    std::fs::write(&tmp, &stdout).unwrap();
+    let wrote = Command::new(&rask).arg("bindc").arg(&header_path).arg("-o").arg(&tmp).output().unwrap();
+    assert!(wrote.status.success(), "{}", String::from_utf8_lossy(&wrote.stderr));
     let same = Command::new(&rask).arg("bindc").arg(&header_path).arg("--check").arg(&tmp).output().unwrap();
     assert!(same.status.success(), "{}", String::from_utf8_lossy(&same.stderr));
-    std::fs::write(&tmp, stdout.replace("42", "43")).unwrap();
+    let written = std::fs::read_to_string(&tmp).unwrap();
+    std::fs::write(&tmp, written.replace("42", "43")).unwrap();
     let stale = Command::new(&rask).arg("bindc").arg(&header_path).arg("--check").arg(&tmp).output().unwrap();
     let _ = std::fs::remove_file(&tmp);
     assert!(!stale.status.success(), "a stale binding should fail --check");
@@ -4727,7 +5005,7 @@ fn a_task_bound_closure_is_refused_at_spawn() {
     // location, so the report named whatever line last had: none at all, or
     // an earlier spawn that succeeded.
     for (fixture, line) in [
-        ("spawn_returned_closure_with_link.rk", 21),
+        ("spawn_returned_closure_with_link.rk", 23),
         ("spawn_field_closure_with_local_box.rk", 20),
     ] {
         for mode in ["--interp", "--native"] {
@@ -5015,7 +5293,7 @@ fn plain_write_keeps_the_partial_update_on_panic() {
 
 /// mem.ownership/D2: `discard` on a Copy type frees nothing.
 ///
-/// The variant, the message and the code W0301 were all written and nothing
+/// The variant, the message and the code W0303 were all written and nothing
 /// ever constructed them — a dead error path holding a live number (#992).
 ///
 /// The check waits for literal defaulting: `let n = 7` is an open type
@@ -5026,12 +5304,12 @@ fn discard_on_a_copy_type_warns() {
     let (checked, output) = check_fixture("discard_copy.rk");
     assert!(checked, "D2 is a warning — the program still type-checks:\n{output}");
     assert_eq!(
-        output.matches("W0301").count(),
+        output.matches("W0303").count(),
         3,
         "the three primitives warn and the two owners don't:\n{output}"
     );
     assert!(
-        output.contains("`i32` is a Copy type"),
+        output.contains("`i64` is a Copy type"),
         "an unsuffixed literal still has a type by the time this runs:\n{output}"
     );
 }
@@ -5499,9 +5777,10 @@ fn assert_compares_by_value_on_both_backends() {
 /// same line, which is the one thing the two backends may not be — and no suite
 /// file asserted a *failing* comparison, so nothing compared them.
 ///
-/// Native can't do better: a struct opts into `Displayable` (std.fmt/D3) and
-/// most don't, so there is nothing to render. The message stands alone for
-/// those, on both sides.
+/// Anything that isn't a scalar goes through the debug renderer on both sides,
+/// the one `{:debug}` uses, so `[1, 2] == [1, 3]` reads as written. A Vec used to
+/// print its two buffer addresses on native and nothing at all on the
+/// interpreter.
 #[test]
 fn a_failed_comparison_reads_the_same_on_both_backends() {
     let cases: &[(&str, &str)] = &[
@@ -5512,6 +5791,11 @@ fn a_failed_comparison_reads_the_same_on_both_backends() {
         ("optionals", "assert maybe(1) == maybe(2)"),
         ("structs", "assert Point(x: 1, y: 2) == Point(x: 1, y: 3)"),
         ("tuples", "assert (1, 2) == (1, 3)"),
+        ("optional against a scalar", "assert maybe(3) == 2"),
+        ("vecs", "assert Vec.from([1, 2]) == Vec.from([1, 3])"),
+        ("vecs of structs", "assert Vec.from([Point(x: 1, y: 2)]) == Vec.from([Point(x: 1, y: 3)])"),
+        ("vecs of strings", "assert Vec.from([\"a\"]) == Vec.from([\"b\"])"),
+        ("nested", "assert (Vec.from([1]), maybe(3)) == (Vec.from([1]), maybe(1))"),
     ];
 
     for (name, assertion) in cases {
@@ -5548,6 +5832,32 @@ fn a_failed_comparison_reads_the_same_on_both_backends() {
             "{name}: no failure line at all:\n{native}"
         );
     }
+}
+
+/// `assert vec_a == vec_b` shows the elements, not buffer addresses or nothing.
+#[test]
+fn a_failed_vec_comparison_shows_the_elements() {
+    const SRC: &str = "test \"v\" {\n    assert Vec.from([1, 2]) == Vec.from([1, 3])\n}\n\
+                       test \"c\" {\n    check Vec.from([\"a\"]) != Vec.from([\"a\"])\n}\n";
+    let dir = std::env::temp_dir()
+        .join(format!("rask_vec_cmp_msg_{}_{}", std::process::id(), next_tmp_id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("vec_cmp.rk");
+    std::fs::write(&file, SRC).unwrap();
+    let path = file.to_str().unwrap();
+    for args in [vec![path], vec!["--interp", path]] {
+        let (ok, out) = rask_test_output(&args);
+        assert!(!ok, "the assertions have to fail ({args:?}):\n{out}");
+        assert!(
+            out.contains("assertion failed: [1, 2] == [1, 3] (left: [1, 2], right: [1, 3])"),
+            "assert on Vecs ({args:?}):\n{out}"
+        );
+        assert!(
+            out.contains("check failed: [\"a\"] != [\"a\"] (left: [\"a\"], right: [\"a\"])"),
+            "check on Vecs ({args:?}):\n{out}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 // ─── Regression: issues #566, #569 ──────────────────────────
@@ -5635,6 +5945,17 @@ func main() {
 }
 "#;
 
+const PANIC_IN_A_CLOSURE_SRC: &str = r#"
+func main() {
+    let f = |x: i64| -> i64 {
+        assert x > 100
+        return x
+    }
+    println("{f(3)}")
+    return
+}
+"#;
+
 /// A panic several frames down names the line it happened on.
 ///
 /// Every `call_*` helper below `call_function` hands back a bare
@@ -5643,14 +5964,17 @@ func main() {
 /// A `v!` on line 4 was reported at the `println` on line 12, two frames away,
 /// while native named line 4 (#1110).
 ///
-/// Both spellings: a plain call and a method call, which reach `call_function`
-/// through different helpers and lost the span in different places.
+/// Three spellings: a plain call, a method call and a closure call, which go
+/// through different helpers and lost the span in different places. The
+/// closure call kept the line inside the body and then dropped it at the call
+/// site.
 #[test]
 fn panic_reports_the_line_it_happened_on() {
     // The line each source panics on, and the line its `main` calls from.
     for (src, want, not_want) in [
         (PANIC_IN_A_CALLEE_SRC, 4, 12),
         (PANIC_IN_A_METHOD_SRC, 9, 14),
+        (PANIC_IN_A_CLOSURE_SRC, 4, 7),
     ] {
         for interp in [false, true] {
             let backend = if interp { "interp" } else { "native" };
@@ -5664,6 +5988,35 @@ fn panic_reports_the_line_it_happened_on() {
                 "{backend}: line {not_want} is the call site, not where it failed:\n{out}"
             );
         }
+    }
+}
+
+const PANIC_IN_A_FUNCTION_AN_ENSURE_CALLS_SRC: &str = r#"import io.IoError
+
+func save() -> void or IoError {
+    todo()
+}
+
+func main() {
+    ensure save() catch e => println(e.message())
+    println("hi")
+}
+"#;
+
+/// A panic in a function only an `ensure` calls names its line.
+///
+/// The chain of cleanup bodies was compiled with no file and no line map, so a
+/// `todo()` there printed `panic: not yet implemented` while the same call
+/// anywhere else said where it was (#1950).
+#[test]
+fn panic_in_a_function_an_ensure_calls_names_its_line() {
+    for interp in [false, true] {
+        let backend = if interp { "interp" } else { "native" };
+        let out = run_rask_run_source(PANIC_IN_A_FUNCTION_AN_ENSURE_CALLS_SRC, interp);
+        assert!(
+            out.contains(":4:") || out.contains(":4\n"),
+            "{backend}: expected the panic at line 4, the `todo()`:\n{out}"
+        );
     }
 }
 
@@ -7363,7 +7716,8 @@ sum=500500
 fn runaway_recursion_is_reported_not_aborted() {
     let (stdout, stderr, code) = run_capture("--interp", "runaway_recursion.rk");
     let out = format!("{}{}", stdout, stderr);
-    assert_eq!(code, 1, "should exit 1, not abort: {}", out);
+    // Running out of stack is a panic (ctrl.panics/S5), so 101 like native.
+    assert_eq!(code, 101, "should exit 101, not abort: {}", out);
     assert!(out.contains("R0023"), "should be the recursion diagnostic: {}", out);
     assert!(out.contains("recursion too deep"), "{}", out);
     assert!(
@@ -7459,6 +7813,18 @@ fn error_int_float_arithmetic() {
         out.contains("x.round<f64>()"),
         "should suggest the conversion: {}", out,
     );
+}
+
+// mem.borrowing/S5: writing over a field frees what a view of it reads. A
+// `let old = p.f` the refill doesn't always follow stays a view, and reading it
+// after the refill read freed storage natively (#1838).
+#[test]
+fn error_field_view_outlives_replace() {
+    let (failed, out) = compile_error_output("field_view_outlives_replace.rk");
+    assert!(failed, "a view read after its field was replaced must be rejected: {}", out);
+    assert_eq!(out.matches("error[E0958]").count(), 16, "sixteen sites, no more: {}", out);
+    assert_eq!(out.matches("error[E0959]").count(), 2, "two reads of an emptied field: {}", out);
+    assert!(out.contains("written over while"), "should say what happened: {}", out);
 }
 
 // mem.parameters/PM2: a `mutate` parameter is still there when the call returns,
@@ -8112,6 +8478,53 @@ fn scalar_assertion_messages_agree_across_backends() {
     );
 }
 
+const OPTIONAL_STRING_ASSERT_SRC: &str = r#"
+test "a string optional holding a string" {
+    let a: string? = "y"
+    assert a == "x"
+}
+
+test "a string optional holding none" {
+    let a: string? = none
+    assert a == "x"
+}
+
+test "a check on a string optional" {
+    let a: string? = "y"
+    check a == "x"
+}
+
+func main() {}
+"#;
+
+/// A `string?` against a string reads the same on both backends.
+///
+/// The interpreter's string case fired when *either* side was a string, so it
+/// printed the optional as a bare quoted word with no `(left:, right:)` half;
+/// native chooses by the two sides' types and the optional sent it down the
+/// debug route. The string form is for two strings.
+#[test]
+fn an_optional_string_assertion_reads_the_same_on_both_backends() {
+    let strip = |out: String| -> Vec<String> {
+        out.lines()
+            .filter(|l| l.contains("assertion failed") || l.contains("check failed"))
+            .map(|l| {
+                let i = l.find("assertion failed").or_else(|| l.find("check failed")).unwrap();
+                l[i..].to_string()
+            })
+            .collect()
+    };
+    let native = strip(run_rask_test_source(OPTIONAL_STRING_ASSERT_SRC, false));
+    let interp = strip(run_rask_test_source(OPTIONAL_STRING_ASSERT_SRC, true));
+    assert_eq!(interp.len(), 3, "all three report:\n{interp:#?}");
+    assert_eq!(native, interp, "the two backends spell the same failure the same way");
+    assert!(
+        interp[0].contains("\"y\" == \"x\" (left: \"y\", right: \"x\")"),
+        "the optional renders as what it holds (fmt/G6):\n{}",
+        interp[0]
+    );
+}
+
 /// Run a source string through `rask run` and give back stdout + stderr.
 fn run_rask_run_source(src: &str, interp: bool) -> String {
     let rask = rask_binary();
@@ -8153,7 +8566,7 @@ func main() {
 }
 "#;
 
-const RUN_ASSERT_OPAQUE_SRC: &str = r#"
+const RUN_ASSERT_STRUCT_SRC: &str = r#"
 struct Pt { x: i64, y: i64 }
 
 func main() {
@@ -8204,16 +8617,145 @@ fn a_failed_assert_outside_a_test_says_it_once() {
             "{backend}: a hand-written message gets no prefix:\n{out}"
         );
 
-        // Neither backend renders struct operands — native compares by address
-        // — so the detail is empty and the words stand alone.
-        let out = run_rask_run_source(RUN_ASSERT_OPAQUE_SRC, interp);
+        // A struct is shown field by field, in debug form.
+        let out = run_rask_run_source(RUN_ASSERT_STRUCT_SRC, interp);
         assert!(
-            out.contains("assertion failed"),
-            "{backend}: an unrenderable comparison still reports:\n{out}"
+            out.contains(
+                "assertion failed: Pt(x: 1, y: 2) == Pt(x: 3, y: 4) \
+                 (left: Pt(x: 1, y: 2), right: Pt(x: 3, y: 4))"
+            ),
+            "{backend}: struct operands render in debug form:\n{out}"
         );
+    }
+}
+
+/// Each way a failure message is built from the program's own text, with a
+/// tail that no fixed buffer reaches: 6000 bytes of filler, then `END`.
+const LONG_FAILURE_PROGRAMS: &[(&str, &str)] = &[
+    (
+        "assert on two long strings",
+        r#"func main() {
+    let fa = "a".repeat(6000)
+    let fb = "b".repeat(6000)
+    let a = "{fa}END"
+    let b = "{fb}END"
+    assert a == b
+}"#,
+    ),
+    (
+        "assert on two long Vecs",
+        r#"func main() {
+    mut a: Vec<i64> = Vec.new()
+    mut b: Vec<i64> = Vec.new()
+    for i in 0..1500 {
+        a.push(i)
+        b.push(i)
+    }
+    b.push(0)
+    assert a == b
+}"#,
+    ),
+    (
+        "assert with a long message",
+        r#"func main() {
+    let f = "m".repeat(6000)
+    assert false, "{f}END"
+}"#,
+    ),
+    (
+        "panic with a long message",
+        r#"func main() {
+    let f = "p".repeat(6000)
+    panic("{f}END")
+}"#,
+    ),
+    (
+        "! on an error with a long message",
+        r#"enum Bad { Long }
+Bad implements Error {
+    func message(self) -> string {
+        let f = "e".repeat(6000)
+        return "{f}END"
+    }
+}
+func fail() -> i64 or Bad {
+    return Bad.Long
+}
+func main() {
+    let x = fail()!
+    println("{x}")
+}"#,
+    ),
+];
+
+const LONG_FAILURE_TESTS: &[(&str, &str)] = &[
+    (
+        "check on two long strings",
+        r#"test "long" {
+    let fa = "a".repeat(6000)
+    let fb = "b".repeat(6000)
+    let a = "{fa}END"
+    let b = "{fb}END"
+    check a == b
+}
+
+func main() {}"#,
+    ),
+    (
+        "two failed checks, each long",
+        r#"test "long" {
+    let one = "1".repeat(3000)
+    let two = "2".repeat(3000)
+    check false, "one {one}"
+    check false, "two {two}END"
+}
+
+func main() {}"#,
+    ),
+    (
+        "a long skip reason",
+        r#"test "long" {
+    let f = "s".repeat(6000)
+    skip("{f}END")
+}
+
+func main() {}"#,
+    ),
+];
+
+/// A failure message is printed whole, however long the text in it.
+///
+/// Native built every one of these in a 512- or 2048-byte buffer and cut the
+/// rest off, where the interpreter printed all of it. They are now built to
+/// the size they need.
+#[test]
+fn a_long_failure_message_is_not_cut_off() {
+    for interp in [false, true] {
+        let backend = if interp { "interp" } else { "native" };
+        for (what, src) in LONG_FAILURE_PROGRAMS {
+            let out = run_rask_run_source(src, interp);
+            // The Vecs end `…, 1499, 0]` on both sides of the message.
+            let tail = if what.contains("Vecs") { "1498, 1499, 0]" } else { "END" };
+            assert!(
+                out.contains(tail),
+                "{backend}: {what} lost its tail:\n{}",
+                &out[out.len().saturating_sub(300)..]
+            );
+        }
+        for (what, src) in LONG_FAILURE_TESTS {
+            let out = run_rask_test_source(src, interp);
+            assert!(
+                out.contains("END"),
+                "{backend}: {what} lost its tail:\n{}",
+                &out[out.len().saturating_sub(300)..]
+            );
+        }
+        // Both checks are kept, joined, whole.
+        let out = run_rask_test_source(LONG_FAILURE_TESTS[1].1, interp);
         assert!(
-            !out.contains("assertion failed:"),
-            "{backend}: and adds no empty detail after a colon:\n{out}"
+            out.contains(&"1".repeat(3000)) && out.contains(&"2".repeat(3000)),
+            "{backend}: the first of two long failed checks was cut:\n{}",
+            &out[out.len().saturating_sub(300)..]
         );
     }
 }
@@ -9112,8 +9654,9 @@ fn error_spawn_needs_multitasking_scope() {
     );
     assert_eq!(
         out.matches("E0353").count(),
-        1,
-        "CC2 fires once, at the call to the function that spawns:\n{out}"
+        3,
+        "CC2 fires at each call that reaches a spawn: a function, a method, \
+         a stdlib function:\n{out}"
     );
     assert!(
         out.contains("`launch_worker` reaches `spawn`"),
@@ -9273,9 +9816,9 @@ fn assert_says_which_side_wanted_a_bool() {
     let cases = [
         ("func opt() -> i32? { return 42 }\nfunc main() { assert opt() }", "found `i32?`"),
         ("func main() { assert \"nonempty\" }", "found `string`"),
-        // An unsuffixed `1` is an `i32` (type.primitives/L1); the message
+        // An unsuffixed `1` is an `i64` (type.primitives/L1); the message
         // used to say `i64` while the literal became an `i32` (#1523).
-        ("func main() { assert 1 }", "found `i32`"),
+        ("func main() { assert 1 }", "found `i64`"),
         ("func opt() -> i32? { return 42 }\nfunc main() { check opt() }", "found `i32?`"),
     ];
     for (src, found) in cases {
@@ -9290,7 +9833,7 @@ fn assert_says_which_side_wanted_a_bool() {
     // The message argument had the same inversion.
     let out = check_output("func main() { assert 1 == 1, 42 }");
     assert!(
-        out.contains("expected `string`") && out.contains("found `i32`"),
+        out.contains("expected `string`") && out.contains("found `i64`"),
         "the message has to be a string, and 42 isn't one:\n{out}"
     );
 }
@@ -9508,6 +10051,47 @@ fn comptime_cfg_answers_for_the_target_not_the_host() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+// `usize.MAX` and `isize.MIN` are the target's pointer width, not the
+// compiler's: lowering answered with the 64-bit numbers for every `--target`,
+// so a 32-bit program's `usize.MAX` was 18446744073709551615. Read off the MIR,
+// which needs no 32-bit backend.
+#[test]
+fn pointer_sized_limits_are_the_targets_in_mir() {
+    let dir = std::env::temp_dir().join(format!("rask_limits_target_{}_{}", std::process::id(), next_tmp_id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let src = dir.join("limits.rk");
+    std::fs::write(
+        &src,
+        "func main() {\n\
+         \x20   let hi: usize = usize.MAX\n\
+         \x20   let lo: isize = isize.MIN\n\
+         \x20   println(\"{hi} {lo}\")\n\
+         }\n",
+    )
+    .unwrap();
+    let dump = |target: &str| -> String {
+        let out = Command::new(rask_binary())
+            .arg("compile")
+            .arg("--dump-mir")
+            .arg("--target")
+            .arg(target)
+            .arg(&src)
+            .env("RASK_RUNTIME_DIR", runtime_dir())
+            .output()
+            .expect("failed to run rask");
+        let text = String::from_utf8_lossy(&out.stderr).to_string();
+        assert!(out.status.success(), "{target}: dump failed:\n{text}");
+        text
+    };
+    let narrow = dump("arm-none");
+    assert!(narrow.contains("4294967295"), "usize.MAX on a 32-bit target:\n{narrow}");
+    assert!(narrow.contains("-2147483648"), "isize.MIN on a 32-bit target:\n{narrow}");
+    let wide = dump("x86_64-linux");
+    assert!(wide.contains("-9223372036854775808"), "isize.MIN on a 64-bit target:\n{wide}");
+    assert!(!wide.contains("4294967295"), "a 64-bit target has no 32-bit limit:\n{wide}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 // The other half: a name nobody declared is an error, not a guess at what was
 // meant. It used to be accepted by anything shaped like `arch-os`.
 #[test]
@@ -9720,4 +10304,652 @@ fn check_on_a_package_directory_checks_every_file() {
     assert!(!ok_parse, "a parse error in other.rk passed the check");
     assert!(err_parse.contains("other.rk"), "the parse error should name its file: {err_parse}");
     assert!(!err_parse.contains("Is a directory"), "stderr: {err_parse}");
+}
+
+/// A project directory: `rask.toml` and the given files, by path.
+fn temp_project(tag: &str, files: &[(&str, &str)]) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("rask_{}_{}_{}", tag, std::process::id(), next_tmp_id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("rask.toml"),
+        "schema = \"rask-package@2\"\n\n[package]\nname = \"proj\"\nversion = \"0.1.0\"\ndescription = \"test\"\nlicense = \"MIT OR Apache-2.0\"\n",
+    )
+    .unwrap();
+    for (path, text) in files {
+        let p = dir.join(path);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, text).unwrap();
+    }
+    dir
+}
+
+/// `rask run <mode> <dir>`: stdout and stderr together, and whether it worked.
+fn run_project(mode: &str, dir: &std::path::Path) -> (String, bool) {
+    let out = Command::new(rask_binary())
+        .args(["run", mode])
+        .arg(dir)
+        .env("RASK_RUNTIME_DIR", runtime_dir())
+        .output()
+        .expect("failed to run rask run");
+    (format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr)), out.status.success())
+}
+
+/// A sub-package's function and struct literal, from the root, on both
+/// backends: the interpreter couldn't find `pa.via_a` (#1730) and native
+/// lowering had no layout for `pa.Pt(v: 9)` (#1728).
+#[test]
+fn a_sub_packages_functions_and_structs_work_on_both_backends() {
+    let dir = temp_project(
+        "subpkg_both",
+        &[
+            ("pa/a.rk", "public func via_a(x: i32) -> i32 {\n    return x + 1\n}\n\npublic struct Pt {\n    public v: i32\n}\n"),
+            ("main.rk", "import pa\n\nfunc main() {\n    let p = pa.Pt(v: 9)\n    println(\"{pa.via_a(4)} {p.v}\")\n}\n"),
+        ],
+    );
+    for mode in ["--native", "--interp"] {
+        let (out, ok) = run_project(mode, &dir);
+        assert!(ok && out.contains("5 9"), "{mode}:\n{out}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Two packages import different headers as `c`. Each `c` means its own
+/// package's header: macros, folded or not, and structs (#1729).
+#[test]
+fn a_c_import_alias_means_its_own_packages_header() {
+    let dir = temp_project(
+        "calias",
+        &[
+            ("pa/a.h", "#ifndef A_H\n#define A_H\nstruct pt { int x; };\n#define F(X) ((X) + 1)\n#endif\n"),
+            ("b.h", "#ifndef B_H\n#define B_H\nstruct pt { long y; long z; };\n#define F(X) ((X) * 100)\n#endif\n"),
+            (
+                "pa/a.rk",
+                "import c \"a.h\" as c\n\npublic func via_a(x: i32) -> i32 {\n    return c.F(x) + c.F(1)\n}\n\n\
+                 public func pt_x() -> i32 {\n    let p = c.Pt(x: 7)\n    return p.x\n}\n",
+            ),
+            (
+                "main.rk",
+                "import pa\nimport c \"b.h\" as c\n\nfunc main() {\n    let n = 4\n    let q = c.Pt(y: 7, z: 8)\n\
+                 \x20   println(\"{c.F(n)} {c.F(4)} {pa.via_a(n)} {q.z} {pa.pt_x()}\")\n}\n",
+            ),
+        ],
+    );
+    for mode in ["--native", "--interp"] {
+        let (out, ok) = run_project(mode, &dir);
+        assert!(ok && out.contains("400 400 7 8 7"), "{mode}:\n{out}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A C macro is no link symbol, so it belongs to its package like a
+/// function: `pa`'s macro `F` and the root's `func F` are two things, each
+/// reached by its own name (#1729, #1744). Within one package a function and
+/// a macro of one name are a duplicate.
+#[test]
+fn a_c_macro_belongs_to_its_package() {
+    let dir = temp_project(
+        "macro_pkg",
+        &[
+            ("pa/a.rk", "@c_macro(\"(X + 1)\")\npublic extern \"C\" func F(X: _) -> _\n\npublic func twice(x: i32) -> i32 {\n    return F(F(x))\n}\n"),
+            ("main.rk", "import pa\n\nfunc F(x: i32) -> i32 {\n    return x * 100\n}\n\nfunc main() {\n    let n: i32 = 4\n    println(\"{F(4)} {pa.F(n)} {pa.twice(n)} {comptime pa.F(1)}\")\n}\n"),
+        ],
+    );
+    for mode in ["--native", "--interp"] {
+        let (out, ok) = run_project(mode, &dir);
+        assert!(ok && out.contains("400 5 6 2"), "{mode}:\n{out}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+
+    let dir = temp_project(
+        "macro_dup",
+        &[(
+            "main.rk",
+            "@c_macro(\"(X + 1)\")\nextern \"C\" func F(X: _) -> _\n\nfunc F(x: i32) -> i32 {\n    return x\n}\n\nfunc main() {\n    println(\"{F(4)}\")\n}\n",
+        )],
+    );
+    let (out, ok) = run_project("--native", &dir);
+    assert!(!ok && out.contains("E0201") && out.contains("`F`"), "{out}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A sub-package's names are reached only through it (modules/IM1), and a
+/// root declaration may share one (#1744). Nested packages bind their last
+/// segment (IM2), and a `src/` layout's `main` is still the entry point.
+#[test]
+fn a_sub_package_is_its_own_namespace() {
+    let dir = temp_project(
+        "subpkg_ns",
+        &[
+            ("pa/a.rk", "import pa.sub\n\npublic func f(x: i32) -> i32 {\n    return sub.f(x) + 1\n}\n"),
+            ("pa/sub/s.rk", "public func f(x: i32) -> i32 {\n    return x * 10\n}\n"),
+            ("main.rk", "import pa\n\nfunc f(x: i32) -> i32 {\n    return x\n}\n\nfunc main() {\n    println(\"{f(2)} {pa.f(2)}\")\n}\n"),
+        ],
+    );
+    for mode in ["--native", "--interp"] {
+        let (out, ok) = run_project(mode, &dir);
+        assert!(ok && out.contains("2 21"), "{mode}:\n{out}");
+    }
+    std::fs::write(dir.join("main.rk"), "import pa\n\nfunc main() {\n    println(\"{sub.f(2)}\")\n}\n").unwrap();
+    let (out, ok) = run_project("--native", &dir);
+    assert!(!ok && out.contains("sub"), "a package's names aren't reachable without importing it:\n{out}");
+    let _ = std::fs::remove_dir_all(&dir);
+
+    let dir = temp_project(
+        "subpkg_src",
+        &[("src/main.rk", "func helper() -> i32 {\n    return 7\n}\n\nfunc main() {\n    println(\"{helper()}\")\n}\n")],
+    );
+    for mode in ["--native", "--interp"] {
+        let (out, ok) = run_project(mode, &dir);
+        assert!(ok && out.contains('7'), "{mode}:\n{out}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A struct `bindc` wrote, handed to a macro from another header whose
+/// header includes the struct's own one, with no include guard anywhere.
+/// The macro's C needs the struct's header, and must not include it twice
+/// (#1729).
+#[test]
+fn a_bindc_struct_reaches_another_headers_macro() {
+    let dir = temp_project(
+        "bindc_struct",
+        &[
+            ("pa/s.h", "struct pt { int v; };\n"),
+            ("m.h", "#include \"pa/s.h\"\n#define PV(P) ((P)->v)\n"),
+            ("other.h", "#define PW(P) ((P)->v * 2)\n"),
+            ("main.rk", "import pa\nimport c \"m.h\" as m\nimport c \"other.h\" as o\n\nfunc main() {\n    mut p = pa.make(9)\n    println(\"{unsafe m.PV(&p)} {unsafe o.PW(&p)}\")\n}\n"),
+        ],
+    );
+    let bindc = Command::new(rask_binary())
+        .current_dir(&dir)
+        .args(["bindc", "pa/s.h", "-o", "pa/s.rk"])
+        .output()
+        .expect("failed to run rask bindc");
+    assert!(bindc.status.success(), "{}", String::from_utf8_lossy(&bindc.stderr));
+    let mut bound = std::fs::read_to_string(dir.join("pa").join("s.rk")).unwrap();
+    assert!(bound.contains("header: \"s.h\""), "bindc writes the struct's header:\n{bound}");
+    bound.push_str("\npublic func make(v: i32) -> Pt {\n    return Pt(v: v)\n}\n");
+    std::fs::write(dir.join("pa").join("s.rk"), bound).unwrap();
+    let (out, ok) = run_project("--native", &dir);
+    assert!(ok && out.contains("9 18"), "{out}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// An arithmetic C macro in `comptime` is computed while compiling (#1731).
+#[test]
+fn an_arithmetic_c_macro_runs_in_comptime() {
+    for mode in ["--native", "--interp"] {
+        let (stdout, stderr, code) = run_capture(mode, "c_macro_comptime.rk");
+        assert_eq!(code, 0, "{mode}: {stderr}");
+        assert_eq!(stdout, "16 8 40\n", "{mode}");
+    }
+}
+
+/// C in `comptime` is refused for what it is. A macro has its body's
+/// effects, so one that calls a C function is that function's: `abs` is
+/// assumed to block (INF5). A `@memory_only` one blocks nothing and is still
+/// C (#1731).
+#[test]
+fn c_in_comptime_is_refused_for_what_it_does() {
+    let dir = temp_project(
+        "macro_ct_c",
+        &[(
+            "main.rk",
+            "extern \"C\" func abs(x: c_int) -> c_int\n@memory_only\nextern \"C\" func labs(x: c_long) -> c_long\n\n\
+             @c_macro(\"abs(X)\", header: \"stdlib.h\")\nextern \"C\" func G(X: _) -> _\n\n\
+             func main() {\n    let c = comptime G(2)\n    let d = comptime labs(2)\n    println(\"{c} {d}\")\n}\n",
+        )],
+    );
+    let (out, ok) = run_project("--native", &dir);
+    assert!(!ok, "{out}");
+    assert!(out.contains("reaches a call that blocks at compile time — `G` does"), "{out}");
+    assert!(out.contains("reaches C code at compile time — `labs` does"), "{out}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// One header imported by the root and by a sub-package is one set of types:
+/// a `c.Pt` the root builds is the `c.Pt` the package takes.
+#[test]
+fn one_header_imported_by_two_packages_is_one_set_of_types() {
+    let dir = temp_project(
+        "cshared",
+        &[
+            ("shared.h", "#ifndef S_H\n#define S_H\nstruct pt { int v; };\n#endif\n"),
+            ("pa/a.rk", "import c \"../shared.h\" as c\n\npublic func get(p: c.Pt) -> i32 {\n    return p.v\n}\n"),
+            ("main.rk", "import pa\nimport c \"shared.h\" as c\n\nfunc main() {\n    let p = c.Pt(v: 6)\n    println(\"{pa.get(p)}\")\n}\n"),
+        ],
+    );
+    for mode in ["--native", "--interp"] {
+        let (out, ok) = run_project(mode, &dir);
+        assert!(ok && out.contains('6'), "{mode}:\n{out}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Imports whose package and alias names run together still get names of
+/// their own: two packages both called `sub`, and a root alias `c_pa` beside
+/// `pa`'s `c`.
+#[test]
+fn c_imports_never_share_names_by_spelling() {
+    let header = |n: i32| format!("struct pt {{ int v; }};\n#define F(X) ((X) + {n})\n");
+    let dir = temp_project(
+        "cnames",
+        &[
+            ("pa/sub/s.h", &header(1)),
+            ("pb/sub/s.h", &header(2)),
+            ("pa/a.h", &header(3)),
+            ("b.h", &header(4)),
+            ("pa/sub/s.rk", "import c \"s.h\" as c\n\npublic func f(x: i32) -> i32 {\n    let p = c.Pt(v: x)\n    return c.F(p.v)\n}\n"),
+            ("pb/sub/s.rk", "import c \"s.h\" as c\n\npublic func g(x: i32) -> i32 {\n    let p = c.Pt(v: x)\n    return c.F(p.v)\n}\n"),
+            ("pa/a.rk", "import pa.sub\nimport c \"a.h\" as c\n\npublic func h(x: i32) -> i32 {\n    let y: i32 = sub.f(x)\n    return c.F(y)\n}\n"),
+            ("pb/b.rk", "import pb.sub\n\npublic func k(x: i32) -> i32 {\n    return sub.g(x)\n}\n"),
+            ("main.rk", "import pa\nimport pb\nimport c \"b.h\" as c_pa\n\nfunc main() {\n    let p = c_pa.Pt(v: 0)\n    println(\"{pa.h(0)} {pb.k(0)} {c_pa.F(p.v)}\")\n}\n"),
+        ],
+    );
+    for mode in ["--native", "--interp"] {
+        let (out, ok) = run_project(mode, &dir);
+        assert!(ok && out.contains("4 2 4"), "{mode}:\n{out}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `rask bindc include/s.h -o src/s.rk` names the header as `src/s.rk`
+/// reaches it, and the result builds.
+#[test]
+fn bindc_output_names_its_header_from_where_it_is_written() {
+    let dir = temp_project(
+        "bindc_where",
+        &[
+            ("include/s.h", "struct pt { int v; };\n#define PV(P) ((P)->v)\n"),
+            ("main.rk", "func main() {\n    mut p = Pt(v: 3)\n    println(\"{unsafe PV(&p)}\")\n}\n"),
+        ],
+    );
+    let bindc = Command::new(rask_binary())
+        .current_dir(&dir)
+        .args(["bindc", "include/s.h", "-o", "s.rk"])
+        .output()
+        .expect("failed to run rask bindc");
+    assert!(bindc.status.success(), "{}", String::from_utf8_lossy(&bindc.stderr));
+    let bound = std::fs::read_to_string(dir.join("s.rk")).unwrap();
+    assert!(bound.contains("header: \"include/s.h\""), "{bound}");
+    let (out, ok) = run_project("--native", &dir);
+    assert!(ok && out.contains('3'), "{out}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The interpreter builds `pa.Pt { … }` as the package's `Pt`, so its
+/// methods are found, and matches `pa.Shape.Circle(r)` patterns.
+#[test]
+fn the_interpreter_reads_package_qualified_types_and_patterns() {
+    let dir = temp_project(
+        "interp_pkg_types",
+        &[
+            (
+                "pa/a.rk",
+                "public struct Pt {\n    public v: i32\n}\n\nextend Pt {\n    public func get(self) -> i32 {\n        return self.v\n    }\n}\n\n\
+                 public enum Shape {\n    Circle(i32)\n    Dot\n}\n",
+            ),
+            (
+                "main.rk",
+                "import pa\n\nfunc main() {\n    let p = pa.Pt(v: 7)\n    let s = pa.Shape.Circle(3)\n    match s {\n\
+                 \x20       pa.Shape.Circle(r) => println(\"{p.get()} circle {r}\"),\n        pa.Shape.Dot => println(\"dot\"),\n    }\n}\n",
+            ),
+        ],
+    );
+    for mode in ["--native", "--interp"] {
+        let (out, ok) = run_project(mode, &dir);
+        assert!(ok && out.contains("7 circle 3"), "{mode}:\n{out}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Every spelling of a sub-package import the resolver accepts reaches the
+/// package's qualified names: the root's name in front, a nested package by
+/// its short name, and `import pa.*` (#1744).
+#[test]
+fn sub_package_imports_in_every_spelling() {
+    let dir = temp_project(
+        "subpkg_spellings",
+        &[
+            ("pa/a.rk", "import sub\n\npublic struct Pt {\n    public x: i32\n}\n\npublic func make(x: i32) -> Pt {\n    return Pt(x: sub.f(x))\n}\n\npublic const LIMIT: i32 = 5\n"),
+            ("pa/sub/s.rk", "public func f(x: i32) -> i32 {\n    return x + 1\n}\n"),
+            ("pb/b.rk", "public func g() -> i32 {\n    return 30\n}\n"),
+            ("main.rk", "import pa.*\nimport proj.pb\n\nfunc main() {\n    let q = make(3)\n    println(\"{q.x} {LIMIT} {pb.g()}\")\n}\n"),
+        ],
+    );
+    for mode in ["--native", "--interp"] {
+        let (out, ok) = run_project(mode, &dir);
+        assert!(ok && out.contains("4 5 30"), "{mode}:\n{out}");
+    }
+    // From the root, `pa/sub` is `pa.sub`: its last segment alone names
+    // nothing, wherever it sits.
+    std::fs::write(dir.join("main.rk"), "import sub\n\nfunc main() {\n    println(\"{sub.f(1)}\")\n}\n").unwrap();
+    let (out, ok) = run_project("--native", &dir);
+    assert!(!ok && out.contains("sub"), "{out}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Packages whose paths spell the same once joined (`pa/sub`, `pa_sub/`)
+/// are still two, a sub-package's `main` beside the root's is an ordinary
+/// function, and a private one is refused through its package too.
+#[test]
+fn sub_packages_keep_apart_and_keep_their_private_names() {
+    let dir = temp_project(
+        "subpkg_apart",
+        &[
+            ("pa/sub/s.rk", "public func f() -> i32 {\n    return 1\n}\n"),
+            ("pa_sub/s.rk", "public func f() -> i32 {\n    return 2\n}\n"),
+            ("pc/c.rk", "public func main() -> i32 {\n    return 3\n}\n\nfunc hidden() -> i32 {\n    return 4\n}\n"),
+            ("main.rk", "import pa.sub\nimport pa_sub\nimport pc\n\nfunc main() {\n    println(\"{sub.f()} {pa_sub.f()} {pc.main()}\")\n}\n"),
+        ],
+    );
+    for mode in ["--native", "--interp"] {
+        let (out, ok) = run_project(mode, &dir);
+        assert!(ok && out.contains("1 2 3"), "{mode}:\n{out}");
+    }
+    std::fs::write(dir.join("main.rk"), "import pc\n\nfunc main() {\n    println(\"{pc.hidden()}\")\n}\n").unwrap();
+    let (out, ok) = run_project("--native", &dir);
+    assert!(!ok && out.contains("E0877") && out.contains("private to `pc`"), "{out}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A sub-package's extern is the package's own name for its C function: the
+/// root's `func labs` stays the root's, `pa.labs` is C's, two packages may
+/// both declare it if they agree on its signature, and nothing declares it
+/// bare for the root (#1754).
+#[test]
+fn a_sub_packages_extern_is_its_own() {
+    let dir = temp_project(
+        "subpkg_extern",
+        &[
+            ("pa/a.rk", "public extern \"C\" func labs(x: i64) -> i64\n"),
+            ("pb/b.rk", "public extern \"C\" func labs(x: i64) -> i64\n\npublic func pos(x: i64) -> i64 {\n    return unsafe labs(x)\n}\n"),
+            (
+                "main.rk",
+                "import pa\nimport pb\n\nfunc labs(x: i64) -> i64 {\n    return 0\n}\n\n\
+                 func main() {\n    println(\"{labs(-3)} {unsafe pa.labs(-4)} {pb.pos(-5)}\")\n}\n",
+            ),
+        ],
+    );
+    let (out, ok) = run_project("--native", &dir);
+    assert!(ok && out.contains("0 4 5"), "{out}");
+
+    std::fs::write(dir.join("main.rk"), "import pa\n\nfunc main() {\n    println(\"{unsafe labs(-3)}\")\n}\n").unwrap();
+    let (out, ok) = run_project("--native", &dir);
+    assert!(!ok && out.contains("`labs`"), "a package's extern isn't the root's:\n{out}");
+
+    std::fs::write(dir.join("pb/b.rk"), "public extern \"C\" func labs(x: i32) -> i64\n").unwrap();
+    std::fs::write(dir.join("main.rk"), "import pa\nimport pb\n\nfunc main() {\n    println(\"{unsafe pa.labs(-3)}\")\n}\n").unwrap();
+    let (out, ok) = run_project("--native", &dir);
+    assert!(!ok && out.contains("E0213"), "one C function, two signatures:\n{out}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A variant of `T` on a flat `T? or E` is three steps down: the success side,
+/// the option holding a value, then the variant. Testing only the first read
+/// the option's tag word as `Light`'s, so `Light.Green` answered true to `is
+/// Light.Red`, and `Shape.Circle(x)` bound `x` out of the wrong bytes. Native
+/// only: the interpreter matches none of these yet.
+#[test]
+fn a_variant_inside_a_flat_option_result_tests_every_step() {
+    let expected = "0: Red=true Green=false\n1: Red=false Green=true\n\
+                    2: Red=false Green=false\n3: Red=false Green=false\n\
+                    circle 1.5\nnone\nis label q2\nlabel q2\nerr\n";
+    let (native, code) = run_native("flat_option_variant_path.rk");
+    assert_eq!(code, 0, "native: {native}");
+    assert_eq!(native, expected, "native");
+}
+
+// ctrl.comptime/CT50: a template's copies are told apart by their instance's
+// types. The interpreter matched them by the types' printed names, which drop
+// the module, so `Item` and `helpers.Item` shared one copy.
+#[test]
+fn template_copies_for_types_sharing_a_name_stay_apart_on_both_backends() {
+    let expected = "a,b,c,\nid,tag,\n";
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "template_package");
+        assert_eq!(code, 0, "{}: {}", mode, stderr);
+        assert!(stdout.ends_with(expected), "{}: {}", mode, stdout);
+    }
+}
+
+// ctrl.comptime/CT50: `rask run` on a file with a `test` block. Finding the
+// instances to write out swapped `main` for the test runner's, so nothing
+// `main` called was written out and the backends met a `comptime for`.
+#[test]
+fn a_template_reached_from_main_beside_a_test_block() {
+    const SRC: &str = r#"import std.reflect
+
+struct Reading {
+    id: i64
+    temp: f64
+}
+
+func show<T>(v: T) -> string {
+    mut out = ""
+    comptime for f in reflect.fields<T>() {
+        out = "{out}{f.name};"
+    }
+    return out
+}
+
+func main() {
+    println(show(Reading(id: 1, temp: 2.5)))
+}
+
+test "t" {
+    assert true
+}
+"#;
+    for interp in [false, true] {
+        let out = run_rask_run_source(SRC, interp);
+        assert!(out.contains("id;temp;"), "interp={interp}:\n{out}");
+    }
+}
+
+// A `mutate` parameter is the caller's slot: when a panic unwinds out of the
+// callee, the caller's unwinding releases what's in it. The callee released
+// it too, once just before the panic and once more from its own unwind
+// record, so the test runner died of a double free and the tests after the
+// panicking one never ran.
+#[test]
+fn a_panic_in_a_callee_leaves_its_mutate_argument_to_the_caller() {
+    const SRC: &str = r#"enum Direction {
+    North
+    South
+}
+
+func boom() -> i64 {
+    todo()
+}
+
+struct Room {
+    exits: Map<Direction, usize>
+}
+
+struct World {
+    rooms: Vec<Room>
+}
+
+func connect(mutate w: World, d: Direction) {
+    w.rooms[0].exits[d] = 1
+    let q = boom()
+}
+
+test "panics in the callee" {
+    mut w = World(rooms: Vec.new())
+    w.rooms.push(Room(exits: Map.new()))
+    connect(mutate w, Direction.North)
+}
+
+test "runs after it" {
+    assert 1 == 1
+}
+"#;
+    for interp in [false, true] {
+        let out = run_rask_test_source(SRC, interp);
+        assert!(out.contains("2 tests, 1 passed, 1 failed"), "interp={interp}:\n{out}");
+    }
+}
+
+// std.reflect: a field typed by a type parameter reports what the instance put
+// there. `Row<Flag>.x` is a `Flag`, read from a cell as a `bool`; the wire kind
+// and the codec facts were worked out from the bare `T` and said "other" with no
+// `decode`, so csv refused a valid cell. Native only: the interpreter's
+// `json.decode` doesn't build a generic struct at all.
+#[test]
+fn csv_reads_a_generic_structs_custom_field_as_its_wire_type() {
+    let (stdout, code) = run_native("csv_generic_custom.rk");
+    assert_eq!(code, 0, "{stdout}");
+    assert_eq!(
+        stdout,
+        "2 true false\nCSV row 2, column \"x\": \"maybe\" is not true or false\n",
+    );
+}
+
+// A stack overflow inside an ensure that runs while a panic unwinds is a
+// secondary panic: reported, contained, and the first panic is the task's.
+// The interpreter used to treat its overflow as an interpreter failure rather
+// than a panic, so it swallowed it with no report while native printed one.
+// The two backends word the overflow differently, so this checks what both
+// report instead of comparing their output byte for byte.
+#[test]
+fn an_overflow_in_an_unwinding_ensure_is_a_reported_secondary_panic() {
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "overflow_in_ensure.rk");
+        assert_eq!(code, 0, "{}: {}", mode, stderr);
+        let lines: Vec<&str> = stdout.lines().collect();
+        assert_eq!(lines.len(), 2, "{}: {}{}", mode, stdout, stderr);
+        assert!(
+            lines[0].starts_with("panicked: ") && lines[0].ends_with("overflow_in_ensure.rk:13: plain"),
+            "{}: the first panic should be the task's: {}", mode, stdout,
+        );
+        assert_eq!(lines[1], "after: 10", "{}", mode);
+        let reports: Vec<&str> = stderr
+            .lines()
+            .filter(|l| l.contains("secondary panic during unwind") && l.contains("overflow_in_ensure.rk:4"))
+            .collect();
+        assert_eq!(reports.len(), 2, "{}: both ensures should report: {}", mode, stderr);
+    }
+}
+
+// Dropping a deep value frees what it owns level by level, in the C runtime,
+// which has no stack limit check of its own. Done by plain recursion, an
+// 8000-link chain dropped in a task ran past its 1 MiB stack and aborted in
+// the stack guard. The runtime now queues a nested free near the limit
+// instead of recursing. Native only: the interpreter's own drop of a value
+// this deep overflows the Rust stack (#2077), and at depths it
+// survives it takes minutes.
+#[test]
+fn a_value_too_deep_to_free_recursively_is_freed() {
+    let (stdout, stderr, code) = run_capture("--native", "deep_drop.rk");
+    assert_eq!(code, 0, "{}", stderr);
+    assert_eq!(
+        stdout,
+        "chain 199999\ntree 199999\ntask chain 49999\ntask tree 49999\n",
+        "{}", stderr,
+    );
+}
+
+// A stack overflow is reported at the function whose entry caught it. A
+// closure's compiled function carried no source position, so an overflow
+// caught at a closure's entry panicked with no file or line (ctrl.panics/S6).
+#[test]
+fn an_overflow_caught_in_a_closure_says_where() {
+    let (_, stderr, code) = run_capture("--native", "overflow_in_closure.rk");
+    assert_eq!(code, 101, "{}", stderr);
+    assert!(
+        stderr.contains("overflow_in_closure.rk:2:") || stderr.contains("overflow_in_closure.rk:3:"),
+        "should name `go` or its closure: {}", stderr,
+    );
+}
+
+// A recursive function's frame is paid at every level. Inlining a helper's
+// 4.8K array into it, though the helper only runs at the bottom, made each
+// level that much bigger and `rec(3000)` overflowed natively; the interpreter
+// finished it.
+#[test]
+fn a_helper_with_an_array_is_not_inlined_into_recursion() {
+    let (stdout, stderr, code) = run_capture("--native", "inlined_into_recursion.rk");
+    assert_eq!(code, 0, "{}", stderr);
+    assert_eq!(stdout, "start\n3007\n");
+}
+
+/// The value cap counts pointers as 8 bytes on every target (#2066),
+/// so a type over it on x86_64 is over it on wasm32 too. Measured with the
+/// target's own pointers, `[Vec<i64>; 8193]` fit in 32 KiB there and the same
+/// program compiled on one machine and not the other.
+#[test]
+fn the_value_cap_counts_the_same_on_a_32_bit_target() {
+    let out = Command::new(rask_binary())
+        .arg("compile")
+        .arg("--dump-mir")
+        .arg("--target")
+        .arg("wasm32-none")
+        .arg(fixture("value_cap_any_target.rk"))
+        .output()
+        .expect("failed to run rask compile");
+    let text = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    assert!(text.contains("E0980"), "wasm32 accepted a value over 64 KiB:\n{text}");
+}
+
+/// A test that panics inside `using ThreadPool` leaves the next test with the
+/// pool closed, on every backend.
+#[test]
+fn pool_block_is_closed_after_a_test_panics_in_it() {
+    let file = fixture("pool_block_closed_after_test_panic.rk");
+    for args in [vec!["test"], vec!["test", "--interp"], vec!["test", "--sim", "--seed", "1"]] {
+        let out = Command::new(rask_binary())
+            .args(&args)
+            .arg(&file)
+            .env("RASK_RUNTIME_DIR", runtime_dir())
+            .output()
+            .expect("failed to run rask test");
+        let combined = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr),
+        );
+        assert!(
+            combined.contains("3 tests, 1 passed, 2 failed"),
+            "{args:?}: only the fresh block should pass:\n{combined}"
+        );
+        assert!(
+            combined.contains("ThreadPool.spawn requires `using ThreadPool` context"),
+            "{args:?}: the stored call should panic:\n{combined}"
+        );
+        assert!(!combined.contains("without a pool"), "{args:?}: ran on a leftover pool:\n{combined}");
+    }
+}
+
+/// A spawn reached through an `any` call panics with no block open
+/// (conc.async/CC3), on every backend. The interpreter ran a task that borrows
+/// its frame without asking for a runtime, so both spawns here printed their
+/// answers there.
+#[test]
+fn spawn_through_any_panics_without_its_block() {
+    let file = fixture("spawn_through_any_needs_runtime.rk");
+    for args in [vec!["test"], vec!["test", "--interp"]] {
+        let out = Command::new(rask_binary())
+            .args(&args)
+            .arg(&file)
+            .env("RASK_RUNTIME_DIR", runtime_dir())
+            .output()
+            .expect("failed to run rask test");
+        let combined = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr),
+        );
+        assert!(
+            combined.contains("3 tests, 1 passed, 2 failed"),
+            "{args:?}: only the test with its blocks open should pass:\n{combined}"
+        );
+        assert!(
+            combined.contains("ThreadPool.spawn requires `using ThreadPool` context"),
+            "{args:?}: the pool spawn should panic:\n{combined}"
+        );
+        assert!(combined.contains("using Multitasking"), "{args:?}: the green spawn should panic:\n{combined}");
+    }
 }

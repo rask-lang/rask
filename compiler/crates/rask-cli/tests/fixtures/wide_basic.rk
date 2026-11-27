@@ -1,20 +1,28 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 // Wide<T> data-parallel algebra on the CPU (conc.data-parallel).
+// A plan is consumed by the operation that extends it (mem.linear), so each
+// chain starts from a fresh one.
+
+import collections.Wide
+func lanes() -> Wide<f64> {
+    return Vec.from([1.0, 2.0, 3.0, 4.0]).wide()
+}
+
 func main() {
-    let xs = Vec.from([1.0, 2.0, 3.0, 4.0]).wide()
+    let xs = lanes()
 
     // terminal: sum over lanes
     print("{xs.sum()}\n")                              // 10
 
     // lazy map, then terminal sum
-    print("{xs.map(|x| x * 2.0).sum()}\n")             // 20
+    print("{lanes().map(|x| x * 2.0).sum()}\n")        // 20
 
     // zip two plans lane-by-lane, then sum (dot product)
     let ys = Vec.from([10.0, 20.0, 30.0, 40.0]).wide()
-    print("{xs.zip_with(ys, |a, b| a * b).sum()}\n")   // 300
+    print("{lanes().zip_with(ys, |a, b| a * b).sum()}\n")   // 300
 
     // lazy map, then materialize back to a Vec
-    print("{xs.map(|x| x * 2.0).to_vec().join(\", \")}\n") // 2, 4, 6, 8
+    print("{lanes().map(|x| x * 2.0).to_vec().join(\", \")}\n") // 2, 4, 6, 8
 
     // reduction family
     print("{xs.min()}\n")                              // 1

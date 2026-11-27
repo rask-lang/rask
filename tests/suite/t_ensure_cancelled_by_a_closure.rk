@@ -1,0 +1,116 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// ctrl.ensure/C1 and C6: a closure or task that takes what the cleanup
+// consumes cancels the ensure, and from then on the closure owns the value
+// and frees it. Natively these first ran the ensure on a vector the closure
+// still pointed at (`out.push(|| v[0])`), then freed it with nobody, and a
+// struct carried into a task under an ensure kept its string forever.
+
+import sync.Atomic
+
+const RAN: Atomic<i64> = Atomic<i64>.new(0)
+
+func sinkv(take v: Vec<string>) -> i64 {
+    RAN.fetch_add(1)
+    return v.len().to<i64>()!
+}
+
+func filled(n: i64) -> Vec<string> {
+    mut v: Vec<string> = Vec.new()
+    v.push("heap string number {n}, long enough to allocate somewhere")
+    return v
+}
+
+func keep(take f: func() -> string) -> func() -> string {
+    return f
+}
+
+func pushed() -> Vec<func() -> string> {
+    let v = filled(1)
+    ensure sinkv(v)
+    mut out: Vec<func() -> string> = Vec.new()
+    out.push(|| v[0])
+    return out
+}
+
+func passed() -> func() -> string {
+    let v = filled(2)
+    ensure sinkv(v)
+    return keep(|| v[0])
+}
+
+func bound_then_returned() -> func() -> string {
+    let v = filled(3)
+    ensure sinkv(v)
+    let f = || v[0]
+    return f
+}
+
+struct Tok {
+    name: string,
+    n: i64,
+}
+
+extend Tok {
+    func finish(take self) {
+        RAN.fetch_add(1)
+    }
+}
+
+func eat(take t: Tok) -> i64 {
+    return t.n
+}
+
+func tok(n: i64) -> Tok {
+    return Tok(name: "token {n} with a name long enough to allocate", n: n)
+}
+
+func task_takes_method_subject(n: i64) -> i64 {
+    let t = tok(n)
+    ensure t.finish()
+    let h = spawn {
+        return eat(t)
+    }
+    return h.join()!
+}
+
+func task_takes_argument_subject(n: i64) -> i64 {
+    let t = tok(n)
+    ensure eat(t)
+    let h = spawn {
+        return eat(t)
+    }
+    return h.join()!
+}
+
+func task_finishes_it(n: i64) -> i64 {
+    let t = tok(n)
+    ensure t.finish()
+    let h = spawn {
+        t.finish()
+        return n
+    }
+    return h.join()!
+}
+
+test "ctrl.ensure/C1 — a closure that takes the subject cancels the ensure" {
+    RAN.store(0)
+    let a = pushed()
+    assert a[0]().starts_with("heap string number 1")
+    let b = passed()
+    assert b().starts_with("heap string number 2")
+    let c = bound_then_returned()
+    assert c().starts_with("heap string number 3")
+    assert RAN.load() == 0
+}
+
+test "ctrl.ensure/C1 — a task that takes the subject cancels the ensure" {
+    RAN.store(0)
+    using Multitasking {
+        assert task_takes_method_subject(4) == 4
+        assert task_takes_argument_subject(5) == 5
+        assert task_finishes_it(6) == 6
+    }
+    assert RAN.load() == 1
+}
+
+func main() {}

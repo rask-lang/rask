@@ -189,8 +189,8 @@ a string and `entries` on a map are all things that look right and aren't.
 `trim_start` `trim_end` `to_uppercase` `to_lowercase` `replace` `replacen`
 `repeat` `reverse` `substring` `char_count` `is_ascii` `to_string`
 `split` `split_whitespace` `lines` `chars` `char_indices` `bytes`
-`parse_int` `parse_float` `parse`
-`index_of` / `last_index_of` (→ `u64?`, not a plain index) · `char_at` (→ `char?`) · `as_bytes`
+`parse<T>` (`"42".parse<i32>()`, not `parse_int`)
+`index_of` / `last_index_of` (→ `usize?`, not a plain index) · `char_at` (→ `char?`) · `as_bytes`
 
 **`bytes`** — `len` `is_empty` `starts_with` `ends_with` `contains` `index_of`
 `hash` `to_vec` `view`; `Vec<u8>.freeze()`
@@ -220,8 +220,9 @@ starts a lazy sequence over `v` and `v.map(f).to_vec()` builds the Vec
 (`type.sequence/SEQ48`). The chain allocates once, at the terminal
 (`type.sequence/SEQ41`).
 
-`.len()` answers `u64` everywhere. `as` won't narrow it to `i64` — that's
-`.to<i64>()!`, or keep the count unsigned.
+`.len()` answers `usize` everywhere, and so do indices. `usize` widens to
+`u64` on its own; `u64` to `usize`, and either to `i64`, is `.to<…>()!`, or
+keep the count unsigned.
 
 ## Types
 
@@ -324,7 +325,7 @@ duck interface Sketchy { func poke(self) }       // opt-in shape-matching — pr
                                              // harden by deleting `duck` + accepting generated declarations
 ```
 
-- Auto-derived (no declaration needed): **Equal, Hashable, Comparable, Cloneable** for eligible field types, `Debug` for all types, `Encode`/`Decode` markers, `Error` for enums. Structs and enums only — a nominal newtype (`type TaskId = u64`) inherits nothing from what it wraps and opts in with `implements …` (`type.aliases/T10`, T11). Overriding `Equal` cancels auto-derived `Hashable`/`Comparable` — redeclare them consistently (OC1).
+- Auto-derived (no declaration needed): **Equal, Hashable, Comparable, Cloneable** for eligible field types, `Debug` for all types, `Encode`/`Decode` markers (a type that protects an invariant makes its field `private`, which is never read from the wire, and writes its `decode`, `T implements Decode { func decode(raw: u16) -> T or MyError { … } }`, which json, csv and claims call wherever `T` appears, `std.encoding/E13a`, E12b). A type with its own `decode` also needs its `encode`, `T implements Encode { func encode(self) -> u16 { return self.value } }`, or `@no_encode`; an empty `Encode` block doesn't do (E12d, E12e), `Error` for enums. Structs and enums only — a nominal newtype (`type TaskId = u64`) inherits nothing from what it wraps and opts in with `implements …` (`type.aliases/T10`, T11). Overriding `Equal` cancels auto-derived `Hashable`/`Comparable` — redeclare them consistently (OC1).
 - Method-name collision between two conformances: compile error; put the second conformance on a nominal type of its own, `type Loud = Doc` (MN3). Not an orphan rule: who owns the type never matters.
 - Generics monomorphize (`func max<T: Comparable>(a: T, b: T) -> T`). Public functions declare bounds; private functions may omit types and bounds entirely — inferred from the body, still fully static (`type.gradual`). Error unions infer too: `-> Config or _`.
 - Operators are authored sugar on concrete types: `a + b` calls `a.add(b)` — write the method, get the operator. Arithmetic operators require Copy types (no allocating `+`); `+=` has no such limit. Generic operator use goes through nominal bounds (OP1). There is no `From`/`Into` — `try` widens error unions structurally, and there's one string type.

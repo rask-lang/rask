@@ -43,6 +43,30 @@ fn nearest_methods(ty: &str, method: &str) -> Vec<&'static str> {
     nearest_names(&rask_stdlib::registry::type_method_names(type_base(ty)), method)
 }
 
+/// What a name from another language is called in Rask, where spelling
+/// distance can't find it: `fs.read_file` is closer to `read_dir` than to
+/// `read_text`. `owner` is a module or a type's base name. The answer may
+/// name another module (`cli.args` → `os.args`).
+fn rask_spelling(owner: &str, name: &str) -> Option<&'static str> {
+    Some(match (owner, name) {
+        ("fs", "read_file" | "read_to_string" | "read_all" | "readFile") => "read_text",
+        ("fs", "write_file" | "writeFile" | "write_all") => "write_text",
+        ("fs", "append_file" | "appendFile") => "append_text",
+        ("fs", "mkdir") => "create_dir",
+        ("fs", "mkdir_all" | "makedirs") => "create_dir_all",
+        ("fs", "list_dir" | "listdir" | "readdir") => "read_dir",
+        ("fs", "delete" | "unlink" | "remove") => "remove_file",
+        ("cli" | "env" | "sys" | "process", "args" | "argv") => "os.args",
+        ("os", "getenv" | "get_env" | "var") => "env",
+        ("os", "argv") => "args",
+        ("string" | "Vec" | "Map" | "Set" | "StringSlice", "size" | "length") => "len",
+        ("Vec", "add" | "append" | "push_back") => "push",
+        ("Map", "put" | "set") => "insert",
+        ("Map", "contains_key" | "has" | "has_key") => "contains",
+        _ => return None,
+    })
+}
+
 /// The rules `nearest_methods` describes, over any list of names.
 fn nearest_names<'a>(candidates: &[&'a str], method: &str) -> Vec<&'a str> {
     if candidates.is_empty() || method.is_empty() {
@@ -619,7 +643,11 @@ impl ToDiagnostic for crate::TypeError {
                         .with_fix(format!("check the arguments to `{}`", method))
                         .with_why(format!("the name resolves — `{}` does have `{}`, and it is the call that didn't fit", ty, method));
                 }
-                match nearest_methods(&ty_name, method) {
+                let names = match rask_spelling(type_base(&ty_name), method) {
+                    Some(n) => vec![n],
+                    None => nearest_methods(&ty_name, method),
+                };
+                match names {
                     names if !names.is_empty() => diag
                         .with_help(format!("did you mean `{}`?", names.join("` or `")))
                         .with_fix(format!("did you mean `{}`?", names.join("` or `")))
@@ -681,8 +709,18 @@ impl ToDiagnostic for crate::TypeError {
                             .with_fix(format!("{}.{}(…)", ty, function))
                     };
                 }
+                if let Some(qualified) = rask_spelling(module, function).filter(|n| n.contains('.')) {
+                    let other = qualified.split('.').next().unwrap_or_default();
+                    return diag
+                        .with_help(format!("that's in `{}`: `import {}`", other, other))
+                        .with_fix(format!("{}(…)", qualified));
+                }
                 let names: Vec<&str> = available.iter().map(String::as_str).collect();
-                match nearest_names(&names, function).first() {
+                let nearest = match rask_spelling(module, function) {
+                    Some(n) => vec![n],
+                    None => nearest_names(&names, function),
+                };
+                match nearest.first() {
                     Some(n) => diag
                         .with_help(format!("did you mean `{}.{}`?", module, n))
                         .with_fix(format!("{}.{}(…)", module, n)),
@@ -699,7 +737,7 @@ impl ToDiagnostic for crate::TypeError {
                     "`{}.{}` is declared but not implemented yet",
                     ty, method
                 ))
-                .with_code("E0353")
+                .with_code("E0349")
                 .with_primary(*span, "no implementation behind this signature")
                 .with_help(format!(
                     "the signature exists so the API can be referenced, but \
@@ -1148,6 +1186,19 @@ impl ToDiagnostic for crate::TypeError {
                     .with_why("`T?` and `T or E` are operator-only: one spelling per job, and the right side is lazy by construction [std.api/SD4]")
             }
 
+            WrapperFieldCut { field, receiver, chained, span } => {
+                let fix = if *chained {
+                    format!("`?.` unwraps one layer; bind the outer one first: `if x? as inner {{ … inner?.{0} … }}`", field)
+                } else {
+                    format!("`x?.{0}` reads it when present, or bind first: `if x? as v {{ … v.{0} … }}`", field)
+                };
+                Diagnostic::error(format!("no field `{}` on `{}`", field, receiver))
+                    .with_code("E0978")
+                    .with_primary(*span, "the value may be absent")
+                    .with_fix(fix)
+                    .with_why("an optional has no fields of its own, and `if x?` doesn't change `x`'s type: the payload is reached through `?.` or an `as` bind [type.optionals/OPT19]")
+            }
+
             TryOutsideFunction { span } => {
                 Diagnostic::error("`try` has nowhere to send the error here")
                     .with_code("E0317")
@@ -1396,6 +1447,14 @@ impl ToDiagnostic for crate::TypeError {
                 }
             }
 
+            WriteThroughForce { span } => {
+                Diagnostic::error("cannot write into a payload `!` read out")
+                    .with_code("E0985")
+                    .with_primary(*span, "`!` hands back a copy of what the optional holds")
+                    .with_help("copy the payload out, change the copy, and assign it back")
+                    .with_fix("mut next = opt!\nnext.n = 5\nopt = next")
+                    .with_why("`x!` reads the payload out, the same as `if x? as v` does, so a write into it would land on the copy and be lost [type.optionals/OPT19]. A link is different: its fields are the node's, so `x!.f = v` on a `Link<T>?` writes the node")
+            }
             MutateWithBinding { name, span } => {
                 Diagnostic::error(format!("cannot mutate `{}` — bound from a shared read lock", name))
                     .with_code("E0360")
@@ -1687,6 +1746,23 @@ impl ToDiagnostic for crate::TypeError {
                     .with_help(format!("`{}` works on a `T?` or a `T or E`; a plain value needs none of it", op))
             }
 
+            ReflectItemNotUnrolled { info, method, span } => {
+                let iterable = if *info == "ParamInfo" { "reflect.params<F>()" } else { "reflect.fields<T>()" };
+                Diagnostic::error(format!(
+                    "`{method}` on a `{info}` only answers inside a `comptime for` over it"
+                ))
+                    .with_code("E0966")
+                    .with_primary(*span, "this isn't a `comptime for` binding")
+                    .with_fix(format!(
+                        "loop with `comptime for x in {iterable}` and ask `x.{method}<…>()` on the binding"
+                    ))
+                    .with_why(
+                        "the answer is worked out while the compiler unrolls the loop, one \
+                         copy of the body per item; a value kept past that has no answer \
+                         left in it [std.reflect/R1]",
+                    )
+            }
+
             DynamicFieldNameNotComptime { span } => {
                 Diagnostic::error("the field name in `value.(…)` isn\'t known at compile time")
                     .with_code("E0385")
@@ -1752,6 +1828,20 @@ impl ToDiagnostic for crate::TypeError {
                     ty
                 ))
             }
+
+            LoopItemMismatch { yields, used_as, span } => Diagnostic::error(format!(
+                "this loop yields `{yields}`, but the body uses its item as `{used_as}`"
+            ))
+            .with_code("E0986")
+            .with_primary(*span, format!("its items are `{yields}`"))
+            .with_why(
+                "a loop's item is the element type of what it walks. This source's \
+                 element type settled only after the body was checked, so the \
+                 conflict is reported here rather than where the item was used",
+            )
+            .with_fix(format!(
+                "change the use in the body that expects `{used_as}`, or walk a source that yields `{used_as}`"
+            )),
 
             NotIterable { found, span } => {
                 let ty = found.to_string();
@@ -1890,11 +1980,113 @@ impl ToDiagnostic for crate::TypeError {
                         field
                     ))
                     .with_fix(format!(
-                        "give `{}` a declared default (`{}: T = value`), or an `@default(expr)` \
-                         override if the default should only apply to decoding",
-                        field, field
+                        "if `{field}` is an invariant the type protects, write the type's `decode`: it reads what the input holds and builds the value itself, so no field has to come off the wire:\n\n  \
+                         {ty} implements Decode {{\n      \
+                         func decode(raw: u16) -> {ty} or MyError {{ … }}\n  \
+                         }}\n\n\
+                         otherwise give `{field}` a declared default (`{field}: T = value`), or an `@default(expr)` \
+                         override if the default should only apply to decoding"
                     ))
-                    .with_why("a decode has to build the whole struct, and a `private` or `@no_serialize` field never appears in the input — so its value comes from its default or from nowhere. Encoding is unaffected: it never needs a value for a field it omits [std.encoding/E13a, type.structs/FD1, FD6]")
+                    .with_why("a decode has to build the whole struct, and a `private` or `@no_serialize` field never appears in the input, so its value comes from its default, from the type's own `decode`, or from nowhere. Encoding is unaffected: it never needs a value for a field it omits [std.encoding/E13a, E12b, type.structs/FD1, FD6]")
+            }
+
+            // E12b: the block has a `decode` or `encode`, but not one a codec can call.
+            BadCustomWire { ty, hook, problem, span } => {
+                use crate::checker::{WireHook, WireHookProblem as P};
+                let method = hook.method();
+                let (label, fix) = match problem {
+                    P::TakesSelf => (
+                        "`decode` is written with `self`".to_string(),
+                        format!("drop `self`: a decode builds a `{ty}`, so there isn't one yet\n\n  func decode(raw: u16) -> {ty} or MyError {{ … }}"),
+                    ),
+                    P::NeedsSelf => (
+                        "`encode` has no `self`".to_string(),
+                        format!("an encode writes out the value it is called on:\n\n  func encode(self) -> u16 {{ … }}"),
+                    ),
+                    P::ParamCount(n) => match hook {
+                        WireHook::Decode => (
+                            format!("`decode` takes {n} parameters, it needs one"),
+                            "take the one value the input holds and nothing else. If the input has several parts, make that value a struct of them\n\n  func decode(raw: Wire) -> Self or MyError { … }".to_string(),
+                        ),
+                        WireHook::Encode => (
+                            format!("`encode` takes {n} {} besides `self`, it needs none", if *n == 1 { "parameter" } else { "parameters" }),
+                            "an encode is `self` and nothing else. What it returns is what gets written\n\n  func encode(self) -> Wire { … }".to_string(),
+                        ),
+                    },
+                    P::NotPlain => match hook {
+                        WireHook::Decode => (
+                            "the parameter is `mutate` or `take`".to_string(),
+                            "write the parameter plain, `raw: u16`. The decoder built the value, so it is the one that releases it after `decode` answers".to_string(),
+                        ),
+                        WireHook::Encode => (
+                            "`self` is `mutate` or `take`".to_string(),
+                            format!("write it plain, `func encode(self) -> …`. An encoder writes a value out and leaves it as it was"),
+                        ),
+                    },
+                    P::Returns { found } => match hook {
+                        WireHook::Decode => (
+                            format!("`decode` returns `{found}`, it needs to return `{ty} or SomeError`"),
+                            format!("return the value or the reason it was rejected\n\n  func decode(raw: u16) -> {ty} or MyError {{ … }}"),
+                        ),
+                        WireHook::Encode => (
+                            format!("`encode` returns `{found}`, it needs to return what is written in its place"),
+                            "return the value that stands for this one on the wire. Writing a value out can't fail, so it isn't a `T or E`\n\n  func encode(self) -> u16 { … }".to_string(),
+                        ),
+                    },
+                    P::WireNotCodable { wire } => match hook {
+                        WireHook::Decode => (
+                            format!("`{wire}` can't be decoded, so nothing can read it from the input"),
+                            format!("the parameter is what the input is read as first, so it has to be `Decode` itself: a number, a `string`, a struct of those, a `Vec` or `Map` of them, or another type with its own `decode`. `{wire}` isn't"),
+                        ),
+                        WireHook::Encode => (
+                            format!("`{wire}` can't be encoded, so nothing can write it"),
+                            format!("what `encode` returns is written the normal way, so it has to be `Encode` itself: a number, a `string`, a struct of those, a `Vec` or `Map` of them, or another type with its own `encode`. `{wire}` isn't"),
+                        ),
+                    },
+                    P::ChainsBack => (
+                        format!("`{ty}` goes through itself, or through a type that goes through `{ty}`"),
+                        format!("the wire type has to be something that ends in a number, a `string` or a struct of those without coming back through `{ty}`"),
+                    ),
+                    P::GenericType => (
+                        format!("`{ty}` is generic"),
+                        format!("a custom `{method}` belongs to one concrete type. Write it for a type with no parameters; a generic container can hold that type"),
+                    ),
+                };
+                let why = match hook {
+                    WireHook::Decode => "the decoders (json, csv, a claim's inputs) call `decode` wherever the type appears: they read the input as the parameter's type, pass that value in, and turn a rejection into a decode error with its message and where it happened. That only works for `func decode(wire: W) -> Self or E` with `W` decodable and `E` an error [std.encoding/E12b]",
+                    WireHook::Encode => "the encoders (json, csv) call `encode` wherever the type appears and write what it returns in the type's place, the normal way. That only works for `func encode(self) -> W` with `W` encodable [std.encoding/E12b]",
+                };
+                Diagnostic::error(format!("`{}`'s `{}` can't be used by {}", ty, method, if *hook == WireHook::Decode { "a decoder" } else { "an encoder" }))
+                    .with_code("E0425")
+                    .with_primary(*span, label)
+                    .with_fix(fix)
+                    .with_why(why)
+            }
+
+            // E12e: `Port` reads itself through `decode` and has no `encode` to write it.
+            EncodeSkipsDecode { ty, owner, through, wire, span } => {
+                let via = if *through {
+                    format!(" (`{}` holds a `{}`)", ty, owner)
+                } else {
+                    String::new()
+                };
+                Diagnostic::error(format!("`{}` cannot be encoded: `{}` is read as a `{}` and would be written as its fields{}", ty, owner, wire, via))
+                    .with_code("E0426")
+                    .with_primary(*span, format!(
+                        "`{owner}.decode` reads a `{wire}`, and an encode would write `{owner}` as an object of its fields, which `decode` doesn't read back"
+                    ))
+                    .with_fix(format!(
+                        "write the `encode` that is `decode` the other way round:\n\n  \
+                         {owner} implements Encode {{\n      \
+                         func encode(self) -> {wire} {{\n          \
+                         return /* the {wire} that `decode` reads */\n      \
+                         }}\n  \
+                         }}\n\n\
+                         or keep it from being written at all with `@no_encode`"
+                    ))
+                    .with_why(format!(
+                        "a value that is written out and read back should come back the same. `{owner}` is read through its own `decode`, so a derived `Encode`, or an empty `Encode {{ }}` block, would write its fields, which `decode` can't read, and the first round trip fails at run time, in whoever reads the output [std.encoding/E12e]"
+                    ))
             }
 
             NotSerializable { ty, interface_name, verb, field, field_ty, span } => {
@@ -1903,33 +2095,43 @@ impl ToDiagnostic for crate::TypeError {
                         format!("field `{}` has type `{}`, which can't be {}", f, fty, verb)
                     }
                     (Some(f), None) => format!("field `{}` can't be {}", f, verb),
-                    _ => format!("`{}` has a field that can't be {}", ty, verb),
+                    _ => format!("`{}` is, or holds, a type with no serialized form", ty),
                 };
                 // The list of what qualifies belongs in `fix`: the formatter
                 // drops `help` whenever fix/why are set, and someone reading
                 // this is exactly the person who needs the list.
-                let target = match field {
-                    Some(f) => format!("`{}`", f),
-                    None => "the offending field".to_string(),
+                const SERIALIZABLE: &str = "bool, the integer and float types, string, `T?`, \
+                    `Vec<T>`, `[T; N]`, `Map<string, T>`, or a struct or enum of those";
+                let fix = match field {
+                    Some(f) => format!("mark `{f}` with `@no_serialize`, or give it a serializable type — {SERIALIZABLE}"),
+                    None => format!("use a serializable type — {SERIALIZABLE}"),
                 };
                 Diagnostic::error(format!("`{}` cannot be {}", ty, verb))
                     .with_code("E0388")
                     .with_primary(*span, label)
-                    .with_fix(format!(
-                        "mark {} with `@no_serialize`, or give it a serializable type — bool, char, \
-                         the integer and float types, string, `T?`, tuples, `Vec<T>`, \
-                         `Map<string, T>`, or a struct or enum of those",
-                        target
-                    ))
+                    .with_fix(fix)
                     .with_why(format!("`{}` isn't implemented by hand — a type has it when its fields do, all the way down (std.encoding/E12)", interface_name))
             }
 
-            InterfaceNotSatisfied { ty, interface_name, context, missing, namesake, span } => {
+            InterfaceNotSatisfied { ty, interface_name, context, missing, namesake, undeclared, span } => {
                 use crate::InterfaceBoundContext as Ctx;
                 let title = match context {
                     Ctx::CopyBound => format!("`{}` isn't Copy", ty),
                     _ => format!("`{}` does not implement `{}`", ty, interface_name),
                 };
+                // G1: the type has every method, and only the declaration is
+                // missing. "Missing methods" sent the author looking for a
+                // method that was already there.
+                if *undeclared == Some(true) {
+                    return Diagnostic::error(title)
+                        .with_code("E0333")
+                        .with_primary(*span, format!(
+                            "`{}` has the methods `{}` asks for, but never says it implements it",
+                            ty, interface_name
+                        ))
+                        .with_fix(format!("declare it; the methods can stay where they are:\n    {} implements {} {{}}", ty, interface_name))
+                        .with_why("a type has an interface only where it says so, because a method with the right name and shape can still mean something else [type.generics/G1]");
+                }
                 // Two interfaces share the name: the type implements the
                 // stdlib's, and this program's own is a different one (#1329).
                 if *namesake {
@@ -1955,6 +2157,10 @@ impl ToDiagnostic for crate::TypeError {
                         // "missing methods" sent the author back through a block
                         // that was one method short.
                         (_, Some((m, _))) => format!("`{}` has no `{}`, which `{}` requires", ty, m, interface_name),
+                        _ if *undeclared == Some(false) => format!(
+                            "`{}` never says it implements `{}`, and doesn't have its methods either",
+                            ty, interface_name
+                        ),
                         _ => format!("`{}` is missing methods `{}` requires", ty, interface_name),
                     });
                 match context {
@@ -2032,16 +2238,16 @@ impl ToDiagnostic for crate::TypeError {
 
             OverlappingInterfaceConformance { ty, first, second, method, span } => {
                 Diagnostic::error(format!(
-                    "`{}` conforms to both `{}` and `{}`, and they want different `{}`s",
+                    "`{}` conforms to both `{}` and `{}`, and a call to `{}` can't tell them apart",
                     ty, first, second, method
                 ))
                 .with_code("E0889")
-                .with_primary(*span, format!("the second `{}` has nowhere to live", method))
+                .with_primary(*span, format!("this `{}` takes the same arguments as the other one", method))
                 .with_fix(format!(
                     "rename `{method}` in the interface you own, or conform a nominal type of your own instead: `type … = {ty}`, then `… implements {second}`",
                     method = method, ty = ty, second = second
                 ))
-                .with_why("a type has one method per name (type.generics/MN1), so two conformances asking for different `{method}`s leave `x.{method}(…)` with no answer. This is about the name, not about who owns the type or the interface: there is no orphan rule [type.generics/MN3]".replace("{method}", method))
+                .with_why("two conformances of one interface can each have a `{method}`, and a call picks one by its arguments (type.generics/GT7). These take the same arguments, so `x.{method}(…)` has nothing to pick by. This is about the name, not about who owns the type or the interface: there is no orphan rule [type.generics/MN3]".replace("{method}", method))
             }
 
             DuplicateMethod { ty, method, first, span } => {
@@ -2368,6 +2574,34 @@ impl ToDiagnostic for crate::TypeError {
                     .with_why("all names must be defined or imported before use")
             }
 
+            FieldPatternExactType { pattern, field, ty, span } => Diagnostic::error(format!(
+                "`{field}: {ty}` tests a type the field always has, and binds nothing"
+            ))
+            .with_code("E0423")
+            .with_primary(*span, format!("`{field}` is already of type `{ty}`, so this always matches"))
+            .with_help(format!(
+                "after the colon goes a pattern. A bare type name there tests the field's type, \
+                 which is useful on a union or optional field and says nothing on `{field}: {ty}`. \
+                 It does not rename `{field}` or declare its type"
+            ))
+            .with_fix(format!("write `{pattern}({field})` to bind it"))
+            .with_why(
+                "the matched value already has its type, so a type test on a field of exactly \
+                 that type can't fail and names nothing",
+            ),
+
+            NameNotBoundByTypePattern { name, ty, span } => Diagnostic::error(format!(
+                "`{name}` is not bound: `{name}: {ty}` tests the field's type and binds nothing"
+            ))
+            .with_code("E0424")
+            .with_primary(*span, format!("`{name}` is not defined here"))
+            .with_help(format!(
+                "after the colon goes a pattern, and a bare type name there is a type test. \
+                 To keep the value, write `{name}: {ty} as {name}`"
+            ))
+            .with_fix(format!("write `{name}: {ty} as {name}`"))
+            .with_why("a type pattern binds a name only when it says `as name`"),
+
             UnknownContext { name, span } => {
                 Diagnostic::error(format!("unknown context `{}` in `using` block", name))
                     .with_code("E0342")
@@ -2580,7 +2814,7 @@ impl ToDiagnostic for crate::TypeError {
                     "`discard {}` frees nothing — `{}` is a Copy type",
                     name, ty
                 ))
-                .with_code("W0301")
+                .with_code("W0303")
                 .with_primary(*span, "there is no allocation here to release")
                 .with_fix(format!("remove `discard {}`", name))
                 .with_why("`discard` exists to end a value's life before its scope does, which only means something when the value owns memory. A Copy type owns none, so the statement reads as a cost it doesn't pay. It does still put the name out of use, so if that was the point, say so with a comment [mem.ownership/D1, D2]")
@@ -2613,6 +2847,18 @@ impl ToDiagnostic for crate::TypeError {
                     .with_primary(*span, "step must be non-zero")
                     .with_help("use a positive step for ascending ranges, or a negative step for descending ranges")
                     .with_why("a zero step would loop forever without making progress [ctrl.ranges/SP3]")
+            }
+
+            UnusedResult { ty, call, can_try, span } => {
+                let mut fix = format!("{call}!    // panics with the error's message if it fails");
+                if *can_try {
+                    fix.push_str(&format!("\n    try {call}    // pass the error to the caller"));
+                }
+                Diagnostic::error(format!("result of type `{}` is ignored", ty))
+                    .with_code("E0419")
+                    .with_primary(*span, "if this fails, nothing finds out")
+                    .with_fix(format!("say what happens on failure:\n    {fix}"))
+                    .with_why("a call that can fail hands its error back as a value, so a statement that ignores the value ignores the failure and the program carries on as if it worked. Every error is asserted, passed on, or handled where the code says so [type.errors/ER50]")
             }
 
             StepDirectionMismatch { range_span, step_span, range_direction, step_direction } => {
@@ -2652,6 +2898,18 @@ impl ToDiagnostic for crate::TypeError {
                     .with_primary(*span, label)
                     .with_fix(fix)
                     .with_why("a value that must be consumed exactly once can't have two copies: one of them would be closed twice or never [mem.linear/L8]")
+            }
+            CloneHandle { ty, handle, span } => {
+                let label = if ty == handle {
+                    format!("a `{}` owns state the runtime frees, and it can't be copied", ty)
+                } else {
+                    format!("this holds a `{}`, which owns state the runtime frees and can't be copied", handle)
+                };
+                Diagnostic::error(format!("`{}` can't be cloned", ty))
+                    .with_code("E0965")
+                    .with_primary(*span, label)
+                    .with_fix("move it, or borrow it where a copy was wanted")
+                    .with_why("a clone copies the handle's pointer, and then both copies would free the same block")
             }
             TakeFromSharedBox { payload, span } => {
                 Diagnostic::error(format!("`take` on a `Shared<{}>`", payload))
@@ -2805,6 +3063,13 @@ impl ToDiagnostic for crate::TypeError {
                     .with_fix(format!("call it through the type: `{}.{}(…)`", ty, method))
                     .with_why("a method without `self` doesn't receive the value it's called on, so calling it through one reads as if it used it [type.structs]")
             }
+            InstanceCallOnType { ty, method, span } => {
+                Diagnostic::error(format!("`{}` takes `self`, called on the type `{}`", method, ty))
+                    .with_code("E0967")
+                    .with_primary(*span, format!("`{}` needs a value of `{}` to run on", method, ty))
+                    .with_fix(format!("call it on a value: `value.{}(…)`", method))
+                    .with_why("a method with `self` works on one value, and a type names no value to hand it [type.structs, type.generics/GF7]")
+            }
             IfWithoutElseValue { found, span } => {
                 Diagnostic::error("an `if` without `else` has no value".to_string())
                     .with_code("E0947")
@@ -2834,6 +3099,51 @@ impl ToDiagnostic for crate::TypeError {
                     .with_primary(*span, format!("this tuple has {} values", len))
                     .with_fix(format!("write {} names, using `_` for the ones you don't need", len))
                     .with_why("a destructure names every position of the tuple, so nothing is dropped or left without a value by accident")
+            }
+            LiteralPatternOnBuiltType { ty, span } => {
+                Diagnostic::error(format!("a literal can't be a pattern for `{}`", ty))
+                    .with_code("E0974")
+                    .with_primary(*span, format!("`{}` builds this value from the literal", ty))
+                    .with_fix("compare in a guard: `_ if x == 0 => …`")
+                    .with_why(format!("a `{ty}` written as a literal is built by its `from_literal` while compiling (type.primitives/L9), so its bits aren't the literal's, and a pattern only compares bits. `==` compares the built values"))
+            }
+            MethodNotForReceiver { ty, method, headers, span } => {
+                let mut d = Diagnostic::error(format!("no method `{}` on `{}`", method, ty))
+                    .with_code("E0981")
+                    .with_primary(*span, "this receiver doesn't fit the block that declares it");
+                for h in headers {
+                    d = d.with_note(format!("`{}` is declared in `extend {}`", method, h));
+                }
+                d.with_why(format!(
+                    "a method declared in an `extend` block whose header names a shape belongs \
+                     only to receivers of that shape; `{ty}` isn't one (std.reflect/R5)"
+                ))
+            }
+            AmbiguousConformanceCall { ty, method, candidates, span } => {
+                let mut d = Diagnostic::error(format!("this `{}` call fits more than one of `{}`'s conformances", method, ty))
+                    .with_code("E0973")
+                    .with_primary(*span, "the arguments don't say which");
+                for c in candidates {
+                    d = d.with_note(format!("it fits `{}`", c));
+                }
+                d.with_fix("give the argument a type of its own: annotate the binding it comes from, or put a suffix on a literal")
+                    .with_why(format!("`{ty}` has one `{method}` per conformance of the interface, and a call's arguments pick which (type.generics/GT7)"))
+            }
+            NoConformanceTakes { ty, method, args, candidates, span } => {
+                let mut d = Diagnostic::error(format!("no `{}` on `{}` takes ({})", method, ty, args.join(", ")))
+                    .with_code("E0972")
+                    .with_primary(*span, "no conformance matches these arguments");
+                for c in candidates {
+                    d = d.with_note(format!("there is `{}`", c));
+                }
+                d.with_why(format!("`{ty}` has one `{method}` per conformance of the interface, and a call's arguments pick which (type.generics/GT7)"))
+            }
+            LiteralConversionNotComptime { ty, method, span } => {
+                Diagnostic::error(format!("`{}.{}` builds literals, so it has to be a `comptime func`", ty, method))
+                    .with_code("E0971")
+                    .with_primary(*span, "runs at run time as written")
+                    .with_fix(format!("comptime func {}(…)", method))
+                    .with_why("a literal of a type that builds itself from literals is computed while compiling, so the program holds the constant and never runs the conversion (type.primitives/L9)")
             }
             FieldGivenTwice { ty, field, span } => {
                 Diagnostic::error(format!("field `{}` of `{}` is given twice", field, ty))
@@ -3069,6 +3379,24 @@ impl ToDiagnostic for crate::TypeError {
                     .with_primary(*span, "invalid conversion form")
                     .with_why("each conversion form names its data-loss behavior; the source and target kinds must match it [type.primitives/CV11–CV16]")
             }
+            ArrayRepeatCount { span } => Diagnostic::error("the count of `[x; n]` isn't known at compile time")
+                .with_code("E0984")
+                .with_why("a fixed-size array's length is part of its type, so the count has to be a literal, a module `const` or a `comptime` parameter")
+                .with_primary(*span, "known only when the program runs")
+                .with_help("for a count known only at run time, push the elements into a `Vec`"),
+            ValueTooLarge { ty, bytes, span } => {
+                let d = Diagnostic::error(format!("`{}` is too large for a value", ty))
+                    .with_code("E0980")
+                    .with_why("any value can land in a stack frame and a task's stack is 1 MiB, so one value holds at most 64 KiB");
+                match bytes {
+                    Some(bytes) => d
+                        .with_primary(*span, format!("{} bytes", bytes))
+                        .with_help("keep this many elements in a `Vec`, which holds them on the heap"),
+                    None => d
+                        .with_primary(*span, "its parts add up to over 64 KiB")
+                        .with_help("keep the large parts on the heap, in a `Vec` or a `Heap`"),
+                }
+            }
             IntLiteralOutOfRange { literal, ty, min, max, span } => {
                 let label = format!("`{}` doesn't fit in `{}`", literal, ty);
                 Diagnostic::error(format!("integer literal `{}` is out of range for `{}`", literal, ty))
@@ -3242,6 +3570,14 @@ impl ToDiagnostic for crate::TypeError {
                         "a range index reads a run of positions, and a map has none — it is keyed [std.collections/V1]".to_string(),
                         None,
                     ),
+                    K::NotIndexed => (
+                        format!("cannot index `{}`", container),
+                        "a rack isn't indexed: its nodes are reached through their links, \
+                         and a link reads like its node, so `h.field` is the node's field \
+                         [mem.racks/RK2]"
+                            .to_string(),
+                        Some("read or write through the link: `h.field = value`".to_string()),
+                    ),
                     K::NoSliceType => (
                         format!("cannot slice `{}` with a range", container),
                         "there is no slice type, so this has nothing to be. A run of \
@@ -3275,8 +3611,8 @@ impl ToDiagnostic for crate::TypeError {
             }
             FixedArrayGrowth { method, array, span } => {
                 let (elem, len) = match array {
-                    crate::Type::Array { elem, len } => (elem.to_string(), *len),
-                    other => (other.to_string(), 0),
+                    crate::Type::Array { elem, len } => (elem.to_string(), len.to_string()),
+                    other => (other.to_string(), "0".to_string()),
                 };
                 let label = format!("`{}` doesn't exist on a fixed array", method);
                 Diagnostic::error(label.clone())
@@ -3284,7 +3620,7 @@ impl ToDiagnostic for crate::TypeError {
                     .with_primary(
                         *span,
                         format!("`[{}; {}]` always holds {} element{}",
-                            elem, len, len, if len == 1 { "" } else { "s" }),
+                            elem, len, len, if len == "1" { "" } else { "s" }),
                     )
                     .with_fix(format!(
                         "let it grow: `mut a: Vec<{}> = […]` — the same literal builds one",

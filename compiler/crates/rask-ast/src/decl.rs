@@ -184,6 +184,9 @@ pub struct ExternDecl {
 /// A function declaration.
 #[derive(Debug, Clone)]
 pub struct FnDecl {
+    /// Identifies this function to later passes: the checker files its
+    /// resolved signature under it.
+    pub id: NodeId,
     pub name: String,
     pub type_params: Vec<TypeParam>,
     pub params: Vec<Param>,
@@ -207,6 +210,18 @@ pub struct FnDecl {
     pub decl_start: usize,
 }
 
+impl ExternDecl {
+    /// The C symbol it links to: its `@c_name` when the program knows it by
+    /// another name (a package qualifies its externs like its functions),
+    /// else its name.
+    pub fn c_symbol(&self) -> String {
+        match crate::attr::c_name(&self.attrs) {
+            Some(crate::attr::CName::Spelled(c)) => c,
+            _ => self.name.clone(),
+        }
+    }
+}
+
 impl FnDecl {
     /// Declared without a Rask body: the backend implements it (`@native`,
     /// `@builtin`) or nothing does yet (`@unimplemented`). An empty `{}`
@@ -223,8 +238,12 @@ impl FnDecl {
         DeclaredEffects {
             grows: has("grows"),
             shrinks: has("shrinks"),
+            reorders: has("reorders"),
             drops_elements: has("drops_elements"),
             copies_elements: has("copies_elements"),
+            moves_out: has("moves_out"),
+            places_node: has("places_node"),
+            eager_callback: has("eager_callback"),
             blocks: has("blocks"),
             prints: has("prints"),
             ambient: has("ambient"),
@@ -237,8 +256,9 @@ impl FnDecl {
 /// What a stdlib function does that its body can't show, as its declaration
 /// says. Read by the checker, ownership and effects.
 ///
-/// `grows`/`shrinks` (comp.advanced/EF1): the method changes how many elements
-/// its receiver holds, or moves them to new storage. Either one invalidates a
+/// `grows`/`shrinks`/`reorders` (comp.advanced/EF1): the method changes how many
+/// elements its receiver holds, moves them to new storage, or moves them
+/// between slots. Any of them invalidates a
 /// `with` binding or a `for mutate` loop over the receiver (mem.borrowing/W2,
 /// ctrl.loops/LP14), and neither is possible on a fixed array. It was five
 /// name lists once, and the with-block rule's list didn't know `remove_where`
@@ -253,7 +273,12 @@ pub struct DeclaredEffects {
     pub grows: bool,
     /// Removes elements, or may move them to a smaller buffer (`pop`, `shrink`).
     pub shrinks: bool,
-    /// Drops elements without handing them back (`clear`, `set` over one).
+    /// Moves elements between slots and keeps the count (`sort`, `swap`,
+    /// `reverse`). Nothing is reallocated, but a place held inside the
+    /// receiver then names a different element, so it is refused where a
+    /// resize is (mem.borrowing/W2).
+    pub reorders: bool,
+    /// Drops elements without handing them back (`clear`, `remove_where`).
     /// Refused on a container whose elements must be consumed
     /// (mem.resources/RC5).
     pub drops_elements: bool,
@@ -261,6 +286,20 @@ pub struct DeclaredEffects {
     /// a container whose elements must be consumed: a copy would be a second
     /// owner (RC5).
     pub copies_elements: bool,
+    /// Takes an element out of its receiver and hands it to the caller, who
+    /// now owns it (`pop`, `remove`, `replace`, and `Map.insert`'s displaced
+    /// value). Without it, a result typed by the receiver's own parameter is
+    /// a view the receiver still owns, and the caller frees nothing.
+    pub moves_out: bool,
+    /// The last argument is a node bound for a rack's storage (`Rack.insert`,
+    /// `Staged.insert`). The call carries the node type's layout with it: its
+    /// size, where its links are and what it owns.
+    pub places_node: bool,
+    /// Runs the closure it is handed to completion before it returns and keeps
+    /// nothing of it (`sort_by`). A call without this that takes a closure and
+    /// has no body to read has to be assumed to keep it, as a lazy adapter
+    /// does, so the caller releases nothing it passed.
+    pub eager_callback: bool,
     /// Can park the thread until something outside it happens: a syscall,
     /// `sleep`, a channel op, a `join`.
     pub blocks: bool,
@@ -284,15 +323,63 @@ impl DeclaredEffects {
     pub fn changes_size(self) -> bool {
         self.grows || self.shrinks
     }
+
+    /// Changes what a place inside the receiver refers to: how many elements
+    /// there are, which buffer they sit in, or which slot each one is in. A
+    /// `with` binding or a `for mutate` loop holds such a place, so none of
+    /// these may run under it (mem.borrowing/W2, ctrl.loops/LP14).
+    pub fn changes_layout(self) -> bool {
+        self.grows || self.shrinks || self.reorders
+    }
 }
 
 /// What the checker resolved a method call to, for the passes after it:
+/// What a C function-like macro's body does, as the checker read it
+/// (struct.c-interop/PP4): effect inference gives the macro its body's effects.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CMacroBody {
+    /// Reads a field through a pointer, or calls into C.
+    pub touches_memory: bool,
+    /// The C functions it calls, by name.
+    pub calls: Vec<String>,
+}
+
 /// `"Type.method"` with the receiver's declared type (`Handle.join` for
 /// `t.join()` on a `Handle<i64>`), and the method's declared effect.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MethodTarget {
     pub name: String,
     pub effect: DeclaredEffects,
+}
+
+/// What the checker resolved at each call, keyed by the call's node.
+#[derive(Debug, Clone, Default)]
+pub struct CallTargets {
+    /// Each method call it resolved.
+    pub methods: std::collections::HashMap<crate::NodeId, MethodTarget>,
+    /// Calls through a local binding or parameter: `work(3)` where `work` holds
+    /// a closure. Such a call runs whatever the binding holds, never the
+    /// function its name happens to spell.
+    pub value_calls: std::collections::HashSet<crate::NodeId>,
+    /// Every expression that names a function, called or not. `apply(work)`
+    /// hands `work` to whatever `apply` calls it through, so naming it reaches
+    /// it as surely as calling it does.
+    pub function_refs: std::collections::HashSet<crate::NodeId>,
+    /// Method calls on a value whose type is a type parameter: `x.go()` with
+    /// `x: T` is `(T, go)`. Which body runs depends on the call that picked `T`.
+    pub param_methods: std::collections::HashMap<crate::NodeId, (String, String)>,
+    /// What each generic call binds its type parameters to, by parameter name.
+    pub type_args: std::collections::HashMap<crate::NodeId, Vec<(String, TypeArgTarget)>>,
+}
+
+/// A type argument as the effects pass needs it: a type whose methods have
+/// names, or the calling function's own type parameter handed on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TypeArgTarget {
+    /// The receiver name its methods are filed under (`Sx` for `Sx.go`).
+    Named(String),
+    /// A type parameter of the function making the call.
+    Param(String),
 }
 
 /// A function parameter.
@@ -466,6 +553,19 @@ pub mod field_attrs {
         format!("__decode_default_{field_name}")
     }
 
+    /// The static method desugar writes beside a type's own `decode`
+    /// (std.encoding/E12b): `decode` with its rejection turned into a message,
+    /// `func __decode_checked(wire: W) -> Self or string`. The decoders call
+    /// it, so a rejection of any error type, a union included, reaches them as
+    /// the string `message()` gives.
+    pub const DECODE_ADAPTER: &str = "__decode_checked";
+
+    /// The method desugar writes beside a type's own `encode` (std.encoding/E12b):
+    /// `func __encode_json(self) -> string`, the type's value as JSON text. The
+    /// native JSON encoder calls it where the type sits inside something it
+    /// writes itself, a runtime-walked `Map` for one.
+    pub const ENCODE_ADAPTER: &str = "__encode_json";
+
     /// `@tag("field")` on an enum: internal tagging, the variant name goes in
     /// this field instead of being the object's own key (std.encoding/E24).
     pub fn tag_field(attrs: &[Attr]) -> Option<String> {
@@ -499,6 +599,12 @@ pub fn positional_field_name(index: usize) -> String {
 pub fn is_positional_field_name(name: &str) -> bool {
     name.strip_prefix('_').is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
 }
+
+/// The static methods every fieldless enum gets without declaring them
+/// (E18): `Colour.variants()` and `Colour.from_value(n)`. A module-qualified
+/// receiver (`http.Method.from_value(0)`) is recognised by one of these names
+/// or by a variant's, so both backends read the same list.
+pub const GENERATED_ENUM_STATICS: &[&str] = &["variants", "from_value"];
 
 /// An enum variant.
 #[derive(Debug, Clone)]

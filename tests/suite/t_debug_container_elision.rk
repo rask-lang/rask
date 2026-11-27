@@ -28,7 +28,7 @@ func main() {
     let ps: Vec<Point> = [Point(x: 1, y: 2)].to_vec()
     println("{ps:debug}")
 
-    let nested: Vec<Vec<i64>> = [].to_vec()
+    let nested: Vec<Vec<i64>> = Vec.new()
     println("{nested:debug}")
 
     mut m: Map<string, i64> = Map.new()

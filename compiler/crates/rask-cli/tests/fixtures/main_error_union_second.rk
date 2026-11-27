@@ -1,0 +1,38 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// main fails with the member of a union error at position 2; the run
+// reports that member's message().
+
+struct Afail {
+    n: i64
+}
+
+extend Afail {
+    func message(self) -> string {
+        return "afail {self.n}"
+    }
+}
+
+struct Bfail {
+    s: string
+}
+
+extend Bfail {
+    func message(self) -> string {
+        return "bfail {self.s}"
+    }
+}
+
+func step(n: i64) -> i64 or (Afail | Bfail) {
+    if n == 1 {
+        return Afail(n: n)
+    }
+    if n == 2 {
+        return Bfail(s: "two")
+    }
+    return n
+}
+
+func main() -> void or (Afail | Bfail) {
+    let v = try step(2)
+    println("unreachable {v}")
+}

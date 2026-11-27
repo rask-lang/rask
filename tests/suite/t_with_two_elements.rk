@@ -1,0 +1,111 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// `with a[i] as x, a[j] as y { }` — two elements of one collection (W3, #1924).
+//
+// The parser read the second binding's `as` as a cast to a type called `y`
+// and then failed to find the `as` it still wanted. Once it parses, two
+// bindings on the same element would be two writable names for one slot, so
+// both backends panic before the body runs, with the same message. A Vec's
+// elements are told apart by index, a Map's values by key, and two different
+// collections never collide.
+
+import thread.Thread
+
+func swap_at(mutate v: Vec<i64>, i: i64, j: i64) {
+    with v[i] as a, v[j] as b {
+        let t = a
+        a = b
+        b = t
+    }
+}
+
+func combine(mutate v: Vec<i64>, i: i64, j: i64) -> i64 {
+    return with v[i] as a, v[j] as b {
+        a = a + b
+        a
+    }
+}
+
+test "two elements of one Vec are both written" {
+    mut v: Vec<i64> = [1, 2, 3]
+    swap_at(mutate v, 0, 2)
+    assert v[0] == 3
+    assert v[1] == 2
+    assert v[2] == 1
+}
+
+test "a two-element block produces a value" {
+    mut v: Vec<i64> = [10, 20, 30]
+    assert combine(mutate v, 1, 2) == 50
+    assert v[1] == 50
+    assert v[2] == 30
+}
+
+test "three bindings, each its own element" {
+    mut v: Vec<i64> = [1, 2, 3]
+    with v[0] as a, v[1] as b, v[2] as c {
+        a = b + c
+        c = 0
+    }
+    assert v[0] == 5
+    assert v[2] == 0
+}
+
+test "two Map values under different keys" {
+    mut m: Map<string, i64> = Map.new()
+    m.insert("a", 1)
+    m.insert("b", 2)
+    with m["a"] as x, m["b"] as y {
+        x = x + y
+        y = 0
+    }
+    assert m["a"] == 3
+    assert m["b"] == 0
+}
+
+test "equal contents are not the same collection" {
+    mut p: Vec<i64> = [1, 2]
+    mut q: Vec<i64> = [1, 2]
+    with p[0] as x, q[0] as y {
+        x = 7
+        y = 9
+    }
+    assert p[0] == 7
+    assert q[0] == 9
+}
+
+test "the same index twice panics before the body runs" {
+    mut note = ""
+    mut ran = false
+    using Multitasking {
+        let h = spawn {
+            mut v: Vec<i64> = [1, 2]
+            swap_at(mutate v, 1, 1)
+            return v[0]
+        }
+        match h.join() {
+            i64 as _ => { ran = true },
+            JoinError.Panicked(msg) => { note = msg },
+        }
+    }
+    assert !ran
+    assert note.contains("duplicate key in same collection")
+}
+
+test "the same Map key twice panics" {
+    mut note = ""
+    using Multitasking {
+        let h = spawn {
+            mut m: Map<string, i64> = Map.new()
+            m.insert("k", 1)
+            with m["k"] as x, m["k"] as y {
+                x = 2
+            }
+            return 0
+        }
+        match h.join() {
+            i64 as _ => { note = "returned" },
+            JoinError.Panicked(msg) => { note = msg },
+        }
+    }
+    assert note.contains("duplicate key in same collection")
+}

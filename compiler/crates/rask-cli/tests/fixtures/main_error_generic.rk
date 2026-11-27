@@ -1,0 +1,34 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// main fails with a generic error type, alone and inside a union; the run
+// reports its message(). Natively the message was looked up by the type's
+// name, and `Gen<i64>` has no function called `Gen<i64>_message`, so the run
+// said only "main returned an error".
+
+struct Gen<T> {
+    v: T
+}
+
+extend Gen<T> {
+    func message(self) -> string {
+        return "gen {self.v}"
+    }
+}
+
+struct Afail {
+    n: i64
+}
+
+extend Afail {
+    func message(self) -> string {
+        return "afail {self.n}"
+    }
+}
+
+func cleanup() {
+    println("cleaned up")
+}
+
+func main() -> void or (Afail | Gen<i64>) {
+    ensure cleanup()
+    return Gen<i64>(v: 7)
+}

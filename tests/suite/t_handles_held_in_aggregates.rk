@@ -1,0 +1,82 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A struct that holds a channel end or a `Shared` box gives it back when it
+// goes, wherever the struct sits: a local, a `Vec` element, a `Map` value
+// (#1859).
+//
+// A channel end was a bare word to the compiler with no release declared, so
+// the struct's drop walked past it, and a `Vec` of such structs described its
+// elements as owning nothing (a `Shared` in a `Vec` element was missed the same
+// way): four allocations for a struct holding both ends, three for one holding
+// a `Shared<Vec<i64>>`. `tests/leak_gate.sh` counts the allocations; this file
+// is not in `known_leaks.txt`.
+import async.Sender
+import async.Receiver
+import sync.Shared
+
+struct Worker {
+    tx: Sender<i64>
+    rx: Receiver<i64>
+    log: Shared<Vec<i64>>
+}
+
+struct Tap {
+    tx: Sender<i64>
+    name: string
+}
+
+func worker() -> Worker {
+    let (tx, rx) = Channel<i64>.buffered(4)
+    let log: Shared<Vec<i64>> = Shared.new(Vec.new())
+    return Worker(tx: tx, rx: rx, log: log)
+}
+
+test "mem.shared/SH2 — a struct local gives back its channel ends and its box" {
+    let w = worker()
+    let _ = w.tx.send(7)
+    if w.rx.receive() is i64 as got {
+        assert got == 7
+    } else {
+        assert false
+    }
+    assert w.log.read().len() == 0
+}
+
+test "mem.shared/SH2 — a vector of structs gives back what each holds" {
+    mut ws: Vec<Worker> = Vec.new()
+    ws.push(worker())
+    ws.push(worker())
+    let _ = ws[0].tx.send(1)
+    if ws[0].rx.receive() is i64 as got {
+        assert got == 1
+    } else {
+        assert false
+    }
+    assert ws.len() == 2
+}
+
+test "mem.shared/SH2 — a vector of channel ends and one of boxes" {
+    let (tx, rx) = Channel<i64>.buffered(2)
+    mut ends: Vec<Sender<i64>> = Vec.new()
+    ends.push(tx)
+    let _ = ends[0].send(3)
+    if rx.receive() is i64 as got {
+        assert got == 3
+    } else {
+        assert false
+    }
+    let log: Shared<Vec<i64>> = Shared.new(Vec.new())
+    mut boxes: Vec<Shared<Vec<i64>>> = Vec.new()
+    boxes.push(log)
+    assert boxes.len() == 1
+}
+
+test "mem.shared/SH2 — a map of structs holding an end" {
+    let (tx, rx) = Channel<i64>.buffered(2)
+    mut taps: Map<string, Tap> = Map.new()
+    taps.insert("first", Tap(tx: tx, name: "a-tap-with-a-name-long-enough-for-the-heap"))
+    assert taps.len() == 1
+    if rx.try_receive() is i64 as got {
+        assert got == 0
+    }
+}

@@ -14,8 +14,9 @@ func main() -> void or Error {
         spawn { health_checker(backend_pool.backends) }.detach()
         loop {
             println("waiting for request")
+            // A detached task moves what it names, so each one gets its own copy.
+            let task_routes = all_routes.clone()
             let (request, responder) = try server.accept()
-            println("got request")
             spawn {
                 ensure responder.respond(Response.internal_error("unhandled"))
                 println("forwarding request")
@@ -45,7 +46,7 @@ func main() -> void or Error {
                     return
                 }
 
-                let matched_route = match_route(request.path(), all_routes)
+                let matched_route = match_route(request.path(), task_routes)
                 if matched_route? as route {
                     let route_and_forward = |request: Request| -> Response {
                         let healthy = route.pool.next_healthy()
@@ -59,7 +60,8 @@ func main() -> void or Error {
                     let response = with_middleware(request)
                     let _ = responder.respond(response)
                 } else {
-                    responder.respond(Response.not_found())
+                    // The client may have hung up; there is nobody to tell.
+                    let _ = responder.respond(Response.not_found())
                     return
                 }
             }.detach()

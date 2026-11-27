@@ -42,9 +42,9 @@ test "stdlib.collections — a Map behind a field indexes to its value type" {
     assert score == 7
 }
 
-// The inner `Vec` is the element here, so binding it would be a second name for
-// the same buffer rather than a copy — that's E0871, and chaining the two
-// indexes is the form the rule points at (mem.borrowing/E1, E2).
+// The inner `Vec` is the element here, so `let row = w.grid[0]` would be a view
+// of it, not a copy (mem.borrowing/E4). Chaining the two indexes reads it
+// without a name (E1, E2).
 test "stdlib.collections — a nested Vec indexes twice" {
     let w = build()
     assert w.grid[0][1] == 4

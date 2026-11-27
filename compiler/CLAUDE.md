@@ -51,6 +51,7 @@ Diagnostics are a first-class feature. A confusing error is a bug.
 - `src/stmt.rs` — statements
 - `src/token.rs` — token types (shared with lexer)
 - `src/lib.rs` — NodeId, Span, LineMap
+- `src/target.rs` — `Target`: the machine a compilation is for (pointer width, C `char` signedness). The driver builds it from the config; every stage that needs a width takes it as a value, there is no global
 - Changes here ripple through parser, desugar, types, interp, mir, codegen
 
 ### rask-desugar — Pre-typecheck transforms
@@ -71,7 +72,8 @@ Diagnostics are a first-class feature. A confusing error is a bug.
 - Depends on `rask-ast` alone. The checker produces this data; nothing here checks anything
 
 ### rask-layout — Sizes, alignments and field offsets
-- `src/lib.rs` — the one size model. Monomorphization lays out with it, and the checker's copy rule asks it through `TypeTable`
+- `src/lib.rs` — the one size model for declared types. Monomorphization lays out with it, and the checker's copy rule asks it through `TypeTable`
+- `src/shape.rs` — the composition rules (tuple offsets, array stride, wrapper payloads) for any type that says what shape it is (`Shaped`). MIR's `MirType` implements it, so MIR and codegen size with `rask_layout::size_of(ty, target)` and keep no size rules of their own
 - Depends on `rask-ast`, `rask-types` and `rask-stdlib`, never on the checker: the checker reads it
 
 ### rask-check — Type checker and inference (largest crate)
@@ -93,7 +95,7 @@ Diagnostics are a first-class feature. A confusing error is a bug.
 
 ### rask-mono — Monomorphization
 - `src/reachability.rs` — discovers reachable functions from main(), name mangling
-- `src/instantiate.rs` — creates concrete function copies with substituted types
+- `src/instance.rs` — `Instance`: a generic function at one set of type arguments. The body's checker records read with the arguments in, when asked; nothing is copied per instance
 - `src/lib.rs` — MonoProgram, MonoFunction, the order layouts are computed in
 
 ### rask-mir — Mid-level IR (SSA control-flow graph)
@@ -119,6 +121,7 @@ an owned block (`Heap(T)`), and aggregates release their parts.
 - `src/lib.rs` — MirFunction, MirStmt, MirTerminator, BlockId, LocalId
 - `src/types.rs` — MirType, `src/operand.rs` — MirOperand, MirConst, MirRValue
 - `src/builder.rs` — BlockBuilder, `src/program.rs` — MirProgram
+- `src/operand.rs` also holds `FunctionRef`: a call carries its `shape` (who owns what crosses it). Never ask a callee's name; state the shape where the call is emitted (`like`, `borrowing`, `releasing`, `reading`) and `tests/spellings_gate.sh` reports a stdlib-family call that doesn't
 
 **Analysis & transforms:** `src/analysis/` (dataflow), `src/transform/` (optimization passes)
 - New MIR instruction: add to `MirStmtKind`/`MirTerminatorKind` in `lib.rs`, update codegen + miri
@@ -129,7 +132,7 @@ an owned block (`Heap(T)`), and aggregates release their parts.
 - `src/types.rs` — MirType→Cranelift type mapping
 - `src/layouts.rs` — struct/enum memory layout for Cranelift
 - `src/closures.rs` — closure codegen
-- `src/dispatch.rs` — stdlib calls into the C runtime: built from `@native("sym")` declarations plus `rask_runtime.h`, and an internal table for names MIR mints. `src/vtable.rs` — vtable layout
+- `src/dispatch.rs` — stdlib calls into the C runtime: built from `@native("sym")` declarations plus `rask_runtime.h`. Anything else lowering calls by C symbol, with a `CallAbi` on the call. `src/vtable.rs` — vtable layout
 - `src/debug_info.rs` — DWARF debug info
 - Struct layout bug: check `layouts.rs` and `rask_layout`
 
@@ -158,7 +161,7 @@ the four divergences fixed in #687/#688/#677/#698 lived exactly there.
 - `src/types.rs` — stdlib type definitions (Vec, Map, string, etc.)
 - `src/builtins.rs` — built-in operator/method registrations
 - `src/registry.rs` — type registry for stdlib lookups
-- `src/mir_metadata.rs` — MIR-level metadata for stdlib functions (used by codegen)
+- `src/mir_metadata.rs` — each stdlib declaration's `CallShape` (what a call does with its arguments and result), read from `stdlib/*.rk`. MIR puts one on every call it emits (`FunctionRef::shape`); a spelling lowering makes up states its own where it emits it
 - New stdlib function: the declaration goes in `stdlib/*.rk`, and it must say
   where its body lives — a Rask body, `comptime func`, `@native("symbol")`,
   `@builtin` (the compiler lowers the call itself, e.g. `Shared.read`), or

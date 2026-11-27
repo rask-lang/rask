@@ -1,0 +1,60 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A projection written as a call's type argument inside a generic body:
+// `ident<H.Out>(…)` in `probe<H: Unwrap>`. Each instance of `probe` has to
+// call the instance of `ident` for its own `H.Out`. The type argument used to
+// pass through as the literal name `H.Out`, so every `probe` shared one
+// `ident$H.Out` that took and returned a word: an f64 came back as 2 and a
+// string as garbage.
+
+interface Unwrap {
+    type Out
+    func get(self) -> Self.Out
+}
+
+struct Cell1<T> {
+    v: T
+}
+
+Cell1<T> implements Unwrap {
+    type Out = T
+    func get(self) -> T {
+        return self.v
+    }
+}
+
+struct Big {
+    a: i64
+    b: i64
+    c: i64
+}
+
+func ident<T>(x: T) -> T {
+    return x
+}
+
+func pair<T>(take x: T) -> Vec<T> {
+    mut v: Vec<T> = Vec.new()
+    v.push(x)
+    return v
+}
+
+func probe<H: Unwrap>(h: H) -> H.Out {
+    return ident<H.Out>(h.get())
+}
+
+func probe2<H: Unwrap>(h: H) -> Vec<H.Out> {
+    return pair<H.Out>(h.get())
+}
+
+test "each instance calls the instance for its own projection" {
+    assert probe(Cell1(v: 5)) == 5
+    assert probe(Cell1(v: "str")) == "str"
+    assert probe(Cell1(v: 2.5)) == 2.5
+    assert probe(Cell1(v: Big(a: 1, b: 2, c: 3))).c == 3
+}
+
+test "a projection as the element of a generic container" {
+    assert probe2(Cell1(v: "q"))[0] == "q"
+    assert probe2(Cell1(v: Big(a: 4, b: 5, c: 6)))[0].c == 6
+}

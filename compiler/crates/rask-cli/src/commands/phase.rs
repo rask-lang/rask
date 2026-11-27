@@ -137,15 +137,20 @@ pub fn cmd_resolve(path: &str, format: Format) {
 
     // Use package resolution if in a multi-file context
     // This file already parsed; a sibling that doesn't is reported by `check`.
-    // Here it falls back to resolving the file on its own.
+    // Here it falls back to resolving the file on its own. The stdlib's
+    // bodies are left out: the dump is of the program's names.
+    let stdlib_types = rask_stdlib::StubRegistry::desugar_declarations();
     let resolve_result = if let Ok(Some(mut pkg_ctx)) = rask_compiler::detect_package(path) {
-        rask_desugar::desugar_package(
-            &mut pkg_ctx.all_decls,
-            rask_stdlib::StubRegistry::desugar_declarations(),
-        );
-        rask_resolve::resolve_package(&pkg_ctx.all_decls, &pkg_ctx.registry, pkg_ctx.root_id)
+        rask_desugar::desugar(&mut pkg_ctx.all_decls, rask_desugar::Desugaring::Program { stdlib: stdlib_types });
+        rask_resolve::resolve(rask_resolve::ResolveInput {
+            decls: &pkg_ctx.all_decls,
+            stdlib: &[],
+            package: Some((&pkg_ctx.registry, pkg_ctx.root_id)),
+        })
     } else {
-        rask_resolve::resolve(&parse_result.decls)
+        let mut decls = parse_result.decls;
+        rask_desugar::desugar(&mut decls, rask_desugar::Desugaring::Program { stdlib: stdlib_types });
+        rask_resolve::resolve(rask_resolve::ResolveInput { decls: &decls, stdlib: &[], package: None })
     };
 
     match resolve_result {

@@ -136,9 +136,9 @@ func written_under_a_view() {
 func sent_to_a_task() {
     let xs: Vec<i32> = [1, 2]
     let p = unsafe xs.as_ptr()
+    // Handed on rather than joined here, so the task carries `p` away.
     let t = Thread.spawn { return unsafe *p }   // ERROR: E0930
-    let got = t.join() catch _ => 0
-    println(got)
+    t.detach()
 }
 
 func captured_and_returned() -> func() -> i32 {

@@ -12,6 +12,11 @@
 //! - `@inline` → inline whatever the size
 //! - Recursive functions → never inline
 //! - Extern functions → never inline
+//! - A frame over `FRAME_CHECKED_IN_PLACE` → never inline: in the caller it
+//!   would make the caller's frame that big, and the stack check for it would
+//!   fire at the caller's entry, ahead of code that runs before the call
+//! - A callee with locals in memory → never into a recursive caller, which
+//!   would pay for them at every level
 
 use std::collections::HashMap;
 
@@ -46,7 +51,7 @@ const MAX_INLINE_DEPTH: usize = 8;
 ///
 /// Returns DI5 inline region metadata as a side-channel (caller name → regions).
 /// This keeps debug concerns out of MirFunction.
-pub fn inline_functions(fns: &mut Vec<MirFunction>) -> HashMap<String, Vec<InlineRegion>> {
+pub fn inline_functions(fns: &mut Vec<MirFunction>, target: rask_ast::Target) -> HashMap<String, Vec<InlineRegion>> {
     let mut inline_metadata: HashMap<String, Vec<InlineRegion>> = HashMap::new();
 
     // Build call graph for heuristics
@@ -65,6 +70,7 @@ pub fn inline_functions(fns: &mut Vec<MirFunction>) -> HashMap<String, Vec<Inlin
         .filter(|f| should_inline(&cg, &f.name) || (f.inline_hint && !cg.is_recursive(&f.name)))
         .filter(|f| !writers.get(&f.name).is_some_and(|s| !s.is_empty()))
         .filter(|f| !builds_borrowing_closure(f))
+        .filter(|f| locals_size(f, target) <= crate::FRAME_CHECKED_IN_PLACE)
         .map(|f| (f.name.clone(), f.clone()))
         .collect();
 
@@ -133,7 +139,7 @@ fn builds_borrowing_closure(func: &MirFunction) -> bool {
 /// func attach(mutate h: Holder, n: Link<Node>) { h.root = n }
 ///
 ///     _5 = _0 + 0            // the parameter, plus the field's offset
-///     Link_set(_5, _1)       // the argument is _5, never _0
+///     rask_link_set(_5, _1)  // the argument is _5, never _0
 /// ```
 ///
 /// Matching arguments against parameter ids alone misses that, so `attach`
@@ -170,18 +176,30 @@ fn builds_borrowing_closure(func: &MirFunction) -> bool {
 fn param_aliases(f: &MirFunction) -> HashMap<LocalId, usize> {
     let mut alias: HashMap<LocalId, usize> =
         f.params.iter().enumerate().map(|(i, p)| (p.id, i)).collect();
+    let placed = placed_locals(f);
     // A derived local can be defined after the one it comes from is itself
     // discovered, so iterate rather than assuming a single pass reaches all.
     loop {
         let mut changed = false;
         for b in &f.blocks {
             for s in &b.statements {
+                // A name bound where an element sits (`for mutate e in a`,
+                // `with a[1] as e`) is that element.
+                if let MirStmtKind::BindPlace { dst, addr } = &s.kind {
+                    if let Some(&i) = alias.get(addr) {
+                        changed |= alias.insert(*dst, i).is_none();
+                    }
+                    continue;
+                }
                 let MirStmtKind::Assign { dst, rvalue } = &s.kind else { continue };
                 let src = match rvalue {
                     MirRValue::Use(MirOperand::Local(id)) => *id,
                     // Only `base + offset`: the base is the address, and a
                     // constant offset keeps it inside the same storage.
                     MirRValue::BinaryOp { op: BinOp::Add, left: MirOperand::Local(id), .. } => *id,
+                    // The address of a bound element is the element's
+                    // address (`f(mutate e)` inside `for mutate e in a`).
+                    MirRValue::Ref(id) if placed.contains(id) => *id,
                     _ => continue,
                 };
                 let Some(&i) = alias.get(&src) else { continue };
@@ -197,7 +215,19 @@ fn param_aliases(f: &MirFunction) -> HashMap<LocalId, usize> {
     alias
 }
 
-fn params_written_through(fns: &[MirFunction]) -> HashMap<String, std::collections::HashSet<usize>> {
+/// Names bound where an element sits (`BindPlace`).
+fn placed_locals(f: &MirFunction) -> std::collections::HashSet<LocalId> {
+    f.blocks
+        .iter()
+        .flat_map(|b| b.statements.iter())
+        .filter_map(|s| match &s.kind {
+            MirStmtKind::BindPlace { dst, .. } => Some(*dst),
+            _ => None,
+        })
+        .collect()
+}
+
+pub(crate) fn params_written_through(fns: &[MirFunction]) -> HashMap<String, std::collections::HashSet<usize>> {
     use std::collections::HashSet;
 
     let known: HashMap<&str, &MirFunction> =
@@ -205,16 +235,26 @@ fn params_written_through(fns: &[MirFunction]) -> HashMap<String, std::collectio
 
     let mut written: HashMap<String, HashSet<usize>> = HashMap::new();
 
-    // Seed with direct stores through a parameter.
+    // Seed with direct stores through a parameter. An element store is one:
+    // `a[0] = x` on a `mutate a: [string; 2]` writes the caller's array, and
+    // inlined onto a copy of it the caller never saw the write.
     for f in fns {
         let mut set = HashSet::new();
         let alias = param_aliases(f);
+        // Assigning a bound element writes the element; assigning a copy
+        // of a parameter writes only the copy.
+        let placed = placed_locals(f);
         for b in &f.blocks {
             for s in &b.statements {
-                if let MirStmtKind::Store { addr, .. } = &s.kind {
-                    if let Some(&i) = alias.get(addr) {
-                        set.insert(i);
-                    }
+                let written = match &s.kind {
+                    MirStmtKind::Assign { dst, .. } if placed.contains(dst) => Some(dst),
+                    MirStmtKind::Store { addr, .. } => Some(addr),
+                    MirStmtKind::ArrayStore { base, .. } => Some(base),
+                    MirStmtKind::ZeroAggregate { local } => Some(local),
+                    _ => None,
+                };
+                if let Some(&i) = written.and_then(|w| alias.get(w)) {
+                    set.insert(i);
                 }
             }
         }
@@ -286,6 +326,10 @@ fn pointer_shaped(ty: &MirType) -> bool {
     )
 }
 
+fn locals_size(f: &MirFunction, target: rask_ast::Target) -> u32 {
+    f.locals.iter().fold(0u32, |sum, l| sum.saturating_add(rask_layout::size_of(&l.ty, target)))
+}
+
 fn should_inline(cg: &CallGraph, callee_name: &str) -> bool {
     if cg.is_recursive(callee_name) {
         return false;
@@ -318,6 +362,12 @@ fn inline_into_function(
         return;
     }
 
+    // A recursive function pays for its frame once per level, so its frame
+    // sets how deep it can go. A callee with locals in memory would add them
+    // to every level, even when it only runs at the bottom: a 4.8K array in
+    // a base-case helper overflowed `rec(3000)` natively.
+    let caller_recursive = cg.is_recursive(&func.name);
+
     // Process block by block. We may add new blocks during iteration,
     // but only process the original ones for inlining candidates.
     let mut block_idx = 0;
@@ -328,7 +378,10 @@ fn inline_into_function(
                 let stmt = &func.blocks[block_idx].statements[stmt_idx];
                 match &stmt.kind {
                     MirStmtKind::Call { func: callee_ref, .. } => {
-                        !callee_ref.is_extern && callee_bodies.contains_key(&callee_ref.name)
+                        !callee_ref.is_extern
+                            && callee_bodies.get(&callee_ref.name).is_some_and(|callee| {
+                                !caller_recursive || !callee.locals.iter().any(|l| l.ty.needs_slot())
+                            })
                     }
                     _ => false,
                 }
@@ -670,6 +723,7 @@ fn remap_rvalue(rv: &MirRValue, local_map: &HashMap<LocalId, LocalId>) -> MirRVa
         MirRValue::Ref(id) => MirRValue::Ref(local_map.get(id).copied().unwrap_or(*id)),
         MirRValue::Deref(op) => MirRValue::Deref(remap_operand(op, local_map)),
         MirRValue::FuncAddr(name) => MirRValue::FuncAddr(name.clone()),
+        MirRValue::WrapSome(op) => MirRValue::WrapSome(remap_operand(op, local_map)),
         MirRValue::BinaryOp { op, left, right } => MirRValue::BinaryOp {
             op: *op,
             left: remap_operand(left, local_map),
@@ -783,15 +837,20 @@ fn remap_stmt(
                     by_ref: c.by_ref,
                     copy: c.copy,
                     lent: c.lent,
+                    owns: c.owns.clone(),
                 })
                 .collect(),
             heap: *heap,
         },
-        MirStmtKind::ClosureCall { dst, closure, args, taken } => MirStmtKind::ClosureCall {
+        MirStmtKind::ClosureCall { dst, closure, args, modes } => MirStmtKind::ClosureCall {
             dst: dst.map(|d| local_map.get(&d).copied().unwrap_or(d)),
             closure: local_map.get(closure).copied().unwrap_or(*closure),
             args: args.iter().map(|a| remap_operand(a, local_map)).collect(),
-            taken: taken.clone(),
+            modes: modes.clone(),
+        },
+        MirStmtKind::BindPlace { dst, addr } => MirStmtKind::BindPlace {
+            dst: local_map.get(dst).copied().unwrap_or(*dst),
+            addr: local_map.get(addr).copied().unwrap_or(*addr),
         },
         MirStmtKind::LoadCapture {
             dst,
@@ -808,19 +867,17 @@ fn remap_stmt(
             closure: local_map.get(closure).copied().unwrap_or(*closure),
             made: made.map(|m| local_map.get(&m).copied().unwrap_or(m)),
         },
-        MirStmtKind::ClosureRetain { closure, made } => MirStmtKind::ClosureRetain {
-            closure: local_map.get(closure).copied().unwrap_or(*closure),
-            made: made.map(|m| local_map.get(&m).copied().unwrap_or(m)),
-        },
         MirStmtKind::ArrayStore {
             base,
             index,
             elem_size,
+            inline,
             value,
         } => MirStmtKind::ArrayStore {
             base: local_map.get(base).copied().unwrap_or(*base),
             index: remap_operand(index, local_map),
             elem_size: *elem_size,
+            inline: *inline,
             value: remap_operand(value, local_map),
         },
         MirStmtKind::GlobalRef { dst, name } => MirStmtKind::GlobalRef {
@@ -835,6 +892,7 @@ fn remap_stmt(
             concrete_size,
             concrete_align,
             vtable_name,
+            owns_value,
         } => MirStmtKind::InterfaceBox {
             dst: local_map.get(dst).copied().unwrap_or(*dst),
             value: remap_operand(value, local_map),
@@ -843,6 +901,7 @@ fn remap_stmt(
             concrete_size: *concrete_size,
             concrete_align: *concrete_align,
             vtable_name: vtable_name.clone(),
+            owns_value: *owns_value,
         },
         MirStmtKind::InterfaceCall {
             dst,
@@ -850,16 +909,18 @@ fn remap_stmt(
             method_name,
             vtable_offset,
             args,
+            takes_receiver,
         } => MirStmtKind::InterfaceCall {
             dst: dst.map(|d| local_map.get(&d).copied().unwrap_or(d)),
             interface_object: local_map.get(interface_object).copied().unwrap_or(*interface_object),
             method_name: method_name.clone(),
             vtable_offset: *vtable_offset,
             args: args.iter().map(|a| remap_operand(a, local_map)).collect(),
+            takes_receiver: *takes_receiver,
         },
-        MirStmtKind::InterfaceDrop { interface_object, owns } => MirStmtKind::InterfaceDrop {
+        MirStmtKind::InterfaceDrop { interface_object, release } => MirStmtKind::InterfaceDrop {
             interface_object: local_map.get(interface_object).copied().unwrap_or(*interface_object),
-            owns: *owns,
+            release: *release,
         },
         MirStmtKind::Phi { dst, args } => MirStmtKind::Phi {
             dst: local_map.get(dst).copied().unwrap_or(*dst),
@@ -882,8 +943,9 @@ fn remap_stmt(
         MirStmtKind::RcDecContents { local } => MirStmtKind::RcDecContents {
             local: local_map.get(local).copied().unwrap_or(*local),
         },
-        MirStmtKind::RcIncContents { local } => MirStmtKind::RcIncContents {
+        MirStmtKind::RcIncContents { local, for_hand_off } => MirStmtKind::RcIncContents {
             local: local_map.get(local).copied().unwrap_or(*local),
+            for_hand_off: *for_hand_off,
         },
         MirStmtKind::ZeroAggregate { local } => MirStmtKind::ZeroAggregate {
             local: local_map.get(local).copied().unwrap_or(*local),
@@ -908,10 +970,13 @@ fn remap_stmt(
                     by_ref: c.by_ref,
                     copy: c.copy,
                     lent: c.lent,
+                    owns: c.owns.clone(),
                 })
                 .collect(),
         },
-        MirStmtKind::EnsureHookPop => MirStmtKind::EnsureHookPop,
+        MirStmtKind::EnsureHookPop { kept } => MirStmtKind::EnsureHookPop {
+            kept: kept.iter().map(|l| local_map.get(l).copied().unwrap_or(*l)).collect(),
+        },
         // Inlining runs before any release pass arms a slot, so these never
         // reach here; copied, they'd keep the callee's slot numbers.
         MirStmtKind::UnwindArm { slot, value, release } => MirStmtKind::UnwindArm {
@@ -1200,8 +1265,10 @@ mod tests {
             }],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
-            source_file: None,
+            param_modes: Vec::new(),
+            item_mode_from_body: false,
 
         }
     }
@@ -1228,8 +1295,10 @@ mod tests {
             }],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
-            source_file: None,
+            param_modes: Vec::new(),
+            item_mode_from_body: false,
 
         }
     }
@@ -1250,7 +1319,7 @@ mod tests {
         let mut caller = make_caller();
         caller.blocks[0].statements = vec![call.clone(), call];
         let mut fns = vec![caller, callee];
-        let _ = inline_functions(&mut fns);
+        let _ = inline_functions(&mut fns, rask_ast::Target::LP64);
         fns[0].blocks.iter().flat_map(|b| &b.statements).any(|s| {
             matches!(&s.kind, MirStmtKind::Call { func, .. } if func.name == "big")
         })
@@ -1265,7 +1334,7 @@ mod tests {
     #[test]
     fn basic_inline() {
         let mut fns = vec![make_caller(), make_simple_callee()];
-        let _ = inline_functions(&mut fns);
+        let _ = inline_functions(&mut fns, rask_ast::Target::LP64);
 
         let main = &fns[0];
         // Original block should now end with Goto (not the call)
@@ -1295,8 +1364,10 @@ mod tests {
             }],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
-            source_file: None,
+            param_modes: Vec::new(),
+            item_mode_from_body: false,
         };
         let caller = MirFunction {
             name: "main".to_string(),
@@ -1314,12 +1385,14 @@ mod tests {
             }],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
-            source_file: None,
+            param_modes: Vec::new(),
+            item_mode_from_body: false,
         };
 
         let mut fns = vec![caller, callee];
-        let _ = inline_functions(&mut fns);
+        let _ = inline_functions(&mut fns, rask_ast::Target::LP64);
 
         fns[0].blocks.iter().flat_map(|b| &b.statements).find_map(|s| match &s.kind {
             MirStmtKind::Store { addr, offset, value: MirOperand::Constant(MirConst::Int(v)), .. }
@@ -1383,13 +1456,15 @@ mod tests {
                 }],
                 entry_block: BlockId(0),
                 is_extern_c: false,
+                span: rask_ast::Span::new(0, 0),
                 inline_hint: false,
-                source_file: None,
+                param_modes: Vec::new(),
+                item_mode_from_body: false,
     
             },
         ];
         let blocks_before = fns[0].blocks.len();
-        let _ = inline_functions(&mut fns);
+        let _ = inline_functions(&mut fns, rask_ast::Target::LP64);
         // Should NOT have inlined — block count unchanged
         assert_eq!(fns[0].blocks.len(), blocks_before);
     }
@@ -1417,8 +1492,10 @@ mod tests {
             }],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
-            source_file: None,
+            param_modes: Vec::new(),
+            item_mode_from_body: false,
         }
     }
 
@@ -1428,7 +1505,7 @@ mod tests {
             dst: None,
             closure: LocalId(1),
             args: vec![MirOperand::Local(LocalId(0))],
-            taken: Vec::new(),
+            modes: vec![rask_ast::ty::ParamMode::Borrow; 1],
         });
         let written = params_written_through(&[f]);
         assert!(written["write"].contains(&0), "self goes to the closure by address");
@@ -1443,6 +1520,7 @@ mod tests {
             method_name: "add".to_string(),
             vtable_offset: 0,
             args: vec![MirOperand::Local(LocalId(0))],
+            takes_receiver: false,
         });
         let written = params_written_through(&[f]);
         assert!(written["write"].contains(&0));
@@ -1466,12 +1544,14 @@ mod tests {
             }],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
-            source_file: None,
+            param_modes: Vec::new(),
+            item_mode_from_body: false,
 
         }];
         let blocks_before = fns[0].blocks.len();
-        let _ = inline_functions(&mut fns);
+        let _ = inline_functions(&mut fns, rask_ast::Target::LP64);
         assert_eq!(fns[0].blocks.len(), blocks_before);
     }
 

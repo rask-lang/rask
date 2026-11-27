@@ -15,3 +15,5 @@ rask-check = { path = "../rask-check" }
 rask-ownership = { path = "../rask-ownership" }
 rask-stdlib = { path = "../rask-stdlib" }
 rask-interp = { path = "../rask-interp" }
+rask-compiler = { path = "../rask-compiler" }
+rask-diagnostics = { path = "../rask-diagnostics" }

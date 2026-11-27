@@ -1,0 +1,123 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// `FieldInfo.wire_kind` says what a decoder reads a field as (std.reflect,
+// std.encoding/E12b), as a value a format can match on: a type that decodes
+// through its own `decode` reads as what that takes, down a chain and through a
+// `T?`.
+
+import reflect
+import reflect.WireKind
+
+struct Bad {
+    why: string
+}
+
+extend Bad {
+    public func message(self) -> string {
+        return self.why
+    }
+}
+
+struct Port {
+    value: u16
+}
+
+Port implements Decode {
+    func decode(raw: u16) -> Port or Bad {
+        return Port(value: raw)
+    }
+}
+
+struct Alias {
+    port: Port
+}
+
+Alias implements Decode {
+    func decode(raw: Port) -> Alias or Bad {
+        return Alias(port: raw)
+    }
+}
+
+struct Sample {
+    name: string
+    on: bool
+    ratio: f32
+    big: i64
+    count: usize
+    port: Port
+    via: Alias
+    maybe: Port?
+    plain: u8?
+    list: Vec<i64>
+}
+
+func kind_name(k: WireKind) -> string {
+    match k {
+        WireKind.Text => return "text"
+        WireKind.Bool => return "bool"
+        WireKind.F32 => return "f32"
+        WireKind.F64 => return "f64"
+        WireKind.I8 => return "i8"
+        WireKind.I16 => return "i16"
+        WireKind.I32 => return "i32"
+        WireKind.I64 => return "i64"
+        WireKind.Isize => return "isize"
+        WireKind.U8 => return "u8"
+        WireKind.U16 => return "u16"
+        WireKind.U32 => return "u32"
+        WireKind.U64 => return "u64"
+        WireKind.Usize => return "usize"
+        WireKind.Other => return "other"
+    }
+}
+
+func described<T>() -> Vec<string> {
+    mut out: Vec<string> = Vec.new()
+    comptime for f in reflect.fields<T>() {
+        if f.wire_optional {
+            out.push("{f.name}={kind_name(f.wire_kind)}?")
+        } else {
+            out.push("{f.name}={kind_name(f.wire_kind)}")
+        }
+    }
+    return out
+}
+
+test "std.reflect — a field's wire kind, through custom decodes and optionals" {
+    let got = described<Sample>()
+    let want = "name=text,on=bool,ratio=f32,big=i64,count=usize,port=u16,via=u16,maybe=u16?,plain=u8?,list=other"
+    assert got.join(",") == want
+}
+
+test "std.reflect — the same facts from reflect.fields as a value" {
+    let fields = reflect.fields<Sample>()
+    assert kind_name(fields[0].wire_kind) == "text"
+    assert kind_name(fields[5].wire_kind) == "u16"
+    assert fields[5].wire_optional == false
+    assert kind_name(fields[7].wire_kind) == "u16"
+    assert fields[7].wire_optional
+    assert kind_name(fields[9].wire_kind) == "other"
+}
+
+// A field typed by a type parameter is asked about what the instance put there.
+struct Holder<T> {
+    x: T
+    y: T?
+    z: Vec<T>
+}
+
+test "std.reflect — a field typed by a type parameter reports the instance's type" {
+    let got = described<Holder<Port>>()
+    assert got.join(",") == "x=u16,y=u16?,z=other"
+    let fields = reflect.fields<Holder<Port>>()
+    assert fields[0].has_decode
+    assert !fields[1].has_decode
+    assert !fields[2].has_decode
+    comptime for f in reflect.fields<Holder<Port>>() {
+        comptime {
+            if f.name == "x" {
+                assert f.has_decode
+                assert f.has_encode == false
+            }
+        }
+    }
+}

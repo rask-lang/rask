@@ -238,7 +238,7 @@ test "a rewritten past release fails check" {
     // Quietly drop release 1's last Add, as if it had never shipped.
     mut first = s.history[0].clone()
     first.changes.pop()
-    s.history.set(0, first)
+    s.history[0] = first
     assert schema_error(s).contains("does not give the current shape")
 }
 

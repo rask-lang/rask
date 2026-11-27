@@ -1,0 +1,32 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+// A stdlib method written in Rask that changes its vector (`remove_unordered`
+// swaps and pops) works on a vector held inside another vector. Natively the
+// method was handed the address of the outer vector's slot rather than the
+// inner vector, read that slot as a vector, and `swap` failed its bounds
+// check (#1991).
+
+struct Bag {
+    id: i64
+    items: Vec<i64>
+}
+
+test "a vector inside a vector" {
+    mut vv: Vec<Vec<i64>> = Vec.new()
+    vv.push(Vec.new())
+    vv[0].push(5)
+    vv[0].push(6)
+    let x = vv[0].remove_unordered(0)
+    assert x == 5
+    assert vv[0].len() == 1
+    assert vv[0][0] == 6
+}
+
+test "a vector field of a vector's element" {
+    mut bags: Vec<Bag> = Vec.new()
+    bags.push(Bag(id: 1, items: Vec.from([7, 8, 9])))
+    let x = bags[0].items.remove_unordered(0)
+    assert x == 7
+    assert bags[0].items.len() == 2
+    assert bags[0].items[0] == 9
+}

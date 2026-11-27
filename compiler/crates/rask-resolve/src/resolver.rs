@@ -5,7 +5,7 @@ use rask_ast::ty::TypeExpr;
 use std::collections::{HashMap, HashSet};
 use rask_ast::decl::{Decl, DeclKind, FnDecl, StructDecl, EnumDecl, InterfaceDecl, ImplDecl, ImportDecl, ExportDecl, TypeParam, UnionDecl};
 use rask_ast::stmt::{ForBinding, Stmt, StmtKind};
-use rask_ast::expr::{Expr, ExprKind, Pattern};
+use rask_ast::expr::{Expr, ExprKind, Pattern, PatternKind};
 use rask_ast::{NodeId, Span};
 
 use crate::error::ResolveError;
@@ -42,8 +42,17 @@ pub struct Resolver {
     scopes: ScopeTree,
     resolutions: HashMap<NodeId, SymbolId>,
     errors: Vec<ResolveError>,
+    /// Names `field: Type` patterns declared in case the learner meant a
+    /// rename. See `ResolvedProgram::field_type_pattern_names`.
+    field_type_pattern_names: HashMap<SymbolId, crate::FieldTypePattern>,
     current_package: Option<PackageId>,
-    package_bindings: HashMap<String, PackageId>,
+    /// Each extern's C symbol, against the first declaration of it. Two
+    /// packages' externs have names of their own and still link one symbol,
+    /// so they have to agree on its signature.
+    extern_symbols: HashMap<String, SymbolId>,
+    /// What an import path names, and from which package each file imports.
+    import_index: crate::ImportIndex,
+    file_package_ids: HashMap<u16, PackageId>,
     imported_symbols: HashSet<String>,
     /// Packages the manifest declares under a `scope` this build doesn't
     /// link, name -> scope. Read when an import fails, so the error says why
@@ -96,6 +105,14 @@ pub struct Resolver {
     /// with no span, so declaring it was reported as shadowing a built-in
     /// type that doesn't exist (#1126).
     builtin_enums: HashSet<SymbolId>,
+    /// The program's `let`/`mut` bindings, for the unused-variable warning
+    /// (tool.warnings/W3). The stdlib's aren't recorded.
+    local_bindings: Vec<SymbolId>,
+    /// Plain-name assignment targets (`x = 2`): a resolution that writes
+    /// the binding without reading it.
+    write_only: HashSet<NodeId>,
+    /// The function being resolved says `@allow(unused_variable)`.
+    allow_unused_variable: bool,
 }
 
 impl Resolver {
@@ -106,8 +123,11 @@ impl Resolver {
             scopes: ScopeTree::new(),
             resolutions: HashMap::new(),
             errors: Vec::new(),
+            field_type_pattern_names: HashMap::new(),
             current_package: None,
-            package_bindings: HashMap::new(),
+            import_index: crate::ImportIndex::default(),
+            extern_symbols: HashMap::new(),
+            file_package_ids: HashMap::new(),
             imported_symbols: HashSet::new(),
             unlinked_scopes: HashMap::new(),
             imported_type_names: HashSet::new(),
@@ -120,6 +140,9 @@ impl Resolver {
             stdlib_symbols: HashSet::new(),
             stub_functions: HashMap::new(),
             builtin_enums: HashSet::new(),
+            local_bindings: Vec::new(),
+            write_only: HashSet::new(),
+            allow_unused_variable: false,
         };
 
         resolver.register_builtins();
@@ -132,7 +155,7 @@ impl Resolver {
         for entry in crate::symbol::BUILTIN_FUNCTIONS {
             let sym_id = self.symbols.insert(
                 entry.name.to_string(),
-                SymbolKind::BuiltinFunction { builtin: entry.kind },
+                SymbolKind::BuiltinFunction { builtin: entry.kind, decl: None },
                 None,
                 Span::new(0, 0),
                 true,
@@ -198,7 +221,14 @@ impl Resolver {
         // print, format, etc. keep their BuiltinFunction symbol kind.
         let stub_reg = rask_stdlib::StubRegistry::load();
         for f in stub_reg.functions() {
-            if self.scopes.lookup(&f.name).is_some() {
+            if let Some(bound) = self.scopes.lookup(&f.name) {
+                // A builtin the stdlib declares with a body: the symbol the
+                // name already has is that declaration's.
+                if let Some(SymbolKind::BuiltinFunction { decl, .. }) =
+                    self.symbols.get_mut(bound).map(|s| &mut s.kind)
+                {
+                    *decl = Some(f.fn_id);
+                }
                 continue;
             }
             let ret_ty = if f.ret_ty == TypeExpr::Unit { None } else { Some(f.ret_ty.clone()) };
@@ -248,6 +278,7 @@ impl Resolver {
                     params: param_syms,
                     ret_ty,
                     is_unsafe: false,
+                    decl: f.fn_id,
                 },
                 None,
                 Span::new(0, 0),
@@ -332,7 +363,7 @@ impl Resolver {
             }
             let sym_id = self.symbols.insert(
                 name.to_string(),
-                SymbolKind::BuiltinFunction { builtin: *builtin },
+                SymbolKind::BuiltinFunction { builtin: *builtin, decl: None },
                 None,
                 span,
                 false,
@@ -406,7 +437,7 @@ impl Resolver {
                 "TooManyRedirects", "Io",
             ]),
             ("json", "JsonValue") => Some(&["Null", "Bool", "Number", "String", "Array", "Object"]),
-            ("json", "JsonError") => Some(&["ParseError", "TypeError", "MissingField"]),
+            ("json", "JsonError") => Some(&["ParseError", "TypeError", "MissingField", "Refused"]),
             _ => None,
         }
     }
@@ -418,7 +449,7 @@ impl Resolver {
 
         // Builtin functions
         match (module, symbol) {
-            ("core", "transmute") => return SymbolKind::BuiltinFunction { builtin: BuiltinFunctionKind::Transmute },
+            ("core", "transmute") => return SymbolKind::BuiltinFunction { builtin: BuiltinFunctionKind::Transmute, decl: None },
             _ => {}
         }
 
@@ -512,108 +543,70 @@ impl Resolver {
         }
     }
 
-    fn resolve_inner(decls: &[Decl], stdlib_mode: bool) -> Result<ResolvedProgram, Vec<ResolveError>> {
+    /// Resolve every name in a program. See [`crate::ResolveInput`].
+    pub fn resolve(input: crate::ResolveInput) -> Result<ResolvedProgram, Vec<ResolveError>> {
+        let crate::ResolveInput { decls, stdlib, package } = input;
         let mut resolver = Resolver::new();
-        resolver.stdlib_mode = stdlib_mode;
+        let (external_decls, file_packages, package_deps) = match package {
+            Some((registry, current_package)) => resolver.load_packages(registry, current_package),
+            None => Default::default(),
+        };
 
+        // The stdlib goes in under `stdlib_mode`: it *defines* `Result`,
+        // `Option` and `spawn`, so the builtin-shadowing check (E0209) would
+        // reject the definitions of the very builtins it's protecting.
+        // Declarations of both are collected before any body resolves, so
+        // either can name the other.
+        resolver.stdlib_mode = true;
+        resolver.collect_declarations(stdlib);
+        resolver.check_annotations(stdlib);
+        resolver.stdlib_mode = false;
         resolver.collect_declarations(decls);
         resolver.check_annotations(decls);
+
+        resolver.stdlib_mode = true;
+        resolver.resolve_bodies(stdlib);
+        resolver.stdlib_mode = false;
         resolver.resolve_bodies(decls);
 
         if resolver.errors.is_empty() {
+            let unused_locals = resolver.unused_locals();
             Ok(ResolvedProgram {
                 symbols: resolver.symbols,
                 resolutions: resolver.resolutions,
                 decl_symbols: resolver.decl_symbols,
-                external_decls: HashMap::new(),
-                file_packages: HashMap::new(),
-                package_deps: HashMap::new(),
+                external_decls,
+                file_packages,
+                package_deps,
+                field_type_pattern_names: resolver.field_type_pattern_names,
+                unused_locals,
             })
         } else {
+            resolver.name_unlinked_scopes();
             Err(resolver.errors)
         }
     }
 
-
-    pub fn resolve(decls: &[Decl]) -> Result<ResolvedProgram, Vec<ResolveError>> {
-        Self::resolve_inner(decls, false)
-    }
-
-    /// Resolve stdlib definition files — skips E0209 builtin shadowing checks.
-    pub fn resolve_stdlib(decls: &[Decl]) -> Result<ResolvedProgram, Vec<ResolveError>> {
-        Self::resolve_inner(decls, true)
-    }
-
-    /// Resolve the program with stdlib bodies alongside it.
-    ///
-    /// The single-file mirror of `resolve_package_with_stdlib`. Needed
-    /// because the stdlib's own bodies are compiled into every program, so they
-    /// have to be resolved — and then type-checked — for anything downstream to
-    /// know what a call inside them refers to.
-    ///
-    /// Stdlib decls go in under `stdlib_mode`: they *define* `Result`, `Option`
-    /// and `spawn`, so the builtin-shadowing check (E0209) would reject the
-    /// definitions of the very builtins it's protecting.
-    pub fn resolve_with_stdlib(
-        decls: &[Decl],
-        stdlib_decls: &[Decl],
-    ) -> Result<ResolvedProgram, Vec<ResolveError>> {
-        let mut resolver = Resolver::new();
-
-        if !stdlib_decls.is_empty() {
-            resolver.stdlib_mode = true;
-            resolver.collect_declarations(stdlib_decls);
-            resolver.stdlib_mode = false;
-        }
-        resolver.collect_declarations(decls);
-        resolver.check_annotations(decls);
-
-        if !stdlib_decls.is_empty() {
-            resolver.stdlib_mode = true;
-            resolver.resolve_bodies(stdlib_decls);
-            resolver.stdlib_mode = false;
-        }
-        resolver.resolve_bodies(decls);
-
-        if resolver.errors.is_empty() {
-            Ok(ResolvedProgram {
-                symbols: resolver.symbols,
-                resolutions: resolver.resolutions,
-                decl_symbols: resolver.decl_symbols,
-                external_decls: HashMap::new(),
-                file_packages: HashMap::new(),
-                package_deps: HashMap::new(),
-            })
-        } else {
-            Err(resolver.errors)
-        }
-    }
-
-    pub fn resolve_package(
-        decls: &[Decl],
+    /// Take in the other packages of a package build: their exports, which
+    /// package owns each file, and what each package can see. Returns the
+    /// other packages' public type declarations, the file owners and the
+    /// visibility graph, for `ResolvedProgram`.
+    #[allow(clippy::type_complexity)]
+    fn load_packages(
+        &mut self,
         registry: &crate::PackageRegistry,
         current_package: crate::PackageId,
-    ) -> Result<ResolvedProgram, Vec<ResolveError>> {
-        Self::resolve_package_with_stdlib(decls, registry, current_package, &[])
-    }
-
-    /// Resolve a package with separate stdlib declarations processed in
-    /// stdlib_mode (bypasses builtin-shadowing checks). Stdlib decls are
-    /// collected and resolved first, then user decls on top.
-    pub fn resolve_package_with_stdlib(
-        decls: &[Decl],
-        registry: &crate::PackageRegistry,
-        current_package: crate::PackageId,
-        stdlib_decls: &[Decl],
-    ) -> Result<ResolvedProgram, Vec<ResolveError>> {
-        let mut resolver = Resolver::new();
+    ) -> (HashMap<String, Vec<Decl>>, HashMap<u16, String>, HashMap<String, std::collections::HashSet<String>>) {
         for (name, scope) in registry.unlinked_scopes() {
-            resolver.unlinked_scopes.insert(name.clone(), scope.clone());
+            self.unlinked_scopes.insert(name.clone(), scope.clone());
         }
-        resolver.current_package = Some(current_package);
+        self.current_package = Some(current_package);
 
+        self.import_index = crate::ImportIndex::new(registry, current_package);
         for pkg in registry.packages() {
-            resolver.package_bindings.insert(pkg.name.clone(), pkg.id);
+            for file in &pkg.files {
+                self.file_package_ids.insert(file.file_id, pkg.id);
+            }
         }
 
         // Which package owns each file, for the checks that need to know who
@@ -674,7 +667,7 @@ impl Resolver {
         let mut external_decls: HashMap<String, Vec<Decl>> = HashMap::new();
         for pkg in registry.packages() {
             if pkg.id != current_package {
-                resolver.collect_package_exports(pkg);
+                self.collect_package_exports(pkg);
 
                 let public_type_decls: Vec<Decl> = pkg.all_decls()
                     .filter(|d| match &d.kind {
@@ -698,38 +691,7 @@ impl Resolver {
             }
         }
 
-        // Collect stdlib declarations in stdlib_mode (skip shadow checks)
-        if !stdlib_decls.is_empty() {
-            resolver.stdlib_mode = true;
-            resolver.collect_declarations(stdlib_decls);
-            resolver.stdlib_mode = false;
-        }
-
-        // Collect and resolve user declarations
-        resolver.collect_declarations(decls);
-        resolver.check_annotations(decls);
-
-        // Resolve bodies for both stdlib and user decls
-        if !stdlib_decls.is_empty() {
-            resolver.stdlib_mode = true;
-            resolver.resolve_bodies(stdlib_decls);
-            resolver.stdlib_mode = false;
-        }
-        resolver.resolve_bodies(decls);
-
-        if resolver.errors.is_empty() {
-            Ok(ResolvedProgram {
-                symbols: resolver.symbols,
-                resolutions: resolver.resolutions,
-                decl_symbols: resolver.decl_symbols,
-                external_decls,
-                file_packages,
-                package_deps,
-            })
-        } else {
-            resolver.name_unlinked_scopes();
-            Err(resolver.errors)
-        }
+        (external_decls, file_packages, package_deps)
     }
 
     /// Re-label undefined names that are really unlinked scoped deps.
@@ -744,7 +706,7 @@ impl Resolver {
             return;
         }
         for err in &mut self.errors {
-            let crate::error::ResolveErrorKind::UndefinedSymbol { name } = &err.kind else { continue };
+            let crate::error::ResolveErrorKind::UndefinedSymbol { name, .. } = &err.kind else { continue };
             let head = name.split('.').next().unwrap_or(name);
             if let Some(scope) = self.unlinked_scopes.get(head) {
                 err.kind = crate::error::ResolveErrorKind::ScopedDependencyUse {
@@ -784,7 +746,7 @@ impl Resolver {
                                     is_deleting: p.is_deleting,
                                 },
                                 p.ty.clone(),
-                                Span::new(0, 0),
+                                p.name_span,
                                 false,
                             )
                         })
@@ -795,6 +757,7 @@ impl Resolver {
                             params,
                             ret_ty: f.ret_ty.clone(),
                             is_unsafe: f.is_unsafe,
+                            decl: f.id,
                         },
                         None,
                         Span::new(0, 0),
@@ -875,6 +838,21 @@ impl Resolver {
                         true,
                     );
                     exports.insert(c.name.clone(), sym_id);
+                }
+                // `import pa.labs`: a C function or macro the package declares.
+                DeclKind::Extern(e) => {
+                    let sym_id = self.symbols.insert(
+                        e.name.clone(),
+                        SymbolKind::ExternFunction {
+                            abi: e.abi.clone(),
+                            params: e.params.iter().filter_map(|p| p.ty.clone()).collect(),
+                            ret_ty: e.ret_ty.clone(),
+                        },
+                        None,
+                        Span::new(0, 0),
+                        true,
+                    );
+                    exports.insert(e.name.clone(), sym_id);
                 }
                 _ => {}
             }
@@ -1008,6 +986,25 @@ impl Resolver {
                         }
                     }
 
+                    // The same C function under another package's name.
+                    let symbol = extern_decl.c_symbol();
+                    let is_macro = rask_ast::attr::c_macro(&extern_decl.attrs).is_some();
+                    if let Some(prev) = self.extern_symbols.get(&symbol).and_then(|id| self.symbols.get(*id)).filter(|_| !is_macro) {
+                        if let SymbolKind::ExternFunction { abi, params, ret_ty } = &prev.kind {
+                            let same = *abi == extern_decl.abi
+                                && *params == param_types
+                                && *ret_ty == extern_decl.ret_ty;
+                            if !same {
+                                self.errors.push(ResolveError::conflicting_extern(
+                                    symbol.clone(),
+                                    render_extern_sig(abi, params, ret_ty),
+                                    render_extern_sig(&extern_decl.abi, &param_types, &extern_decl.ret_ty),
+                                    prev.span,
+                                    decl.span,
+                                ));
+                            }
+                        }
+                    }
                     let sym_id = self.symbols.insert(
                         extern_decl.name.clone(),
                         SymbolKind::ExternFunction {
@@ -1019,6 +1016,9 @@ impl Resolver {
                         decl.span,
                         false,
                     );
+                    if !is_macro {
+                        self.extern_symbols.entry(symbol).or_insert(sym_id);
+                    }
                     if let Err(e) = self.scopes.define(extern_decl.name.clone(), sym_id, decl.span) {
                         self.errors.push(e);
                     }
@@ -1032,7 +1032,7 @@ impl Resolver {
     /// at the top level it meant the second `func f` silently won. Functions,
     /// types and constants share the namespace: `Point(…)` may be either a
     /// call or a construction. An `extern` may repeat an agreeing signature,
-    /// and is checked where it binds.
+    /// and is checked where it binds; a C macro's extern may not.
     fn reject_duplicate_declarations(&mut self, decls: &[Decl]) {
         if self.stdlib_mode {
             return;
@@ -1048,6 +1048,10 @@ impl Resolver {
                 DeclKind::TypeAlias(a) => a.name.as_str(),
                 DeclKind::Union(u) => u.name.as_str(),
                 DeclKind::Annotation(a) => a.name.as_str(),
+                // A C macro is no link symbol, so nothing about it repeats
+                // the way an extern's declaration may: a second one, or a
+                // function of its name, is a second thing called that.
+                DeclKind::Extern(e) if rask_ast::attr::c_macro(&e.attrs).is_some() => e.name.as_str(),
                 _ => continue,
             };
             match seen.get(name) {
@@ -1210,27 +1214,6 @@ impl Resolver {
             .map(|m| m.to_string())
     }
 
-    /// Is `name` bound to a type the *program* declared — as opposed to a
-    /// builtin, something the stdlib declared, or an earlier import?
-    fn declares_locally(&self, name: &str) -> bool {
-        if self.stdlib_mode || self.imported_symbols.contains(name) {
-            return false;
-        }
-        let Some(sym_id) = self.scopes.lookup(name) else { return false };
-        if self.stdlib_symbols.contains(&sym_id) {
-            return false;
-        }
-        self.symbols.get(sym_id).is_some_and(|sym| {
-            matches!(
-                sym.kind,
-                SymbolKind::Struct { .. }
-                    | SymbolKind::Enum { .. }
-                    | SymbolKind::Interface { .. }
-                    | SymbolKind::TypeAlias { .. }
-            ) && sym.span != Span::new(0, 0)
-        })
-    }
-
     fn declare_function(&mut self, fn_decl: &FnDecl, span: Span, is_pub: bool) -> SymbolId {
         let base = fn_decl.name.clone();
         if self.stdlib_mode {
@@ -1246,7 +1229,7 @@ impl Resolver {
 
         let sym_id = self.symbols.insert(
             base.clone(),
-            SymbolKind::Function { params: vec![], ret_ty: fn_decl.ret_ty.clone(), is_unsafe: fn_decl.is_unsafe },
+            SymbolKind::Function { params: vec![], ret_ty: fn_decl.ret_ty.clone(), is_unsafe: fn_decl.is_unsafe, decl: fn_decl.id },
             None,
             span,
             is_pub,
@@ -1426,11 +1409,19 @@ impl Resolver {
             );
         }
 
-        if path.len() == 1 {
-            let pkg_name = &path[0];
+        // The package the path names, from the package this file is in:
+        // `import pa.sub` binds `sub` (IM2), and so does `import sub` inside
+        // `pa`.
+        let importer = self.file_package_ids.get(&span.file_id).copied();
+        let found = self.import_index.package(path, importer);
+        let names_package = found.filter(|(_, n)| *n == path.len()).map(|(id, _)| id);
+
+        if path.len() == 1 || names_package.is_some() {
+            let pkg_name = path.last().unwrap();
             let binding_name = import_decl.alias.as_ref().unwrap_or(pkg_name).clone();
 
-            let stdlib_module = BuiltinModuleKind::from_name(pkg_name.as_str());
+            let stdlib_module =
+                if path.len() == 1 { BuiltinModuleKind::from_name(pkg_name.as_str()) } else { None };
 
             if let Some(module_kind) = stdlib_module {
                 let sym_id = self.symbols.insert(
@@ -1458,8 +1449,8 @@ impl Resolver {
                 // Module functions are accessed qualified (os.env), but types
                 // (Command, File, Signal) are used unqualified per convention.
                 self.register_module_functions(module_kind, span);
-            } else if let Some(&pkg_id) = self.package_bindings.get(pkg_name) {
-                // External package import — register as a package namespace
+            } else if let Some(pkg_id) = names_package {
+                // Another package — register it as a namespace
                 if import_decl.is_glob {
                     // Glob import: bring all public symbols directly into scope
                     if let Some(exports) = self.package_exports.get(&pkg_id).cloned() {
@@ -1534,8 +1525,8 @@ impl Resolver {
                 }
             }
 
-            // Try to resolve from external package exports
-            if let Some(&pkg_id) = self.package_bindings.get(pkg_name) {
+            // A member of another package: `import pa.f`, `import pa.sub.f`.
+            if let Some((pkg_id, _)) = found.filter(|(_, n)| *n == path.len() - 1) {
                 if let Some(exports) = self.package_exports.get(&pkg_id) {
                     if let Some(&exported_sym) = exports.get(symbol_name) {
                         // Bind the actual exported symbol into scope
@@ -1672,18 +1663,15 @@ impl Resolver {
                         }
                     }
                 }
+            } else if found.is_some() {
+                // A package that has no public member of that name. Named
+                // bare, so a private one is reported as private (E0877).
+                self.errors.push(ResolveError::undefined(symbol_name.clone(), span));
+                return;
             } else {
-                // Unknown package — create variable binding as fallback
-                let sym_id = self.symbols.insert(
-                    binding_name.clone(),
-                    SymbolKind::Variable { mutable: false },
-                    None,
-                    span,
-                    false,
-                );
-                if let Err(e) = self.scopes.define(binding_name.clone(), sym_id, span) {
-                    self.errors.push(e);
-                }
+                let scope = path.first().and_then(|n| self.unlinked_scopes.get(n)).cloned();
+                self.errors.push(ResolveError::unknown_package_in_scope(path.clone(), scope, span));
+                return;
             }
 
             // Not in stdlib_mode: `imported_symbols` records what the *program*
@@ -1844,6 +1832,10 @@ impl Resolver {
             ScopeKind::Function(SymbolId(u32::MAX))
         };
         self.scopes.push(scope_kind);
+        let outer_allow = std::mem::replace(
+            &mut self.allow_unused_variable,
+            fn_decl.attrs.iter().filter_map(rask_ast::allow_names::allowed_name).any(|a| a == "unused_variable"),
+        );
 
         // IM1 for the signature and for every `let`/`mut` annotation in the
         // body, with the function's type parameters in scope — a local
@@ -1897,7 +1889,9 @@ impl Resolver {
                     is_deleting: param.is_deleting,
                 },
                 param.ty.clone(),
-                Span::new(0, 0),
+                // Where it's declared: a later pass tells a parameter from a
+                // local of the same name by it.
+                param.name_span,
                 false,
             );
             if let Err(e) = self.scopes.define(param.name.clone(), param_sym, Span::new(0, 0)) {
@@ -1922,8 +1916,42 @@ impl Resolver {
             self.resolve_stmt(stmt);
         }
 
+        self.allow_unused_variable = outer_allow;
         self.pop_type_params();
         self.scopes.pop();
+    }
+
+    /// Keep a binding for the unused-variable warning when it's the program's
+    /// own: not the stdlib's, and in a package build not a dependency's.
+    fn record_local_binding(&mut self, sym_id: SymbolId, span: Span) {
+        let other_package = self.current_package.is_some()
+            && self.file_package_ids.get(&span.file_id) != self.current_package.as_ref();
+        if !self.stdlib_mode && !self.allow_unused_variable && !other_package {
+            self.local_bindings.push(sym_id);
+        }
+    }
+
+    /// `let`/`mut` bindings nothing reads (tool.warnings/W3). `_` in front
+    /// of the name says it's meant. Assigning a binding isn't reading it, so
+    /// `mut total = 0` followed only by `total = 5` is still unused.
+    fn unused_locals(&self) -> Vec<crate::UnusedLocal> {
+        let read: HashSet<SymbolId> = self
+            .resolutions
+            .iter()
+            .filter(|(node, _)| !self.write_only.contains(node))
+            .map(|(_, sym)| *sym)
+            .collect();
+        let mut unused: Vec<crate::UnusedLocal> = self
+            .local_bindings
+            .iter()
+            .filter(|sym| !read.contains(sym))
+            .filter_map(|sym| self.symbols.get(*sym))
+            .filter(|sym| !sym.name.starts_with('_'))
+            .map(|sym| crate::UnusedLocal { name: sym.name.clone(), span: sym.span })
+            .collect();
+        unused.sort_by_key(|u| (u.span.file_id, u.span.start));
+        unused.dedup_by_key(|u| (u.span.file_id, u.span.start));
+        unused
     }
 
     fn resolve_impl(&mut self, impl_decl: &ImplDecl) {
@@ -1968,6 +1996,7 @@ impl Resolver {
                 if let Err(e) = self.scopes.define(name.clone(), sym_id, stmt.span) {
                     self.errors.push(e);
                 }
+                self.record_local_binding(sym_id, *name_span);
             }
             StmtKind::Let { name, name_span, ty, init } => {
                 self.resolve_expr(init);
@@ -1987,6 +2016,7 @@ impl Resolver {
                 if let Err(e) = self.scopes.define(name.clone(), sym_id, stmt.span) {
                     self.errors.push(e);
                 }
+                self.record_local_binding(sym_id, *name_span);
             }
             StmtKind::MutTuple { patterns, init } => {
                 self.resolve_expr(init);
@@ -2035,8 +2065,12 @@ impl Resolver {
                     }
                 }
             }
-            StmtKind::Assign { target, value, .. } => {
+            StmtKind::Assign { target, value, op } => {
                 self.resolve_expr(target);
+                // `x += 1` reads `x`; only a plain `x = …` doesn't.
+                if op.is_none() && matches!(target.kind, ExprKind::Ident(_)) {
+                    self.write_only.insert(target.id);
+                }
                 self.resolve_expr(value);
             }
             StmtKind::Return(value) => {
@@ -2054,6 +2088,8 @@ impl Resolver {
                     }
                 } else if !self.scopes.in_loop() {
                     self.errors.push(ResolveError::invalid_break(None, stmt.span));
+                } else if value.is_some() && self.scopes.innermost_loop_is_comptime() {
+                    self.errors.push(ResolveError::break_value_from_comptime_for(stmt.span));
                 }
                 match value {
                     // `break x` reads either way, and the parser picks the value
@@ -2180,7 +2216,9 @@ impl Resolver {
             }
             StmtKind::ComptimeFor { binding, iter, body } => {
                 self.resolve_expr(iter);
-                self.scopes.push(ScopeKind::Block);
+                // A loop for `break` and `continue`: they act on the
+                // comptime loop (ctrl.comptime/CT70).
+                self.scopes.push(ScopeKind::ComptimeLoop);
                 let names = match binding {
                     ForBinding::Single(name) => vec![name.clone()],
                     ForBinding::Tuple(names) => names.clone(),
@@ -2401,7 +2439,11 @@ impl Resolver {
         if self.report_missing_import(name, expr.span) {
             return;
         }
-        self.errors.push(ResolveError::undefined(name.to_string(), expr.span));
+        let similar = rask_diagnostics::suggestions::closest(name, self.scopes.visible_names());
+        self.errors.push(ResolveError {
+            kind: crate::error::ResolveErrorKind::UndefinedSymbol { name: name.to_string(), similar },
+            span: expr.span,
+        });
     }
 
     fn resolve_expr(&mut self, expr: &Expr) {
@@ -2498,7 +2540,14 @@ impl Resolver {
                         }
                     }
                 }
-                self.resolve_expr(object);
+                // `T.zero()`: a function the bounds on `T` require, called on
+                // the type parameter itself (`type.generics/GF7`). The name is
+                // a type here, so it has no value to resolve.
+                let names_type_param = matches!(&object.kind, ExprKind::Ident(n)
+                    if self.is_type_param(n) && self.scopes.lookup(n).is_none());
+                if !names_type_param {
+                    self.resolve_expr(object);
+                }
                 for arg in args {
                     self.resolve_expr(&arg.expr);
                 }
@@ -2788,7 +2837,7 @@ impl Resolver {
                                     is_deleting: false,
                         },
                         param.ty.clone(),
-                        expr.span,
+                        param.name_span,
                         false,
                     );
                     if let Err(e) = self.scopes.define(param.name.clone(), sym_id, expr.span) {
@@ -2798,9 +2847,12 @@ impl Resolver {
                 self.resolve_expr(body);
                 self.scopes.pop();
             }
-            ExprKind::Spawn { receiver, body, .. } => {
+            ExprKind::Spawn { receiver, args, body, .. } => {
                 if let Some(r) = receiver {
                     self.resolve_expr(r);
+                }
+                for a in args {
+                    self.resolve_expr(&a.expr);
                 }
                 self.resolve_expr(body);
             }
@@ -2872,10 +2924,51 @@ impl Resolver {
     // Pattern Resolution
     // =========================================================================
 
+    /// Does `name` mean a type here: a struct, enum, interface or builtin
+    /// (primitives included)? A stdlib module's name doesn't count. Each
+    /// module is declared as a field-less struct named after itself
+    /// (`struct time {}`), so it looks like a type, and it is never one a
+    /// pattern tests for.
+    fn names_a_type(&self, name: &str) -> bool {
+        let Some(sym) = self.scopes.lookup(name).and_then(|id| self.symbols.get(id)) else {
+            return false;
+        };
+        matches!(
+            sym.kind,
+            SymbolKind::Struct { .. }
+                | SymbolKind::Enum { .. }
+                | SymbolKind::Interface { .. }
+                | SymbolKind::BuiltinType { .. }
+        ) && !rask_stdlib::modules::is_module(name)
+    }
+
+    /// A bare name in a pattern that already means a variant or a type.
+    fn pattern_name_is_not_a_binding(&self, name: &str) -> bool {
+        self.names_a_type(name)
+            || self
+                .scopes
+                .lookup(name)
+                .and_then(|id| self.symbols.get(id))
+                .is_some_and(|sym| matches!(sym.kind, SymbolKind::EnumVariant { .. }))
+    }
+
+    fn define_pattern_binding(&mut self, name: &str) {
+        let sym_id = self.symbols.insert(
+            name.to_string(),
+            SymbolKind::Variable { mutable: false },
+            None,
+            Span::new(0, 0),
+            false,
+        );
+        if let Err(e) = self.scopes.define(name.to_string(), sym_id, Span::new(0, 0)) {
+            self.errors.push(e);
+        }
+    }
+
     fn resolve_pattern(&mut self, pattern: &Pattern) {
-        match pattern {
-            Pattern::Wildcard => {}
-            Pattern::Ident(name) => {
+        match &pattern.kind {
+            PatternKind::Wildcard => {}
+            PatternKind::Ident(name) => {
                 // A bare name that already means a variant or a type isn't a
                 // new binding. `r is Fault` tests the branch (type.errors/ER27)
                 // and binds nothing, which is how the checker reads it, but
@@ -2888,36 +2981,15 @@ impl Resolver {
                 // field-less struct named after itself (`struct time {}`), so
                 // it looks like a type here, and it is never one a pattern
                 // tests for. `EngineStart(time) => …` binds `time`.
-                if let Some(sym_id) = self.scopes.lookup(name) {
-                    if let Some(sym) = self.symbols.get(sym_id) {
-                        let names_a_type = matches!(
-                            sym.kind,
-                            SymbolKind::Struct { .. }
-                                | SymbolKind::Enum { .. }
-                                | SymbolKind::Interface { .. }
-                                | SymbolKind::BuiltinType { .. }
-                        ) && !rask_stdlib::modules::is_module(name);
-                        if matches!(sym.kind, SymbolKind::EnumVariant { .. }) || names_a_type {
-                            return;
-                        }
-                    }
+                if self.pattern_name_is_not_a_binding(name) {
+                    return;
                 }
-
-                let sym_id = self.symbols.insert(
-                    name.clone(),
-                    SymbolKind::Variable { mutable: false },
-                    None,
-                    Span::new(0, 0),
-                    false,
-                );
-                if let Err(e) = self.scopes.define(name.clone(), sym_id, Span::new(0, 0)) {
-                    self.errors.push(e);
-                }
+                self.define_pattern_binding(name);
             }
-            Pattern::Literal(expr) => {
+            PatternKind::Literal(expr) => {
                 self.resolve_expr(expr);
             }
-            Pattern::Constructor { name, fields } => {
+            PatternKind::Constructor { name, fields } => {
                 if let Some(sym_id) = self.scopes.lookup(name) {
                     let _ = sym_id;
                 }
@@ -2925,24 +2997,57 @@ impl Resolver {
                     self.resolve_pattern(field_pattern);
                 }
             }
-            Pattern::Struct { name, fields, .. } => {
-                if let Some(_sym_id) = self.scopes.lookup(name) {}
-                for (_, field_pattern) in fields {
+            PatternKind::Struct { name, fields, .. } => {
+                for (field, field_pattern) in fields {
+                    // `Cash(amount: i32)`: after the colon goes a pattern, and a
+                    // bare type name there tests the field's type (ER27); it
+                    // binds nothing. Whether the test means anything depends on
+                    // the field's type, which only the checker has: on a union
+                    // or optional field it is a real test, and on a field of
+                    // exactly that type it is the learner's rename, E0423.
+                    //
+                    // Either way an arm body that uses `amount` must reach the
+                    // checker instead of dying here as "undefined symbol".
+                    // `amount` is declared tentatively, and the checker only
+                    // lets a use through when it bound the name itself. An
+                    // outer `amount` is left alone: a tentative one would
+                    // shadow it.
+                    if let PatternKind::Ident(ty) = &field_pattern.kind {
+                        if ty != field && self.names_a_type(ty) && self.scopes.lookup(field).is_none() {
+                            let sym_id = self.symbols.insert(
+                                field.clone(),
+                                SymbolKind::Variable { mutable: false },
+                                None,
+                                Span::new(0, 0),
+                                false,
+                            );
+                            if self.scopes.define(field.clone(), sym_id, Span::new(0, 0)).is_ok() {
+                                self.field_type_pattern_names.insert(
+                                    sym_id,
+                                    crate::FieldTypePattern {
+                                        pattern: name.clone(),
+                                        field: field.clone(),
+                                        ty: ty.clone(),
+                                    },
+                                );
+                            }
+                        }
+                    }
                     self.resolve_pattern(field_pattern);
                 }
             }
-            Pattern::Tuple(patterns) => {
+            PatternKind::Tuple(patterns) => {
                 for p in patterns {
                     self.resolve_pattern(p);
                 }
             }
-            Pattern::Or(patterns) => {
+            PatternKind::Or(patterns) => {
                 for p in patterns {
                     self.resolve_pattern(p);
                 }
             }
-            Pattern::Range { .. } => {}
-            Pattern::TypePat { binding, .. } => {
+            PatternKind::Range { .. } => {}
+            PatternKind::TypePat { binding, .. } => {
                 if let Some(name) = binding {
                     let sym_id = self.symbols.insert(
                         name.clone(),
@@ -2980,6 +3085,7 @@ impl Default for Resolver {
 mod tests {
     use super::*;
     use crate::error::ResolveErrorKind;
+    use crate::ResolveInput;
     use rask_ast::decl::{Decl, DeclKind, ImportDecl};
 
     fn make_import_decl(path: Vec<&str>, alias: Option<&str>, is_glob: bool, is_lazy: bool) -> Decl {
@@ -2998,42 +3104,42 @@ mod tests {
     #[test]
     fn test_stdlib_import() {
         let decls = vec![make_import_decl(vec!["io"], None, false, false)];
-        let result = Resolver::resolve(&decls);
+        let result = crate::resolve(ResolveInput { decls: &decls, stdlib: &[], package: None });
         assert!(result.is_ok(), "Stdlib import should succeed");
     }
 
     #[test]
     fn test_symbol_import() {
         let decls = vec![make_import_decl(vec!["io", "stdin"], None, false, false)];
-        let result = Resolver::resolve(&decls);
+        let result = crate::resolve(ResolveInput { decls: &decls, stdlib: &[], package: None });
         assert!(result.is_ok(), "Symbol import should succeed");
     }
 
     #[test]
     fn test_aliased_import() {
         let decls = vec![make_import_decl(vec!["io"], Some("h"), false, false)];
-        let result = Resolver::resolve(&decls);
+        let result = crate::resolve(ResolveInput { decls: &decls, stdlib: &[], package: None });
         assert!(result.is_ok(), "Aliased import should succeed");
     }
 
     #[test]
     fn test_glob_import() {
         let decls = vec![make_import_decl(vec!["io"], None, true, false)];
-        let result = Resolver::resolve(&decls);
+        let result = crate::resolve(ResolveInput { decls: &decls, stdlib: &[], package: None });
         assert!(result.is_ok(), "Glob import should succeed (with warning)");
     }
 
     #[test]
     fn test_lazy_import() {
         let decls = vec![make_import_decl(vec!["fs"], None, false, true)];
-        let result = Resolver::resolve(&decls);
+        let result = crate::resolve(ResolveInput { decls: &decls, stdlib: &[], package: None });
         assert!(result.is_ok(), "Lazy import should succeed");
     }
 
     #[test]
     fn test_unknown_package_import_fails() {
         let decls = vec![make_import_decl(vec!["nonexistent"], None, false, false)];
-        let result = Resolver::resolve(&decls);
+        let result = crate::resolve(ResolveInput { decls: &decls, stdlib: &[], package: None });
         assert!(result.is_err(), "Unknown package import should fail");
     }
 
@@ -3041,6 +3147,7 @@ mod tests {
         Decl {
             id: NodeId(0),
             kind: DeclKind::Fn(FnDecl {
+                id: rask_ast::NodeId::DUMMY,
                 name: name.to_string(),
                 type_params: vec![],
                 params: vec![],
@@ -3110,7 +3217,7 @@ mod tests {
             },
         ];
 
-        let resolved = Resolver::resolve(&decls).expect("should resolve");
+        let resolved = crate::resolve(ResolveInput { decls: &decls, stdlib: &[], package: None }).expect("should resolve");
         let sym = resolved
             .symbols
             .iter()
@@ -3133,7 +3240,7 @@ mod tests {
         for name in ["min", "max", "clamp", "drop"] {
             let decls = vec![make_fn_decl(name)];
             assert!(
-                Resolver::resolve(&decls).is_ok(),
+                crate::resolve(ResolveInput { decls: &decls, stdlib: &[], package: None }).is_ok(),
                 "`{}` is not in BF1, so a program may declare its own",
                 name
             );
@@ -3152,7 +3259,7 @@ mod tests {
             "todo", "unreachable", "spawn", "transmute",
         ] {
             let decls = vec![make_fn_decl(name)];
-            let err = Resolver::resolve(&decls)
+            let err = crate::resolve(ResolveInput { decls: &decls, stdlib: &[], package: None })
                 .expect_err(&format!("`{}` is in BF1 and must be rejected", name));
             assert!(
                 err.iter().any(|e| matches!(
@@ -3182,7 +3289,7 @@ mod tests {
             }),
             span: Span::new(0, 10),
         }];
-        let result = Resolver::resolve(&decls);
+        let result = crate::resolve(ResolveInput { decls: &decls, stdlib: &[], package: None });
         assert!(result.is_err(), "Shadowing built-in type should fail");
     }
 
@@ -3203,7 +3310,7 @@ mod tests {
             }),
             span: Span::new(0, 10),
         }];
-        let result = Resolver::resolve(&decls);
+        let result = crate::resolve(ResolveInput { decls: &decls, stdlib: &[], package: None });
         assert!(result.is_err(), "Shadowing prelude enum should fail");
     }
 
@@ -3241,7 +3348,7 @@ mod tests {
         ] {
             let decls = vec![make_struct_decl(name)];
             assert!(
-                Resolver::resolve(&decls).is_err(),
+                crate::resolve(ResolveInput { decls: &decls, stdlib: &[], package: None }).is_err(),
                 "`{}` is always in scope, so a program may not declare it",
                 name
             );
@@ -3261,7 +3368,7 @@ mod tests {
         ] {
             let decls = vec![make_struct_decl(name)];
             assert!(
-                Resolver::resolve(&decls).is_ok(),
+                crate::resolve(ResolveInput { decls: &decls, stdlib: &[], package: None }).is_ok(),
                 "`{}` is not in BI1's set, so a program that hasn't imported it \
                  may declare its own",
                 name
@@ -3278,7 +3385,7 @@ mod tests {
             make_import_decl(vec!["time", "Duration"], None, false, false),
             make_struct_decl("Duration"),
         ];
-        let err = Resolver::resolve(&decls).expect_err("IM8: the second `Duration` is an error");
+        let err = crate::resolve(ResolveInput { decls: &decls, stdlib: &[], package: None }).expect_err("IM8: the second `Duration` is an error");
         assert!(
             err.iter().any(|e| matches!(
                 &e.kind,
@@ -3352,7 +3459,7 @@ mod tests {
         );
 
         let decls = vec![make_fn_decl("main")];
-        let result = Resolver::resolve_package(&decls, &registry, pkg_id);
+        let result = crate::resolve(ResolveInput { decls: &decls, stdlib: &[], package: Some((&registry, pkg_id)) });
         assert!(result.is_ok(), "Package resolution should succeed");
     }
 
@@ -3378,7 +3485,7 @@ mod tests {
             make_fn_decl("main"),
         ];
 
-        let result = Resolver::resolve_package(&decls, &registry, main_pkg);
+        let result = crate::resolve(ResolveInput { decls: &decls, stdlib: &[], package: Some((&registry, main_pkg)) });
         assert!(result.is_ok(), "Package with import should resolve");
     }
 
@@ -3386,6 +3493,7 @@ mod tests {
         Decl {
             id: NodeId(100),
             kind: DeclKind::Fn(FnDecl {
+                id: rask_ast::NodeId::DUMMY,
                 name: name.to_string(),
                 type_params: vec![],
                 params: vec![],
@@ -3452,7 +3560,7 @@ mod tests {
             make_fn_decl("main"),
         ];
 
-        let result = Resolver::resolve_package(&decls, &registry, app_pkg);
+        let result = crate::resolve(ResolveInput { decls: &decls, stdlib: &[], package: Some((&registry, app_pkg)) });
         assert!(result.is_ok(), "Cross-package import should resolve: {:?}", result.err());
 
         // Verify the import created an ExternalPackage symbol
@@ -3494,10 +3602,13 @@ mod tests {
             make_fn_decl("main"),
         ];
 
-        // This should still resolve (the import falls through to the fallback path)
-        // but the symbol won't be the actual function — it'll be a dummy Variable
-        let result = Resolver::resolve_package(&decls, &registry, app_pkg);
-        assert!(result.is_ok(), "Import of non-public symbol should not error at resolve time");
+        // A member the package doesn't export names nothing here.
+        let result = crate::resolve(ResolveInput { decls: &decls, stdlib: &[], package: Some((&registry, app_pkg)) });
+        let errors = result.expect_err("a private member isn't importable");
+        assert!(
+            errors.iter().any(|e| matches!(&e.kind, crate::ResolveErrorKind::UndefinedSymbol { name, .. } if name == "internal_helper")),
+            "{errors:?}"
+        );
     }
 
     #[test]
@@ -3526,7 +3637,7 @@ mod tests {
             make_fn_decl("main"),
         ];
 
-        let result = Resolver::resolve_package(&decls, &registry, app_pkg);
+        let result = crate::resolve(ResolveInput { decls: &decls, stdlib: &[], package: Some((&registry, app_pkg)) });
         assert!(result.is_ok(), "Unqualified import should resolve: {:?}", result.err());
 
         // Verify greet is in scope as a Function symbol (not a dummy Variable)
@@ -3566,7 +3677,7 @@ mod tests {
             make_fn_decl("main"),
         ];
 
-        let result = Resolver::resolve_package(&decls, &registry, app_pkg);
+        let result = crate::resolve(ResolveInput { decls: &decls, stdlib: &[], package: Some((&registry, app_pkg)) });
         assert!(result.is_ok(), "Struct import should resolve: {:?}", result.err());
 
         let resolved = result.unwrap();
@@ -3587,19 +3698,19 @@ mod tests {
             make_import_decl(vec!["io"], None, false, false),
             make_fn_decl("main"),
         ];
-        let result = Resolver::resolve(&decls);
+        let result = crate::resolve(ResolveInput { decls: &decls, stdlib: &[], package: None });
         assert!(result.is_ok(), "Single-file resolve should still work");
     }
 
     #[test]
-    fn test_resolve_stdlib_allows_builtin_function() {
+    fn stdlib_may_define_builtin_function() {
         let decls = vec![make_fn_decl("println")];
-        let result = Resolver::resolve_stdlib(&decls);
-        assert!(result.is_ok(), "resolve_stdlib should allow redefining builtin functions");
+        let result = crate::resolve(ResolveInput { decls: &[], stdlib: &decls, package: None });
+        assert!(result.is_ok(), "the stdlib may define redefining builtin functions");
     }
 
     #[test]
-    fn test_resolve_stdlib_allows_builtin_type() {
+    fn stdlib_may_define_builtin_type() {
         use rask_ast::decl::StructDecl;
         let decls = vec![Decl {
             id: NodeId(0),
@@ -3614,12 +3725,12 @@ mod tests {
             }),
             span: Span::new(0, 10),
         }];
-        let result = Resolver::resolve_stdlib(&decls);
-        assert!(result.is_ok(), "resolve_stdlib should allow redefining builtin types");
+        let result = crate::resolve(ResolveInput { decls: &[], stdlib: &decls, package: None });
+        assert!(result.is_ok(), "the stdlib may define redefining builtin types");
     }
 
     #[test]
-    fn test_resolve_stdlib_allows_builtin_enum() {
+    fn stdlib_may_define_builtin_enum() {
         use rask_ast::decl::EnumDecl;
         let decls = vec![Decl {
             id: NodeId(0),
@@ -3635,8 +3746,8 @@ mod tests {
             }),
             span: Span::new(0, 10),
         }];
-        let result = Resolver::resolve_stdlib(&decls);
-        assert!(result.is_ok(), "resolve_stdlib should allow redefining builtin enums");
+        let result = crate::resolve(ResolveInput { decls: &[], stdlib: &decls, package: None });
+        assert!(result.is_ok(), "the stdlib may define redefining builtin enums");
     }
 
     fn make_pub_enum_decl(name: &str, variants: &[&str]) -> Decl {
@@ -3692,7 +3803,7 @@ mod tests {
             make_fn_decl("main"),
         ];
 
-        let result = Resolver::resolve_package(&decls, &registry, app_pkg);
+        let result = crate::resolve(ResolveInput { decls: &decls, stdlib: &[], package: Some((&registry, app_pkg)) });
         assert!(result.is_ok(), "Should resolve: {:?}", result.err());
 
         let resolved = result.unwrap();
@@ -3762,7 +3873,7 @@ mod tests {
             make_import_decl(vec!["liba"], None, false, false),
             make_fn_decl("main"),
         ];
-        let resolved = Resolver::resolve_package(&decls, &registry, app)
+        let resolved = crate::resolve(ResolveInput { decls: &decls, stdlib: &[], package: Some((&registry, app)) })
             .expect("should resolve");
 
         let ext = resolved.external_decls.get("liba").expect("liba exports");
@@ -3782,7 +3893,7 @@ mod tests {
             make_import_decl(vec!["io"], None, false, false),
             make_fn_decl("main"),
         ];
-        let result = Resolver::resolve(&decls);
+        let result = crate::resolve(ResolveInput { decls: &decls, stdlib: &[], package: None });
         assert!(result.is_ok());
         assert!(result.unwrap().external_decls.is_empty(),
             "Single-file resolve should have empty external_decls");
@@ -3828,7 +3939,7 @@ mod tests {
             make_fn_decl("main"),
         ];
 
-        let result = Resolver::resolve_package(&decls, &registry, app_pkg);
+        let result = crate::resolve(ResolveInput { decls: &decls, stdlib: &[], package: Some((&registry, app_pkg)) });
         assert!(result.is_ok());
 
         let resolved = result.unwrap();
@@ -3879,6 +3990,7 @@ mod tests {
         let main_decl = Decl {
             id: NodeId(12),
             kind: DeclKind::Fn(FnDecl {
+                id: rask_ast::NodeId::DUMMY,
                 name: "main".to_string(),
                 type_params: vec![],
                 params: vec![],
@@ -3907,7 +4019,7 @@ mod tests {
             main_decl,
         ];
 
-        let result = Resolver::resolve_package(&decls, &registry, app_pkg);
+        let result = crate::resolve(ResolveInput { decls: &decls, stdlib: &[], package: Some((&registry, app_pkg)) });
         assert!(result.is_ok(), "Should resolve: {:?}", result.err());
 
         let resolved = result.unwrap();

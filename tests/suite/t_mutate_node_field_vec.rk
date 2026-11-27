@@ -1,0 +1,39 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A struct field of a rack node, passed as `mutate`, stays the node's (#1809).
+//
+// Inlined, the callee's parameter became a local copied from the field's
+// address (`i = h + 24`), and the release pass took that local for a struct
+// the frame had built: it freed the node's own vector after the call. Only a
+// field at offset zero escaped, because its address was the node's link.
+import memory.Rack
+
+struct Inner {
+    n: i64
+    v: Vec<i64>
+}
+
+struct Holder {
+    id: i32
+    big: [i64; 3]
+    inner: Inner
+}
+
+func set_elem(mutate i: Inner, k: usize, b: i64) {
+    i.v[k] = b
+}
+
+func main() {}
+
+test "a node's struct field passed as mutate keeps its vector" {
+    mut nodes: Rack<Holder> = Rack.new()
+    mut v: Vec<i64> = Vec.new()
+    v.push(1)
+    v.push(1)
+    let h = nodes.insert(Holder(id: 1, big: [0, 0, 0], inner: Inner(n: 1, v: v)))
+    set_elem(mutate h.inner, 0, 5)
+    assert h.inner.v.len() == 2
+    assert h.inner.v[0] == 5
+    set_elem(mutate h.inner, 1, 7)
+    assert h.inner.v[1] == 7
+}

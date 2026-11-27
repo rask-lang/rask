@@ -1,0 +1,161 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// An `ensure` runs when the block it is written in ends (ctrl.ensure/EN1), and
+// its body is a block of its own.
+//
+// Native ran the body of an `ensure` in a loop turn or an inner block as a copy
+// of the body's first basic block only, in a place the release passes didn't
+// know was a scope end:
+//
+//   - a body holding a `match` (or any branch) lost everything after the
+//     branch: the cleanup silently did nothing (#1916);
+//   - a value the body read was released only at the end of the function, so a
+//     variable declared in a loop turn or an inner block leaked every time the
+//     block ended normally (#1909), and a `return` from inside an inner block
+//     released it twice, once for the body in the chain and once for the exit
+//     of the whole function (#1914);
+//   - an `ensure` inside an `ensure` body stayed registered for the rest of the
+//     function, so the frame's exit ran it where the variables it reads no
+//     longer existed (#1915); the interpreter never ran it at all.
+//
+// The leak gate and the memcheck gate are what check the memory half.
+
+func make(n: i64) -> Vec<string> {
+    mut v: Vec<string> = Vec.new()
+    for i in 0..n {
+        v.push("a heap string long enough to allocate, number {i}")
+    }
+    return v
+}
+
+func note(v: Vec<string>, mutate out: Vec<u64>) {
+    out.push(v.len())
+}
+
+func in_a_loop(mutate out: Vec<u64>) {
+    for i in 0..3 {
+        let a = make(2)
+        ensure note(a, mutate out)
+        out.push(100 + i.to<u64>()!)
+    }
+}
+
+func in_an_if(c: bool, mutate out: Vec<u64>) {
+    if c {
+        let b = make(3)
+        ensure note(b, mutate out)
+        out.push(200)
+    }
+    out.push(201)
+}
+
+func in_a_block_with_return(c: bool, mutate out: Vec<u64>) -> u64 {
+    let outer = make(1)
+    ensure out.push(outer.len())
+    {
+        let inner = make(3)
+        ensure out.push(inner.len())
+        if c {
+            return 9
+        }
+    }
+    return 1
+}
+
+func with_a_break(mutate out: Vec<u64>) {
+    for i in 0..5 {
+        let a = make(2)
+        ensure note(a, mutate out)
+        if i == 1 {
+            break
+        }
+        if i == 0 {
+            continue
+        }
+        out.push(300)
+    }
+}
+
+func match_body(mutate out: Vec<i64>) {
+    for i in 0..3 {
+        ensure out.push(i)
+        ensure {
+            match i {
+                1 => out.push(100),
+                _ => out.push(200),
+            }
+        }
+    }
+}
+
+func nested(mutate out: Vec<u64>) {
+    ensure out.push(1)
+    ensure {
+        let v = make(2)
+        ensure out.push(v.len())
+        let w = make(3)
+        out.push(w.len())
+    }
+}
+
+test "an ensure in a loop turn reads its variable, then releases it" {
+    mut out: Vec<u64> = Vec.new()
+    in_a_loop(mutate out)
+    assert out.len() == 6
+    assert out[0] == 100
+    assert out[1] == 2
+    assert out[4] == 102
+    assert out[5] == 2
+}
+
+test "an ensure in an if block runs when the block ends" {
+    mut out: Vec<u64> = Vec.new()
+    in_an_if(true, mutate out)
+    in_an_if(false, mutate out)
+    assert out.len() == 4
+    assert out[0] == 200
+    assert out[1] == 3
+    assert out[2] == 201
+    assert out[3] == 201
+}
+
+test "a return from an inner block runs both ensures once" {
+    mut out: Vec<u64> = Vec.new()
+    let r1 = in_a_block_with_return(true, mutate out)
+    let r2 = in_a_block_with_return(false, mutate out)
+    assert r1 == 9
+    assert r2 == 1
+    assert out.len() == 4
+    assert out[0] == 3
+    assert out[1] == 1
+    assert out[2] == 3
+    assert out[3] == 1
+}
+
+test "break and continue run the turn's ensure" {
+    mut out: Vec<u64> = Vec.new()
+    with_a_break(mutate out)
+    assert out.len() == 2
+    assert out[0] == 2
+    assert out[1] == 2
+}
+
+test "an ensure body holding a match runs at the end of every turn" {
+    mut out: Vec<i64> = Vec.new()
+    match_body(mutate out)
+    assert out.len() == 6
+    assert out[0] == 200
+    assert out[1] == 0
+    assert out[2] == 100
+    assert out[3] == 1
+    assert out[4] == 200
+    assert out[5] == 2
+}
+
+test "an ensure inside an ensure body runs when that body ends" {
+    mut out: Vec<u64> = Vec.new()
+    nested(mutate out)
+    assert out.len() == 3
+    assert out[0] == 3
+    assert out[1] == 2
+    assert out[2] == 1
+}

@@ -1,0 +1,101 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// `v[i] = x` is `v.replace(i, x)` with the old element dropped, since `Vec.set`
+// went. Three kinds of element weren't handled that way.
+//
+// A closure or an `any` box that came out of a `@moves_out` call (`replace`,
+// `remove`, `pop`) was freed by nobody. The frame only freed closures and
+// boxes it had made itself. `rask_vec_set` used to free the old element in the
+// runtime, which hid this for index assignment, but `remove` leaked all along.
+// Run under RASK_LEAK_CHECK=1 to see it.
+//
+// A link written with `ls[i] = c` was never recorded as an edge, so deleting
+// its node left it in the vector: native read the dead node, and the
+// interpreter still saw the old id. `push` and `replace` recorded it.
+
+import memory.Link
+import memory.Rack
+
+func heap(s: string) -> string {
+    return "{s}, long enough to live on the heap"
+}
+
+interface Named {
+    func name(self) -> string
+}
+
+struct Dog {
+    n: string
+}
+
+Dog implements Named {
+    public func name(self) -> string {
+        return self.n
+    }
+}
+
+struct Leaf {
+    id: i32
+}
+
+test "assigning over a closure element frees the old closure" {
+    let cap = heap("cap")
+    mut fs: Vec<func() -> string> = Vec.new()
+    fs.push(|| cap)
+    fs[0] = || "two"
+    assert fs[0]() == "two"
+}
+
+test "a closure taken out with remove or replace is the caller's" {
+    let base: i64 = 10
+    mut fs: Vec<func(i64) -> i64> = Vec.new()
+    fs.push(|x| x + base)
+    fs.push(|x| x * base)
+    let first = fs.remove(0)
+    assert first(1) == 11
+    let old = fs.replace(0, |x| x - base)
+    assert old(2) == 20
+    assert fs[0](15) == 5
+}
+
+test "assigning over an any element frees the old box" {
+    mut ns: Vec<any Named> = Vec.new()
+    ns.push(Dog(n: heap("rex")) as any Named)
+    ns[0] = Dog(n: heap("fido")) as any Named
+    assert ns[0].name() == heap("fido")
+}
+
+test "an any box taken out with remove, pop or replace is the caller's" {
+    mut ns: Vec<any Named> = Vec.new()
+    ns.push(Dog(n: heap("rex")) as any Named)
+    ns.push(Dog(n: heap("max")) as any Named)
+    ns.push(Dog(n: heap("bo")) as any Named)
+    let gone = ns.remove(0)
+    assert gone.name() == heap("rex")
+    if ns.pop()? as last {
+        assert last.name() == heap("bo")
+    } else {
+        assert false
+    }
+    let old = ns.replace(0, Dog(n: heap("fido")) as any Named)
+    assert old.name() == heap("max")
+    assert ns[0].name() == heap("fido")
+}
+
+test "a link assigned into a slot is removed when its node is deleted" {
+    mut leaves: Rack<Leaf> = Rack.new()
+    let a = leaves.insert(Leaf(id: 1))
+    let b = leaves.insert(Leaf(id: 2))
+    let c = leaves.insert(Leaf(id: 3))
+    mut ls: Vec<Link<Leaf>?> = Vec.new()
+    ls.push(a)
+    ls.push(b)
+    ls[0] = c
+    leaves.delete(c)
+    assert ls.len() == 1
+    if ls[0]? as left {
+        assert left.id == 2
+    } else {
+        assert false
+    }
+}

@@ -15,7 +15,7 @@
 // the bargain.
 
 import io.IoError
-import error.ContextError
+import builtins.ContextError
 
 enum Bare {
     Empty

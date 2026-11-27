@@ -109,11 +109,6 @@ pub enum Event {
     Other(LocalId),
     /// Whatever the name holds leaves the frame here, on this path.
     HandOver(LocalId),
-    /// A hand-over into a closure environment that releases what it is given.
-    /// The same as `HandOver` for this frame; `plan_carrying` also reports
-    /// where the environment really was handed the value, so the pass can
-    /// tell the environment to release exactly those.
-    Carry(LocalId),
     /// A whole-width store into the slot. The next field of the value already
     /// there, or a new value over one that lives on under another name; this
     /// analysis decides which.
@@ -131,7 +126,6 @@ impl Event {
             Event::Make(n)
             | Event::Other(n)
             | Event::HandOver(n)
-            | Event::Carry(n)
             | Event::Fill(n)
             | Event::WriteThrough(n) => *n,
             Event::Alias { dst, .. }
@@ -160,6 +154,17 @@ pub struct Facts {
     pub foreign: Vec<LocalId>,
     /// Parameters that are ours on entry, because the caller gave them up.
     pub owned: Vec<LocalId>,
+    /// Owned names that are the caller's slot (a held `mutate` parameter).
+    /// What one holds is the caller's to release if a panic unwinds past
+    /// this frame, so the frame's unwind record never takes it.
+    pub caller_slots: Vec<LocalId>,
+    /// Names holding a container or `Heap` block read out of a field of a
+    /// struct, where nothing else holds that struct's bytes. Handed on while
+    /// the struct is the frame's, such a name takes the field with it and
+    /// leaves the rest of the struct ours: the pass empties the field's slot
+    /// at the hand-over (`Plan::moved_out`), and the struct is released
+    /// where it normally would be, minus that field.
+    pub moved_parts: BTreeSet<LocalId>,
 }
 
 /// A release to insert, under `name`. `made` is the name the value was made
@@ -331,13 +336,38 @@ fn shape(func: &MirFunction, names: &BTreeSet<LocalId>) -> Shape {
     let n = func.blocks.len();
     let mut succs = vec![Vec::new(); n];
     let mut preds = vec![Vec::new(); n];
+    let mut edge = |from: usize, to: BlockId| {
+        if let Some(&si) = index_of.get(&to) {
+            if !succs[from].contains(&si) {
+                succs[from].push(si);
+                preds[si].push(from);
+            }
+        }
+    };
     for (bi, b) in func.blocks.iter().enumerate() {
-        for s in cfg::successors(&b.terminator) {
-            if let Some(&si) = index_of.get(&s) {
-                if !succs[bi].contains(&si) {
-                    succs[bi].push(si);
-                    preds[si].push(bi);
+        match &b.terminator.kind {
+            MirTerminatorKind::CleanupReturn { cleanup_chain, .. } if !cleanup_chain.is_empty() => {
+                edge(bi, cleanup_chain[0]);
+            }
+            _ => {
+                for s in cfg::successors(&b.terminator) {
+                    edge(bi, s);
                 }
+            }
+        }
+    }
+    // A cleanup return runs its `ensure` bodies one after another: into the
+    // first, and from the end of each (its `Unreachable`) into the next. As
+    // alternatives, every body was a path of its own, so each released what
+    // the bodies read and the next one read it freed. The last body's end is
+    // where the function leaves (`exit_points`).
+    for b in &func.blocks {
+        let MirTerminatorKind::CleanupReturn { cleanup_chain, .. } = &b.terminator.kind else {
+            continue;
+        };
+        for pair in cleanup_chain.windows(2) {
+            for end in ensure_body_ends(func, &index_of, pair[0]) {
+                edge(end, pair[1]);
             }
         }
     }
@@ -376,8 +406,197 @@ fn is_phi(func: &MirFunction, bi: usize, si: usize) -> bool {
     matches!(func.blocks[bi].statements[si].kind, MirStmtKind::Phi { .. })
 }
 
+/// The blocks where the `ensure` body starting at `head` ends: those its
+/// sub-CFG reaches that end in `Unreachable`, which codegen turns into a jump
+/// to the next body or the function's return.
+fn ensure_body_ends(
+    func: &MirFunction,
+    index_of: &std::collections::HashMap<BlockId, usize>,
+    head: BlockId,
+) -> Vec<usize> {
+    ensure_body(func, index_of, head).1
+}
+
+/// The blocks of the `ensure` body starting at `head`, and the ones it ends in.
+fn ensure_body(
+    func: &MirFunction,
+    index_of: &std::collections::HashMap<BlockId, usize>,
+    head: BlockId,
+) -> (BTreeSet<usize>, Vec<usize>) {
+    let mut ends = Vec::new();
+    let mut seen = BTreeSet::new();
+    let mut stack = vec![head];
+    while let Some(id) = stack.pop() {
+        let Some(&bi) = index_of.get(&id) else { continue };
+        if !seen.insert(bi) {
+            continue;
+        }
+        let term = &func.blocks[bi].terminator;
+        match term.kind {
+            MirTerminatorKind::Unreachable => ends.push(bi),
+            MirTerminatorKind::CleanupReturn { .. } | MirTerminatorKind::Return { .. } => {}
+            _ => stack.extend(cfg::successors(term)),
+        }
+    }
+    (seen, ends)
+}
+
+/// Where the function leaves, and which of the values still ours are released
+/// there.
+///
+/// A return releases everything. A cleanup return releases what its `ensure`
+/// bodies don't read. The end of each body (its `Unreachable`) releases what
+/// the body made, and each value from before the cleanup return that this
+/// body is the last in the chain to read.
+///
+/// Released at the cleanup return, a value the bodies read was freed before
+/// they read it. Carried to the end of the chain, it was lost where that end
+/// is shared with an earlier cleanup return's chain, from before the value
+/// existed: there the value is only ours on some paths, and nothing is
+/// released. A body end can't release whatever is still ours there: the
+/// dataflow doesn't see the releases placed at an earlier body's end, so a
+/// value one body made and released still reads as ours at the next end.
+fn exit_points(func: &MirFunction, live: &Live) -> Vec<(usize, Exit)> {
+    let index_of: std::collections::HashMap<BlockId, usize> =
+        func.blocks.iter().enumerate().map(|(i, b)| (b.id, i)).collect();
+    let mut out = Vec::new();
+    type Heads = BTreeSet<(usize, Vec<usize>)>;
+    let mut at_end: std::collections::BTreeMap<usize, (BTreeSet<LocalId>, BTreeSet<usize>, Heads)> = Default::default();
+    for (bi, b) in func.blocks.iter().enumerate() {
+        match &b.terminator.kind {
+            MirTerminatorKind::Return { .. } => out.push((bi, Exit::All)),
+            MirTerminatorKind::CleanupReturn { cleanup_chain, .. } if cleanup_chain.is_empty() => {
+                out.push((bi, Exit::All));
+            }
+            MirTerminatorKind::CleanupReturn { cleanup_chain, .. } => {
+                out.push((bi, Exit::Except(live.out[bi].clone())));
+                for (k, &head) in cleanup_chain.iter().enumerate() {
+                    let (blocks, ends) = ensure_body(func, &index_of, head);
+                    let later: Vec<usize> =
+                        cleanup_chain[k + 1..].iter().filter_map(|h| index_of.get(h).copied()).collect();
+                    // Live into a body means read there or in a later one, so
+                    // the last body a name is live into is the last that reads it.
+                    let last_read: Vec<LocalId> = live.out[bi]
+                        .iter()
+                        .copied()
+                        .filter(|name| {
+                            let reads = |h: &BlockId| {
+                                index_of.get(h).is_some_and(|&hi| live.at[hi].first().is_some_and(|l| l.contains(name)))
+                            };
+                            cleanup_chain.iter().rev().find(|h| reads(h)) == Some(&head)
+                        })
+                        .collect();
+                    for end in ends {
+                        let entry = at_end.entry(end).or_default();
+                        entry.0.extend(last_read.iter().copied());
+                        entry.1.extend(blocks.iter().copied());
+                        if let Some(&hi) = index_of.get(&head) {
+                            entry.2.insert((hi, later.clone()));
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    out.extend(at_end.into_iter().map(|(bi, (read, made_in, heads))| (bi, Exit::BodyEnd { read, made_in, heads })));
+    out
+}
+
+/// Which values an exit point releases.
+enum Exit {
+    All,
+    /// Those held under none of these names.
+    Except(BTreeSet<LocalId>),
+    /// Those held under one of `read`, and those made in one of `made_in`.
+    /// And a value the body took in that nothing after it reads, whatever it
+    /// holds it under by now: a body that writes a new value over the one it
+    /// read leaves the old one held by no name that was live into the chain.
+    /// `heads` is each chain this end belongs to, as the body's block and the
+    /// bodies that run after it.
+    BodyEnd { read: BTreeSet<LocalId>, made_in: BTreeSet<usize>, heads: BTreeSet<(usize, Vec<usize>)> },
+}
+
+/// What the `ensure` hooks still registered hold by reference where a path
+/// ends in `Unreachable` without reaching the hook's pop: a `panic()`, or the
+/// end of any path the program doesn't come back from.
+///
+/// A hook runs on a panic anywhere between its registration and its pop, and
+/// the pop reads what the hook holds (`EnsureHookPop`), which keeps the value
+/// owned on every path that gets there. A path that panics never gets there, so
+/// nothing kept the value, and it was released on the way into the branch with
+/// the panic in it, before the hook ran and wrote over it (#1895).
+///
+/// Paths a cleanup chain runs aren't followed: the chain's own pops are the
+/// reads there, and a body's end is a jump, not a path that ends.
+fn hooks_pending_at_ends(func: &MirFunction) -> Vec<Vec<LocalId>> {
+    use std::collections::HashMap;
+    let n = func.blocks.len();
+    let mut out: Vec<Vec<LocalId>> = vec![Vec::new(); n];
+    if !func.blocks.iter().flat_map(|b| &b.statements).any(|s| matches!(s.kind, MirStmtKind::EnsureHookRegister { .. })) {
+        return out;
+    }
+    let index_of: HashMap<BlockId, usize> = func.blocks.iter().enumerate().map(|(i, b)| (b.id, i)).collect();
+    let cleanup_only = cfg::cleanup_only_blocks(func);
+    // Per block, how many hooks hold each local at its start. The most any
+    // way in says, capped so a loop can't count up for ever.
+    let mut at_start: Vec<Option<BTreeMap<LocalId, u32>>> = vec![None; n];
+    let Some(&entry) = index_of.get(&func.entry_block) else { return out };
+    at_start[entry] = Some(BTreeMap::new());
+    let mut work = vec![entry];
+    while let Some(bi) = work.pop() {
+        let Some(mut held) = at_start[bi].clone() else { continue };
+        for st in &func.blocks[bi].statements {
+            match &st.kind {
+                MirStmtKind::EnsureHookRegister { captures, .. } => {
+                    for c in captures.iter().filter(|c| c.by_ref) {
+                        let k = held.entry(c.local_id).or_insert(0);
+                        *k = (*k + 1).min(4);
+                    }
+                }
+                MirStmtKind::EnsureHookPop { kept } => {
+                    for l in kept {
+                        if let Some(k) = held.get_mut(l) {
+                            *k = k.saturating_sub(1);
+                        }
+                    }
+                    held.retain(|_, k| *k > 0);
+                }
+                _ => {}
+            }
+        }
+        let term = &func.blocks[bi].terminator;
+        if matches!(term.kind, MirTerminatorKind::Unreachable) && !cleanup_only.contains(&func.blocks[bi].id) {
+            out[bi] = held.keys().copied().collect();
+        }
+        if matches!(term.kind, MirTerminatorKind::CleanupReturn { .. }) {
+            continue;
+        }
+        for succ in cfg::successors(term) {
+            let Some(&si) = index_of.get(&succ) else { continue };
+            let merged = match &at_start[si] {
+                None => held.clone(),
+                Some(prev) => {
+                    let mut m = prev.clone();
+                    for (l, k) in &held {
+                        let e = m.entry(*l).or_insert(0);
+                        *e = (*e).max(*k);
+                    }
+                    m
+                }
+            };
+            if at_start[si].as_ref() != Some(&merged) {
+                at_start[si] = Some(merged);
+                work.push(si);
+            }
+        }
+    }
+    out
+}
+
 fn liveness(func: &MirFunction, facts: &Facts, sh: &Shape, updates: &HashSet<(usize, usize)>) -> Live {
     let n = func.blocks.len();
+    let pending = hooks_pending_at_ends(func);
     let phi_dsts: Vec<BTreeSet<LocalId>> =
         sh.phis.iter().map(|ps| ps.iter().map(|(d, _)| *d).collect()).collect();
 
@@ -390,6 +609,7 @@ fn liveness(func: &MirFunction, facts: &Facts, sh: &Shape, updates: &HashSet<(us
         for r in &facts.terminator_reads[bi] {
             live.insert(*r);
         }
+        live.extend(pending[bi].iter().copied());
         at[len] = live.clone();
         for si in (0..len).rev() {
             if !is_phi(func, bi, si) {
@@ -458,6 +678,7 @@ fn liveness(func: &MirFunction, facts: &Facts, sh: &Shape, updates: &HashSet<(us
 /// out to be the next field of the value already in the slot.
 fn apply(
     st: &mut State,
+    moved: &BTreeSet<LocalId>,
     events: &[Event],
     bi: usize,
     si: usize,
@@ -529,7 +750,7 @@ fn apply(
                     .filter_map(|b| b.value().and_then(|v| st.guard.get(&v).copied()))
                     .collect();
                 for src in srcs {
-                    hand_over(st, *src);
+                    hand_over(st, moved, *src);
                 }
                 if ours && flags.len() <= 1 {
                     make(st, *dst, bi, si);
@@ -543,7 +764,7 @@ fn apply(
             Event::Other(n) => {
                 st.bind.insert(*n, BTreeSet::from([Bind::Other]));
             }
-            Event::HandOver(n) | Event::Carry(n) => hand_over(st, *n),
+            Event::HandOver(n) => hand_over(st, moved, *n),
             Event::Fill(n) => {
                 let held = st.binds(*n);
                 let only = (held.len() == 1).then(|| *held.iter().next().unwrap());
@@ -591,7 +812,34 @@ fn written_through(st: &mut State, n: LocalId) {
     }
 }
 
-fn hand_over(st: &mut State, n: LocalId) {
+/// The struct a `moved_parts` name takes a field out of when handed on, if
+/// the frame owns it outright here. Only then is it the field that leaves:
+/// where the struct is ours only under a flag, or may be somebody else's, the
+/// pass has no single place to empty the slot, and the whole goes with it.
+/// The struct value `n` takes a field out of, and the flag it is ours under
+/// when it is ours on only some paths. A join only narrows a name to one
+/// part of a flagged value when it holds that part wherever the flag is set
+/// (`join`), so the field leaves under the same flag.
+fn field_taken_from(st: &State, moved: &BTreeSet<LocalId>, n: LocalId) -> Option<(Value, Option<GuardKey>)> {
+    if !moved.contains(&n) {
+        return None;
+    }
+    let held = st.binds(n);
+    let Some(Bind::Part(v)) = (held.len() == 1).then(|| *held.iter().next().unwrap()) else {
+        return None;
+    };
+    st.owned(v).then(|| (v, st.guard.get(&v).copied()))
+}
+
+fn hand_over(st: &mut State, moved: &BTreeSet<LocalId>, n: LocalId) {
+    // A field moved out of a struct the frame owns leaves the rest of it
+    // ours: released where the struct would have been, field slot emptied.
+    // The name stops standing for the struct, so that what it was handed to
+    // doesn't keep the rest of it needed.
+    if field_taken_from(st, moved, n).is_some() {
+        st.bind.insert(n, BTreeSet::from([Bind::Other]));
+        return;
+    }
     for b in st.binds(n) {
         if let Bind::Own(v) | Bind::Part(v) = b {
             if st.own.contains_key(&v) {
@@ -616,6 +864,12 @@ fn make(st: &mut State, n: LocalId, bi: usize, si: usize) {
 struct Kills {
     at: HashSet<(usize, usize, Value)>,
     edges: HashSet<(usize, usize, Value)>,
+    /// Owned from entry and released before the first statement.
+    entry: HashSet<Value>,
+    /// The releases in `at` and in `edges` that run under a drop flag. A
+    /// flagged release covers only the paths that set the flag.
+    guarded_at: HashSet<(usize, usize, Value)>,
+    guarded_edges: HashSet<(usize, usize, Value)>,
 }
 
 fn join(
@@ -748,8 +1002,12 @@ fn join(
         out.own.insert(j, true);
     }
     // A name holding the flagged value on every path where it is ours, and
-    // something untracked on the rest, certainly holds it whenever the flag
-    // is set, which is the only time it is released.
+    // nothing ours on the rest, certainly holds it whenever the flag is set,
+    // which is the only time it is released. "Nothing ours" counts a value
+    // already released on that path: a `return` from inside a match arm
+    // jumps past the arm's end, where the other arm released the same name's
+    // value, and requiring an untracked name there left the value with no
+    // name to be released under at the return (#2038).
     for (v, ours) in &flagged {
         for (n, set) in out.bind.iter_mut() {
             if set.len() < 2 {
@@ -759,7 +1017,7 @@ fn join(
             let fits = seen.iter().enumerate().all(|(k, st)| {
                 let s = st.binds(*n);
                 if !ours[k] {
-                    return s.iter().all(|b| *b == Bind::Other);
+                    return s.iter().all(|b| b.value().is_none_or(|w| !st.owned(w)));
                 }
                 let one = (s.len() == 1).then(|| *s.iter().next().unwrap());
                 match one {
@@ -813,13 +1071,17 @@ fn transfer(
         if is_phi(func, bi, si) {
             continue;
         }
-        apply(&mut st, &facts.events[bi][si], bi, si, &live.at[bi][si + 1], updates);
+        apply(&mut st, &facts.moved_parts, &facts.events[bi][si], bi, si, &live.at[bi][si + 1], updates);
         killed_at(&mut st, kills, bi, si);
     }
     let len = func.blocks[bi].statements.len();
-    apply(&mut st, &facts.terminator_events[bi], bi, len, &live.out[bi], updates);
+    apply(&mut st, &facts.moved_parts, &facts.terminator_events[bi], bi, len, &live.out[bi], updates);
     st
 }
+
+/// The statement index `after_last_use` gives a release before block 0's
+/// first statement.
+const ENTRY: usize = usize::MAX;
 
 fn killed_at(st: &mut State, kills: &Kills, bi: usize, si: usize) {
     for (b, s, v) in &kills.at {
@@ -830,7 +1092,7 @@ fn killed_at(st: &mut State, kills: &Kills, bi: usize, si: usize) {
     }
 }
 
-fn entry_state(facts: &Facts) -> State {
+fn entry_state(facts: &Facts, kills: &Kills) -> State {
     let mut st = State::default();
     for n in &facts.foreign {
         st.bind.insert(*n, BTreeSet::from([Bind::Other]));
@@ -839,7 +1101,7 @@ fn entry_state(facts: &Facts) -> State {
     for n in &facts.owned {
         let v = Value { block: 0, at: u32::MAX - 1, name: *n };
         st.bind.insert(*n, BTreeSet::from([Bind::Own(v)]));
-        st.own.insert(v, true);
+        st.own.insert(v, !kills.entry.contains(&v));
     }
     st
 }
@@ -865,7 +1127,7 @@ fn solve(
         defs.clear();
         for &bi in &sh.rpo {
             let entry = if bi == 0 {
-                Some(entry_state(facts))
+                Some(entry_state(facts, kills))
             } else {
                 join(bi, sh, &exits, &live.at[bi][0], kills, &mut defs)
             };
@@ -888,15 +1150,40 @@ fn solve(
 /// there on it can't be released at all: no name certainly holds it. So a
 /// value dead on one path waits until it is dead on every path that meets
 /// it, and goes once, after the join.
+///
+/// It also keeps the releases placed so far. They are placed a round at a
+/// time against the states of that round, so one placed after a join stays
+/// there, unguarded, when a later round finds the value dead on one edge into
+/// the join. A release on that edge would free it a second time further on.
 struct NeededLater {
     succs: Vec<Vec<usize>>,
-    /// Per value, the join blocks that still need it on the way in.
-    needing: std::collections::BTreeMap<Value, HashSet<usize>>,
+    /// Per value, the edges `(from, join)` into a join that still need it
+    /// there.
+    needing: std::collections::BTreeMap<Value, HashSet<(usize, usize)>>,
+    joins: HashSet<usize>,
+    /// Per value, where it is already released: `(block, statement)` and
+    /// edges `(from, to)`.
+    released_at: std::collections::BTreeMap<Value, Vec<(usize, usize)>>,
+    released_on: std::collections::BTreeMap<Value, HashSet<(usize, usize)>>,
 }
 
 impl NeededLater {
-    fn new(func: &MirFunction, sh: &Shape, live: &Live, entries: &[Option<State>]) -> Self {
-        let mut needing: std::collections::BTreeMap<Value, HashSet<usize>> = Default::default();
+    /// Needed on an edge into a join when a name live there holds it both in
+    /// the joined state and as that edge sees it. The joined state alone
+    /// unions what every way in brings: `let a = make(0) catch _ => Vec.new()`
+    /// joins the payload read out of the result with the handler's new
+    /// vector, so `a` might hold part of the result. On the handler's edge it
+    /// can't, and reading the union there kept the result needed past the
+    /// join, where nothing released it: the error it carried leaked (#2003).
+    fn new(
+        func: &MirFunction,
+        sh: &Shape,
+        live: &Live,
+        entries: &[Option<State>],
+        exits: &[Option<State>],
+        kills: &Kills,
+    ) -> Self {
+        let mut needing: std::collections::BTreeMap<Value, HashSet<(usize, usize)>> = Default::default();
         for b in 0..func.blocks.len() {
             if sh.preds[b].len() < 2 {
                 continue;
@@ -907,34 +1194,88 @@ impl NeededLater {
                 .iter()
                 .take_while(|s| matches!(s.kind, MirStmtKind::Phi { .. }))
                 .count();
-            for v in e.own.keys() {
-                if e.needed(*v, &live.at[b][first]) {
-                    needing.entry(*v).or_default().insert(b);
+            let live_in = &live.at[b][first];
+            for &p in &sh.preds[b] {
+                let Some(px) = &exits[p] else { continue };
+                let seen = edge_view(b, p, sh, px, kills);
+                for v in e.own.keys() {
+                    if e.needed(*v, live_in) && seen.needed(*v, live_in) {
+                        needing.entry(*v).or_default().insert((p, b));
+                    }
                 }
             }
         }
-        NeededLater { succs: sh.succs.clone(), needing }
+        let joins = (0..func.blocks.len()).filter(|b| sh.preds[*b].len() >= 2).collect();
+        // Only releases that run on every path through them. A flagged one
+        // runs only where its flag is set: a `return` from inside a match arm
+        // released the arm's struct at the function's end under a flag, and
+        // reading that as covering the arm's normal exit, where the flag is
+        // clear, left the struct unreleased there (#2038).
+        let mut released_at: std::collections::BTreeMap<Value, Vec<(usize, usize)>> = Default::default();
+        for (b, si, v) in kills.at.iter().filter(|k| !kills.guarded_at.contains(k)) {
+            released_at.entry(*v).or_default().push((*b, *si));
+        }
+        let mut released_on: std::collections::BTreeMap<Value, HashSet<(usize, usize)>> = Default::default();
+        for (from, to, v) in kills.edges.iter().filter(|k| !kills.guarded_edges.contains(k)) {
+            released_on.entry(*v).or_default().insert((*from, *to));
+        }
+        NeededLater { succs: sh.succs.clone(), needing, joins, released_at, released_on }
     }
 
-    /// Some join reachable from `b`, `b` included, still needs `v`. Not
-    /// through the block that makes `v`: past it, it is the next turn's.
-    fn from(&self, b: usize, v: Value) -> bool {
-        let Some(joins) = self.needing.get(&v) else { return false };
-        let made = v.block as usize;
-        if b == made {
+    /// `v` is already released somewhere past statement `si` of `bi`.
+    fn released_after(&self, bi: usize, si: usize, v: Value) -> bool {
+        self.released_at.get(&v).is_some_and(|at| at.iter().any(|&(b, s)| b == bi && s > si))
+            || self.succs[bi].iter().any(|&c| self.released_past(bi, c, v))
+    }
+
+    /// `v` is already released on the edge `from` → `b` or somewhere a path
+    /// over it reaches, short of the block that makes `v` again.
+    fn released_past(&self, from: usize, b: usize, v: Value) -> bool {
+        let at = self.released_at.get(&v);
+        let on = self.released_on.get(&v);
+        if at.is_none() && on.is_none() {
             return false;
         }
-        let mut seen: HashSet<usize> = HashSet::from([b]);
-        let mut frontier = vec![b];
-        while let Some(x) = frontier.pop() {
-            if joins.contains(&x) {
+        let made = v.block as usize;
+        let mut seen: HashSet<usize> = HashSet::new();
+        let mut frontier = vec![(from, b)];
+        while let Some((x, s)) = frontier.pop() {
+            if on.is_some_and(|on| on.contains(&(x, s))) {
                 return true;
             }
-            for &s in &self.succs[x] {
-                if s != made && seen.insert(s) {
-                    frontier.push(s);
-                }
+            if s == made || !seen.insert(s) {
+                continue;
             }
+            if at.is_some_and(|at| at.iter().any(|&(b, _)| b == s)) {
+                return true;
+            }
+            frontier.extend(self.succs[s].iter().map(|&t| (s, t)));
+        }
+        false
+    }
+
+    /// Some join reachable over the edge `from` → `b` still needs `v` on the
+    /// edge it is reached by. Not through the block that makes `v`: past it,
+    /// it is the next turn's.
+    ///
+    /// A join reached over an edge that doesn't need `v` ends the search down
+    /// that way: no name live there holds it, so nothing past it can.
+    fn from(&self, from: usize, b: usize, v: Value) -> bool {
+        let Some(edges) = self.needing.get(&v) else { return false };
+        let made = v.block as usize;
+        let mut seen: HashSet<usize> = HashSet::new();
+        let mut frontier = vec![(from, b)];
+        while let Some((x, s)) = frontier.pop() {
+            if s == made {
+                continue;
+            }
+            if edges.contains(&(x, s)) {
+                return true;
+            }
+            if self.joins.contains(&s) || !seen.insert(s) {
+                continue;
+            }
+            frontier.extend(self.succs[s].iter().map(|&t| (s, t)));
         }
         false
     }
@@ -962,39 +1303,24 @@ pub struct Plan {
     pub unwind: Vec<Mark>,
     /// The drop flags `releases` and `unwind` name by index.
     pub guards: Vec<Guard>,
+    /// Hand-overs of a `Facts::moved_parts` name that took a field out of a
+    /// struct the frame owns (`MovedOut`), by index.
+    /// The statement index is the block's length for the terminator. The
+    /// holders are every name that holds the struct's bytes there: copies of an
+    /// aggregate are copies of its bytes, so the field is emptied in each, and
+    /// whichever one the struct is released under later skips it.
+    pub moved_out: Vec<MovedOut>,
 }
+
+/// `(block, statement, name, holders, guard)`: see `Plan::moved_out`. The
+/// guard is the flag the struct is ours under, when it is ours on only some
+/// of the paths there.
+pub type MovedOut = (usize, usize, LocalId, Vec<LocalId>, Option<usize>);
 
 /// Where each value this frame owns is released, and under which name.
 pub fn plan(func: &MirFunction, facts: &Facts, placement: Placement) -> Plan {
-    plan_carrying(func, facts, placement, &|_, _| false).0
-}
-
-/// A `Carry` that handed the environment a value it now owns outright:
-/// `(block, statement, name)`, by index.
-pub type Carried = BTreeSet<(usize, usize, LocalId)>;
-
-/// `plan`, plus the `Carry` events that handed the environment something it
-/// now owns outright: the name certainly held one value this frame owned, or
-/// a part of one, and nothing the frame reads afterwards holds the same bytes.
-/// Those are what the environment has to release.
-///
-/// `disjoint(carried, other)` is the pass's answer to "do these two names
-/// certainly hold different parts of the value". It is what lets
-/// `let (req, r) = accept()` carry `req` while `r` goes elsewhere. The value
-/// is handed over whole either way, so whatever else is in it is left to
-/// whoever it went to, which is a leak at worst.
-///
-/// Everything else a `Carry` names — a parameter, one value on some paths and
-/// another on others, a Copy value the frame keeps reading — the environment
-/// must leave alone, because something else may still free it or read it.
-pub fn plan_carrying(
-    func: &MirFunction,
-    facts: &Facts,
-    placement: Placement,
-    disjoint: &dyn Fn(LocalId, LocalId) -> bool,
-) -> (Plan, Carried) {
     if func.blocks.is_empty() {
-        return (Plan { releases: Vec::new(), unwind: Vec::new(), guards: Vec::new() }, Carried::new());
+        return Plan { releases: Vec::new(), unwind: Vec::new(), guards: Vec::new(), moved_out: Vec::new() };
     }
     let mut flags = FlagIndex::default();
     let sh = shape(func, &facts.names);
@@ -1031,13 +1357,33 @@ pub fn plan_carrying(
     let edges: usize = sh.succs.iter().map(|s| s.len()).sum();
     for _ in 0..(4 * edges + 64) {
         let (entries, exits, _) = solve(func, facts, &sh, &live, &kills, &mut HashSet::new());
-        let later = NeededLater::new(func, &sh, &live, &entries);
-        if placement == Placement::LastUse {
-            let found = after_last_use(func, facts, &sh, &live, &entries, &kills, &later);
+        let later = NeededLater::new(func, &sh, &live, &entries, &exits, &kills);
+        {
+            let mut found = match placement {
+                Placement::LastUse => after_last_use(func, facts, &sh, &live, &entries, &kills, &later),
+                Placement::ScopeEnd => before_overwrite(func, facts, &live, &entries, &kills),
+            };
+            // One release per value per solve, the earliest in program order.
+            // Each block was read against entries that don't know about the
+            // others' releases yet, so a value whose last use is in one block
+            // could also read as dying further down the same path (where a
+            // name that held it is written over), and was released twice.
+            // Another release of it that is still due comes out of the next
+            // solve.
+            found.sort_by_key(|(block, _, at, ..)| (order[*block], *at));
+            let mut first_of: HashSet<Value> = HashSet::new();
+            found.retain(|(_, _, _, _, v, _)| first_of.insert(*v));
             if !found.is_empty() {
-                for (block, si, name, v, g) in found {
-                    out.push(Release::At { block, at: si + 1, name, made: v.made(), guard: flags.of(g) });
-                    kills.at.insert((block, si, v));
+                for (block, si, at, name, v, g) in found {
+                    out.push(Release::At { block, at, name, made: v.made(), guard: flags.of(g) });
+                    if si == ENTRY {
+                        kills.entry.insert(v);
+                    } else {
+                        kills.at.insert((block, si, v));
+                        if g.is_some() {
+                            kills.guarded_at.insert((block, si, v));
+                        }
+                    }
                 }
                 continue;
             }
@@ -1059,11 +1405,32 @@ pub fn plan_carrying(
             }
             out.push(Release::OnEdge { from: ids[pi], to: ids[bi], name, made: v.made(), guard: flags.of(g) });
             kills.edges.insert((pi, bi, v));
+            if g.is_some() {
+                kills.guarded_edges.insert((pi, bi, v));
+            }
+        }
+    }
+    let (entries, exits, defs) = solve(func, facts, &sh, &live, &kills, &mut HashSet::new());
+    // A release on an edge reads its flag off the round that placed it, and a
+    // later round can find the value flagged there: one released on a loop's
+    // back edge comes round again already released, so the second turn's
+    // state at the same edge has it ours only under a flag. Unwrapped, the
+    // release ran every turn and freed the value again (`last = l` in a loop).
+    for &(pi, bi, v) in &kills.edges {
+        if kills.guarded_edges.contains(&(pi, bi, v)) {
+            continue;
+        }
+        let Some(g) = exits[pi].as_ref().and_then(|x| x.guard.get(&v)).copied() else { continue };
+        for r in out.iter_mut() {
+            if let Release::OnEdge { from, to, made, guard: guard @ None, .. } = r {
+                if *from == ids[pi] && *to == ids[bi] && *made == v.made() {
+                    *guard = flags.of(Some(g));
+                }
+            }
         }
     }
     out.sort();
     out.dedup();
-    let (entries, exits, defs) = solve(func, facts, &sh, &live, &kills, &mut HashSet::new());
     if std::env::var("RASK_OWNERSHIP_TRACE").is_ok_and(|v| v == func.name) {
         for bi in 0..func.blocks.len() {
             eprintln!("bb{} entry {:?}", ids[bi].0, entries[bi]);
@@ -1073,27 +1440,76 @@ pub fn plan_carrying(
         eprintln!("releases {:?}", out);
         eprintln!("flags {:?}", defs);
     }
-    let carried = if facts.events.iter().flatten().flatten().any(|e| matches!(e, Event::Carry(_))) {
-        carried_outright(func, facts, &live, &entries, &kills, disjoint)
-    } else {
-        Carried::new()
-    };
     let unwind = unwind_marks(func, facts, &sh, &live, &entries, &exits, &kills, &mut flags);
+    let moved_out = if facts.moved_parts.is_empty() {
+        Vec::new()
+    } else {
+        fields_moved_out(func, facts, &live, &entries, &kills, &mut flags)
+    };
     let guards = flags.guards(func, &defs);
-    (Plan { releases: out, unwind, guards }, carried)
+    Plan { releases: out, unwind, guards, moved_out }
 }
 
-/// The `Carry` events that hand over an owned value, or part of one, that
-/// nothing else reads afterwards, against the settled state.
-fn carried_outright(
+/// The hand-overs that take a field out of a struct the frame owns, against
+/// the settled state: `(block, statement, name)`.
+fn fields_moved_out(
     func: &MirFunction,
     facts: &Facts,
     live: &Live,
     entries: &[Option<State>],
     kills: &Kills,
-    disjoint: &dyn Fn(LocalId, LocalId) -> bool,
-) -> Carried {
-    let mut out = Carried::new();
+    flags: &mut FlagIndex,
+) -> Vec<MovedOut> {
+    let mut note = |st: &State, events: &[Event], bi: usize, si: usize, out: &mut Vec<MovedOut>| {
+        for ev in events {
+            let names: Vec<LocalId> = match ev {
+                Event::HandOver(n) => vec![*n],
+                Event::Remake { srcs, .. } => srcs.clone(),
+                _ => continue,
+            };
+            for n in names {
+                let Some((v, g)) = field_taken_from(st, &facts.moved_parts, n) else { continue };
+                if !out.iter().any(|(b, s, m, _, _)| (*b, *s, *m) == (bi, si, n)) {
+                    out.push((bi, si, n, st.holders(v), flags.of(g)));
+                }
+            }
+        }
+    };
+    let mut out = Vec::new();
+    for bi in 0..func.blocks.len() {
+        let Some(entry) = &entries[bi] else { continue };
+        let mut st = entry.clone();
+        let len = func.blocks[bi].statements.len();
+        for si in 0..len {
+            if is_phi(func, bi, si) {
+                continue;
+            }
+            let events = &facts.events[bi][si];
+            note(&st, events, bi, si, &mut out);
+            apply(&mut st, &facts.moved_parts, events, bi, si, &live.at[bi][si + 1], &mut HashSet::new());
+            killed_at(&mut st, kills, bi, si);
+        }
+        note(&st, &facts.terminator_events[bi], bi, len, &mut out);
+    }
+    out
+}
+
+/// Releases of a value whose last holder is a slot a store writes over,
+/// placed before the store: `(block, statement, name, value)`.
+///
+/// A variable a closure captures by reference lives in a slot, and assigning
+/// it again stores over the value it held. Nothing names that value after the
+/// store, so no scope end can release it: `v = Vec.new()` after `let f = ||
+/// v.len()` leaked the vector it replaced (#2034). No reader can still see it
+/// either, since the checker refuses a write to a variable something borrows.
+fn before_overwrite(
+    func: &MirFunction,
+    facts: &Facts,
+    live: &Live,
+    entries: &[Option<State>],
+    kills: &Kills,
+) -> Vec<(usize, usize, usize, LocalId, Value, Option<GuardKey>)> {
+    let mut out = Vec::new();
     for bi in 0..func.blocks.len() {
         let Some(entry) = &entries[bi] else { continue };
         let mut st = entry.clone();
@@ -1101,38 +1517,20 @@ fn carried_outright(
             if is_phi(func, bi, si) {
                 continue;
             }
-            let events = &facts.events[bi][si];
-            for ev in events {
-                let Event::Carry(n) = ev else { continue };
-                let held = st.binds(*n);
-                let Some(Bind::Own(v) | Bind::Part(v)) =
-                    (held.len() == 1).then(|| *held.iter().next().unwrap())
-                else {
-                    continue;
-                };
-                // Ours only under a flag: the environment would release it
-                // on every path.
-                if !st.owned(v) || st.guard.contains_key(&v) {
-                    continue;
-                }
-                // The names this statement defines aren't the frame's: the
-                // closure the value went into is the one being built here.
-                let defined: Vec<LocalId> = events
-                    .iter()
-                    .filter_map(|e| match e {
-                        Event::Other(d) | Event::Make(d) => Some(*d),
-                        _ => None,
-                    })
-                    .collect();
-                let read_later = live.at[bi][si + 1]
-                    .iter()
-                    .any(|m| !defined.contains(m) && st.mentions(*m, v) && !disjoint(*n, *m));
-                if !read_later {
-                    out.insert((bi, si, *n));
-                }
-            }
-            apply(&mut st, events, bi, si, &live.at[bi][si + 1], &mut HashSet::new());
+            let before = st.clone();
+            apply(&mut st, &facts.moved_parts, &facts.events[bi][si], bi, si, &live.at[bi][si + 1], &mut HashSet::new());
             killed_at(&mut st, kills, bi, si);
+            let MirStmtKind::Store { addr: slot, .. } = &func.blocks[bi].statements[si].kind else { continue };
+            if !facts.kills[bi][si].contains(slot) || facts.reads[bi][si].contains(slot) {
+                continue;
+            }
+            for v in before.own.iter().filter(|(_, o)| **o).map(|(v, _)| *v) {
+                if !before.holders(v).contains(slot) || !st.owned(v) || st.needed(v, &live.at[bi][si + 1]) {
+                    continue;
+                }
+                out.push((bi, si, si, *slot, v, st.guard.remove(&v)));
+                st.own.insert(v, false);
+            }
         }
     }
     out
@@ -1148,17 +1546,34 @@ fn after_last_use(
     entries: &[Option<State>],
     kills: &Kills,
     later: &NeededLater,
-) -> Vec<(usize, usize, LocalId, Value, Option<GuardKey>)> {
+) -> Vec<(usize, usize, usize, LocalId, Value, Option<GuardKey>)> {
     let mut out = Vec::new();
     for bi in 0..func.blocks.len() {
         let Some(entry) = &entries[bi] else { continue };
         let mut st = entry.clone();
+        // A parameter owned from entry that nothing ever reads: `take self`
+        // on a method that builds its answer from the other arguments. With
+        // no statement to follow, it goes before the first.
+        if bi == 0 {
+            let unread: Vec<Value> = facts
+                .owned
+                .iter()
+                .map(|n| Value { block: 0, at: u32::MAX - 1, name: *n })
+                .filter(|v| st.owned(*v) && !st.needed(*v, &live.at[0][0]))
+                .collect();
+            for v in unread {
+                if let Some(name) = pick(&st, v, &[]) {
+                    out.push((0, ENTRY, 0, name, v, st.guard.remove(&v)));
+                    st.own.insert(v, false);
+                }
+            }
+        }
         for si in 0..func.blocks[bi].statements.len() {
             if is_phi(func, bi, si) {
                 continue;
             }
             let before = st.clone();
-            apply(&mut st, &facts.events[bi][si], bi, si, &live.at[bi][si + 1], &mut HashSet::new());
+            apply(&mut st, &facts.moved_parts, &facts.events[bi][si], bi, si, &live.at[bi][si + 1], &mut HashSet::new());
             killed_at(&mut st, kills, bi, si);
             let touched: Vec<LocalId> = facts.reads[bi][si]
                 .iter()
@@ -1175,11 +1590,14 @@ fn after_last_use(
                 let alive_before = (before.owned(v) && before.needed(v, &live.at[bi][si]))
                     || made_here
                     || touched.iter().any(|n| before.mentions(*n, v) || st.mentions(*n, v));
-                if !alive_before || sh.succs[bi].iter().any(|&c| later.from(c, v)) {
+                if !alive_before
+                    || sh.succs[bi].iter().any(|&c| later.from(bi, c, v))
+                    || later.released_after(bi, si, v)
+                {
                     continue;
                 }
                 if let Some(name) = pick(&st, v, &touched) {
-                    out.push((bi, si, name, v, st.guard.remove(&v)));
+                    out.push((bi, si, si + 1, name, v, st.guard.remove(&v)));
                     st.own.insert(v, false);
                 }
             }
@@ -1205,8 +1623,13 @@ fn on_edges(
     for pi in 0..func.blocks.len() {
         let Some(px) = &exits[pi] else { continue };
         // A cleanup return's successors are the `ensure` blocks it runs on the
-        // way out; what it returns flows through them to the caller.
-        if matches!(func.blocks[pi].terminator.kind, MirTerminatorKind::CleanupReturn { .. }) {
+        // way out; what it returns flows through them to the caller. And the
+        // end of one body leads to the next by codegen's jump, not a branch
+        // an edge's release can be put on: `exit_points` places those.
+        if matches!(
+            func.blocks[pi].terminator.kind,
+            MirTerminatorKind::CleanupReturn { .. } | MirTerminatorKind::Unreachable
+        ) {
             continue;
         }
         let mut p_out = live.out[pi].clone();
@@ -1226,7 +1649,9 @@ fn on_edges(
                 let site = match placement {
                     // Needed on the way out because another successor reads
                     // it; dead on the way in here.
-                    Placement::LastUse => px.needed(v, &p_out) && !later.from(bi, v),
+                    Placement::LastUse => {
+                        px.needed(v, &p_out) && !later.from(pi, bi, v) && !later.released_past(pi, bi, v)
+                    }
                     // The last chance: past this edge the value isn't
                     // certainly ours any more, because another way in
                     // doesn't bring it — a back edge, the edge out of the arm
@@ -1234,9 +1659,18 @@ fn on_edges(
                     // Anywhere else it is still ours further on, and waits.
                     // A join value made at `bi` is a new one on every way
                     // in, so the one arriving here is always the last turn's.
+                    //
+                    // And a name live past the join that holds it only as
+                    // another way in brings it was written over on this one:
+                    // `last = l` in a loop. Its scope ended at the write. Left
+                    // for the function's end, the name there held this value
+                    // or a later turn's, and neither was released.
                     Placement::ScopeEnd => {
                         let remade = v.block as usize == bi && v.at == u32::MAX;
-                        remade || !entries[bi].as_ref().is_some_and(|e| e.owned(v))
+                        let written_over = entries[bi]
+                            .as_ref()
+                            .is_some_and(|e| e.needed(v, &live.at[bi][first]));
+                        remade || written_over || !entries[bi].as_ref().is_some_and(|e| e.owned(v))
                     }
                 };
                 if !site {
@@ -1261,18 +1695,27 @@ fn before_returns(
     flags: &mut FlagIndex,
     out: &mut Vec<Release>,
 ) {
-    for bi in 0..func.blocks.len() {
-        if !matches!(
-            func.blocks[bi].terminator.kind,
-            MirTerminatorKind::Return { .. } | MirTerminatorKind::CleanupReturn { .. }
-        ) {
-            continue;
-        }
+    for (bi, exit) in exit_points(func, live) {
         let Some(e) = &entries[bi] else { continue };
         let st = transfer(func, facts, live, bi, e, kills, &mut HashSet::new());
         let len = func.blocks[bi].statements.len();
         for (v, owned) in &st.own {
-            if *owned {
+            let here = match &exit {
+                Exit::All => true,
+                Exit::Except(read) => !st.needed(*v, read),
+                Exit::BodyEnd { read, made_in, heads } => {
+                    st.needed(*v, read)
+                        || made_in.contains(&(v.block as usize))
+                        || heads.iter().any(|(h, later)| {
+                            entries[*h].as_ref().is_some_and(|eh| {
+                                eh.owned(*v)
+                                    && eh.needed(*v, &live.at[*h][0])
+                                    && !later.iter().any(|l| eh.needed(*v, &live.at[*l][0]))
+                            })
+                        })
+                }
+            };
+            if *owned && here {
                 if let Some(name) = pick(&st, *v, &[]) {
                     let guard = flags.of(st.guard.get(v).copied());
                     out.push(Release::At { block: bi, at: len, name, made: v.made(), guard });
@@ -1365,6 +1808,26 @@ fn unwind_marks(
     let mut entry_arm: Vec<Option<BTreeMap<Value, LocalId>>> = vec![None; n];
     let mut exit_arm: Vec<BTreeMap<Value, LocalId>> = vec![BTreeMap::new(); n];
     let read_in = read_since_made(func, facts, sh, live, entries, kills);
+    // Slots an `ensure` hook holds by reference. The hook can write a new value
+    // into one while the frame is unwinding, so the frame's record has to name
+    // the slot, whose contents the release reads when it runs, and not the
+    // value it held when it was armed (#1895).
+    let hooked: BTreeSet<LocalId> = func
+        .blocks
+        .iter()
+        .flat_map(|b| b.statements.iter())
+        .filter_map(|s| match &s.kind {
+            MirStmtKind::EnsureHookRegister { captures, .. } => Some(captures),
+            _ => None,
+        })
+        .flatten()
+        .filter(|c| c.by_ref)
+        .map(|c| c.local_id)
+        .collect();
+    let pick_arm = |st: &State, v: Value| -> Option<LocalId> {
+        let holders = st.holders(v);
+        holders.iter().copied().filter(|h| hooked.contains(h)).min().or_else(|| pick(st, v, &[]))
+    };
     let mut half_built: BTreeSet<Value> = BTreeSet::new();
     for (bi, block) in facts.events.iter().enumerate() {
         for (si, evs) in block.iter().enumerate() {
@@ -1395,7 +1858,7 @@ fn unwind_marks(
                 continue;
             }
             let holders = entry.holders(*v);
-            if holders.is_empty() {
+            if holders.is_empty() || holders.iter().any(|h| facts.caller_slots.contains(h)) {
                 continue;
             }
             let mut agreed: Option<Option<LocalId>> = None;
@@ -1410,8 +1873,11 @@ fn unwind_marks(
                     _ => Some(None),
                 };
             }
-            let kept = agreed.flatten().filter(|m| holders.contains(m));
-            if let Some(name) = kept.or_else(|| pick(entry, *v, &[])) {
+            let hooked_holder = holders.iter().any(|h| hooked.contains(h));
+            let kept = agreed
+                .flatten()
+                .filter(|m| holders.contains(m) && (!hooked_holder || hooked.contains(m)));
+            if let Some(name) = kept.or_else(|| pick_arm(entry, *v)) {
                 arm.insert(*v, name);
             }
         }
@@ -1426,7 +1892,7 @@ fn unwind_marks(
             note_reads(&st, &mut read, &facts.reads[bi][si]);
             let held_before: BTreeMap<Value, Vec<LocalId>> =
                 arm.keys().map(|v| (*v, st.holders(*v))).collect();
-            apply(&mut st, &facts.events[bi][si], bi, si, &live.at[bi][si + 1], &mut HashSet::new());
+            apply(&mut st, &facts.moved_parts, &facts.events[bi][si], bi, si, &live.at[bi][si + 1], &mut HashSet::new());
             forget_made(&mut read, &facts.events[bi][si], bi, si);
             // Handed over, or no longer held by the name it was armed under:
             // gone before the statement runs, because a callee that panics
@@ -1441,6 +1907,20 @@ fn unwind_marks(
             // release.
             for (v, name) in arm.clone() {
                 let made_here = v.block as usize == bi && v.at as usize == si;
+                // Now held by a slot a hook holds: armed under that slot from
+                // here, by the arm below, rather than under a name the hook
+                // can't see written.
+                let moved_to_hooked_slot = st.owned(v)
+                    && !hooked.contains(&name)
+                    && st.holders(v).iter().any(|h| hooked.contains(h));
+                if moved_to_hooked_slot {
+                    marks.push(Mark {
+                        at: MarkAt::In { block: bi, at: si, late: true },
+                        kind: MarkKind::Disarm { slot: slot(v, name) },
+                    });
+                    arm.remove(&v);
+                    continue;
+                }
                 if made_here || !st.owned(v) || !st.holders(v).contains(&name) {
                     marks.push(Mark {
                         at: MarkAt::In { block: bi, at: si, late: true },
@@ -1475,10 +1955,13 @@ fn unwind_marks(
             }
             let owned: Vec<Value> = st.own.iter().filter(|(_, o)| **o).map(|(v, _)| *v).collect();
             for v in owned {
-                if arm.contains_key(&v) || !armable(v, &read) {
+                if arm.contains_key(&v)
+                    || !armable(v, &read)
+                    || st.holders(v).iter().any(|h| facts.caller_slots.contains(h))
+                {
                     continue;
                 }
-                if let Some(name) = pick(&st, v, &[]) {
+                if let Some(name) = pick_arm(&st, v) {
                     let guard = flags.of(st.guard.get(&v).copied());
                     marks.push(Mark {
                         at: MarkAt::In { block: bi, at: si + 1, late: false },
@@ -1490,15 +1973,50 @@ fn unwind_marks(
         }
         // A cleanup return released everything still ours just before it; the
         // `ensure` bodies it runs next can still panic.
-        apply(&mut st, &facts.terminator_events[bi], bi, len, &live.out[bi], &mut HashSet::new());
-        let cleanup_return =
-            matches!(func.blocks[bi].terminator.kind, MirTerminatorKind::CleanupReturn { .. });
+        apply(&mut st, &facts.moved_parts, &facts.terminator_events[bi], bi, len, &live.out[bi], &mut HashSet::new());
+        let chain: &[BlockId] = match &func.blocks[bi].terminator.kind {
+            MirTerminatorKind::CleanupReturn { cleanup_chain, .. } => cleanup_chain,
+            _ => &[],
+        };
+        let cleanup_return = matches!(func.blocks[bi].terminator.kind, MirTerminatorKind::CleanupReturn { .. });
         for (v, name) in arm.clone() {
             if cleanup_return || !st.owned(v) || !st.holders(v).contains(&name) {
-                marks.push(Mark {
-                    at: MarkAt::In { block: bi, at: len, late: true },
-                    kind: MarkKind::Disarm { slot: slot(v, name) },
-                });
+                // A value an `ensure` body reads stays armed while the bodies
+                // run: one that panics must not drop what the bodies after it
+                // would read (#1895). It comes off at the end of the last body
+                // that reads it, where `exit_points` releases it.
+                let mut disarm_at: Vec<usize> = Vec::new();
+                let holders = st.holders(v);
+                if cleanup_return && st.owned(v) && holders.contains(&name) && holders.iter().any(|h| live.out[bi].contains(h)) {
+                    let index_of: std::collections::HashMap<BlockId, usize> =
+                        func.blocks.iter().enumerate().map(|(i, b)| (b.id, i)).collect();
+                    // The bodies read it under any name that holds it, a lent
+                    // slot included, not only the one it was armed under.
+                    let reads = |h: &BlockId| {
+                        index_of.get(h).is_some_and(|&hi| {
+                            live.at[hi].first().is_some_and(|l| holders.iter().any(|n| l.contains(n)))
+                        })
+                    };
+                    if let Some(head) = chain.iter().rev().find(|h| reads(h)) {
+                        disarm_at = ensure_body_ends(func, &index_of, *head);
+                    }
+                }
+                if disarm_at.is_empty() {
+                    marks.push(Mark {
+                        at: MarkAt::In { block: bi, at: len, late: true },
+                        kind: MarkKind::Disarm { slot: slot(v, name) },
+                    });
+                } else {
+                    for end in disarm_at {
+                        let mark = Mark {
+                            at: MarkAt::In { block: end, at: func.blocks[end].statements.len(), late: true },
+                            kind: MarkKind::Disarm { slot: slot(v, name) },
+                        };
+                        if !marks.contains(&mark) {
+                            marks.push(mark);
+                        }
+                    }
+                }
                 arm.remove(&v);
             }
         }
@@ -1600,7 +2118,7 @@ fn read_since_made(
                     continue;
                 }
                 note_reads(&st, &mut read, &facts.reads[bi][si]);
-                apply(&mut st, &facts.events[bi][si], bi, si, &live.at[bi][si + 1], &mut HashSet::new());
+                apply(&mut st, &facts.moved_parts, &facts.events[bi][si], bi, si, &live.at[bi][si + 1], &mut HashSet::new());
                 forget_made(&mut read, &facts.events[bi][si], bi, si);
                 killed_at(&mut st, kills, bi, si);
             }
@@ -1702,6 +2220,26 @@ impl Shifted {
     /// any marks placed there.
     pub fn at(&self, block: usize, at: usize) -> usize {
         self.at[block].get(at).copied().unwrap_or(at)
+    }
+
+    /// Put each in-block release's statements where the plan placed it:
+    /// `(block, at, statements)`, in the order they should run when several
+    /// share a spot. One after the block's last statement goes at its end,
+    /// after every mark.
+    pub fn insert_releases(&self, func: &mut MirFunction, releases: Vec<(usize, usize, Vec<MirStmt>)>) {
+        let (ends, inside): (Vec<_>, Vec<_>) =
+            releases.into_iter().partition(|(block, at, _)| *at + 1 >= self.at[*block].len());
+        for (block, _, stmts) in ends {
+            func.blocks[block].statements.extend(stmts);
+        }
+        // Back to front, so every index still means what the plan said, and
+        // releases sharing a spot keep their order.
+        let mut inside: Vec<(usize, (usize, usize, Vec<MirStmt>))> = inside.into_iter().enumerate().collect();
+        inside.sort_by_key(|(i, (block, at, _))| (*block, *at, *i));
+        for (_, (block, at, stmts)) in inside.into_iter().rev() {
+            let at = self.at(block, at);
+            func.blocks[block].statements.splice(at..at, stmts);
+        }
     }
 }
 

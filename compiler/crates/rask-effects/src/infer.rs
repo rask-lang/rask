@@ -13,15 +13,16 @@ use rask_ast::decl::{Decl, DeclKind, FnDecl};
 use rask_ast::expr::{Expr, ExprKind, SpawnTarget};
 use rask_ast::stmt::{Stmt, StmtKind};
 
-use crate::{Effects, EffectMap, MethodTargets};
+use crate::{Effects, EffectMap, CallTargets, ParamNeeds, Runtimes};
+use rask_ast::decl::TypeArgTarget;
 use crate::sources;
 
 /// Qualified function name (plain name or "Type.method").
 type FuncName = String;
 
 /// Run effect inference on declarations.
-pub fn infer(decls: &[Decl], targets: &MethodTargets) -> EffectMap {
-    infer_with_reach(decls, &[], targets).0
+pub fn infer(decls: &[Decl], targets: &CallTargets) -> EffectMap {
+    infer_with_reach(decls, &[], targets, &Default::default()).0
 }
 
 /// Effects, plus the functions that can only ever run with a runtime installed.
@@ -34,38 +35,82 @@ pub fn infer(decls: &[Decl], targets: &MethodTargets) -> EffectMap {
 pub fn infer_with_reach(
     program: &[Decl],
     stdlib: &[Decl],
-    targets: &MethodTargets,
-) -> (EffectMap, HashSet<FuncName>) {
-    let mut pass = InferPass::new(targets);
+    targets: &CallTargets,
+    c_macros: &crate::CMacros,
+) -> (EffectMap, HashSet<FuncName>, ParamNeeds) {
+    let mut pass = InferPass::new(targets, c_macros);
     pass.run(program, stdlib);
     let runtime_only = pass.runtime_only();
-    (pass.effects, runtime_only)
+    (pass.effects, runtime_only, pass.param_needs)
+}
+
+/// Type parameters a body names as declared.
+fn same_names(params: &[rask_ast::decl::TypeParam]) -> HashMap<String, String> {
+    params.iter().map(|p| (p.name.clone(), p.name.clone())).collect()
+}
+
+/// The type's parameters as an `extend` header names them, by position: the
+/// body of `extend Holder<U>` says `U` for what calls bind as `Holder`'s `T`.
+fn extend_params(target: &rask_ast::ty::TypeExpr, decls: &[Decl]) -> HashMap<String, String> {
+    let rask_ast::ty::TypeExpr::Named { path, args } = target else { return HashMap::new() };
+    let Some(name) = path.last() else { return HashMap::new() };
+    let declared = decls.iter().find_map(|d| match &d.kind {
+        DeclKind::Struct(s) if s.name == *name => Some(&s.type_params),
+        DeclKind::Enum(e) if e.name == *name => Some(&e.type_params),
+        _ => None,
+    });
+    let Some(declared) = declared else { return HashMap::new() };
+    args.iter()
+        .zip(declared)
+        .filter_map(|(arg, p)| match arg {
+            rask_ast::ty::TypeExpr::Named { path, args } if path.len() == 1 && args.is_empty() => {
+                Some((path[0].clone(), p.name.clone()))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// A call that binds the callee's type parameters, and the runtimes installed
+/// around it.
+struct GenericCall {
+    callee: FuncName,
+    bindings: Vec<(String, TypeArgTarget)>,
+    held: Runtimes,
+}
+
+/// What a call binds a type parameter to.
+fn bound<'b>(bindings: &'b [(String, TypeArgTarget)], param: &str) -> Option<&'b TypeArgTarget> {
+    bindings.iter().find(|(p, _)| p == param).map(|(_, t)| t)
 }
 
 /// What classifying a body reads besides the body.
 struct Cx<'a> {
-    targets: &'a MethodTargets,
+    targets: &'a CallTargets,
     imports: &'a sources::ImportedNames,
+    /// Joins of tasks that borrow their frame (`crate::borrowing_joins`).
+    borrowing_joins: &'a HashSet<rask_ast::NodeId>,
 }
 
 struct InferPass<'t> {
     /// The checker's name for each method call it resolved.
-    targets: &'t MethodTargets,
+    targets: &'t CallTargets,
+    /// What each C macro's body does, by the checker's reading.
+    c_macros: &'t crate::CMacros,
     /// The imports of the unit being collected, for what a name at a call
     /// site means.
     imports: sources::ImportedNames,
-    /// Whether the unit being collected is the program. CW2's reachability
-    /// walk is about the program's own call paths, so the stdlib's bodies
-    /// aren't scanned for it.
-    scan_reach: bool,
     /// Per-function direct effects (before transitive propagation).
     effects: EffectMap,
     /// Call graph: caller → callees.
     call_graph: HashMap<FuncName, HashSet<FuncName>>,
-    /// CC2: functions that call spawn or unguarded-call something with needs_runtime.
-    direct_needs_runtime: HashSet<FuncName>,
+    /// CC2: the runtimes each function's own task blocks need and it doesn't
+    /// install.
+    direct_needs_runtime: HashMap<FuncName, Runtimes>,
     /// CC2: callee names reached without an enclosing `using Multitasking {}` block.
     unguarded_callees: HashMap<FuncName, HashSet<FuncName>>,
+    /// CC2: callee names reached without an enclosing `using ThreadPool {}` block.
+    unguarded_pool_callees: HashMap<FuncName, HashSet<FuncName>>,
     /// CW2: callee names reached with no runtime installed.
     plain_callees: HashMap<FuncName, HashSet<FuncName>>,
     /// CW2: callee names reached with a runtime installed — inside that block,
@@ -75,21 +120,35 @@ struct InferPass<'t> {
     /// with no runtime installed, so its local call sites don't settle the
     /// question.
     reachable_from_outside: HashSet<FuncName>,
+    /// The type parameters in scope in each function, by the name its body
+    /// uses, mapped to the name a call binds: the function's own, and for a
+    /// method the type's, which `extend Holder<U>` may rename from the
+    /// declared `Holder<T>` (generics/GF6), so `U` is bound as `T`.
+    type_params: HashMap<FuncName, HashMap<String, String>>,
+    /// CC2: each generic function's method calls on a type parameter, direct
+    /// at first and then through the generic calls it makes.
+    param_needs: ParamNeeds,
+    /// CC2: the generic calls each function makes.
+    generic_calls: HashMap<FuncName, Vec<GenericCall>>,
 }
 
 impl<'t> InferPass<'t> {
-    fn new(targets: &'t MethodTargets) -> Self {
+    fn new(targets: &'t CallTargets, c_macros: &'t crate::CMacros) -> Self {
         Self {
             targets,
+            c_macros,
             imports: sources::ImportedNames::default(),
-            scan_reach: true,
             effects: HashMap::new(),
             call_graph: HashMap::new(),
-            direct_needs_runtime: HashSet::new(),
+            direct_needs_runtime: HashMap::new(),
             unguarded_callees: HashMap::new(),
+            unguarded_pool_callees: HashMap::new(),
             plain_callees: HashMap::new(),
             guarded_callees: HashMap::new(),
             reachable_from_outside: HashSet::new(),
+            type_params: HashMap::new(),
+            param_needs: HashMap::new(),
+            generic_calls: HashMap::new(),
         }
     }
 
@@ -97,9 +156,8 @@ impl<'t> InferPass<'t> {
         // The stdlib first, so a program declaration of the same name is the
         // one its own calls reach. Each unit reads its own imports: a name
         // means what that file's imports say.
-        for (decls, is_program) in [(stdlib, false), (program, true)] {
+        for decls in [stdlib, program] {
             self.imports = sources::ImportedNames::from_decls(decls);
-            self.scan_reach = is_program;
             // Phase 1: Classify direct effects and build call graph
             self.collect(decls);
             // Phase 2: Mark extern functions conservatively (INF5)
@@ -109,11 +167,19 @@ impl<'t> InferPass<'t> {
         // Phase 3: Fixed-point propagation (FX2)
         self.propagate();
 
-        // Phase 4: CC2 — propagate needs_runtime via unguarded-call edges
-        let needs_runtime = self.propagate_needs_runtime();
-        for fname in needs_runtime {
+        // Phase 4: CC2 — propagate needs_runtime via unguarded-call edges,
+        // once each generic call has said which bodies its type picks.
+        self.resolve_generic_calls();
+        let pick = |r: Runtimes| r.multitasking;
+        for fname in propagate_needs(&self.direct_needs_runtime, pick, &self.unguarded_callees) {
             if let Some(e) = self.effects.get_mut(&fname) {
-                e.needs_runtime = true;
+                e.needs_runtime.multitasking = true;
+            }
+        }
+        let pick = |r: Runtimes| r.pool;
+        for fname in propagate_needs(&self.direct_needs_runtime, pick, &self.unguarded_pool_callees) {
+            if let Some(e) = self.effects.get_mut(&fname) {
+                e.needs_runtime.pool = true;
             }
         }
     }
@@ -124,30 +190,33 @@ impl<'t> InferPass<'t> {
         for decl in decls {
             match &decl.kind {
                 DeclKind::Fn(f) => {
-                    self.collect_fn(&f.name, f);
+                    self.collect_fn(&f.name, f, HashMap::new());
                 }
                 DeclKind::Struct(s) => {
+                    let outer = same_names(&s.type_params);
                     for method in &s.methods {
                         let qname = format!("{}.{}", s.name, method.name);
-                        self.collect_fn(&qname, method);
+                        self.collect_fn(&qname, method, outer.clone());
                     }
                 }
                 DeclKind::Enum(e) => {
+                    let outer = same_names(&e.type_params);
                     for method in &e.methods {
                         let qname = format!("{}.{}", e.name, method.name);
-                        self.collect_fn(&qname, method);
+                        self.collect_fn(&qname, method, outer.clone());
                     }
                 }
                 DeclKind::Impl(i) => {
+                    let outer = extend_params(&i.target_ty, decls);
                     for method in &i.methods {
                         let qname = crate::method_key(&i.target_ty, &method.name);
-                        self.collect_fn(&qname, method);
+                        self.collect_fn(&qname, method, outer.clone());
                     }
                 }
                 DeclKind::Interface(t) => {
                     for method in &t.methods {
                         let qname = format!("{}.{}", t.name, method.name);
-                        self.collect_fn(&qname, method);
+                        self.collect_fn(&qname, method, HashMap::new());
                     }
                 }
                 // A test or benchmark body is a caller like `main`. Left out,
@@ -167,7 +236,11 @@ impl<'t> InferPass<'t> {
         }
     }
 
-    fn collect_fn(&mut self, qname: &str, f: &FnDecl) {
+    fn collect_fn(&mut self, qname: &str, f: &FnDecl, mut params: HashMap<String, String>) {
+        params.extend(same_names(&f.type_params));
+        if !params.is_empty() {
+            self.type_params.insert(qname.to_string(), params);
+        }
         self.collect_body(qname, &f.body, &f.attrs, f.is_pub);
         // A stdlib native has no body to read, so its declaration says what
         // it does (`@blocks`, `@prints`, `@ambient`, `@grows`, `@shrinks`).
@@ -194,7 +267,12 @@ impl<'t> InferPass<'t> {
         // Classify direct effects from function body
         let mut direct = Effects::default();
         let mut callees = HashSet::new();
-        let cx = Cx { targets: self.targets, imports: &self.imports };
+        let borrowing_joins: HashSet<rask_ast::NodeId> = rask_ast::tasks::all_windows(body)
+            .iter()
+            .filter(|w| matches!(w.spawn.kind, ExprKind::Spawn { target: SpawnTarget::Pool, .. }))
+            .map(|w| w.join_call.id)
+            .collect();
+        let cx = Cx { targets: self.targets, imports: &self.imports, borrowing_joins: &borrowing_joins };
         classify_body(body, &mut direct, &mut callees, &cx);
 
         self.effects.insert(qname.to_string(), direct);
@@ -207,18 +285,19 @@ impl<'t> InferPass<'t> {
             self.reachable_from_outside.insert(qname.to_string());
         }
 
-        if !self.scan_reach {
-            return;
-        }
-
         // CC2: compute which functions call spawn (or runtime-needing callees) without a guard
-        let mut scan = ReachScan::new(self.targets, &self.imports);
-        let direct_needs_rt = rt_scan_stmts(body, 0, &mut scan);
-        if direct_needs_rt {
-            self.direct_needs_runtime.insert(qname.to_string());
+        let no_params = HashMap::new();
+        let params = self.type_params.get(qname).unwrap_or(&no_params);
+        let mut scan = ReachScan::new(self.targets, &self.imports, params);
+        let direct_needs_rt = rt_scan_stmts(body, Runtimes::NONE, &mut scan);
+        if direct_needs_rt.any() {
+            self.direct_needs_runtime.insert(qname.to_string(), direct_needs_rt);
         }
         if !scan.unguarded.is_empty() {
             self.unguarded_callees.insert(qname.to_string(), scan.unguarded);
+        }
+        if !scan.unguarded_pool.is_empty() {
+            self.unguarded_pool_callees.insert(qname.to_string(), scan.unguarded_pool);
         }
         if !scan.plain.is_empty() {
             self.plain_callees.insert(qname.to_string(), scan.plain);
@@ -226,23 +305,46 @@ impl<'t> InferPass<'t> {
         if !scan.guarded.is_empty() {
             self.guarded_callees.insert(qname.to_string(), scan.guarded);
         }
+        if !scan.param_calls.is_empty() {
+            self.param_needs.insert(qname.to_string(), scan.param_calls);
+        }
+        if !scan.generic_calls.is_empty() {
+            self.generic_calls.insert(qname.to_string(), scan.generic_calls);
+        }
     }
 
-    // ── Phase 4: CC2 needs_runtime propagation ──────────────────────
-
-    fn propagate_needs_runtime(&self) -> HashSet<FuncName> {
-        let mut needs_runtime = self.direct_needs_runtime.clone();
+    /// comp.effects/INF1 for CC2: a generic function's effects are those of
+    /// the instance a call picks. `run<T: Starter>(x: T) { x.go() }` spawns
+    /// when `T` is a type whose `go` spawns, and not otherwise, so the edge to
+    /// `Sx.go` belongs to the caller that picked `Sx`.
+    ///
+    /// First, a type parameter handed on to another generic call carries that
+    /// callee's method calls back to this function's own parameter, until
+    /// nothing changes. Then each call that names a type gets an edge to that
+    /// type's method, outside a block where neither function installs one.
+    fn resolve_generic_calls(&mut self) {
         loop {
             let mut changed = false;
-            for (caller, callees) in &self.unguarded_callees {
-                if needs_runtime.contains(caller) {
-                    continue;
-                }
-                for callee in callees {
-                    if needs_runtime.contains(callee) {
-                        needs_runtime.insert(caller.clone());
-                        changed = true;
-                        break;
+            for (caller, calls) in &self.generic_calls {
+                let Some(own) = self.type_params.get(caller) else { continue };
+                for call in calls {
+                    let Some(reached) = self.param_needs.get(&call.callee) else { continue };
+                    let mut add = Vec::new();
+                    for ((param, method), open) in reached {
+                        let open = open.missing_from(call.held);
+                        let Some(TypeArgTarget::Param(q)) = bound(&call.bindings, param) else { continue };
+                        let Some(q) = own.get(q) else { continue };
+                        if open.any() {
+                            add.push(((q.clone(), method.clone()), open));
+                        }
+                    }
+                    let mine = self.param_needs.entry(caller.clone()).or_default();
+                    for (key, open) in add {
+                        let slot = mine.entry(key).or_default();
+                        if (*slot | open) != *slot {
+                            *slot |= open;
+                            changed = true;
+                        }
                     }
                 }
             }
@@ -250,7 +352,22 @@ impl<'t> InferPass<'t> {
                 break;
             }
         }
-        needs_runtime
+        for (caller, calls) in &self.generic_calls {
+            for call in calls {
+                let Some(reached) = self.param_needs.get(&call.callee) else { continue };
+                for ((param, method), open) in reached {
+                    let open = open.missing_from(call.held);
+                    let Some(TypeArgTarget::Named(ty)) = bound(&call.bindings, param) else { continue };
+                    let name = format!("{ty}.{method}");
+                    if open.multitasking {
+                        self.unguarded_callees.entry(caller.clone()).or_default().insert(name.clone());
+                    }
+                    if open.pool {
+                        self.unguarded_pool_callees.entry(caller.clone()).or_default().insert(name);
+                    }
+                }
+            }
+        }
     }
 
     // ── CW2: which functions can only run under a runtime ───────────
@@ -337,17 +454,25 @@ impl<'t> InferPass<'t> {
     // ── Phase 2: Extern declarations ────────────────────────────────
 
     /// INF5: a C function could do anything, so it blocks and touches ambient
-    /// state unless its declaration says `@memory_only`.
+    /// state unless its declaration says `@memory_only`. Either way it's C
+    /// code. A C macro has its body's effects: arithmetic is pure, since the
+    /// compiler computes it; a field read is C code; a call has the effects
+    /// of the C function it calls.
     fn mark_externs(&mut self, decls: &[Decl]) {
         for decl in decls {
             if let DeclKind::Extern(e) = &decl.kind {
                 // `@ambient`: reads ambient state (the clock, randomness) but
                 // never waits, which is a protocol engine's whole shape.
                 let says = |name: &str| e.attrs.iter().any(|a| a.is(name));
-                let effects = if says("memory_only") {
-                    Effects::default()
+                let effects = if let Some(body) = self.c_macros.get(&e.name) {
+                    if !body.calls.is_empty() {
+                        self.call_graph.entry(e.name.clone()).or_default().extend(body.calls.iter().cloned());
+                    }
+                    Effects { c_code: body.touches_memory, ..Default::default() }
+                } else if says("memory_only") {
+                    Effects { c_code: true, ..Default::default() }
                 } else {
-                    Effects { blocks: !says("ambient"), ambient: true, ..Default::default() }
+                    Effects { blocks: !says("ambient"), ambient: true, c_code: true, ..Default::default() }
                 };
                 self.effects.insert(e.name.clone(), effects);
             }
@@ -369,7 +494,7 @@ impl<'t> InferPass<'t> {
         let mut work: Vec<String> = self
             .effects
             .iter()
-            .filter(|(_, e)| !e.is_pure())
+            .filter(|(_, e)| !e.is_pure() || e.c_code)
             .map(|(k, _)| k.clone())
             .collect();
         while let Some(callee) = work.pop() {
@@ -441,12 +566,13 @@ fn classify_stmt(stmt: &Stmt, effects: &mut Effects, callees: &mut HashSet<Strin
 }
 
 fn classify_expr(expr: &Expr, effects: &mut Effects, callees: &mut HashSet<String>, t: &Cx) {
+    if let Some(name) = crate::function_ref(expr, t.targets, t.imports) {
+        callees.insert(name);
+    }
     match &expr.kind {
         ExprKind::Call { func, args } => {
-            if let Some(name) = extract_callee_name(func) {
-                // By what the name means here: `exists` is `fs.exists` only
-                // where the file imported it.
-                callees.insert(t.imports.qualify(&name));
+            if let Some(name) = crate::free_callee(expr.id, func, t.targets, t.imports) {
+                callees.insert(name);
             }
             classify_expr(func, effects, callees, t);
             for arg in args {
@@ -455,10 +581,12 @@ fn classify_expr(expr: &Expr, effects: &mut Effects, callees: &mut HashSet<Strin
         }
 
         ExprKind::MethodCall { object, method, args, .. } => {
-            let effect = t.targets.get(&expr.id).map(|target| target.effect).unwrap_or_default();
+            let effect = t.targets.methods.get(&expr.id).map(|target| target.effect).unwrap_or_default();
             effects.union(sources::size_effects(effect));
-            for name in crate::method_callees(expr.id, object, method, t.targets, t.imports) {
-                callees.insert(name);
+            if !t.borrowing_joins.contains(&expr.id) {
+                for name in crate::method_callees(expr.id, object, method, t.targets, t.imports) {
+                    callees.insert(name);
+                }
             }
 
             classify_expr(object, effects, callees, t);
@@ -615,36 +743,42 @@ fn classify_expr(expr: &Expr, effects: &mut Effects, callees: &mut HashSet<Strin
     }
 }
 
-/// Extract callee name from a Call expression's func field.
-fn extract_callee_name(func: &Expr) -> Option<String> {
-    match &func.kind {
-        ExprKind::Ident(name) | ExprKind::GenericName { name, .. } => Some(name.clone()),
-        ExprKind::Field { object, field } => {
-            if let Some(obj_name) = object.name() {
-                Some(format!("{}.{}", obj_name, field))
-            } else {
-                None
+// ── CC2: runtime-needs scanning ────────────────────────────────────────
+//
+/// CC2: the functions that need one runtime open at their call site — those
+/// whose own task blocks need it, and those that call one of them outside a
+/// block installing it.
+fn propagate_needs(
+    direct: &HashMap<FuncName, Runtimes>,
+    pick: impl Fn(Runtimes) -> bool,
+    unguarded: &HashMap<FuncName, HashSet<FuncName>>,
+) -> HashSet<FuncName> {
+    let mut needs: HashSet<FuncName> =
+        direct.iter().filter(|(_, r)| pick(**r)).map(|(f, _)| f.clone()).collect();
+    loop {
+        let mut changed = false;
+        for (caller, callees) in unguarded {
+            if !needs.contains(caller) && callees.iter().any(|c| needs.contains(c)) {
+                needs.insert(caller.clone());
+                changed = true;
             }
         }
-        _ => None,
+        if !changed {
+            return needs;
+        }
     }
 }
 
-// ── CC2: runtime-needs scanning ────────────────────────────────────────
-//
-// These functions walk the AST tracking `using Multitasking {}` nesting depth.
-// At depth 0, a direct `spawn { }` sets `needs_runtime = true`.
-// Function calls at depth 0 are collected into `unguarded` for transitive propagation.
-
-fn is_multitasking_block(name: &str) -> bool {
-    matches!(name, "Multitasking" | "MultiTasking" | "multitasking")
-}
+// These functions walk the AST tracking which runtimes are installed at each
+// point (`held`) and return the ones a task block needs and nothing installs.
+// Calls made without a runtime are collected into `unguarded` for transitive
+// propagation, one set per runtime.
 
 /// Callees of one function, split by whether a runtime was installed when the
 /// call was reached.
 ///
 /// `unguarded` feeds CC2 — a `spawn` under one of these needs the caller to
-/// supply the block. `plain`/`guarded` feed CW2, which asks the opposite
+/// supply the block; `unguarded_pool` is the same for `ThreadPool.spawn`. `plain`/`guarded` feed CW2, which asks the opposite
 /// question: can this function run with *no* runtime installed? A call inside
 /// `using Multitasking { }`, or inside the closure handed to `spawn`, can't.
 ///
@@ -653,37 +787,67 @@ fn is_multitasking_block(name: &str) -> bool {
 /// methods — a handler that does its I/O in `room.broadcast()` is exactly the
 /// shape #1263 is about.
 struct ReachScan<'t> {
-    targets: &'t MethodTargets,
+    targets: &'t CallTargets,
     imports: &'t sources::ImportedNames,
+    /// The scanned function's type parameters (`InferPass::type_params`).
+    type_params: &'t HashMap<String, String>,
     unguarded: HashSet<String>,
+    unguarded_pool: HashSet<String>,
     plain: HashSet<String>,
     guarded: HashSet<String>,
-    in_spawn: bool,
+    /// Method calls on one of `type_params`, with the runtimes not installed
+    /// around them.
+    param_calls: HashMap<(String, String), Runtimes>,
+    generic_calls: Vec<GenericCall>,
 }
 
 impl<'t> ReachScan<'t> {
-    fn new(targets: &'t MethodTargets, imports: &'t sources::ImportedNames) -> Self {
+    fn new(targets: &'t CallTargets, imports: &'t sources::ImportedNames, type_params: &'t HashMap<String, String>) -> Self {
         Self {
             targets,
             imports,
+            type_params,
             unguarded: HashSet::new(),
+            unguarded_pool: HashSet::new(),
             plain: HashSet::new(),
             guarded: HashSet::new(),
-            in_spawn: false,
+            param_calls: HashMap::new(),
+            generic_calls: Vec::new(),
+        }
+    }
+
+    /// A call that binds type parameters, kept for `resolve_generic_calls`.
+    fn generic_call(&mut self, call: rask_ast::NodeId, held: Runtimes, callee: String) {
+        if let Some(bindings) = self.targets.type_args.get(&call) {
+            self.generic_calls.push(GenericCall { callee, bindings: bindings.clone(), held });
+        }
+    }
+
+    /// A method call on a value of the function's own type parameter.
+    fn param_call(&mut self, call: rask_ast::NodeId, held: Runtimes) {
+        let Some((param, method)) = self.targets.param_methods.get(&call) else { return };
+        let Some(bound_as) = self.type_params.get(param) else { return };
+        let open = Runtimes { multitasking: true, pool: true }.missing_from(held);
+        if open.any() {
+            *self.param_calls.entry((bound_as.clone(), method.clone())).or_default() |= open;
         }
     }
 
     /// A plain call: counts for both analyses.
-    fn record(&mut self, depth: u32, name: String) {
-        if depth == 0 && !self.in_spawn {
+    fn record(&mut self, held: Runtimes, name: String) {
+        if !held.multitasking {
             self.unguarded.insert(name.clone());
         }
-        self.reach(depth, name);
+        if !held.pool {
+            self.unguarded_pool.insert(name.clone());
+        }
+        self.reach(held, name);
     }
 
-    /// A call CC2 doesn't follow — a method — recorded for reachability only.
-    fn reach(&mut self, depth: u32, name: String) {
-        if depth == 0 && !self.in_spawn {
+    /// A call CC2 doesn't follow (a method the checker didn't resolve),
+    /// recorded for reachability only.
+    fn reach(&mut self, held: Runtimes, name: String) {
+        if !held.multitasking {
             self.plain.insert(name);
         } else {
             self.guarded.insert(name);
@@ -691,191 +855,208 @@ impl<'t> ReachScan<'t> {
     }
 }
 
-fn rt_scan_stmts(stmts: &[Stmt], depth: u32, rs: &mut ReachScan<'_>) -> bool {
-    stmts.iter().fold(false, |acc, s| acc | rt_scan_stmt(s, depth, rs))
+fn rt_scan_stmts(stmts: &[Stmt], held: Runtimes, rs: &mut ReachScan<'_>) -> Runtimes {
+    stmts.iter().fold(Runtimes::NONE, |acc, s| acc | rt_scan_stmt(s, held, rs))
 }
 
-fn rt_scan_stmt(stmt: &Stmt, depth: u32, rs: &mut ReachScan<'_>) -> bool {
+fn rt_scan_stmt(stmt: &Stmt, held: Runtimes, rs: &mut ReachScan<'_>) -> Runtimes {
     match &stmt.kind {
-        StmtKind::Expr(e) => rt_scan_expr(e, depth, rs),
-        StmtKind::Mut { init, .. } | StmtKind::Let { init, .. } => rt_scan_expr(init, depth, rs),
+        StmtKind::Expr(e) => rt_scan_expr(e, held, rs),
+        StmtKind::Mut { init, .. } | StmtKind::Let { init, .. } => rt_scan_expr(init, held, rs),
         StmtKind::MutTuple { init, .. }
         | StmtKind::LetTuple { init, .. }
-        | StmtKind::LetStruct { init, .. } => rt_scan_expr(init, depth, rs),
+        | StmtKind::LetStruct { init, .. } => rt_scan_expr(init, held, rs),
         StmtKind::Assign { target, value, .. } => {
-            rt_scan_expr(target, depth, rs) | rt_scan_expr(value, depth, rs)
+            rt_scan_expr(target, held, rs) | rt_scan_expr(value, held, rs)
         }
-        StmtKind::Return(Some(e)) => rt_scan_expr(e, depth, rs),
+        StmtKind::Return(Some(e)) => rt_scan_expr(e, held, rs),
         StmtKind::Return(None) | StmtKind::Break { value: None, .. }
-        | StmtKind::Continue(_) | StmtKind::Discard { .. } => false,
-        StmtKind::Break { value: Some(v), .. } => rt_scan_expr(v, depth, rs),
+        | StmtKind::Continue(_) | StmtKind::Discard { .. } => Runtimes::NONE,
+        StmtKind::Break { value: Some(v), .. } => rt_scan_expr(v, held, rs),
         StmtKind::While { cond, body, .. } => {
-            rt_scan_expr(cond, depth, rs) | rt_scan_stmts(body, depth, rs)
+            rt_scan_expr(cond, held, rs) | rt_scan_stmts(body, held, rs)
         }
         StmtKind::WhileLet { expr, body, .. } => {
-            rt_scan_expr(expr, depth, rs) | rt_scan_stmts(body, depth, rs)
+            rt_scan_expr(expr, held, rs) | rt_scan_stmts(body, held, rs)
         }
         StmtKind::Loop { body, .. } | StmtKind::Comptime(body) | StmtKind::ComptimeFor { body, .. } => {
-            rt_scan_stmts(body, depth, rs)
+            rt_scan_stmts(body, held, rs)
         }
         StmtKind::For { iter, body, .. } => {
-            rt_scan_expr(iter, depth, rs) | rt_scan_stmts(body, depth, rs)
+            rt_scan_expr(iter, held, rs) | rt_scan_stmts(body, held, rs)
         }
         StmtKind::Ensure { body, else_handler } => {
-            let mut r = rt_scan_stmts(body, depth, rs);
+            let mut r = rt_scan_stmts(body, held, rs);
             if let Some((_, handler)) = else_handler {
-                r |= rt_scan_stmts(handler, depth, rs);
+                r |= rt_scan_stmts(handler, held, rs);
             }
             r
         }
     }
 }
 
-fn rt_scan_expr(expr: &Expr, depth: u32, rs: &mut ReachScan<'_>) -> bool {
+fn rt_scan_expr(expr: &Expr, held: Runtimes, rs: &mut ReachScan<'_>) -> Runtimes {
+    if let Some(name) = crate::function_ref(expr, rs.targets, rs.imports) {
+        // A generic function named as a value has its types recorded under
+        // the name, so it is an instance the way a call is.
+        rs.generic_call(expr.id, held, name.clone());
+        rs.record(held, name);
+    }
     match &expr.kind {
         ExprKind::Call { func, args } => {
-            if let Some(name) = extract_callee_name(func) {
-                rs.record(depth, name);
+            if let Some(name) = crate::free_callee(expr.id, func, rs.targets, rs.imports) {
+                rs.generic_call(expr.id, held, name.clone());
+                rs.record(held, name);
             }
-            let mut r = rt_scan_expr(func, depth, rs);
+            let mut r = rt_scan_expr(func, held, rs);
             for arg in args {
-                r |= rt_scan_expr(&arg.expr, depth, rs);
+                r |= rt_scan_expr(&arg.expr, held, rs);
             }
             r
         }
 
-        // A green task runs on the scheduler, so a runtime is installed for
-        // everything its block reaches — the same thing `using Multitasking`
-        // means, arriving by a different route. An OS thread or a pool job
-        // needs no green runtime to start.
-        ExprKind::Spawn { target: SpawnTarget::Green, body, .. } => {
-            let was = rs.in_spawn;
-            rs.in_spawn = true;
-            rt_scan_expr(body, depth, rs);
-            rs.in_spawn = was;
-            depth == 0
-        }
-        ExprKind::Spawn { body, .. } => rt_scan_expr(body, depth, rs),
-
-        // `using Multitasking { }` guards the body — increase depth
-        ExprKind::UsingBlock { name, args, body } if is_multitasking_block(name) => {
-            for arg in args {
-                rt_scan_expr(&arg.expr, depth, rs);
-            }
-            rt_scan_stmts(body, depth + 1, rs);
-            false
+        // A task runs on the runtime that accepted it, so that runtime is
+        // installed for everything its block reaches — the same thing the
+        // `using` block means, arriving by a different route. An OS thread
+        // needs no runtime to start, and neither does a pool job that said
+        // `requires_pool: false`.
+        ExprKind::Spawn { target, args, body, .. } => {
+            let needs = match target {
+                SpawnTarget::Green => Runtimes::MULTITASKING,
+                SpawnTarget::Pool if !says_no_pool(args) => Runtimes::POOL,
+                SpawnTarget::Pool | SpawnTarget::Thread => Runtimes::NONE,
+            };
+            let inner = rt_scan_expr(body, held | needs, rs);
+            needs.missing_from(held) | inner
         }
 
-        // All other expressions: recurse with same depth
+        // A `using` block installs its runtime for the body.
+        ExprKind::UsingBlock { name, args, body } => {
+            let mut r = Runtimes::NONE;
+            for arg in args { r |= rt_scan_expr(&arg.expr, held, rs); }
+            r | rt_scan_stmts(body, held | Runtimes::of_block(name), rs)
+        }
+
+        // All other expressions: recurse with same held
+        // A method the checker resolved is a call like any other: CC2
+        // follows it (`http.serve` spawns per connection). One it didn't is
+        // only a guess from the spelling, which can name methods the call
+        // never reaches, so it counts for reachability alone.
         ExprKind::MethodCall { object, method, args, .. } => {
-            for name in crate::method_callees(expr.id, object, method, rs.targets, rs.imports) {
-                rs.reach(depth, name);
+            rs.param_call(expr.id, held);
+            if let Some(name) = crate::resolved_method(expr.id, rs.targets) {
+                rs.generic_call(expr.id, held, name.clone());
+                rs.record(held, name);
+            } else {
+                for name in crate::method_callees(expr.id, object, method, rs.targets, rs.imports) {
+                    rs.reach(held, name);
+                }
             }
-            let mut r = rt_scan_expr(object, depth, rs);
-            for arg in args { r |= rt_scan_expr(&arg.expr, depth, rs); }
-            r
-        }
-        ExprKind::UsingBlock { args, body, .. } => {
-            let mut r = false;
-            for arg in args { r |= rt_scan_expr(&arg.expr, depth, rs); }
-            r |= rt_scan_stmts(body, depth, rs);
+            let mut r = rt_scan_expr(object, held, rs);
+            for arg in args { r |= rt_scan_expr(&arg.expr, held, rs); }
             r
         }
         ExprKind::Binary { left, right, .. } => {
-            rt_scan_expr(left, depth, rs) | rt_scan_expr(right, depth, rs)
+            rt_scan_expr(left, held, rs) | rt_scan_expr(right, held, rs)
         }
-        ExprKind::Unary { operand, .. } => rt_scan_expr(operand, depth, rs),
-        ExprKind::Field { object, .. } | ExprKind::OptionalField { object, .. } => rt_scan_expr(object, depth, rs),
+        ExprKind::Unary { operand, .. } => rt_scan_expr(operand, held, rs),
+        ExprKind::Field { object, .. } | ExprKind::OptionalField { object, .. } => rt_scan_expr(object, held, rs),
         ExprKind::DynamicField { object, field_expr } => {
-            rt_scan_expr(object, depth, rs) | rt_scan_expr(field_expr, depth, rs)
+            rt_scan_expr(object, held, rs) | rt_scan_expr(field_expr, held, rs)
         }
         ExprKind::Index { object, index } => {
-            rt_scan_expr(object, depth, rs) | rt_scan_expr(index, depth, rs)
+            rt_scan_expr(object, held, rs) | rt_scan_expr(index, held, rs)
         }
-        ExprKind::Block(stmts) => rt_scan_stmts(stmts, depth, rs),
+        ExprKind::Block(stmts) => rt_scan_stmts(stmts, held, rs),
         ExprKind::If { cond, then_branch, else_branch, .. } => {
-            let mut r = rt_scan_expr(cond, depth, rs);
-            r |= rt_scan_expr(then_branch, depth, rs);
-            if let Some(e) = else_branch { r |= rt_scan_expr(e, depth, rs); }
+            let mut r = rt_scan_expr(cond, held, rs);
+            r |= rt_scan_expr(then_branch, held, rs);
+            if let Some(e) = else_branch { r |= rt_scan_expr(e, held, rs); }
             r
         }
         ExprKind::IfLet { expr, then_branch, else_branch, .. } => {
-            let mut r = rt_scan_expr(expr, depth, rs);
-            r |= rt_scan_expr(then_branch, depth, rs);
-            if let Some(e) = else_branch { r |= rt_scan_expr(e, depth, rs); }
+            let mut r = rt_scan_expr(expr, held, rs);
+            r |= rt_scan_expr(then_branch, held, rs);
+            if let Some(e) = else_branch { r |= rt_scan_expr(e, held, rs); }
             r
         }
         ExprKind::GuardPattern { expr, else_branch, .. } => {
-            rt_scan_expr(expr, depth, rs) | rt_scan_expr(else_branch, depth, rs)
+            rt_scan_expr(expr, held, rs) | rt_scan_expr(else_branch, held, rs)
         }
         ExprKind::IsPattern { expr, .. } | ExprKind::IsPresent { expr, .. }
-        | ExprKind::Unwrap { expr, .. } | ExprKind::Cast { expr, .. } | ExprKind::Convert { expr, .. } => rt_scan_expr(expr, depth, rs),
+        | ExprKind::Unwrap { expr, .. } | ExprKind::Cast { expr, .. } | ExprKind::Convert { expr, .. } => rt_scan_expr(expr, held, rs),
         ExprKind::Match { scrutinee, arms } => {
-            let mut r = rt_scan_expr(scrutinee, depth, rs);
+            let mut r = rt_scan_expr(scrutinee, held, rs);
             for arm in arms {
-                if let Some(g) = &arm.guard { r |= rt_scan_expr(g, depth, rs); }
-                r |= rt_scan_expr(&arm.body, depth, rs);
+                if let Some(g) = &arm.guard { r |= rt_scan_expr(g, held, rs); }
+                r |= rt_scan_expr(&arm.body, held, rs);
             }
             r
         }
-        ExprKind::Try { expr: e } | ExprKind::Take { place: e } => rt_scan_expr(e, depth, rs),
+        ExprKind::Try { expr: e } | ExprKind::Take { place: e } => rt_scan_expr(e, held, rs),
         ExprKind::Catch { value, clause } => {
-            rt_scan_expr(value, depth, rs) | rt_scan_expr(&clause.body, depth, rs)
+            rt_scan_expr(value, held, rs) | rt_scan_expr(&clause.body, held, rs)
         }
         ExprKind::NullCoalesce { value, default } => {
-            rt_scan_expr(value, depth, rs) | rt_scan_expr(default, depth, rs)
+            rt_scan_expr(value, held, rs) | rt_scan_expr(default, held, rs)
         }
         ExprKind::Range { start, end, .. } => {
-            let mut r = false;
-            if let Some(s) = start { r |= rt_scan_expr(s, depth, rs); }
-            if let Some(e) = end { r |= rt_scan_expr(e, depth, rs); }
+            let mut r = Runtimes::NONE;
+            if let Some(s) = start { r |= rt_scan_expr(s, held, rs); }
+            if let Some(e) = end { r |= rt_scan_expr(e, held, rs); }
             r
         }
         ExprKind::StructLit { fields, spread, .. } => {
-            let mut r = false;
-            for f in fields { r |= rt_scan_expr(&f.value, depth, rs); }
-            if let Some(s) = spread { r |= rt_scan_expr(s, depth, rs); }
+            let mut r = Runtimes::NONE;
+            for f in fields { r |= rt_scan_expr(&f.value, held, rs); }
+            if let Some(s) = spread { r |= rt_scan_expr(s, held, rs); }
             r
         }
         ExprKind::Array(elems) | ExprKind::Tuple(elems) => {
-            elems.iter().fold(false, |acc, e| acc | rt_scan_expr(e, depth, rs))
+            elems.iter().fold(Runtimes::NONE, |acc, e| acc | rt_scan_expr(e, held, rs))
         }
         ExprKind::ArrayRepeat { value, count } => {
-            rt_scan_expr(value, depth, rs) | rt_scan_expr(count, depth, rs)
+            rt_scan_expr(value, held, rs) | rt_scan_expr(count, held, rs)
         }
         ExprKind::WithAs { bindings, body } => {
-            let mut r = false;
-            for b in bindings { r |= rt_scan_expr(&b.source, depth, rs); }
-            r |= rt_scan_stmts(body, depth, rs);
+            let mut r = Runtimes::NONE;
+            for b in bindings { r |= rt_scan_expr(&b.source, held, rs); }
+            r |= rt_scan_stmts(body, held, rs);
             r
         }
-        ExprKind::Closure { body, .. } => rt_scan_expr(body, depth, rs),
+        ExprKind::Closure { body, .. } => rt_scan_expr(body, held, rs),
         ExprKind::Comptime { body }
-        | ExprKind::Loop { body, .. } | ExprKind::Unsafe { body } => rt_scan_stmts(body, depth, rs),
+        | ExprKind::Loop { body, .. } | ExprKind::Unsafe { body } => rt_scan_stmts(body, held, rs),
         ExprKind::Assert { condition, message } | ExprKind::Check { condition, message } => {
-            let mut r = rt_scan_expr(condition, depth, rs);
-            if let Some(m) = message { r |= rt_scan_expr(m, depth, rs); }
+            let mut r = rt_scan_expr(condition, held, rs);
+            if let Some(m) = message { r |= rt_scan_expr(m, held, rs); }
             r
         }
         ExprKind::Select { arms, .. } => {
-            let mut r = false;
+            let mut r = Runtimes::NONE;
             for arm in arms {
                 match &arm.kind {
-                    rask_ast::expr::SelectArmKind::Recv { channel, .. } => { r |= rt_scan_expr(channel, depth, rs); }
+                    rask_ast::expr::SelectArmKind::Recv { channel, .. } => { r |= rt_scan_expr(channel, held, rs); }
                     rask_ast::expr::SelectArmKind::Send { channel, value } => {
-                        r |= rt_scan_expr(channel, depth, rs);
-                        r |= rt_scan_expr(value, depth, rs);
+                        r |= rt_scan_expr(channel, held, rs);
+                        r |= rt_scan_expr(value, held, rs);
                     }
                     rask_ast::expr::SelectArmKind::Default => {}
                 }
-                r |= rt_scan_expr(&arm.body, depth, rs);
+                r |= rt_scan_expr(&arm.body, held, rs);
             }
             r
         }
         ExprKind::Int(_, _) | ExprKind::Float(_, _) | ExprKind::String(_)
         | ExprKind::StringInterp(_) | ExprKind::Bytes(_) | ExprKind::Char(_) | ExprKind::Bool(_) | ExprKind::None | ExprKind::Ident(_)
-        | ExprKind::GenericName { .. } => false,
+        | ExprKind::GenericName { .. } => Runtimes::NONE,
     }
+}
+
+/// `ThreadPool.spawn(requires_pool: false)`, written as a literal. Any other
+/// value is only known at run time, where the spawn checks for itself (CC3).
+pub(crate) fn says_no_pool(args: &[rask_ast::expr::CallArg]) -> bool {
+    args.first().is_some_and(|a| matches!(a.expr.kind, ExprKind::Bool(false)))
 }
 
 // ── Tests ────────────────────────────────────────────────────────────
@@ -890,9 +1071,9 @@ mod tests {
 
     /// Inference over `decls` as the program, with the real stdlib beside it,
     /// the way the compiler runs it.
-    fn infer_std(decls: &[Decl], targets: &MethodTargets) -> EffectMap {
+    fn infer_std(decls: &[Decl], targets: &CallTargets) -> EffectMap {
         let stdlib = rask_stdlib::StubRegistry::typecheck_decls();
-        infer_with_reach(decls, &stdlib, targets).0
+        infer_with_reach(decls, &stdlib, targets, &Default::default()).0
     }
 
     fn target(name: &str) -> rask_ast::decl::MethodTarget {
@@ -966,7 +1147,7 @@ mod tests {
         };
         Expr {
             id: NodeId(0),
-            kind: ExprKind::Spawn { target: SpawnTarget::Green, receiver: None, body: Box::new(body) },
+            kind: ExprKind::Spawn { target: SpawnTarget::Green, receiver: None, args: Vec::new(), body: Box::new(body) },
             span: sp(),
         }
     }
@@ -979,6 +1160,7 @@ mod tests {
         Decl {
             id: NodeId(0),
             kind: DeclKind::Fn(FnDecl {
+                id: rask_ast::NodeId::DUMMY,
                 name: name.into(),
                 type_params: vec![],
                 params: vec![],
@@ -1002,6 +1184,7 @@ mod tests {
         Decl {
             id: NodeId(0),
             kind: DeclKind::Fn(FnDecl {
+                id: rask_ast::NodeId::DUMMY,
                 name: name.into(),
                 type_params: vec![],
                 params: vec![],
@@ -1079,13 +1262,13 @@ mod tests {
     #[test]
     fn method_call_classed_by_resolved_receiver() {
         let decls = vec![make_fn("wait", vec![expr_stmt(method_call("t", "join"))])];
-        let targets: MethodTargets = [(NodeId(0), target("Handle.join"))].into();
+        let targets = CallTargets { methods: [(NodeId(0), target("Handle.join"))].into(), ..Default::default() };
         let effects = infer_std(&decls, &targets);
         assert!(effects["wait"].blocks);
 
         // A variable spelled like a source type, holding something else.
         let decls = vec![make_fn("words", vec![expr_stmt(method_call("Handle", "join"))])];
-        let targets: MethodTargets = [(NodeId(0), target("Vec.join"))].into();
+        let targets = CallTargets { methods: [(NodeId(0), target("Vec.join"))].into(), ..Default::default() };
         assert!(infer_std(&decls, &targets)["words"].is_pure());
     }
 
@@ -1222,9 +1405,9 @@ mod tests {
     }
 
     /// The checker resolved `insert` to a method declared `@grows`.
-    fn growing(node: u32) -> MethodTargets {
+    fn growing(node: u32) -> CallTargets {
         let effect = rask_ast::decl::DeclaredEffects { grows: true, ..Default::default() };
-        [(NodeId(node), rask_ast::decl::MethodTarget { name: "Rack.insert".to_string(), effect })].into()
+        CallTargets { methods: [(NodeId(node), rask_ast::decl::MethodTarget { name: "Rack.insert".to_string(), effect })].into(), ..Default::default() }
     }
 
     #[test]

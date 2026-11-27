@@ -1,0 +1,60 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+// `Atomic<T>.default()` holds `T`'s own zero. The interpreter built an
+// integer 0 for every payload, so a bool atomic loaded as `0` and a char one
+// failed to compare with a char (#2001).
+import sync.Atomic
+
+type Ticks = u32 implements Numeric
+type Flag = bool
+
+struct Slot {
+    a: Ticks
+    b: u32
+}
+
+func make<T>() -> Atomic<T> {
+    return Atomic<T>.default()
+}
+
+test "each primitive payload starts at its zero" {
+    let b = Atomic<bool>.default()
+    assert b.load() == false
+    assert "{b.load()}" == "false"
+    let i = Atomic<i32>.default()
+    assert i.load() == 0
+    let c = Atomic<char>.default()
+    assert c.load() == '\0'
+    let f = Atomic<f64>.default()
+    assert f.load() == 0.0
+}
+
+test "a default made in a generic body" {
+    let b: Atomic<bool> = make()
+    assert "{b.load()}" == "false"
+    b.store(true)
+    assert b.load()
+    let u: Atomic<u64> = make()
+    assert u.fetch_add(3) == 0
+    assert u.load() == 3
+}
+
+// A newtype is its underlying value's bytes, so it is a payload exactly when
+// that is, alone or as a struct's field. The checker turned `Atomic<Ticks>`
+// away as "only a struct", and a struct with a `Ticks` field as not scalar.
+test "a newtype payload" {
+    let t = Atomic<Ticks>.default()
+    assert t.load().value == 0
+    t.store(Ticks(7))
+    assert t.swap(Ticks(9)).value == 7
+    assert t.load().value == 9
+    let f = Atomic<Flag>.new(Flag(true))
+    assert f.load().value
+}
+
+test "a struct with a newtype field" {
+    let s = Atomic<Slot>.new(Slot(a: Ticks(3), b: 4))
+    let v = s.load()
+    assert v.a.value == 3
+    assert v.b == 4
+}

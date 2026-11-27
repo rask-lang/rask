@@ -1,0 +1,41 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A closure handed back by `Vec.remove` is the caller's, and is released with
+// it (#1873).
+//
+// `pop` always gave the closure back to its caller to free; `remove` leaked the
+// block (one 64-byte allocation for `fs.push(|x| x + base)` then
+// `fs.remove(0)`). `tests/leak_gate.sh` counts the allocations: this file isn't
+// in `known_leaks.txt`.
+
+test "std.collections — a closure removed from a vector is released" {
+    mut fs: Vec<func(i64) -> i64> = Vec.new()
+    let base: i64 = 10
+    fs.push(|x| x + base)
+    let old = fs.remove(0)
+    assert old(1) == 11
+    assert fs.len() == 0
+}
+
+test "std.collections — a closure popped from a vector is released" {
+    mut fs: Vec<func(i64) -> i64> = Vec.new()
+    let base: i64 = 20
+    fs.push(|x| x + base)
+    fs.push(|x| x * base)
+    let last = fs.pop()!
+    assert last(2) == 40
+    let first = fs.remove(0)
+    assert first(2) == 22
+}
+
+test "std.collections — closures left in a vector go with it" {
+    mut fs: Vec<func(i64) -> i64> = Vec.new()
+    let base: i64 = 3
+    fs.push(|x| x + base)
+    fs.push(|x| x - base)
+    fs.push(|x| x * base)
+    let middle = fs.remove(1)
+    assert middle(10) == 7
+    assert fs.len() == 2
+    assert fs[0](1) == 4
+}

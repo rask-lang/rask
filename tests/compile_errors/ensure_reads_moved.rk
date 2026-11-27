@@ -1,0 +1,148 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: something an ensure still needs is given away while the
+// ensure is owed (E0977, ctrl.ensure/C6).
+//
+// An ensure is cancelled by giving away what its body consumes, the thing it
+// cleans up. Anything else it reads has to still be there when it runs, so
+// giving that away is an error rather than a cancellation: cancelling would
+// leave the resource unclosed, and running would read a value that is gone
+// (natively, freed memory). Which value the cleanup consumes decides it, not
+// how the call is spelled.
+
+@resource
+struct Conn {
+    id: i64
+}
+
+extend Conn {
+    func close(take self, why: string) {}
+    func release(take self) -> i64 {
+        return self.id
+    }
+}
+
+struct Log {
+    seen: Vec<i64>,
+}
+
+extend Log {
+    func record(mutate self, id: i64) {
+        self.seen.push(id)
+    }
+}
+
+struct Pair {
+    a: Conn,
+    b: Conn,
+}
+
+extend Pair {
+    func close(take self) {
+        self.a.close("pair")
+        self.b.close("pair")
+    }
+}
+
+func sink(take v: Vec<string>) -> u64 {
+    return v.len()
+}
+
+func keep(take l: Log) -> i64 {
+    return l.seen.len().to<i64>()!
+}
+
+func eat(take c: Conn) {
+    c.close("eaten")
+}
+
+func close_with(take c: Conn, why: Vec<string>) {
+    c.close("{why.len()}")
+}
+
+func receiver_cleans_up() {
+    mut tag: Vec<string> = Vec.new()
+    tag.push("tag")
+    let c = Conn(id: 1)
+    ensure c.close("{tag.len()}")
+    // ERROR: `tag` is read by the ensure above and given away here
+    sink(tag)
+}
+
+// `latch` is what the cleanup consumes; `log` is only its receiver.
+func receiver_only_reads() -> i64 {
+    mut log = Log(seen: Vec.new())
+    let latch = Conn(id: 2)
+    ensure log.record(latch.release())
+    // ERROR: giving `log` away would leave `latch` unreleased
+    return keep(log)
+}
+
+// A free function cleans up the same way a method does.
+func argument_cleans_up() {
+    mut why: Vec<string> = Vec.new()
+    why.push("why")
+    let c = Conn(id: 3)
+    ensure close_with(c, why)
+    // ERROR: `why` is read by the cleanup
+    sink(why)
+}
+
+// A cleanup that consumes nothing has nothing that cancels it (#1978).
+func nothing_cleaned_up() {
+    mut v: Vec<string> = Vec.new()
+    v.push("a heap string long enough to allocate here 1")
+    ensure println("done with {v.len()} items")
+    // ERROR: the ensure still prints `v.len()`
+    sink(v)
+}
+
+func returned_under_ensure(n: i64) -> Vec<string> {
+    mut v: Vec<string> = Vec.new()
+    v.push("first {n} heap string long enough to allocate")
+    ensure {
+        v = Vec.new()
+    }
+    // ERROR: the ensure still writes `v`
+    return v
+}
+
+// The ensure closes all of `p`, so `p.a` has to stay.
+func part_of_what_is_cleaned_up() {
+    let p = Pair(a: Conn(id: 4), b: Conn(id: 5))
+    ensure p.close()
+    // ERROR: `p.a` is part of what the ensure closes
+    eat(p.a)
+}
+
+func two() -> (Conn, Conn) {
+    return (Conn(id: 6), Conn(id: 7))
+}
+
+// Two resources in one cleanup: giving one away would skip the other.
+func two_in_one() {
+    let (a, b) = two()
+    ensure {
+        a.close("a")
+        b.close("b")
+    }
+    // ERROR: cancelling the ensure would leave `b` open
+    eat(a)
+}
+
+// Reading is fine, and so is giving away what the cleanup consumes.
+func read_only() {
+    mut tag: Vec<string> = Vec.new()
+    tag.push("tag")
+    let c = Conn(id: 8)
+    ensure c.close("{tag.len()}")
+    println("{tag.len()}")
+}
+
+func latch_given_away() {
+    mut log = Log(seen: Vec.new())
+    let latch = Conn(id: 9)
+    ensure log.record(latch.release())
+    eat(latch)
+}
+
+func main() {}

@@ -17,6 +17,7 @@ serde-wasm-bindgen = "0.6"
 
 # Rask compiler crates. The frontend comes from rask-compiler rather than being
 # assembled here — one pipeline, so the playground can't drift from `rask run`.
+rask-ast = { path = "../rask-ast" }
 rask-compiler = { path = "../rask-compiler" }
 rask-interp = { path = "../rask-interp" }
 rask-diagnostics = { path = "../rask-diagnostics" }

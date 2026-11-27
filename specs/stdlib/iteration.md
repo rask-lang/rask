@@ -29,7 +29,7 @@ Four iteration modes per collection: value (default, read-only), mutable (read-w
 | **A1: Copy out** | `collection[i]` copies T when T: Copy (≤16 bytes) |
 | **A2: Field copy** | `collection[i].field` copies field when field: Copy |
 | **A3: Expression borrow** | `collection[i].method()` borrows for call, released at `;` |
-| **A4: No move** | `collection[i]` where T: !Copy is a compile error in user code. Use `.clone()` or `.take_all()`. Loop bindings bypass this — see `ctrl.loops/LP17` |
+| **A4: No move** | `collection[i]` where T: !Copy never moves the element out. Bound with `let` it's a read-only view (mem.borrowing/E4); stored, returned or bound `mut` it's a compile error. Use `.clone()`, `remove` or `.take_all()` to get one of your own |
 
 <!-- test: skip -->
 ```rask

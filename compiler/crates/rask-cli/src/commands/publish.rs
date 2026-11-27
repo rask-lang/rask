@@ -120,12 +120,20 @@ pub fn cmd_publish(path: &str, dry_run: bool, unsigned: bool, verbose: bool) {
     }
 
     // PB6: Build reproducible tarball
-    let tmp_dir = std::env::temp_dir();
-    let tarball_path = tmp_dir.join(format!("{}-{}.tar.gz", manifest.name, manifest.version));
+    // A file of this process's own, so two publishes or dry runs at once
+    // don't build into the same tarball.
+    let tarball_path = match super::own_temp_file(&format!("{}-{}", manifest.name, manifest.version), "tar.gz") {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("{}: no temporary file to build the tarball in: {}", output::error_label(), e);
+            process::exit(1);
+        }
+    };
 
     let tarball_info = match rask_resolve::tarball::create_reproducible_tarball(&root, &tarball_path) {
         Ok(info) => info,
         Err(e) => {
+            let _ = std::fs::remove_file(&tarball_path);
             eprintln!("{}: failed to create tarball: {}", output::error_label(), e);
             process::exit(1);
         }
@@ -149,6 +157,7 @@ pub fn cmd_publish(path: &str, dry_run: bool, unsigned: bool, verbose: bool) {
     // SG1: Sign the tarball
     let signature_info = signing_key.as_ref().map(|kp| {
         let tarball_bytes = std::fs::read(&tarball_path).unwrap_or_else(|e| {
+            let _ = std::fs::remove_file(&tarball_path);
             eprintln!("{}: failed to read tarball for signing: {}", output::error_label(), e);
             process::exit(1);
         });

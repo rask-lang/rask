@@ -2,7 +2,9 @@
 //
 // The conformance is declared in neither the package that owns the type nor
 // the one that owns the interface, and it's used here through the bound — the
-// whole of type.generics/XC2 in one program.
+// whole of type.generics/XC2 in one program. Boxed as `any Labeled` too: the
+// vtable's slot has to hold liba's body, which no name built from `Doc`
+// spells.
 
 import interfacepkg
 import interfacepkg.Labeled
@@ -12,9 +14,14 @@ func show<T: Labeled>(x: T) -> string {
     return x.label()
 }
 
+func boxed(x: any Labeled) -> string {
+    return x.label()
+}
+
 func main() {
     let d = interfacepkg.make_doc(7)
     println(show(d))
     println(d.label())
+    println(boxed(d))
     return
 }

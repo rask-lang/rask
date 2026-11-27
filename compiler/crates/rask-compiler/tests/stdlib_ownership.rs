@@ -16,7 +16,7 @@ fn stdlib_bodies_pass_the_ownership_checker() {
     let out = check_source("probe.rk", "func main() {}\n", &config);
     let checked = out.result.expect("an empty program checks");
     let stdlib = rask_stdlib::StubRegistry::typecheck_decls();
-    let result = rask_ownership::check_ownership_with_stdlib(&checked.typed, &stdlib, &stdlib);
+    let result = rask_ownership::check_ownership(&checked.typed, &stdlib, &stdlib);
 
     let sources: Vec<(&str, &str, u16)> = rask_stdlib::stubs::stub_sources().collect();
     let place = |span: rask_ast::Span| {
@@ -25,7 +25,7 @@ fn stdlib_bodies_pass_the_ownership_checker() {
             .find(|(_, _, id)| *id == span.file_id)
             .map(|(name, src, _)| {
                 let line = src[..span.start.min(src.len())].matches('\n').count() + 1;
-                format!("stdlib/{}:{}", name, line)
+                format!("stdlib/{}:{} `{}`", name, line, &src[span.start.min(src.len())..span.end.min(src.len())])
             })
             .unwrap_or_else(|| format!("file {} @{}", span.file_id, span.start))
     };

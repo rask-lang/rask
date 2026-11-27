@@ -82,7 +82,3 @@ pub fn lookup(name: &str) -> Option<&'static PtrMethod> {
     PTR_METHODS.iter().find(|m| m.name == name)
 }
 
-/// The MIR call name for a pointer method — `RawPtr_offset`.
-pub fn mir_name(name: &str) -> String {
-    format!("RawPtr_{}", name)
-}

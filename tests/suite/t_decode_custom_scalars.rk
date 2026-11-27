@@ -1,0 +1,215 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A type whose `decode` takes a float or a bool (std.encoding/E12b). The
+// runtime hands the decoder a word out of its buffer, so the wire value has to
+// come back as the float or bool it is, not as the word's bits: native once
+// decoded 21.5 as 4626744929681408000. The write side is the same story: a
+// bare `json.encode` of a float or bool wrote the integer encoder's answer.
+// csv reads a cell as the wire type, so a float or bool column is checked and
+// written as one.
+
+import csv
+import json
+
+struct Bad {
+    why: string
+}
+
+extend Bad {
+    public func message(self) -> string {
+        return self.why
+    }
+}
+
+struct Temp {
+    c: f64
+}
+
+Temp implements Decode {
+    func decode(raw: f64) -> Temp or Bad {
+        return Temp(c: raw)
+    }
+}
+
+Temp implements Encode {
+    func encode(self) -> f64 {
+        return self.c
+    }
+}
+
+struct Small {
+    c: f32
+}
+
+Small implements Decode {
+    func decode(raw: f32) -> Small or Bad {
+        return Small(c: raw)
+    }
+}
+
+Small implements Encode {
+    func encode(self) -> f32 {
+        return self.c
+    }
+}
+
+struct Flag {
+    on: bool
+}
+
+Flag implements Decode {
+    func decode(raw: bool) -> Flag or Bad {
+        return Flag(on: raw)
+    }
+}
+
+Flag implements Encode {
+    func encode(self) -> bool {
+        return self.on
+    }
+}
+
+struct Reading {
+    t: Temp
+    s: Small
+    f: Flag
+}
+
+test "std.encoding/E12b — a float or bool wire reaches decode as itself" {
+    let t = json.decode<Temp>("21.5") catch e => {
+        assert false
+        return
+    }
+    assert t.c == 21.5
+    let s = json.decode<Small>("1.25") catch e => {
+        assert false
+        return
+    }
+    assert s.c == 1.25
+    let f = json.decode<Flag>("true") catch e => {
+        assert false
+        return
+    }
+    assert f.on
+    let r = json.decode<Reading>("{{\"t\": -3.5, \"s\": 0.5, \"f\": false}") catch e => {
+        assert false
+        return
+    }
+    assert r.t.c == -3.5
+    assert r.s.c == 0.5
+    assert r.f.on == false
+}
+
+test "std.encoding/E12b — a float or bool wire is written as a float or bool" {
+    assert json.encode(Temp(c: 2.5)) == "2.5"
+    assert json.encode(Temp(c: -1.25)) == "-1.25"
+    assert json.encode(Small(c: 1.25)) == "1.25"
+    assert json.encode(Flag(on: true)) == "true"
+    assert json.encode(Flag(on: false)) == "false"
+    let r = Reading(t: Temp(c: 21.5), s: Small(c: 0.5), f: Flag(on: true))
+    assert json.encode(r) == "{{\"t\":21.5,\"s\":0.5,\"f\":true}"
+    let back = json.decode<Reading>(json.encode(r)) catch e => {
+        assert false
+        return
+    }
+    assert back.t.c == 21.5
+    assert back.f.on
+}
+
+test "std.encoding/E12b — json.encode of a bare float, f32 or bool" {
+    let x = 2.5
+    assert json.encode(x) == "2.5"
+    assert json.encode(true) == "true"
+    let small: f32 = 0.5
+    assert json.encode(small) == "0.5"
+    let flag = false
+    assert json.encode(flag) == "false"
+    // An f32 is written as the double it widens to, here and inside a struct.
+    let tenth: f32 = 0.1
+    assert json.encode(tenth) == "0.10000000149011612"
+}
+
+struct Email {
+    user: string
+    domain: string
+}
+
+Email implements Decode {
+    func decode(raw: string) -> Email or Bad {
+        let parts = raw.split("@").map(|x| x.to_string()).to_vec()
+        if parts.len() != 2 {
+            return Bad(why: "not an email: {raw}")
+        }
+        return Email(user: parts[0].clone(), domain: parts[1].clone())
+    }
+}
+
+Email implements Encode {
+    func encode(self) -> string {
+        return "{self.user}@{self.domain}"
+    }
+}
+
+struct Level {
+    n: i64
+}
+
+Level implements Decode {
+    func decode(raw: i64?) -> Level or Bad {
+        if raw is i64 as n {
+            return Level(n: n)
+        }
+        return Level(n: 1)
+    }
+}
+
+Level implements Encode {
+    func encode(self) -> i64? {
+        return self.n
+    }
+}
+
+struct Row {
+    name: string
+    t: Temp
+    f: Flag
+    e: Email
+    lv: Level
+}
+
+test "std.encoding/E12b — csv reads and writes float, bool, string and optional wires" {
+    let text = "name,t,f,e,lv\nx,21.5,true,a@b,3\ny,-1.25,false,c@d,\n"
+    let rows = csv.decode<Row>(text) catch e => {
+        assert false
+        return
+    }
+    assert rows.len() == 2
+    assert rows[0].t.c == 21.5
+    assert rows[0].f.on
+    assert rows[1].t.c == -1.25
+    assert rows[1].f.on == false
+    assert rows[1].e.domain == "d"
+    // A blank cell is the optional wire's `none`, which `decode` turns into 1.
+    assert rows[1].lv.n == 1
+    assert csv.encode(rows) == "name,t,f,e,lv\nx,21.5,true,a@b,3\ny,-1.25,false,c@d,1\n"
+}
+
+test "std.encoding/E12b — csv checks a float or bool cell as the wire type, then names the column" {
+    let word = csv.decode<Row>("name,t,f,e,lv\nx,warm,true,a@b,3\n")
+    if word is CsvError as e {
+        assert e.message() == "CSV row 2, column \"t\": \"warm\" is not a number"
+    } else {
+        assert false
+    }
+    let flag = csv.decode<Row>("name,t,f,e,lv\nx,1.0,maybe,a@b,3\n")
+    if flag is CsvError as e {
+        assert e.message() == "CSV row 2, column \"f\": \"maybe\" is not true or false"
+    } else {
+        assert false
+    }
+    let email = csv.decode<Row>("name,t,f,e,lv\nx,1.0,true,ab,3\n")
+    if email is CsvError as e {
+        assert e.message() == "CSV row 2, column \"e\": not an email: ab"
+    } else {
+        assert false
+    }
+}

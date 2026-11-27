@@ -225,7 +225,7 @@ fn lower_or_exit(
     source: Option<&str>,
     entry: &rask_compiler::emit::Entry,
 ) -> Vec<rask_mir::MirFunction> {
-    let input = rask_compiler::emit::BackEnd::of(result, Some(path), source);
+    let input = rask_compiler::emit::BackEnd::of(result);
     match rask_compiler::emit::lower(&input, entry) {
         Ok(lowered) => lowered.functions,
         Err(errors) => {
@@ -290,7 +290,7 @@ pub fn cmd_compile(path: &str, output_path: Option<&str>, format: Format, quiet:
     };
     let obj_path = format!("{}.o", bin_path);
 
-    let input = rask_compiler::emit::BackEnd::of(&result, Some(path), source.as_deref());
+    let input = rask_compiler::emit::BackEnd::of(&result);
     if let Err(errors) = super::compile::emit_object(
         &input, &rask_compiler::emit::Entry::Main, target, build_mode, &obj_path,
     ) {

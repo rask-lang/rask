@@ -1,0 +1,30 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Rejects: an array over the 64 KiB a value can take
+//
+// `[0; 3000000000]` panicked the compiler: layout multiplied the element size
+// by the length, overflowed its 32-bit size, and nothing had said no first.
+// The checker reports it now, and the passes that run on after an error get a
+// capped size instead of a panic.
+//
+// A field's type and a `let`'s annotation were reported at 1:1: the error
+// lost its span on the way out of layout (#2055).
+
+const M = 600000000
+
+struct Huge {
+    // ERROR: 5000000000 bytes [E0980]
+    data: [u8; 5000000000]
+}
+
+func main() {
+    // ERROR: 24000000000 bytes [E0980]
+    let a = [0; 3000000000]
+    // ERROR: 4800000000 bytes [E0980]
+    let b = [0i64; M]
+    // ERROR: 8000000000 bytes [E0980]
+    let c: [i64; 1000000000] = [0i64; 1000000000]
+    // ERROR: 65544 bytes [E0980]
+    let d = [0i64; 8193]
+    let fits = [0i64; 8192]
+    println("{a.len()} {b.len()} {c.len()} {d.len()} {fits.len()}")
+}

@@ -47,10 +47,6 @@ func cleared(mutate files: Vec<File>) {
     files.clear()                        // ERROR: E0823
 }
 
-func overwritten(mutate files: Vec<File>) {
-    files.set(0, File.open())            // ERROR: E0823
-}
-
 func written_over(mutate files: Vec<File>) {
     files[0] = File.open()               // ERROR: E0823
 }

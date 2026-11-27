@@ -1,0 +1,21 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Rejects: `[x; n]` whose count is only known when the program runs
+//
+// A fixed-size array's length is part of its type. The checker gave a count
+// it couldn't read a placeholder length of 0, which unified with any array:
+// `let c: [i64; 2] = [0i64; n]` checked, the interpreter printed 3 for its
+// length, and native lowering called an `array_repeat` that didn't exist
+// (#2057).
+
+const N = 4
+
+func main() {
+    let n = 3
+    // ERROR: known only when the program runs [E0984]
+    let c: [i64; 2] = [0i64; n]
+    // ERROR: known only when the program runs [E0984]
+    let d = [1; n + 1]
+    let fine = [0; N]
+    let also = [0u8; 16]
+    println("{c.len()} {d.len()} {fine.len()} {also.len()}")
+}

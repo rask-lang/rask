@@ -1,0 +1,50 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A call through a closure held in a local or a parameter runs that closure,
+// even when a function elsewhere has the same name. The effect pass matched
+// calls by name, so `work(3)` on a parameter called `work` counted as a call
+// to the function `work`, which spawns, and the caller was rejected for not
+// opening the runtime that function needs.
+
+import thread.ThreadPool
+
+func work() -> i64 {
+    return ThreadPool.spawn { return 6 * 7 }.join()!
+}
+
+func green_work() -> i64 {
+    return spawn { return 6 * 7 }.join()!
+}
+
+func apply(work: func(i64) -> i64) -> i64 {
+    return work(3)
+}
+
+func apply_green(green_work: func(i64) -> i64) -> i64 {
+    return green_work(3)
+}
+
+func shadowed() -> i64 {
+    let work = |x: i64| x + 1
+    return work(3)
+}
+
+test "a parameter named like a pool function needs no pool" {
+    assert apply(|x| x + 1) == 4
+}
+
+test "a parameter named like a green function needs no Multitasking" {
+    assert apply_green(|x| x * 2) == 6
+}
+
+test "a local closure named like a pool function needs no pool" {
+    assert shadowed() == 4
+}
+
+test "the functions themselves still run inside their blocks" {
+    using ThreadPool {
+        assert work() == 42
+    }
+    using Multitasking {
+        assert green_work() == 42
+    }
+}

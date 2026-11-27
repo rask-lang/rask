@@ -3,10 +3,11 @@
 // `ensure`. The explicit close should cancel the ensure, as it does when the
 // call is spelled `fs.create_file(...)` (t_month_io.rk).
 //
-// Natively it doesn't: the binding's type isn't known to lowering when it came
-// from an imported name, so `w.close()` emits no `resource_consume`, the ensure
-// closes the handle a second time, and glibc aborts with "double free
-// detected" (#1601). The interpreter is right.
+// Natively it once didn't: lowering guessed the callee from the receiver's
+// type, which an imported name left unknown, so `w.close()` didn't consume the
+// handle, the ensure closed it a second time and glibc aborted with "double
+// free detected" (#1601). Lowering now asks the checker which method the call
+// resolved to.
 
 import fs
 import fs.{create_file, open, read_text, remove_file}

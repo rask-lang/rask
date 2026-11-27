@@ -5,8 +5,10 @@
 //! type checker, and interpreter.
 
 pub mod span;
+pub mod source_map;
 pub mod call;
 pub mod token;
+pub mod tasks;
 pub mod expr;
 pub mod stmt;
 pub mod decl;
@@ -17,6 +19,7 @@ pub mod interfaces;
 pub mod operators;
 pub mod fmt_spec;
 pub mod primitives;
+pub mod target;
 pub mod ty;
 pub mod rewrite;
 pub mod qualify;
@@ -26,6 +29,8 @@ pub mod allow_names;
 pub mod type_params;
 
 pub use span::{Span, LineMap};
+pub use source_map::{SourceFile, SourceMap};
+pub use target::Target;
 
 /// Unique identifier for AST nodes.
 ///

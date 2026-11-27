@@ -17,7 +17,7 @@ struct Point {
 
 func main() {
     let n = 7
-    discard n                    // warning: i32, frees nothing
+    discard n                    // warning: i64, frees nothing
 
     let flag = true
     discard flag                 // warning: bool

@@ -1,0 +1,91 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A link written through a `mutate` parameter is an edge write like any other.
+//
+// Two ways it wasn't:
+//
+// - A `mutate l: Link<T>?` parameter was treated as an aggregate passed by
+//   address while the caller passed the link itself, so `l = b` wrote b's
+//   address into the first field of the node `l` named (#1808).
+// - A struct field of a node, passed as `mutate`, was written by a callee that
+//   can't know it's inside a node. The slot got a second record, while the
+//   node's own record stayed on the old target's list. The next direct write
+//   to the slot then took that list apart, and another node's edge to the
+//   target was lost: deleting the target left it dangling (#1807).
+import memory.Link
+import memory.Rack
+
+struct Leaf {
+    id: i32
+}
+
+struct Cursor {
+    at: Link<Leaf>?
+}
+
+struct Holder {
+    id: i32
+    peer: Link<Leaf>?
+    cur: Cursor
+}
+
+func set_link(mutate l: Link<Leaf>?, b: Link<Leaf>) {
+    l = b
+}
+
+func set_cursor(mutate c: Cursor, b: Link<Leaf>) {
+    c = Cursor(at: b)
+}
+
+func id_of(x: Link<Leaf>?) -> i32 {
+    if x? as l {
+        return l.id
+    }
+    return -1
+}
+
+func main() {}
+
+test "writing a mutate link parameter writes the caller's slot" {
+    mut leaves: Rack<Leaf> = Rack.new()
+    mut nodes: Rack<Holder> = Rack.new()
+    let a = leaves.insert(Leaf(id: 1))
+    let b = leaves.insert(Leaf(id: 2))
+    let h = nodes.insert(Holder(id: 1, peer: a, cur: Cursor(at: none)))
+    set_link(mutate h.peer, b)
+    assert a.id == 1
+    assert id_of(h.peer) == 2
+    leaves.delete(b)
+    assert h.peer is none
+}
+
+test "writing a mutate link parameter on a local" {
+    mut leaves: Rack<Leaf> = Rack.new()
+    let a = leaves.insert(Leaf(id: 1))
+    let b = leaves.insert(Leaf(id: 2))
+    mut l: Link<Leaf>? = a
+    set_link(mutate l, b)
+    assert a.id == 1
+    assert id_of(l) == 2
+}
+
+test "a node's struct field written through mutate, then directly" {
+    mut leaves: Rack<Leaf> = Rack.new()
+    mut nodes: Rack<Holder> = Rack.new()
+    let a = leaves.insert(Leaf(id: 1))
+    let b = leaves.insert(Leaf(id: 2))
+    let c = leaves.insert(Leaf(id: 3))
+    let h = nodes.insert(Holder(id: 1, peer: none, cur: Cursor(at: a)))
+    let h2 = nodes.insert(Holder(id: 2, peer: none, cur: Cursor(at: b)))
+    set_cursor(mutate h.cur, b)
+    h.cur.at = c
+    assert id_of(h.cur.at) == 3
+    assert id_of(h2.cur.at) == 2
+    leaves.delete(c)
+    assert h.cur.at is none
+    assert id_of(h2.cur.at) == 2
+    leaves.delete(b)
+    assert h2.cur.at is none
+    leaves.delete(a)
+    assert h.cur.at is none
+}

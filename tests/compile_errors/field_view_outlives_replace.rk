@@ -1,0 +1,366 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A field read is a view until its block ends, and writing over the field
+// frees what it views (mem.borrowing/S1, S5, E0958, #1838).
+//
+// `let old = p.f` followed by `p.f = …` in the same block, with nothing in
+// between that can leave early, is consume-and-replace: the read is a move,
+// and the field is empty until the refill (E0959). Anywhere else the refill
+// might not run, so the read stays a view. Native freed the buffer under it
+// and printed garbage, or read the emptied slot.
+
+struct Holder {
+    log: Vec<string>
+}
+
+extend Holder {
+    // Fine: the refill always runs, so `old` owns the old vector. A loop
+    // whose own `break` is in between doesn't change that.
+    func swap(mutate self, limit: i64) -> usize {
+        let old = self.log
+        mut count = 0
+        while true {
+            if count >= limit {
+                break
+            }
+            count += 1
+        }
+        self.log = Vec.new()
+        return old.len()
+    }
+
+    // ERROR: the early return skips the refill [E0958]
+    func swap_or_stop(mutate self, stop: bool) -> usize {
+        let old = self.log
+        if stop {
+            return 99
+        }
+        self.log = Vec.new()
+        return old.len()
+    }
+}
+
+struct Regs {
+    log: Vec<string>
+    regs: Vec<i64>
+}
+
+extend Regs {
+    func set_reg(mutate self, v: i64) {
+        self.regs = Vec.new()
+        self.regs.push(v)
+    }
+
+    func reset_twice_removed(mutate self) {
+        self.reset()
+    }
+}
+
+// Fine: `set_reg` replaces `regs`, never `log`, which is what a VM loop
+// holding `let code = self.code` across `self.set_reg(…)` relies on.
+func set_under_view(mutate r: Regs) -> usize {
+    let code = r.log
+    r.set_reg(1)
+    return code.len()
+}
+
+// ERROR: `reset` replaces `log`, here through a second method [E0958]
+func reset_under_view(mutate r: Regs) -> usize {
+    let code = r.log
+    r.reset_twice_removed()
+    return code.len()
+}
+
+struct Cfg {
+    list: Vec<string>
+}
+
+extend Cfg {
+    func wipe(mutate self) {
+        self.list = Vec.new()
+    }
+}
+
+struct Outer {
+    cfg: Cfg
+}
+
+// ERROR: a struct field's view is a copy of it, and `wipe` replaces what
+// that copy holds [E0958]
+func wipe_under_view(mutate p: Outer) -> usize {
+    let old = p.cfg
+    p.cfg.wipe()
+    return old.list.len()
+}
+
+interface Reset {
+    func reset(mutate self)
+}
+
+Regs implements Reset {
+    func reset(mutate self) {
+        self.log = Vec.new()
+    }
+}
+
+struct Bag<T: Reset> {
+    item: T
+}
+
+extend Bag<T> {
+    func wipe(mutate self) {
+        self.item.reset()
+    }
+}
+
+// ERROR: a method on a type-parameter receiver has no body to read, so it
+// replaces its receiver [E0958]
+func generic_under_view(mutate b: Bag<Regs>) -> usize {
+    let old = b.item
+    b.wipe()
+    return old.log.len()
+}
+
+func touch(mutate r: Regs) {
+    r.regs = Vec.new()
+}
+
+// ERROR: the local closure `touch` isn't the top-level `touch`, and it
+// replaces `log` [E0958]
+func closure_named_like_a_function(mutate r: Regs) -> usize {
+    let touch = |mutate x: Regs| {
+        x.log = Vec.new()
+    }
+    let old = r.log
+    touch(mutate r)
+    return old.len()
+}
+
+extend Regs {
+    func bump(mutate self) {
+        self.regs.push(1)
+    }
+
+    func reset_in_closure(mutate self) {
+        let wipe = || {
+            self.log = Vec.new()
+        }
+        wipe()
+    }
+}
+
+// ERROR: a write inside a closure the method calls is the method's [E0958]
+func closure_in_callee(mutate r: Regs) -> usize {
+    let old = r.log
+    r.reset_in_closure()
+    return old.len()
+}
+
+// Fine: between the move and the refill, `bump` reads and writes `regs`
+// only, so it never sees the empty `log`.
+func helper_between(mutate r: Regs) -> usize {
+    let old = r.log
+    r.bump()
+    r.log = Vec.new()
+    return old.len()
+}
+
+struct Conn {
+    pending: Vec<string>?
+}
+
+extend Conn {
+    func drain(mutate self) -> usize {
+        let r = take self.pending
+        if r? as v {
+            return v.len()
+        }
+        return 0
+    }
+}
+
+// ERROR: `drain` empties the field a view reads with `take` [E0958]
+func drain_under_view(mutate c: Conn) -> usize {
+    let view = c.pending
+    let n = c.drain()
+    if view? as v {
+        return n + v.len()
+    }
+    return n
+}
+
+// ERROR: so does a `take` written out here [E0958]
+func take_under_view(mutate c: Conn) -> usize {
+    let view = c.pending
+    let m = take c.pending
+    if view? as v {
+        return v.len()
+    }
+    if m? as w {
+        return w.len()
+    }
+    return 0
+}
+
+struct Slots {
+    names: Vec<string>
+    slots: Vec<Regs>
+}
+
+extend Slots {
+    func put(mutate self) {
+        self.slots[self.names.len() - 1].regs = Vec.new()
+    }
+}
+
+// ERROR: `put` reads `names` in an index while it's empty [E0959]
+func index_read_between(mutate p: Slots) -> usize {
+    let old = p.names
+    p.put()
+    p.names = Vec.new()
+    return old.len()
+}
+
+interface Sized {
+    func size(self) -> usize
+}
+
+Regs implements Sized {
+    func size(self) -> usize {
+        return self.log.len()
+    }
+}
+
+struct Sack<T: Sized> {
+    item: T
+}
+
+extend Sack<T> {
+    func count_mut(mutate self) -> usize {
+        return self.item.size()
+    }
+}
+
+// Fine: no interface declares `size` as `mutate self`, so `count_mut`
+// can't replace `item`.
+func size_under_view(mutate b: Sack<Regs>) -> usize {
+    let v = b.item
+    let k = b.count_mut()
+    return v.log.len() + k
+}
+
+struct Maybe {
+    opt: Cfg?
+}
+
+// ERROR: a call through `!` writes the optional's payload [E0958]
+func unwrap_under_view(mutate m: Maybe) -> usize {
+    let old = m.opt
+    m.opt!.wipe()
+    if old? as c {
+        return c.list.len()
+    }
+    return 0
+}
+
+func call_it(f: func() -> usize) -> usize {
+    return f()
+}
+
+// ERROR: a closure handed to a call between the move and the refill could
+// read the empty field, so the read stays a view [E0958]
+func closure_passed_between(mutate h: Holder) -> usize {
+    let n = || h.log.len()
+    let old = h.log
+    let k = call_it(n)
+    h.log = Vec.new()
+    return k + old.len()
+}
+
+struct Fixed {
+    slots: [Vec<string>; 2]
+}
+
+// ERROR: a fixed-size array's element is the array's own storage [E0958]
+func array_element_under_view(mutate a: Fixed) -> usize {
+    let old = a.slots
+    a.slots[0] = Vec.new()
+    return old[0].len()
+}
+
+// Fine: growing the vector a view reads frees nothing.
+func grow(mutate h: Holder) -> usize {
+    let f = h.log
+    h.log.push("more")
+    return f.len()
+}
+
+// ERROR: an inner `let` reusing the view's name doesn't hide it from the
+// write [E0958]
+func shadowed(mutate h: Holder) -> usize {
+    let old = h.log
+    if h.log.len() > 0 {
+        let old = 5
+        h.log = Vec.new()
+        println("{old}")
+    }
+    return old.len()
+}
+
+// ERROR: a closure called between the move and the refill could read the
+// empty field, so the read stays a view [E0958]
+func closure_between(mutate h: Holder) -> usize {
+    let n = || h.log.len()
+    let old = h.log
+    println("{n()}")
+    h.log = Vec.new()
+    return old.len()
+}
+
+// Fine: a new `h` in an inner block is a different value.
+func inner_rebind(h: Holder) -> usize {
+    let old = h.log
+    mut total = 0
+    for i in 0..2 {
+        mut h = Holder(log: Vec.new())
+        h.log = Vec.new()
+        total += h.log.len()
+    }
+    return total + old.len()
+}
+
+func reset_log(mutate h: Holder) {
+    h.log = Vec.new()
+}
+
+func main() {
+    mut h = Holder(log: Vec.new())
+    h.log.push("entry-long-enough-to-heap")
+
+    // ERROR: the refill runs on one path only [E0958]
+    let c = h.log.len() > 0
+    let a = h.log
+    if c {
+        h.log = Vec.new()
+    }
+
+    // ERROR: a write later in a loop frees what the next turn reads [E0958]
+    let b = h.log
+    mut i = 0
+    while i < 2 {
+        println("{b.len()}")
+        h.log = Vec.new()
+        i += 1
+    }
+
+    // ERROR: a call given `h` to write through can replace the field under
+    // a view [E0958]
+    let d = h.log
+    reset_log(mutate h)
+
+    // ERROR: between the move and the refill the field is empty [E0959]
+    let g = h.log
+    println("{h.log.len()}")
+    h.log = Vec.new()
+
+    println("{a.len()} {d.len()} {grow(mutate h)} {g.len()} {h.swap(1)} {h.swap_or_stop(true)}")
+}

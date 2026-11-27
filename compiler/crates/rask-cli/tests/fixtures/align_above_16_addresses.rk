@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// Where `@align(64)`, `@align(4096)` and `@align(2097152)` values land
+// Where `@align(64)`, `@align(4096)` and `@align(65536)` values land
 // natively (#1637). Each line is an address modulo the alignment, so every one
 // should print 0.
 
@@ -17,8 +17,10 @@ struct Page {
     n: u32
 }
 
-// A huge page. Allocators hand these to DMA engines and page tables.
-@align(2097152)
+// The largest alignment a value can take: a value is at most 64 KiB, and
+// its size is a multiple of its alignment, so a 2 MiB huge page (`@align(2097152)`)
+// is a 2 MiB value, too big for the stack, and has to be a `Vec<u8>` instead.
+@align(65536)
 struct Huge {
     n: u8
 }
@@ -111,5 +113,5 @@ func main() {
 
     let huge = Heap(Huge(n: 7))
     ensure drop(huge)
-    println("huge {huge_addr(huge) % 2097152}")
+    println("huge {huge_addr(huge) % 65536}")
 }

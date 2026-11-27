@@ -21,8 +21,8 @@ const LINUX_SOURCES: &[&str] = &[
     "green.c",
 ];
 
-/// Every other `.c` in the runtime directory — the portable set, read from the
-/// directory rather than listed here.
+/// Every other `.c` under the runtime directory — the portable set, read from
+/// the directory rather than listed here.
 ///
 /// It used to be a 21-entry constant, which is a directory listing a human had
 /// to keep in step. `unicode_text.c` was added to the tree and to that list in
@@ -31,23 +31,19 @@ const LINUX_SOURCES: &[&str] = &[
 /// rask_canonical_decompose`-style lines, on programs that used no strings, with
 /// nothing pointing at the compiler being stale (#1041).
 ///
+/// Subdirectories count: `core-math/` keeps the vendored math library in its
+/// upstream shape, one directory per function with its own headers.
+///
 /// The platform lists above stay written down: which sources need pthreads and
 /// which are Linux-only is knowledge, not something a listing can tell you.
 /// Sorted, so link order and the cache key don't depend on readdir order.
 fn portable_sources(runtime_dir: &Path) -> Result<Vec<String>, String> {
-    let entries = std::fs::read_dir(runtime_dir).map_err(|e| {
-        format!("failed to read runtime dir {}: {}", runtime_dir.display(), e)
-    })?;
-
-    let mut sources: Vec<String> = entries
-        .flatten()
-        .filter_map(|e| e.file_name().into_string().ok())
-        .filter(|n| n.ends_with(".c"))
+    let sources: Vec<String> = runtime_files(runtime_dir, "c")?
+        .into_iter()
         .filter(|n| {
             !PTHREAD_SOURCES.contains(&n.as_str()) && !LINUX_SOURCES.contains(&n.as_str())
         })
         .collect();
-    sources.sort();
 
     if sources.is_empty() {
         return Err(format!(
@@ -56,6 +52,30 @@ fn portable_sources(runtime_dir: &Path) -> Result<Vec<String>, String> {
         ));
     }
     Ok(sources)
+}
+
+/// Every file with extension `ext` under `dir`, as `/`-separated paths
+/// relative to it, sorted.
+pub fn runtime_files(dir: &Path, ext: &str) -> Result<Vec<String>, String> {
+    fn walk(dir: &Path, prefix: &str, ext: &str, out: &mut Vec<String>) -> Result<(), String> {
+        let entries = std::fs::read_dir(dir)
+            .map_err(|e| format!("failed to read runtime dir {}: {}", dir.display(), e))?;
+        for entry in entries.flatten() {
+            let Ok(name) = entry.file_name().into_string() else { continue };
+            let rel = format!("{prefix}{name}");
+            let path = entry.path();
+            if path.is_dir() {
+                walk(&path, &format!("{rel}/"), ext, out)?;
+            } else if path.extension().and_then(|e| e.to_str()) == Some(ext) {
+                out.push(rel);
+            }
+        }
+        Ok(())
+    }
+    let mut out = Vec::new();
+    walk(dir, "", ext, &mut out)?;
+    out.sort();
+    Ok(out)
 }
 
 /// Extra link-time inputs (libraries, object files, search paths).
@@ -234,8 +254,18 @@ fn profile_cflags(release: bool) -> Vec<String> {
 /// Each libc hides those behind its own macro, and each macro is inert on the
 /// other platform. `compiler/runtime/Makefile` passes the same pair — the two
 /// have to agree, or `make` builds a dialect nobody ships.
+///
+/// `-ffp-contract=off` is part of what a float means (`determinism/D12`): a
+/// compiler free to fuse `a * b + c` into one rounding gives different bits on
+/// a machine with FMA than on one without. gcc fuses by default outside strict
+/// ISO mode and clang within an expression, so without the flag the runtime's
+/// float code would answer differently on aarch64 than on x86-64.
 fn feature_cflags(sim: bool) -> Vec<String> {
-    let mut flags = vec!["-D_GNU_SOURCE".to_string(), "-D_DARWIN_C_SOURCE".to_string()];
+    let mut flags = vec![
+        "-D_GNU_SOURCE".to_string(),
+        "-D_DARWIN_C_SOURCE".to_string(),
+        "-ffp-contract=off".to_string(),
+    ];
     if no_green() {
         flags.push("-DRASK_NO_GREEN".to_string());
     }
@@ -303,16 +333,7 @@ fn runtime_cache_key(
     // Headers too: every source includes `rask_runtime.h`, so a change to it
     // is a change to all of them, and keying on the `.c` files alone handed
     // back objects built against the old header.
-    let mut headers: Vec<String> = std::fs::read_dir(runtime_dir)
-        .map(|entries| {
-            entries
-                .flatten()
-                .filter_map(|e| e.file_name().into_string().ok())
-                .filter(|n| n.ends_with(".h"))
-                .collect()
-        })
-        .unwrap_or_default();
-    headers.sort();
+    let headers = runtime_files(runtime_dir, "h").unwrap_or_default();
 
     for src in config.sources.iter().chain(headers.iter()) {
         src.hash(&mut hasher);
@@ -347,7 +368,8 @@ fn runtime_objects(
     let mut objects = Vec::with_capacity(config.sources.len());
 
     for src in &config.sources {
-        let stem = src.trim_end_matches(".c");
+        // `core-math/sin/sin.c` caches as `core-math-sin-sin.o`.
+        let stem = src.trim_end_matches(".c").replace('/', "-");
         let obj = dir.join(format!("{}.o", stem));
         if obj.is_file() {
             objects.push(obj);
@@ -677,7 +699,12 @@ fn unpack_embedded_runtime() -> Result<PathBuf, String> {
     std::fs::create_dir_all(&staging)
         .map_err(|e| format!("cannot create {}: {}", staging.display(), e))?;
     for (name, contents) in embedded::EMBEDDED_RUNTIME {
-        std::fs::write(staging.join(name), contents)
+        let path = staging.join(name);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("cannot create {}: {}", parent.display(), e))?;
+        }
+        std::fs::write(&path, contents)
             .map_err(|e| format!("cannot write {}: {}", name, e))?;
     }
 

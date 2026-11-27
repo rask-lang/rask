@@ -106,8 +106,10 @@ mod tests {
             blocks,
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
-            source_file: None,
+            param_modes: Vec::new(),
+            item_mode_from_body: false,
         }
     }
 
@@ -175,6 +177,7 @@ mod tests {
                         by_ref: false,
                         copy: true,
                         lent: false,
+                        owns: None,
                     }],
                     heap: true,
                     task_bound: false,
@@ -202,6 +205,7 @@ mod tests {
                         by_ref: false,
                         copy: true,
                         lent: false,
+                        owns: None,
                     }],
                     heap: false,
                     task_bound: false,

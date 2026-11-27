@@ -115,14 +115,21 @@ fn views_and_handovers(
     let mut views: HashSet<LocalId> = HashSet::new();
     let mut handed: HashSet<LocalId> = HashSet::new();
     for stmt in func.blocks.iter().flat_map(|b| b.statements.iter()) {
+        // An element bound where it sits points into the collection's storage.
+        if let MirStmtKind::BindPlace { dst, .. } = &stmt.kind {
+            if string_locals.contains(dst) {
+                views.insert(*dst);
+            }
+            continue;
+        }
         let MirStmtKind::Call { dst, func: fref, args } = &stmt.kind else { continue };
-        if crate::own_names::returns_a_view(&fref.name, own) {
+        if crate::own_names::returns_a_view(fref, own) {
             if let Some(dst) = dst.filter(|d| string_locals.contains(d)) {
                 views.insert(dst);
             }
         }
         for (i, arg) in args.iter().enumerate() {
-            if !crate::own_names::keeps_argument(&fref.name, i, own) {
+            if !crate::own_names::keeps_argument(fref, i, own) {
                 continue;
             }
             if let Some(id) =
@@ -222,97 +229,34 @@ fn elide_local_only(func: &mut MirFunction, own: &HashSet<String>) -> usize {
 
     // Decide per group, not per local: keeping one local's release while
     // dropping the increment on the copy that outlives it frees the buffer out
-    // from under the copy.
-    // Out of one container and into another. A view coming out carries no
-    // reference, so the frame owes no release on it; a hand-over going in takes
-    // one. Both at once: the view's copy is retained, and that retain is the
-    // reference the destination ends up holding, so it has to survive.
-    //
-    //     _21 = Vec_get_unchecked(_16, _19)   // a view into _16
-    //     _22 = _21
-    //     _23 = Vec_push(_14, _22)            // _14 points at _16's buffer
-    //
-    // is `fs.read_lines` — split the text, push each piece into the vector it
-    // hands back — and every line read as freed bytes once the split's own
-    // vector started being freed (#1035).
+    // from under the copy. A view's copy pushed into another container is the
+    // reason views count below: its retain is the reference the destination
+    // holds, and `fs.read_lines` read every line as freed bytes without it
+    // (#1035).
     let (views, handed_over) = views_and_handovers(func, &string_locals, own);
 
-    // `dst = src` between strings: `rc_insert` gives every one its own
-    // retain, and a release where it dies.
-    let plain_copies: HashSet<LocalId> = func
-        .blocks
-        .iter()
-        .flat_map(|b| b.statements.iter())
-        .filter_map(|st| match &st.kind {
-            MirStmtKind::Assign { dst, rvalue: MirRValue::Use(MirOperand::Local(src)) }
-                if string_locals.contains(dst) && string_locals.contains(src) =>
-            {
-                Some(*dst)
-            }
-            _ => None,
-        })
-        .collect();
-
-    let phi_dsts: HashSet<LocalId> = func
-        .blocks
-        .iter()
-        .flat_map(|b| b.statements.iter())
-        .filter_map(|st| match &st.kind {
-            MirStmtKind::Phi { dst, .. } => Some(*dst),
-            _ => None,
-        })
-        .collect();
-
+    // What `rc_insert` placed is right on its own; this pass only takes out
+    // pairs that cancel. They cancel in a group that is nothing but this
+    // frame's own copies of one value. Once a member came from somewhere
+    // else (a call's result, a read out of a container) or goes somewhere
+    // else (a keeper), a release in the group may be the only one that
+    // value gets, and a retain may be the reference the keeper holds.
+    //
+    // Deciding which ops to keep by the group's shape lost one or the other
+    // through a join: `v.fold(s(0), |acc, x| x)` merges the init (a call's
+    // result) and each element's copy in one phi, the group read as "out
+    // of one container, into another" because the answer was pushed, and
+    // the release of each replaced accumulator went (#1987).
+    //
+    // Escaping is decided per group too. `return if c { b } else { a }` on two
+    // borrowed parameters retains each arm's copy and returns the join; only
+    // the join escapes, and dropping the arms' retains handed the caller a
+    // reference nobody took, so the string was freed twice.
     let mut keep: HashSet<LocalId> = HashSet::new();
-    // Retain only, for the container-to-container case: the copy's increment is
-    // the reference the destination ends up holding, and there is no release to
-    // keep because this frame never had one to give. A parameter handed to a
-    // call that keeps it is the same: the caller keeps its own reference, and
-    // the one `rc_insert` took for the callee is what the container holds.
-    let params: HashSet<LocalId> = func.params.iter().map(|p| p.id).collect();
-    let mut keep_retain_only: HashSet<LocalId> = HashSet::new();
     for group in copy_groups(func, &string_locals) {
-        // A view only. A string handed to a keeper used to count too, and
-        // that dropped every release in the group on every path: `s` pushed
-        // on one branch leaked on the other (#1341). `rc_insert` accounts for
-        // the hand-over itself — no release at the last use, a retain before
-        // an earlier one — so those ops are the right ones to keep.
-        let crosses_container = group.iter().any(|l| views.contains(l));
-        let borrowed_in = group.iter().any(|l| owned.contains(l));
-        let container_to_container =
-            group.iter().any(|l| views.contains(l)) && group.iter().any(|l| handed_over.contains(l));
-        let param_handed_over =
-            group.iter().any(|l| params.contains(l) && handed_over.contains(l));
-        if container_to_container || param_handed_over {
-            // Only the members the hand-over runs through. A copy that is
-            // never handed on took a reference for itself, and gives it back
-            // at its last use like any copy: a `filter` closure's parameter
-            // is a copy of the element the loop then pushes, and keeping its
-            // retain without its release leaked one reference per item (#1419).
-            for l in group {
-                if plain_copies.contains(&l) && !handed_over.contains(&l) {
-                    keep.insert(l);
-                } else {
-                    keep_retain_only.insert(l);
-                }
-            }
-        } else if crosses_container && !group.iter().any(|l| phi_dsts.contains(l)) {
-            // A copy of a view holds a reference of its own, taken at the copy
-            // and given back at its last use. The slot it was read from can be
-            // written over in between — `let w = words[0]` then `words[0] =
-            // "z"` releases what the slot held — and a copy with no reference
-            // was left pointing at the freed buffer.
-            //
-            // Only where the group is the view and its copies. Through a join,
-            // a copy's reference moves into the phi, whose release this pass
-            // doesn't keep for a group that touches a container, so the retain
-            // would be the only op left and leak.
-            for l in group {
-                if plain_copies.contains(&l) {
-                    keep.insert(l);
-                }
-            }
-        } else if borrowed_in && !crosses_container {
+        if group.iter().any(|l| {
+            escaped.contains(l) || views.contains(l) || owned.contains(l) || handed_over.contains(l)
+        }) {
             keep.extend(group);
         }
     }
@@ -322,18 +266,8 @@ fn elide_local_only(func: &mut MirFunction, own: &HashSet<String>) -> usize {
         let before = block.statements.len();
         block.statements.retain(|stmt| {
             match &stmt.kind {
-                MirStmtKind::RcInc { local } => {
-                    escaped.contains(local)
-                        || keep.contains(local)
-                        || keep_retain_only.contains(local)
-                }
-                MirStmtKind::RcDec { local } => {
-                    // Keep if the local escapes, or if its reference came from
-                    // somewhere this function has to release. A
-                    // container-to-container string is neither: the reference
-                    // its retain made went into the destination.
-                    (escaped.contains(local) || keep.contains(local))
-                        && !keep_retain_only.contains(local)
+                MirStmtKind::RcInc { local } | MirStmtKind::RcDec { local } => {
+                    escaped.contains(local) || keep.contains(local)
                 }
                 _ => true,
             }
@@ -553,8 +487,10 @@ mod tests {
             blocks,
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
-            source_file: None,
+            param_modes: Vec::new(),
+            item_mode_from_body: false,
         }
     }
 
@@ -751,7 +687,7 @@ mod tests {
                     }),
                     MirStmt::dummy(MirStmtKind::Call {
                         dst: Some(local(0)),
-                        func: FunctionRef::internal("string_concat".into()),
+                        func: FunctionRef::borrowing("rask_string_concat"),
                         args: vec![],
                     }),
                     MirStmt::dummy(MirStmtKind::RcInc { local: local(0) }),

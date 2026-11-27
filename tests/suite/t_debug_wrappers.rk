@@ -86,84 +86,84 @@ func pick(which: i64) -> i64 or Fault | Other {
 
 test "G6 — an optional" {
     let o: f64? = 2.5
-    assert "{o:debug}" == "Option.Some(2.5)"
+    assert "{o:debug}" == "2.5"
     let n: f64? = none
-    assert "{n:debug}" == "Option.None"
+    assert "{n:debug}" == "none"
     let s: string? = "hi"
-    assert "{s:debug}" == "Option.Some(\"hi\")"
+    assert "{s:debug}" == "\"hi\""
     let i: i32? = 5
-    assert "{i:debug}" == "Option.Some(5)"
+    assert "{i:debug}" == "5"
     let b: bool? = false
-    assert "{b:debug}" == "Option.Some(false)"
+    assert "{b:debug}" == "false"
     let p: Pt? = Pt(x: 1, y: 2.5)
-    assert "{p:debug}" == "Option.Some(Pt(x: 1, y: 2.5))"
+    assert "{p:debug}" == "Pt(x: 1, y: 2.5)"
     let pn: Pt? = none
-    assert "{pn:debug}" == "Option.None"
+    assert "{pn:debug}" == "none"
 }
 
 test "G6 — a result" {
     let a = ok_int(3)
-    assert "{a:debug}" == "Result.Ok(3)"
+    assert "{a:debug}" == "3"
     let b = err_int(7)
-    assert "{b:debug}" == "Result.Err(Fault.Worse(7))"
+    assert "{b:debug}" == "Fault.Worse(7)"
     let c = ok_pt()
-    assert "{c:debug}" == "Result.Ok(Pt(x: 1, y: 2.5))"
+    assert "{c:debug}" == "Pt(x: 1, y: 2.5)"
     let d = err_pt()
-    assert "{d:debug}" == "Result.Err(Fault.Bad)"
+    assert "{d:debug}" == "Fault.Bad"
     let e = ok_str()
-    assert "{e:debug}" == "Result.Ok(\"yes\")"
+    assert "{e:debug}" == "\"yes\""
 }
 
 test "G6 — a union error renders as the member it holds" {
     let a = pick(0)
-    assert "{a:debug}" == "Result.Ok(1)"
+    assert "{a:debug}" == "1"
     let b = pick(1)
-    assert "{b:debug}" == "Result.Err(Fault.Worse(2))"
+    assert "{b:debug}" == "Fault.Worse(2)"
     let c = pick(2)
-    assert "{c:debug}" == "Result.Err(Other.Odd(\"x\"))"
+    assert "{c:debug}" == "Other.Odd(\"x\")"
 }
 
 test "G6 — wrappers nest" {
     let oo: i64?? = 5
-    assert "{oo:debug}" == "Option.Some(Option.Some(5))"
+    assert "{oo:debug}" == "5"
     let n = maybe_fail(true)
-    assert "{n:debug}" == "Result.Ok(Option.Some(5))"
+    assert "{n:debug}" == "5"
     let m = maybe_fail(false)
-    assert "{m:debug}" == "Result.Err(Fault.Bad)"
+    assert "{m:debug}" == "Fault.Bad"
 }
 
 test "G6 — a wrapper inside a struct, a tuple, a Vec" {
     let h = Holder(tag: "t", maybe: 3, res: ok_int(4))
-    assert "{h:debug}" == "Holder(tag: \"t\", maybe: Option.Some(3), res: Result.Ok(4))"
+    assert "{h:debug}" == "Holder(tag: \"t\", maybe: 3, res: 4)"
     let h2 = Holder(tag: "u", maybe: none, res: err_int(1))
-    assert "{h2:debug}" == "Holder(tag: \"u\", maybe: Option.None, res: Result.Err(Fault.Worse(1)))"
+    assert "{h2:debug}" == "Holder(tag: \"u\", maybe: none, res: Fault.Worse(1))"
     let o: f64? = 2.5
     let t = (1, o)
-    assert "{t:debug}" == "(1, Option.Some(2.5))"
+    assert "{t:debug}" == "(1, 2.5)"
     let t2: (i64?, string) = (none, "z")
-    assert "{t2:debug}" == "(Option.None, \"z\")"
+    assert "{t2:debug}" == "(none, \"z\")"
     mut vo: Vec<i64?> = Vec.new()
     vo.push(1)
     vo.push(none)
-    assert "{vo:debug}" == "[Option.Some(1), Option.None]"
+    assert "{vo:debug}" == "[1, none]"
     mut vs: Vec<string?> = Vec.new()
     vs.push("a")
     vs.push(none)
-    assert "{vs:debug}" == "[Option.Some(\"a\"), Option.None]"
+    assert "{vs:debug}" == "[\"a\", none]"
     mut vr: Vec<i64 or Fault> = Vec.new()
     vr.push(ok_int(1))
     vr.push(err_int(2))
-    assert "{vr:debug}" == "[Result.Ok(1), Result.Err(Fault.Worse(2))]"
+    assert "{vr:debug}" == "[1, Fault.Worse(2)]"
 }
 
 test "G6 — a link renders as its node" {
     mut r = Rack<Node>.new()
     let first = r.insert(Node(v: 1, next: none))
     let second = r.insert(Node(v: 2, next: first))
-    assert "{first:debug}" == "Node(v: 1, next: Option.None)"
-    assert "{second:debug}" == "Node(v: 2, next: Option.Some(Node(v: 1, next: Option.None)))"
-    assert "{first.next:debug}" == "Option.None"
-    assert "{second.next:debug}" == "Option.Some(Node(v: 1, next: Option.None))"
+    assert "{first:debug}" == "Node(v: 1, next: none)"
+    assert "{second:debug}" == "Node(v: 2, next: Node(v: 1, next: none))"
+    assert "{first.next:debug}" == "none"
+    assert "{second.next:debug}" == "Node(v: 1, next: none)"
 }
 
 test "a container whose type was inferred from its literal" {

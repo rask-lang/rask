@@ -30,6 +30,7 @@ enum JsonError {
     ParseError(string)
     TypeError(string)
     MissingField(string)
+    Refused(path: string, reason: string)   // a type's own `decode` said no (J12)
 }
 ```
 
@@ -82,10 +83,11 @@ extend JsonValue {
 | Rule | Description |
 |------|-------------|
 | **J6: Auto-encode** | Any struct satisfying `Encode` can be encoded without manual implementation. Uses `comptime for` + field access (`ctrl.comptime/CT48`–`CT54`) |
-| **J7: Compatible types** | `bool`, `i32`, `i64`, `u32`, `u64`, `f32`, `f64`, `string`, `Vec<T>`, `Map<string, T>`, `T?`, nested structs |
+| **J7: Compatible types** | `bool`, the integer types up to 64 bits, `f32`, `f64`, `string`, `Vec<T>`, `[T; N]`, `Map<string, T>`, `T?`, nested structs, and enums in the `std.encoding/E22`–`E25` form, which decode reads as encode writes it |
 | **J8: Field mapping** | Struct field `serial_name` = JSON key. Defaults to field name (snake_case). Override with `@rename` (`std.encoding/E18`) |
 | **J9: Optional fields** | `T?` fields decode `null` or missing as `none`; missing required fields produce `MissingField`. `@default` fields (`std.encoding/E20`) also tolerate missing keys |
 | **J10: Extra keys ignored** | JSON keys not matching a serialized struct field are silently skipped. This includes a key naming a field that is excluded from the wire form (`std.encoding/E13b`) — the field is never filled from input |
+| **J12: Own decode** | A type with its own `decode` (`std.encoding/E12b`) is read as the type `decode` takes and handed to it, wherever it appears. This is also how a type with no JSON form of its own gets one, or an enum gets a different one: read it as a `string` or a struct and map it in `decode`. A refusal is a `JsonError.Refused`: `path` is where in the input (`field ports[1]`, `the value` at the top) and `reason` is the type's own message; `message()` reads `type error: field path: message`. A type with its own `encode` is written as what that returns, so what `json.encode` writes reads back through `json.decode` |
 
 <!-- surface -->
 ```rask
@@ -193,7 +195,6 @@ WHY: Only primitive, collection, optional, and nested-struct types can be encode
 - Date/time handling — dates are strings, parse with `time` module
 - `json.to_value` / `json.from_value` — the typed↔`JsonValue` pair; `decode`/`encode` cover the string ends today
 - `@default(expr)` with anything but a literal — an arbitrary comptime expression needs CTFE at the field
-- Enums as JSON — only structs, collections, and scalars decode
 
 ### Resolved (by std.encoding)
 

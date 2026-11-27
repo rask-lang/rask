@@ -16,9 +16,10 @@ rel="${file#"$root"/}"
 # Files that fail `rask check` on purpose, or can't be checked on their own.
 check_skipped() {
   case "$1" in
-    tests/compile_errors/* | docs/book/errors/*) ;;   # must be rejected
+    tests/compile_errors/*) ;;                        # must be rejected
     tests/packages/* | compiler/crates/*/tests/fixtures/*) ;;  # gate fixtures, some meant to fail
     agentbench/tasks/*) ;;                            # verify.rk needs the model's solution
+    docs/book/src/learn/*) ;;                         # tour steps; some fail on purpose, tests/tour_gate.sh checks them
     stdlib/*) ;;                                      # built into the compiler, not a standalone file
     specs/analysis/prototype/cascade_hole_links.rk) ;;  # exists to be rejected
     *) return 1 ;;

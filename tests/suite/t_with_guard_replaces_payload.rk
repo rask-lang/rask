@@ -1,0 +1,102 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A `with` block on a `Shared` that writes a whole new value over the payload.
+//
+// A payload one word wide (a vector, a closure, a number) was loaded into the
+// binding and written back when the block ended. `w = Vec.from(…)` then
+// replaced the copy, and the vector the box held was never freed. The binding
+// now sits on the box's own slot, so the write gives the old value back. The
+// strings are long enough to live on the heap.
+
+import sync.Shared
+import sync.Mutex
+import sync.Readers
+import sync.Local
+
+func long(n: i64) -> string {
+    return "long-heap-string-number-{n}-padded-past-inline"
+}
+
+test "a vector replaced under a mutex" {
+    let v: Shared<Vec<string>, Mutex> = Shared.mutex(Vec.from([long(1), long(2)]))
+    with v.write() as w {
+        w = Vec.from([long(3)])
+    }
+    with v.read() as w {
+        assert w.len() == 1
+        assert w[0] == long(3)
+    }
+}
+
+test "a vector replaced under readers" {
+    let v: Shared<Vec<string>, Readers> = Shared.new(Vec.from([long(4)]))
+    with v.write() as w {
+        w = Vec.from([long(5), long(6)])
+    }
+    with v.read() as w {
+        assert w[1] == long(6)
+    }
+}
+
+test "a vector replaced in a local box" {
+    let v: Shared<Vec<string>, Local> = Shared.local(Vec.from([long(7)]))
+    with v.write() as w {
+        w = Vec.from([long(8)])
+    }
+    with v.read() as w {
+        assert w[0] == long(8)
+    }
+}
+
+test "a vector replaced in a loop" {
+    let v: Shared<Vec<string>, Mutex> = Shared.mutex(Vec.new())
+    for i in 0..4 {
+        with v.write() as w {
+            w = Vec.from([long(i)])
+        }
+    }
+    with v.read() as w {
+        assert w[0] == long(3)
+    }
+}
+
+test "a vector grown then replaced" {
+    let v: Shared<Vec<string>, Mutex> = Shared.mutex(Vec.new())
+    with v.write() as w {
+        w.push(long(9))
+        w = Vec.from([long(10)])
+        w.push(long(11))
+    }
+    with v.read() as w {
+        assert w.len() == 2
+        assert w[1] == long(11)
+    }
+}
+
+func bump(c: Shared<i64, Mutex>) -> i64 {
+    with c.write() as n {
+        n = n + 5
+        return n
+    }
+    return -1
+}
+
+test "a number written and returned from the block" {
+    let c: Shared<i64, Mutex> = Shared.mutex(1)
+    assert bump(c) == 6
+    with c.read() as n {
+        assert n == 6
+    }
+}
+
+test "a closure replaced" {
+    let tag = long(12)
+    let other = long(13)
+    let f: Shared<func() -> string, Mutex> = Shared.mutex(|| tag)
+    with f.write() as g {
+        g = || other
+    }
+    with f.read() as g {
+        assert g() == long(13)
+    }
+}

@@ -1,0 +1,45 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A handle that frees itself (`Random`, `Atomic<T>`, `cstring`, `Staged<T>`) is
+// a pointer to state the runtime owns. It has no `clone`, and neither does
+// anything a clone would copy it out of: a Vec or Map of them, a struct with one
+// as a field, an optional or a tuple holding one (E0965). The copy and the
+// original would both free the same block (#1887). The calls at the end are
+// legal.
+
+import random.Random
+import sync.Atomic
+import sync.MemoryOrder
+
+struct Dice {
+    rng: Random
+    sides: i64
+}
+
+func main() {
+    let r = Random.from_seed(1)
+    // ERROR: the handle itself [E0965]
+    let r2 = r.clone()
+
+    mut rngs: Vec<Random> = Vec.new()
+    rngs.push(Random.from_seed(2))
+    // ERROR: a Vec's clone copies its elements [E0965]
+    let copies = rngs.clone()
+
+    mut counters: Map<string, Atomic<i64>> = Map.new()
+    counters.insert("a", Atomic.new(1))
+    // ERROR: so does a Map's [E0965]
+    let counters2 = counters.clone()
+
+    let d = Dice(rng: Random.from_seed(3), sides: 6)
+    // ERROR: a struct holding one derives no clone [E0965]
+    let d2 = d.clone()
+
+    let maybe: Atomic<i64>? = Atomic.new(4)
+    // ERROR: an optional holding one [E0965]
+    let maybe2 = maybe.clone()
+
+    // A Vec of plain values, and a struct without a handle, still clone.
+    let ns = Vec.from([1, 2, 3])
+    let ns2 = ns.clone()
+    println("{ns2.len()} {d.sides} {rngs.len()} {counters.len()}")
+}

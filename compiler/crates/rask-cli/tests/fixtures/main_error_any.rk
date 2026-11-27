@@ -1,0 +1,37 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// main fails with an `any Error`; the run reports the message of whatever is
+// in the box, after the `ensure` has run. Natively there was no symbol to look
+// `message()` up by, so the run said only "main returned an error" (#2097).
+
+struct Afail {
+    n: i64
+}
+
+Afail implements Error {
+    func message(self) -> string {
+        return "afail {self.n}"
+    }
+}
+
+struct Bfail {
+    what: string
+}
+
+Bfail implements Error {
+    func message(self) -> string {
+        println("message asked")
+        return "bfail {self.what}"
+    }
+}
+
+func pick(n: i64) -> any Error {
+    if n > 1 {
+        return Bfail(what: "two")
+    }
+    return Afail(n: n)
+}
+
+func main() -> void or any Error {
+    ensure println("cleaned up")
+    return pick(2)
+}

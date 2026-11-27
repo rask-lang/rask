@@ -1,0 +1,54 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// 12. Enums and match
+//
+// An enum is a type whose value is one choice from a fixed list. A direction
+// is North, East, South or West and nothing else.
+//
+// You could use a string for that, "north", but then "nrth" is a direction
+// too, and nothing tells you which strings are allowed. With an enum the list
+// is written down once, the compiler rejects anything not on it, and a reader
+// sees every possibility in one place.
+//
+// `match` is how you act on an enum, and you'll see it everywhere in Rask. It
+// picks the arm for the value it has and must cover every case: leave one out
+// and the program doesn't compile. So when you add a fifth case to an enum,
+// the compiler shows you every `match` that has to handle it. Like `if`,
+// `match` gives a value.
+
+enum Direction {
+    North
+    East
+    South
+    West
+}
+
+func opposite(d: Direction) -> Direction {
+    return match d {
+        Direction.North => Direction.South,
+        Direction.East => Direction.West,
+        Direction.South => Direction.North,
+        Direction.West => Direction.East,
+    }
+}
+
+// Your turn: `turn_right` gives the direction a quarter turn clockwise, so
+// North becomes East.
+
+func turn_right(d: Direction) -> Direction {
+    return match d {
+        Direction.North => Direction.East,
+        Direction.East => Direction.South,
+        Direction.South => Direction.West,
+        Direction.West => Direction.North,
+    }
+}
+
+test "opposite" {
+    assert opposite(Direction.North) == Direction.South
+}
+
+test "turn right" {
+    assert turn_right(Direction.North) == Direction.East
+    assert turn_right(Direction.West) == Direction.North
+}

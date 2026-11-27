@@ -1,0 +1,61 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Rejects: a struct, tuple or enum whose parts add up past 64 KiB
+//
+// Each 40 KB array fits on its own, so only the whole value is over. The
+// checker reports the whole value, once, and not again for a value whose part
+// is already over (`Outer`, `Three`). Two 3 GB fields used to wrap layout's
+// 32-bit size arithmetic: `Three` came out about 1.7 GB, nothing reported it,
+// and compiling a program that used it hung (#2061). Each field is reported
+// now, and the struct isn't reported again.
+
+// ERROR: its parts add up to over 64 KiB [E0980]
+struct Two {
+    a: [u8; 40_000]
+    b: [u8; 40_000]
+}
+
+struct Holder<T> {
+    x: T
+    y: T
+}
+
+// ERROR: its parts add up to over 64 KiB [E0980]
+enum Big {
+    One(a: [u8; 40_000], b: [u8; 40_000])
+    Empty
+}
+
+// ERROR: its parts add up to over 64 KiB [E0980]
+func pair(t: ([u8; 40_000], [u8; 40_000])) -> i64 {
+    return 1
+}
+
+// ERROR: its parts add up to over 64 KiB [E0980]
+func held(h: Holder<[u8; 40_000]>) -> i64 {
+    return 2
+}
+
+struct Three {
+    // ERROR: 3000000000 bytes [E0980]
+    a: [u8; 3_000_000_000]
+    // ERROR: 3000000000 bytes [E0980]
+    b: [u8; 3_000_000_000]
+}
+
+struct Outer {
+    inner: Two
+    more: [u8; 16]
+}
+
+func main() {
+    let a = [0u8; 40_000]
+    let b = [0u8; 40_000]
+    // ERROR: its parts add up to over 64 KiB [E0980]
+    let t = (a, b)
+    let c = [0u8; 33_000]
+    let d = [0u8; 33_000]
+    // ERROR: its parts add up to over 64 KiB [E0980]
+    let h = Holder(x: c, y: d)
+    let fits = (0u8, [0u8; 16])
+    println("{t.0.len()} {h.x.len()} {fits.1.len()}")
+}

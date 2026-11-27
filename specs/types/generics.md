@@ -12,7 +12,7 @@ Interface conformance is declared — `Type implements Interface` says the type 
 
 | Rule | Description |
 |------|-------------|
-| **G1: Declared conformance** | A type satisfies an interface through a declared `Type implements Interface` block, checked against the interface's signatures. `duck interface` opts an interface into shape-matching (no declaration needed) within its own package — see DT1–DT4. The four core interfaces (Equal, Hashable, Comparable, Cloneable) are auto-derived for eligible types — compiler-provided conformance, overridable per EQ2/HA2/CO2 and subject to OC1. `Debug` (all types), `Encode`/`Decode` (markers), and `Error` (enums, `type.errors/ER6`) are also auto-derived. Of those, the four plus `Encode`/`Decode` may be overridden only by the package that declares the type (XC1) |
+| **G1: Declared conformance** | A type satisfies an interface through a declared `Type implements Interface` block, checked against the interface's signatures. `duck interface` opts an interface into shape-matching (no declaration needed) within its own package — see DT1–DT4. The four core interfaces (Equal, Hashable, Comparable, Cloneable) are auto-derived for eligible types — compiler-provided conformance, overridable per EQ2/HA2/CO2 and subject to OC1. `Debug` (all types), `Encode`/`Decode` (markers), and `Error` (enums, `type.errors/ER6`) are also auto-derived. `Decode` is withheld from a type with a `private` field and no default for it, since a decoder never fills a private field (`std.encoding/E13a`). A type that protects an invariant writes `T implements Decode { func decode(wire: W) -> Self or E { … } }`, which every decoder then calls wherever the type appears (`std.encoding/E12b`) and which builds the whole value. `Encode` is withheld from a type with its own `decode`, for the matching reason: the fields a derived one writes aren't what `decode` reads (`std.encoding/E12e`). `T implements Encode { func encode(self) -> W { … } }` writes it as `W` wherever the type appears (`std.encoding/E12d`), and `@no_encode` says it isn't written. An empty `T implements Encode { }` on such a type is an error, since it writes the fields. Of those, the four plus `Encode`/`Decode` may be overridden only by the package that declares the type (XC1) |
 | **G1a: `Copy` bound** | `T: Copy` holds where a value of `T` copies (`mem.value/VS1`): a primitive, `string`, or a struct, tuple or enum of Copy parts within 16 bytes. Nothing to implement, so no conformance block. In the body a `T` copies, so a borrowed `value: T` can be stored or handed to a `take` parameter without `take` on the parameter. Without the bound a `T` is assumed to move |
 | **G2: Checked at use site** | The compiler verifies interface matching when you call a generic function, not when you define it |
 | **G3: Body-local inference** | Non-public functions can have bounds inferred from body; see [Gradual Constraints](gradual-constraints.md) |
@@ -73,9 +73,10 @@ The header binds `Rhs` to `f64`, so what the conformance owes is `scale(self, k:
 |------|-------------|
 | **GT1: Parameters on the declaration** | `interface Scale<Rhs>` — one or two parameters, the same cap generic types carry. `Self` is always in scope and is not one of them |
 | **GT2: The header applies them** | `T implements Scale<f64>` substitutes through every required signature. A header that gives the wrong number of arguments is an error naming the interface's arity |
-| **GT3: The applied interface is the conformance** | `Mul<f64>` and `Mul<Meters>` are different conformances of one interface, each with its own signatures and its own associated types (`type.associated-types/AT8`). A bare `T: Mul` bound means the defaulted instantiation, not "some instantiation". Both of them *on one type* is rejected at the second block while MN1 still decides the call — see AT8 |
+| **GT3: The applied interface is the conformance** | `Mul<f64>` and `Mul<Meters>` are different conformances of one interface, each with its own signatures and its own associated types (`type.associated-types/AT8`). A bare `T: Mul` bound means the defaulted instantiation, not "some instantiation". Both of them on one type is fine: GT7 says which a call reaches |
 | **GT4: Declared defaults** | `interface Mul<Rhs = Self>` lets `Mul` be written bare and mean `Mul<Self>`. Without a default the argument is required, in a bound and in a conformance header alike |
 | **GT5: Bounds on the parameter** | `interface Scale<Rhs: Numeric>` is checked where the conformance names its argument, the same as a bound on a generic struct's parameter |
+| **GT7: Arguments pick the conformance** | A type may conform to one generic interface more than once, and each conformance keeps its own methods. A call picks by its argument types: `report.render(Html(…))` reaches `Render<Html>`'s `render`, `Fixed.from_literal(0.5)` reaches `FromLiteral<f64>`'s. An argument converts the way it would in any call (an integer literal into an `f64`, a value into its `T?`). An unsuffixed literal tries a primitive of its own kind first, then for an integer a float, then a type built from literals; an integer only reaches integer types that hold it (`300` isn't a `u8`), and a tie goes to the literal's own default (`2` against `Scale<i32>` and `Scale<i64>` is the `i32`, against `f32` and `f64` the `f64`). A tie with no default on offer is E0973. A bound names the conformance itself: `T: Render<Html>` calls that one. No conformance taking the arguments is E0972; more than one is E0973 (`s.feed(none)` against `Feed<Html>` and `Feed<Json>`), with the fix being to give the argument a type of its own. This is the operator rule (`type.operator-resolution/OR1`) for every generic interface, and the only place one name has several bodies: free functions and inherent methods still have one each |
 
 Associated types are the other half of this: a parameter is what the *conformance* chooses, an associated type is what the conformance *reports*. See [associated-types.md](associated-types.md).
 
@@ -126,6 +127,7 @@ The publish-time warning (DT2) is in [build.md](../structure/build.md#publishing
 | **GF4: Disjointness travels with the signature** | A signature writing `T or E` with a type parameter on either side carries an implicit "these must stay distinct" obligation, checked at the call site once `T` is known. Not spelled as a bound — the `or` already says it. See [error-types.md](error-types.md) ER3a |
 | **GF5: Methods too** | A method declares type parameters the same way a function does, and they're independent of the receiver's. `Holder<T>` can have `func other<U>(self, u: U) -> U` — `T` is fixed by the receiver, `U` is chosen per call |
 | **GF6: A type's bounds hold in its methods** | `struct Holder<T: Named>` means every method in `extend Holder<T>` may call `Named`'s methods on a `T`. The bound is declared on the type and only there; the `extend` header names the parameters by position and may rename them |
+| **GF7: Functions on the parameter itself** | `T.zero()` calls a function `T`'s bounds require and that takes no `self`: `interface Zero { func zero() -> Self }` lets `func fresh<T: Zero>() -> T { return T.zero() }`. Each instance calls its own type's function, as `Meters.zero()` would. Through a type, `T` or a concrete one, only a function without `self` is called; a method with `self` is called on a value (E0967), and a function without one through the type (E0946) |
 
 ```rask
 // Public: bounds MUST be explicit
@@ -134,6 +136,12 @@ public func process<T: Hashable>(items: Vec<T>) { ... }
 // Private: bounds inferred from body
 func helper(item) { item.hash() }
 // Compiler infers: func helper<T: Hashable>(item: T)
+
+// GF7: a function the bound requires, called on the parameter
+interface Zero {
+    func zero() -> Self
+}
+func fresh<T: Zero>() -> T { return T.zero() }
 
 // GF5: a method's own parameters, alongside the receiver's
 extend Holder<T> {
@@ -207,7 +215,7 @@ One type, one method name, one meaning. A collision gets a second type, not a se
 |------|-------------|
 | **MN1: Single namespace** | Methods defined in `T implements Interface { }` are ordinary methods of T, same namespace as plain `extend T` blocks |
 | **MN2: Shared implementation** | Two conformances requiring the same method name share the one implementation — legal iff both signatures match it. One implementation means one definition: two blocks each defining `label` on the same type is a duplicate method (E0898), whichever interfaces they name, plain `extend` blocks included |
-| **MN3: Conflict means a second type** | If the signatures disagree, the second conformance is a compile error (E0889) naming both interfaces. The way out is a nominal type of its own: `type Loud = Doc` then `Loud implements Tagged { ... }`, one line, same layout. This covers two applied forms of one generic interface (`Mul<f64>` and `Mul<Meters>` on the same type) as much as two different interfaces. It is a rule about one name, not about ownership: who declared the type or the interface never matters here (XC2), and there is no orphan rule anywhere in Rask |
+| **MN3: Conflict means a second type** | If the signatures disagree, the second conformance is a compile error (E0889) naming both interfaces. The way out is a nominal type of its own: `type Loud = Doc` then `Loud implements Tagged { ... }`, one line, same layout. Two applied forms of one generic interface are the exception GT7 makes: their methods may differ, as long as their parameters do, since that's what a call picks by. Two that take the same arguments (`Make<Html>` and `Make<Json>` each with `make(self)`) are E0889, and so are two that could for some instantiation: `Boxed<T> implements Render<T>` and `Render<Html>` meet at `Boxed<Html>`. `Render<T>` and `Render<Vec<T>>` never do. It is a rule about one name, not about ownership: who declared the type or the interface never matters here (XC2), and there is no orphan rule anywhere in Rask |
 
 <!-- test: skip -->
 ```rask
@@ -420,6 +428,7 @@ interface Cloneable {
 | Type | Cloneable Status |
 |------|------------------|
 | Primitives (i32, bool, f64) | Auto-derived (bitwise copy) |
+| Function value (`func(…) -> R`) | Cloneable: a carried capture is cloned, a pointed-at one pointed at again (`mem.closures/CV2`) |
 | Struct with all Cloneable fields | Auto-derived (deep copy) |
 | Struct with raw pointer | Auto-derived (address copy). One that owns what it points at is a `@resource`: no clone, no copy |
 | Array/Vec of Cloneable | Auto-derived (element-wise clone) |
@@ -725,8 +734,8 @@ public func insert<K: HashKey, V>(map: HashMap<K, V>, key: K, val: V) {
 | `Debug` | `debug(self) -> string` | Yes — all types |
 | `Numeric` | `add, sub, mul, div, neg, zero, one, from_int` | No |
 | `Convert<From, To>` | `convert(self: From) -> To` | No |
-| `Encode` | Marker — no methods | Yes — all-Encode public fields (`std.encoding/E12`) |
-| `Decode` | Marker — no methods | Yes — all-Decode public fields (`std.encoding/E12`) |
+| `Encode` | Marker — no required methods; a type may write `encode(self) -> W` (`std.encoding/E12d`) | Yes — all-Encode public fields, unless the type has its own `decode` and no `encode` (`std.encoding/E12`, E12e) |
+| `Decode` | Marker — no required methods; a type may write `decode(wire: W) -> Self or E` (`std.encoding/E12b`) | Yes — all-Decode serialized fields, each excluded one with a default, unless the type writes its own `decode` (`std.encoding/E12`, E13a) |
 
 Six of these decide what happens to a type's data: `Equal`, `Hashable`, `Comparable`, `Cloneable` get baked into the data structures holding it, and `Encode`/`Decode` say whether it may be serialized at all. All six are auto-derived, owner-overridable, and never third-party (XC1).
 

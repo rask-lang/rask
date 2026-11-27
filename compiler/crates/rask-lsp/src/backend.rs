@@ -219,9 +219,9 @@ fn run_pipeline(uri: &Url, source: &str, version: i32) -> PipelineOutput {
     rask_comptime::apply_cfg(&mut parse_result.decls, &cfg);
 
     // --- Desugar (operators + default/named args) ---
-    let desugared = rask_desugar::desugar_with_stdlib(
+    let desugared = rask_desugar::desugar(
         &mut parse_result.decls,
-        rask_stdlib::StubRegistry::desugar_declarations(),
+        rask_desugar::Desugaring::Program { stdlib: rask_stdlib::StubRegistry::desugar_declarations() },
     );
     for e in &desugared.errors {
         diags.push(
@@ -248,24 +248,11 @@ fn run_pipeline(uri: &Url, source: &str, version: i32) -> PipelineOutput {
     };
 
     // --- Resolve ---
+    // A stdlib file is resolved by itself, under the stdlib's rules. Anything
+    // else is resolved the way `rask check` does: with its package's other
+    // files, and with the stdlib's bodies, which every program compiles.
     let is_stdlib = rask_stdlib::StubRegistry::is_stdlib_path(uri.path());
-    let resolved = if is_stdlib {
-        match rask_resolve::resolve_stdlib(&parse_result.decls) {
-            Ok(r) => r,
-            Err(errors) => {
-                for error in &errors {
-                    diags.push(error.to_diagnostic());
-                }
-                return PipelineOutput {
-                    version,
-                    source: source.to_string(),
-                    line_index,
-                    diagnostics: diags,
-                    result: None,
-                };
-            }
-        }
-    } else if let Some(ref ctx) = pkg_ctx {
+    if let (Some(ctx), false) = (&pkg_ctx, is_stdlib) {
         let file_path = uri.to_file_path().unwrap_or_default();
         let mut sibling_decls: Vec<Decl> = ctx.registry.get(ctx.root_id)
             .map(|pkg| {
@@ -276,49 +263,38 @@ fn run_pipeline(uri: &Url, source: &str, version: i32) -> PipelineOutput {
             })
             .unwrap_or_default();
         rask_comptime::apply_cfg(&mut sibling_decls, &cfg);
-        rask_desugar::desugar_with_stdlib(
+        rask_desugar::desugar(
             &mut sibling_decls,
-            rask_stdlib::StubRegistry::desugar_declarations(),
+            rask_desugar::Desugaring::Program { stdlib: rask_stdlib::StubRegistry::desugar_declarations() },
         );
         parse_result.decls.extend(sibling_decls);
-
-        match rask_resolve::resolve_package(
-            &parse_result.decls,
-            &ctx.registry,
-            ctx.root_id,
-        ) {
-            Ok(r) => r,
-            Err(errors) => {
-                for error in &errors {
-                    let diag = error.to_diagnostic();
-                    if is_current_file_diagnostic(&diag, &current_file_spans) {
-                        diags.push(diag);
-                    }
-                }
-                return PipelineOutput {
-                    version,
-                    source: source.to_string(),
-                    line_index,
-                    diagnostics: diags,
-                    result: None,
-                };
-            }
-        }
+    }
+    let stdlib_bodies = if is_stdlib { Vec::new() } else { rask_stdlib::StubRegistry::compilable_decls() };
+    let input = if is_stdlib {
+        rask_resolve::ResolveInput { decls: &[], stdlib: &parse_result.decls, package: None }
     } else {
-        match rask_resolve::resolve(&parse_result.decls) {
-            Ok(r) => r,
-            Err(errors) => {
-                for error in &errors {
-                    diags.push(error.to_diagnostic());
+        rask_resolve::ResolveInput {
+            decls: &parse_result.decls,
+            stdlib: &stdlib_bodies,
+            package: pkg_ctx.as_ref().map(|ctx| (&ctx.registry, ctx.root_id)),
+        }
+    };
+    let resolved = match rask_resolve::resolve(input) {
+        Ok(r) => r,
+        Err(errors) => {
+            for error in &errors {
+                let diag = error.to_diagnostic();
+                if is_current_file_diagnostic(&diag, &current_file_spans) {
+                    diags.push(diag);
                 }
-                return PipelineOutput {
-                    version,
-                    source: source.to_string(),
-                    line_index,
-                    diagnostics: diags,
-                    result: None,
-                };
             }
+            return PipelineOutput {
+                version,
+                source: source.to_string(),
+                line_index,
+                diagnostics: diags,
+                result: None,
+            };
         }
     };
 
@@ -336,11 +312,12 @@ fn run_pipeline(uri: &Url, source: &str, version: i32) -> PipelineOutput {
     // --- Typecheck (lenient so ownership/effects still run) ---
     let stdlib_decls = rask_stdlib::StubRegistry::typecheck_decls();
     let (mut typed, type_errors) =
-        rask_check::typecheck_with_stdlib_lenient(
+        rask_check::typecheck(
             resolved,
             &mut parse_result.decls,
             &stdlib_decls,
             &desugared.operator_calls,
+            cfg.target(),
         );
     for error in &type_errors {
         let diag = error.to_diagnostic();
@@ -350,7 +327,7 @@ fn run_pipeline(uri: &Url, source: &str, version: i32) -> PipelineOutput {
     }
 
     // --- Ownership ---
-    let ownership_result = rask_ownership::check_ownership(&typed, &parse_result.decls);
+    let ownership_result = rask_ownership::check_ownership(&typed, &parse_result.decls, &stdlib_decls);
     for error in &ownership_result.errors {
         let diag = error.to_diagnostic();
         if is_current_file_diagnostic(&diag, &current_file_spans) {
@@ -360,7 +337,7 @@ fn run_pipeline(uri: &Url, source: &str, version: i32) -> PipelineOutput {
 
     // --- Effects (CW1/CW2) ---
     let (_effects, effect_warnings) =
-        rask_effects::infer_effects(&parse_result.decls, &stdlib_decls, &typed.method_targets(), &[]);
+        rask_effects::infer_effects(&parse_result.decls, &stdlib_decls, &typed.call_targets(), &typed.c_macro_bodies, &[]);
     for w in &effect_warnings {
         let d = rask_diagnostics::Diagnostic::warning(&w.message)
             .with_code(w.code)
@@ -464,4 +441,47 @@ fn is_current_file_diagnostic(diag: &rask_diagnostics::Diagnostic, _current_file
     // which defaults to file_id 0). Sibling decls have file_id > 0 from
     // package parsing.
     primary_span.file_id == 0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// What the editor shows for `source`: one `code: message` per diagnostic.
+    fn editor_diagnostics(source: &str) -> Vec<String> {
+        let uri = Url::parse("file:///tmp/rask_lsp_test/main.rk").unwrap();
+        run_pipeline(&uri, source, 1)
+            .diagnostics
+            .iter()
+            .map(|d| {
+                let code = d.code.as_ref().map(|c| c.0.clone()).unwrap_or_default();
+                format!("{code}: {}", d.message)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn let_mut_shows_its_own_error_and_still_declares_the_name() {
+        let shown = editor_diagnostics(
+            "func main() {\n    let mut res : Vec<string> = [\"a\"]\n    res.push(\"b\")\n    println(\"{res.len()}\")\n}\n",
+        );
+        assert_eq!(shown, vec!["E0100: 'let mut' is not Rask"]);
+
+        // Used later, in a function that returns it, and in a test block.
+        for src in [
+            "func f() -> Vec<string> {\n    let mut res : Vec<string> = [\"a\"]\n    res.push(\"b\")\n    return res\n}\nfunc main() {\n    println(\"{f().len()}\")\n}\n",
+            "test \"t\" {\n    let mut res : Vec<string> = [\"a\"]\n    assert res.len() == 1\n}\n",
+            "func main() {\n    let mut res : Vec<string> = [\"a\"]\n}\n",
+        ] {
+            assert_eq!(editor_diagnostics(src), vec!["E0100: 'let mut' is not Rask"], "{src}");
+        }
+    }
+
+    #[test]
+    fn a_local_const_shows_its_own_error_and_still_declares_the_name() {
+        let shown = editor_diagnostics(
+            "func main() {\n    const limit = 3\n    println(\"{limit}\")\n}\n",
+        );
+        assert_eq!(shown, vec!["E0100: 'const' is only for module-level constants"]);
+    }
 }

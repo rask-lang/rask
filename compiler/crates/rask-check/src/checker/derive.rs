@@ -19,7 +19,7 @@
 //! compares through the pair (`TypedProgram::wrapper_fns`) (#1392).
 
 use rask_ast::decl::{Decl, DeclKind, FnDecl, ImplDecl, Param};
-use rask_ast::expr::{ArgMode, BinOp, CallArg, Expr, ExprKind, MatchArm, Pattern};
+use rask_ast::expr::{ArgMode, BinOp, CallArg, Expr, ExprKind, MatchArm, Pattern, PatternKind};
 use rask_ast::stmt::{Stmt, StmtKind};
 use rask_ast::token::IntSuffix;
 use rask_ast::ty::TypeExpr;
@@ -53,6 +53,10 @@ pub struct WrapperFns {
     /// Only for a wrapper holding something a copy can't duplicate: a
     /// `string?` or a `(Vec<i64>, i64)`. An `i64?` clones by being copied.
     pub clone: Option<String>,
+    /// Each method a value of the type answers, by the method's name → what
+    /// it runs. A generic body's call through a bound reads this
+    /// (`TypedProgram::wrapper_method`).
+    pub methods: Vec<(String, super::type_defs::WrapperMethod)>,
 }
 
 impl TypeChecker {
@@ -107,7 +111,7 @@ impl TypeChecker {
                 {
                     params = type_params;
                     if !variants.is_empty() && derived(methods, "clone") {
-                        let body = self.enum_clone(name, variants, params);
+                        let body = self.enum_clone(id, name, variants, params);
                         written.push(self.method("clone", false, "Self", body));
                     }
                 }
@@ -138,15 +142,15 @@ impl TypeChecker {
                         continue;
                     }
                     if derived(methods, "eq") {
-                        let body = self.enum_eq(name, variants);
+                        let body = self.enum_eq(id, name, variants);
                         written.push(self.method("eq", true, "bool", body));
                     }
                     if derived(methods, "hash") {
-                        let body = self.enum_hash(name, variants);
+                        let body = self.enum_hash(id, name, variants);
                         written.push(self.method("hash", false, "u64", body));
                     }
                     if derived(methods, "clone") {
-                        let body = self.enum_clone(name, variants, &[]);
+                        let body = self.enum_clone(id, name, variants, &[]);
                         written.push(self.method("clone", false, "Self", body));
                     }
                 }
@@ -164,8 +168,11 @@ impl TypeChecker {
                 self.types.get_mut(id)
             {
                 for m in methods.iter_mut() {
-                    if names.contains(&m.name) && m.name != "compare" {
-                        m.origin = rask_types::MethodOrigin::Derived;
+                    if let Some(f) = written.iter().find(|f| f.name == m.name) {
+                        m.decl = Some(f.id);
+                        if m.name != "compare" {
+                            m.origin = rask_types::MethodOrigin::Derived;
+                        }
                     }
                 }
             }
@@ -302,7 +309,7 @@ impl TypeChecker {
     ///     E.B => match other { E.B => return true, _ => return false }
     /// }
     /// ```
-    fn enum_eq(&mut self, name: &str, variants: &[(String, Vec<Type>)]) -> Vec<Stmt> {
+    fn enum_eq(&mut self, id: TypeId, name: &str, variants: &[(String, Vec<Type>)]) -> Vec<Stmt> {
         let single = variants.len() == 1;
         let mut arms = Vec::new();
         for (variant, tys) in variants {
@@ -316,22 +323,22 @@ impl TypeChecker {
                 })
                 .collect();
             let all = self.all(compares);
-            let mut inner = vec![arm(variant_pattern(&path, tys.len(), "__b"), self.ret_block(all))];
+            let mut inner = vec![arm(self.variant_pattern(id, variant, &path, tys.len(), "__b"), self.ret_block(all))];
             // One variant: a wildcard would never match, and the checker says so.
             if !single {
                 let no = self.bool_lit(false);
-                inner.push(arm(Pattern::Wildcard, self.ret_block(no)));
+                inner.push(arm(self.pat(PatternKind::Wildcard), self.ret_block(no)));
             }
             let other = self.ident("other");
             let body = self.expr(ExprKind::Match { scrutinee: Box::new(other), arms: inner });
-            arms.push(arm(variant_pattern(&path, tys.len(), "__a"), body));
+            arms.push(arm(self.variant_pattern(id, variant, &path, tys.len(), "__a"), body));
         }
         let scrutinee = self.ident("self");
         vec![self.expr_stmt(ExprKind::Match { scrutinee: Box::new(scrutinee), arms })]
     }
 
     /// The variant's position, then its payload's hashes.
-    fn enum_hash(&mut self, name: &str, variants: &[(String, Vec<Type>)]) -> Vec<Stmt> {
+    fn enum_hash(&mut self, id: TypeId, name: &str, variants: &[(String, Vec<Type>)]) -> Vec<Stmt> {
         let mut arms = Vec::new();
         for (index, (variant, tys)) in variants.iter().enumerate() {
             let mut parts = vec![self.u64_lit(index as i128)];
@@ -342,7 +349,7 @@ impl TypeChecker {
             let seed = self.u64_lit(FNV_OFFSET);
             let mixed = self.mix(seed, parts);
             arms.push(arm(
-                variant_pattern(&format!("{name}.{variant}"), tys.len(), "__a"),
+                self.variant_pattern(id, variant, &format!("{name}.{variant}"), tys.len(), "__a"),
                 self.ret_block(mixed),
             ));
         }
@@ -381,7 +388,7 @@ impl TypeChecker {
     /// shares a buffer with it. A recursive enum recurses through its own
     /// `clone`: `Node(Vec<Tree>)` clones the vector, and the vector clones
     /// each `Tree` (#1428).
-    fn enum_clone(&mut self, name: &str, variants: &[(String, Vec<Type>)], params: &[String]) -> Vec<Stmt> {
+    fn enum_clone(&mut self, id: TypeId, name: &str, variants: &[(String, Vec<Type>)], params: &[String]) -> Vec<Stmt> {
         let mut arms = Vec::new();
         for (variant, tys) in variants {
             let path = format!("{name}.{variant}");
@@ -402,7 +409,7 @@ impl TypeChecker {
             };
             body.push(self.ret(built));
             let block = self.block(body);
-            arms.push(arm(variant_pattern(&path, tys.len(), "__a"), block));
+            arms.push(arm(self.variant_pattern(id, variant, &path, tys.len(), "__a"), block));
         }
         let scrutinee = self.ident("self");
         vec![self.expr_stmt(ExprKind::Match { scrutinee: Box::new(scrutinee), arms })]
@@ -554,9 +561,24 @@ impl TypeChecker {
         let mut ids = Vec::new();
         rask_ast::visit::walk_decls(decls, &mut |e| ids.push(e.id));
         let mut args: Vec<Type> = Vec::new();
+        let own: std::collections::HashSet<NodeId> = ids.iter().copied().collect();
         for id in ids {
             if let Some(ty) = self.node_types.get(&id) {
                 collect_wrapper_args(&self.ctx.apply(ty), &mut args);
+            }
+        }
+        // A generic call's type arguments: `code((1, 2))` with `K: Hashable`
+        // calls `k.hash()` on a tuple at that instance (#1976).
+        let call_args: Vec<Type> = self
+            .pending_call_type_args
+            .iter()
+            .filter(|(call, _)| own.contains(call))
+            .flat_map(|(_, vars)| vars.iter().map(|(_, t)| self.ctx.apply(t)))
+            .collect();
+        for ty in call_args {
+            collect_wrapper_args(&ty, &mut args);
+            if Self::is_wrapper(&ty) && !args.contains(&ty) {
+                args.push(ty);
             }
         }
         for ty in args {
@@ -598,7 +620,7 @@ impl TypeChecker {
             return found.clone();
         }
         let n = self.wrapper_fns.len();
-        let fns = WrapperFns {
+        let mut fns = WrapperFns {
             ty: ty.clone(),
             eq: self.type_has_method(ty, "eq").then(|| derived_fn_name("eq", n)),
             hash: self.type_has_method(ty, "hash").then(|| derived_fn_name("hash", n)),
@@ -606,7 +628,11 @@ impl TypeChecker {
                 .then(|| derived_fn_name("compare", n)),
             clone: (!Self::clones_by_copy(ty) && self.type_has_method(ty, "clone"))
                 .then(|| derived_fn_name("clone", n)),
+            methods: Vec::new(),
         };
+        if Self::clones_by_copy(ty) && self.type_has_method(ty, "clone") {
+            fns.methods.push(("clone".to_string(), super::type_defs::WrapperMethod::IsCopy));
+        }
         // Registered before the bodies are written: one holding another
         // wrapper asks for that one's pair while this one is half built.
         self.wrapper_fns.push(fns.clone());
@@ -632,6 +658,14 @@ impl TypeChecker {
             self.wrapper_symbols.insert(name.clone(), sym);
             written.push((name.clone(), 3, sym));
         }
+        // The method each `which` writes, in the order of the arms below.
+        const METHODS: [&str; 4] = ["eq", "hash", "compare", "clone"];
+        for (_, which, sym) in &written {
+            fns.methods.push((METHODS[*which].to_string(), super::type_defs::WrapperMethod::Runs(*sym)));
+        }
+        if let Some(entry) = self.wrapper_fns.iter_mut().find(|w| &w.ty == ty) {
+            entry.methods = fns.methods.clone();
+        }
         for (name, which, sym) in written {
             let f = match which {
                 0 => {
@@ -653,6 +687,7 @@ impl TypeChecker {
                     self.free_fn(&name, ty, true, "Ordering", body)
                 }
             };
+            self.symbol_runs(sym, f.id);
             let id = self.derived_id();
             self.resolved.decl_symbols.insert(id, sym);
             self.pending_derived.push((Decl { id, kind: DeclKind::Fn(f), span: SP }, None));
@@ -668,6 +703,8 @@ impl TypeChecker {
                 params: Vec::new(),
                 ret_ty: Some(ret_written),
                 is_unsafe: false,
+                // Set by `symbol_runs` once the body is written.
+                decl: rask_ast::NodeId::DUMMY,
             },
             None,
             SP,
@@ -877,14 +914,14 @@ impl TypeChecker {
             Branch::Value(side) => {
                 let written = self.written(side);
                 if !bind {
-                    return (Pattern::TypePat { ty: written, binding: None }, None);
+                    return (self.pat(PatternKind::TypePat { ty: written, binding: None }), None);
                 }
                 let x = self.fresh_name();
                 let xe = self.ident(&x);
-                (Pattern::TypePat { ty: written, binding: Some(x) }, Some(xe))
+                (self.pat(PatternKind::TypePat { ty: written, binding: Some(x) }), Some(xe))
             }
-            Branch::None => (Pattern::TypePat { ty: TypeExpr::NoneType, binding: None }, None),
-            Branch::Void => (Pattern::Wildcard, None),
+            Branch::None => (self.pat(PatternKind::TypePat { ty: TypeExpr::NoneType, binding: None }), None),
+            Branch::Void => (self.pat(PatternKind::Wildcard), None),
         }
     }
 
@@ -933,10 +970,21 @@ impl TypeChecker {
                 default: None,
             })
             .collect();
+        self.symbol_runs(sym, f.id);
         let id = self.derived_id();
         self.resolved.decl_symbols.insert(id, sym);
         self.pending_derived.push((Decl { id, kind: DeclKind::Fn(f), span: SP }, None));
         name
+    }
+
+    /// A wrapper's symbol is made before its body, so it learns which
+    /// declaration a call to it runs once there is one.
+    fn symbol_runs(&mut self, sym: rask_resolve::SymbolId, fn_id: rask_ast::NodeId) {
+        if let Some(rask_resolve::SymbolKind::Function { decl, .. }) =
+            self.resolved.symbols.get_mut(sym).map(|s| &mut s.kind)
+        {
+            *decl = fn_id;
+        }
     }
 
     /// Whether copying the bytes is the whole of a clone: scalars, and the
@@ -1014,7 +1062,7 @@ impl TypeChecker {
                             arms.push(arm(pattern, no));
                         }
                         let yes = s.bool_lit(true);
-                        arms.push(arm(Pattern::Wildcard, yes));
+                        arms.push(arm(s.pat(PatternKind::Wildcard), yes));
                     } else {
                         let (pattern, y) = s.branch_pattern(branch, true);
                         let same = match (branch, x, y) {
@@ -1023,7 +1071,7 @@ impl TypeChecker {
                         };
                         let no = s.bool_lit(false);
                         arms.push(arm(pattern, same));
-                        arms.push(arm(Pattern::Wildcard, no));
+                        arms.push(arm(s.pat(PatternKind::Wildcard), no));
                     }
                     s.expr(ExprKind::Match { scrutinee: Box::new(b.clone()), arms })
                 })
@@ -1091,6 +1139,30 @@ impl TypeChecker {
         let id = NodeId(self.next_derived_id);
         self.next_derived_id += 1;
         id
+    }
+
+    fn pat(&mut self, kind: PatternKind) -> Pattern {
+        Pattern::new(self.derived_id(), kind, Span::new(0, 0))
+    }
+
+    /// `E.V` or `E.V(prefix0, prefix1, …)`, with what each part means filed
+    /// the way the checker files a written pattern's: the derived bodies are
+    /// written after checking, and nothing resolves them again.
+    fn variant_pattern(&mut self, enum_id: TypeId, variant: &str, path: &str, n: usize, prefix: &str) -> Pattern {
+        let pattern = if n == 0 {
+            self.pat(PatternKind::Ident(path.to_string()))
+        } else {
+            let fields: Vec<Pattern> = (0..n).map(|i| self.pat(PatternKind::Ident(format!("{prefix}{i}")))).collect();
+            for field in &fields {
+                self.pattern_targets.insert(field.id, rask_types::PatternTarget::Binding);
+            }
+            self.pat(PatternKind::Constructor { name: path.to_string(), fields })
+        };
+        self.pattern_targets.insert(
+            pattern.id,
+            rask_types::PatternTarget::Variant { enum_id, variant: variant.to_string() },
+        );
+        pattern
     }
 
     fn fresh_name(&mut self) -> String {
@@ -1229,21 +1301,21 @@ impl TypeChecker {
         self.field(ordering, variant)
     }
 
-    fn method(&self, name: &str, takes_other: bool, ret: &str, body: Vec<Stmt>) -> FnDecl {
+    fn method(&mut self, name: &str, takes_other: bool, ret: &str, body: Vec<Stmt>) -> FnDecl {
         let mut params = vec![param("self", TypeExpr::named("Self"))];
         if takes_other {
             params.push(param("other", TypeExpr::named("Self")));
         }
-        fn_decl(name, params, ret, body)
+        fn_decl(self.derived_id(), name, params, ret, body)
     }
 
-    fn free_fn(&self, name: &str, ty: &Type, takes_other: bool, ret: &str, body: Vec<Stmt>) -> FnDecl {
+    fn free_fn(&mut self, name: &str, ty: &Type, takes_other: bool, ret: &str, body: Vec<Stmt>) -> FnDecl {
         let written = self.written(ty);
         let mut params = vec![param("a", written.clone())];
         if takes_other {
             params.push(param("b", written));
         }
-        fn_decl(name, params, ret, body)
+        fn_decl(self.derived_id(), name, params, ret, body)
     }
 }
 
@@ -1269,8 +1341,9 @@ fn param(name: &str, ty: TypeExpr) -> Param {
     }
 }
 
-fn fn_decl(name: &str, params: Vec<Param>, ret: &str, body: Vec<Stmt>) -> FnDecl {
+fn fn_decl(id: NodeId, name: &str, params: Vec<Param>, ret: &str, body: Vec<Stmt>) -> FnDecl {
     FnDecl {
+        id,
         name: name.to_string(),
         type_params: Vec::new(),
         params,
@@ -1322,16 +1395,6 @@ fn result_branches(ty: &Type) -> Vec<Branch> {
     out
 }
 
-fn variant_pattern(path: &str, n: usize, prefix: &str) -> Pattern {
-    if n == 0 {
-        Pattern::Ident(path.to_string())
-    } else {
-        Pattern::Constructor {
-            name: path.to_string(),
-            fields: (0..n).map(|i| Pattern::Ident(format!("{prefix}{i}"))).collect(),
-        }
-    }
-}
 
 /// Every wrapper type standing as a type argument inside `ty`.
 fn collect_wrapper_args(ty: &Type, out: &mut Vec<Type>) {
@@ -1370,7 +1433,6 @@ fn is_concrete(ty: &Type) -> bool {
         Type::Var(_) | Type::UnresolvedNamed(_) | Type::UnresolvedGeneric { .. } | Type::Error => false,
         Type::Generic { args, .. } => args.iter().all(|a| match a {
             rask_types::GenericArg::Type(t) => is_concrete(t),
-            _ => true,
         }),
         Type::Tuple(elems) => elems.iter().all(is_concrete),
         Type::Result { ok, err } => is_concrete(ok) && is_concrete(err),

@@ -2,7 +2,7 @@
 // A `mutate self` Vec method called on a fixed array changes the array.
 //
 // Natively an array receiver is copied into a temporary Vec so the shared Vec
-// lowering has a header to read. `sort`, `reverse`, `swap`, `set` and
+// lowering has a header to read. `sort`, `reverse`, `swap` and
 // `sort_by` changed that copy and nothing wrote it back, so
 // `mut a = [3, 1, 2]; a.sort()` stayed `3 1 2` (#1405). The copy also took
 // the array's strings over: two method calls on one `[string; 3]` released
@@ -43,13 +43,6 @@ test "narrow elements are written back at their own width" {
     assert f[2] == 2.5
 }
 
-test "set replaces one element" {
-    mut q = [5, 6, 7]
-    q.set(1, 60)
-    assert q[0] == 5
-    assert q[1] == 60
-    assert q[2] == 7
-}
 
 func shuffled(n: i64) -> string {
     mut s = ["second entry, long enough to live on the heap {n}", "third entry, long enough to live on the heap {n}", "first entry, long enough to live on the heap {n}"]

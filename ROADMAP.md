@@ -30,517 +30,148 @@ closing it means something.
 
 ## Where things stand
 
-Re-measure these rather than trusting them — each line names the command.
+Measured 2026-11-23 on `53a80616`. Re-measure these rather than trusting them;
+each line names the command.
 
 | Measure | Now | Command |
 |---------|-----|---------|
-| Suite programs agreeing on both backends | 798 green, 9 registered red | `tests/differential.sh` |
-| Programs that leak | 1, holding 55 allocations (#1609), 0 deferred | `tests/leak_gate.sh` |
-| Matrix cells clean on both backends | 293 of 293, 13 pairs skipped | `tests/matrix/run.sh` |
-| Programs memcheck finds an error in | 7 of 801, each filed (the gate used to watch `timeout`, not the test) | `tests/memcheck_gate.sh` |
-| Concurrency files TSan reports a race in | 0 of 93 | `tests/tsan_gate.sh` |
+| Suite programs agreeing on both backends | 989 green, 9 registered red (4 fail on both backends) | `tests/differential.sh` |
+| Programs that leak | 1, holding 40 allocations (#1609), 0 deferred; 6 not measured (build fails) | `tests/leak_gate.sh` |
+| Matrix cells clean on both backends | 284 of 284, 0 red, 22 pairs skipped | `tests/matrix/run.sh` |
+| Programs memcheck finds an error in | 1 known-bad (#1588), 0 new, 6 not measured | `tests/memcheck_gate.sh` |
+| Concurrency files TSan reports a race in | 0 of 125 | `tests/tsan_gate.sh` |
 | Soak programs within their thread budget | 6 of 6 | `tests/soak_gate.sh` |
-| Concurrency files clean under sim, 100 seeds in CI | 93 of 93, 44 tests exempt | `tests/sim_gate.sh` |
+| Concurrency files clean under sim | 125 of 125 at 20 seeds locally (CI runs 100), 46 exempt | `tests/sim_gate.sh` |
 | Examples with a pinned golden | 38 of 38 | `tests/examples_gate.sh` |
-| Runtime builds under the other compiler | clean | `tests/clang_gate.sh` |
-| Stdlib items a spec promises that exist and run on both backends | 855 of 855 | `tests/stdlib_coverage_gate.sh` |
-| Open bugs | 54 of 99 open issues | issue search |
-| Open design questions | 19 | issue search |
+| Runtime builds under the other compiler | clean (3 warnings) | `tests/clang_gate.sh` |
+| Stdlib items a spec promises that exist and run on both backends | 873 of 873 | `tests/stdlib_coverage_gate.sh` |
+| v0.7 restated-fact sites | 222, 215 to go | `cargo test --release -p rask-cli --test one_owner_sites` |
+| Open bugs | 197 labelled `bug`, of 281 open issues | issue search |
+| Open design questions | 18 labelled `design` | issue search |
 
-Nine more gates cover prototypes, packages, projects, tutorials, the book, the
-agent benchmark, internal spellings, formatter round-trips and the HTTP server.
-All green.
+Prototypes (9 agree), projects (22 ok), formatter round-trips, the HTTP server,
+the agent benchmark (19 green) and `cargo test --release` (1681 passed, 0
+failed) were re-run too. All green. The tour, book and spellings gates were not
+re-run this pass.
 
-This table was a month stale when it was last checked — it claimed 31 leaking
-programs holding 86 allocations while the gate printed 0, and 500 of 505 while
-the suite had grown to 525. That is the failure the preamble above says this
-file exists to prevent, so: re-measure before quoting it, and if you quoted it,
-you have re-measured it.
+**Every gate is green and the bug count is still climbing.** 165 open bugs
+became 197: 68 filed since 2026-11-16, 51 closed. The leak and memcheck gates
+only see what the suite runs, so their green says the suite is clean, not that
+memory is. A bug gets counted once it has a suite file.
 
-## v0.3 — Memory is settled — **shipped 2026-09-18**
+The six "not measured" programs are registered red files that don't build. The
+gates can't see them until they do.
 
-**Done when `tests/leak_gate.sh` reports 0 allocations this milestone. Today: 0.**
+## Shipped
 
-The gate's condition is met — 521 suite files clean. That is the measure, not
-the claim that nothing leaks, and what "settled" should mean beyond a green gate
-is the open question now.
+Each version shipped the day its gate hit its target. The full story of each is
+in git history and its issues; what's worth carrying forward is below.
 
-Every leak on this list was the compiler getting *who frees this* wrong. A leak
-is the polite version of that mistake — the same confusion releasing early
-instead is a use-after-free, which is what
-[#1161](https://github.com/rask-lang/rask/issues/1161) was. Ownership is the
-whole thesis of the language, so this goes first.
-
-**The impolite half now has a gate too.** Nothing measured it: no valgrind, no
-sanitiser, in any of the thirteen gates or in CI, so every use-after-free,
-double free and read of an uninitialised field found so far was found by a
-crash. `tests/memcheck_gate.sh` runs the same suite binaries under memcheck.
-Within a minute of first being pointed at the suite it found a live bug in
-week-old code — a pool built field by field that had grown two fields nobody
-initialised — which the leak gate, twelve other gates, CI and a 30× poisoned
-stack run had all called green. It is in CI beside the leak gate now, with
-`tests/known_memcheck.txt` as its ledger, currently empty.
-
-The gate reports a second number beside that one, and it isn't part of this
-milestone. It is 2 allocations now, down from 15, and one file:
-`t_shared_freed.rk`, waiting on `clone_elision` knowing which block
-`s.clone()` handed back. Freeing it today is a double free rather than a smaller
-leak, which is what makes it a wait rather than a task. Its line in
-`tests/known_leaks.txt` says `deferred`, and the gate still measures it and
-still holds it to its count. It just doesn't judge a memory milestone on what a
-memory milestone can't fix.
-
-The other 13 were one bug, and the reason to say so is that the ledger blamed
-the wrong thing for a month. It read "a task killed by a panic doesn't unwind
-its captures, waits on the unwinder in v0.5" — but the unwinder landed in
-August. What was actually wrong was two lines of C: a task's closure allocation
-was freed on the line after the body's own call, which a panicking body longjmps
-straight past, and `TaskHandle.join` read as returning a view into its receiver
-because its return type names a type parameter, so the frame released nothing it
-got back. Three files went clean ([#1223](https://github.com/rask-lang/rask/issues/1223)).
-A deferred line is worth re-measuring, not re-reading.
-
-The last one was [#1205](https://github.com/rask-lang/rask/issues/1205), and it
-took six attempts because the question was never "how does a swallowed closure
-get freed" — ten lines answer that — but "which of the two owners frees it,
-when one body is built from sites in different positions". `main` drops the
-adapter it builds; a `flat_map` callback returns the one it builds; the glue is
-named after the body. Splitting those sites is what made one answer possible.
-The five measurements are on the issue.
-
-**The gate is not the whole story**, and its blind spot is worth knowing about
-before anyone reads 0 as "done": it runs suite files as `test` blocks, so a leak
-that only shows in `main` is invisible to it.
-[#1213](https://github.com/rask-lang/rask/issues/1213) lived there — a value
-that hands its old version into its new one, freed by nobody — and was found by
-running the repro rather than by the gate. It is fixed and now has a suite file,
-but the next one of its kind will hide in the same place.
-
-[#1224](https://github.com/rask-lang/rask/issues/1224) was the last one the
-gate still counted, and it was two bugs wearing one number. A variable an
-`ensure` body names becomes a memory slot — the hook holds its address, because
-the body may run on a panic long after the frame stopped — and nothing freed
-what those slots held: `ensure v.push(2)` leaked the vector. Underneath it, a
-cleanup chain ends in `unreachable` because MIR has nothing left to say after
-it, and codegen turns that into the real return; read as an abort, it made every
-exit through an `ensure` look like a path the process never leaves, so a release
-the assert lowering owes on the *passing* branch was dropped as dead code. That
-second one is why `assert s == "…"` leaked its string only in functions that
-also had an `ensure` somewhere.
-
-The list of leaks that were open without showing in the gate is empty now. Each
-one's repro was re-run on both backends and each has a suite file keeping it
-that way: [#1035](https://github.com/rask-lang/rask/issues/1035) (a string
-between two containers, and a container inside one),
-[#1117](https://github.com/rask-lang/rask/issues/1117) (a container returned
-inside `T?` from a callee small enough to inline),
-[#1131](https://github.com/rask-lang/rask/issues/1131) (`for x in h.items`,
-which dies on a block that never mentions it),
-[#1153](https://github.com/rask-lang/rask/issues/1153) (a fused `zip` over two
-struct fields), [#1157](https://github.com/rask-lang/rask/issues/1157)
-(`with s.staged()` on a local box) and
-[#1158](https://github.com/rask-lang/rask/issues/1158) (`io.copy` through a
-boxed writer).
-
-[#882](https://github.com/rask-lang/rask/issues/882) was the last thing this
-milestone was waiting on, and the audit it asked for is done: four passes over
-the grid — `@resource`, `Heap<T>`, then the crossed cells and
-the panic path — seventy-odd cells, six holes, all fixed. The result worth
-keeping is the shape. Not one was a wrong rule. Every one was a point nobody had
-put on the list: a `break`, a wrapper, a call form, a thunk. And the crossed
-cells were each caught by the fix for an uncrossed one, so the grid is
-`creation + exit + consumption` rather than the product of the three — the next
-pass doesn't have to be combinatorial.
-
-The issue stays open for one cell the audit couldn't reach: a resource crossing
-a *task* boundary when the task panics. That waits on
-[#299](https://github.com/rask-lang/rask/issues/299) — captures aren't unwound
-at all yet — which is v0.5's theme, not this one.
-
-## v0.4 — A value works in every position — **shipped 2026-09-22**
-
-**Done when `tests/matrix/run.sh` is green. It is: 281 of 283 cells clean, 2
-registered red, 0 new, and 5 pairs skipped as pairs the design rules out.**
-
-Read the cell count against the old one with care — it was 284 of 286 while
-`Vec<Heap<T>>` still compiled. Fixing [#1245](https://github.com/rask-lang/rask/issues/1245)
-turned three of those cells from "should be rejected and isn't" into pairs that
-aren't legal Rask, so they moved to `gen.py`'s SKIPS with `std.collections/C4`
-next to them. Fewer cells, one more enforced rule.
-
-These read as unrelated bugs and aren't. A closure works as a local and not out
-of a `Map`; a function works as an argument and not as a struct field. Nothing
-enumerated value-kind × position, so the holes were found one report at a time.
-The deliverable is the matrix — every payload kind in every carrier, one small
-program per cell, run on both backends — and then the bugs it lights up.
-
-The matrix exists: `tests/matrix/gen.py` writes 283 cells over 18 payloads and
-16 carriers, `tests/matrix/run.sh` runs them, and `tests/matrix/known_red.txt`
-holds each red cell to what it claims — which backend fails it and how far that
-backend gets. A registered cell that starts passing is reported so the line gets
-pruned.
-
-It lit up ten bugs across 25 cells on its first full run, and they are fixed:
-
-[#1234](https://github.com/rask-lang/rask/issues/1234) ·
-[#1239](https://github.com/rask-lang/rask/issues/1239) ·
-[#1151](https://github.com/rask-lang/rask/issues/1151) ·
-[#1235](https://github.com/rask-lang/rask/issues/1235) ·
-[#1237](https://github.com/rask-lang/rask/issues/1237) ·
-[#1238](https://github.com/rask-lang/rask/issues/1238) ·
-[#1240](https://github.com/rask-lang/rask/issues/1240) ·
-[#1241](https://github.com/rask-lang/rask/issues/1241) ·
-[#1236](https://github.com/rask-lang/rask/issues/1236) ·
-[#1242](https://github.com/rask-lang/rask/issues/1242) ·
-[#1243](https://github.com/rask-lang/rask/issues/1243)
-
-Plus two the matrix doesn't reach, found the same week and the same theme:
-[#1232](https://github.com/rask-lang/rask/issues/1232), a string field assigned
-through an inline lock chain, and
-[#1228](https://github.com/rask-lang/rask/issues/1228), a closure in a struct
-field leaking once the struct is a `Vec` element.
-
-**[#1046](https://github.com/rask-lang/rask/issues/1046) closed, and not the way
-it was written.** It was filed as "the adapters wait for `Vec.iter()` to return a
-`Sequence`". `.iter()` is gone instead (SEQ48) — a collection is its own chain
-head, so `v.filter(p)` and `for x in v` are the spellings and there is no second
-call whose return type needs changing. The adapters landed, `v.filter(p)` hands
-back a `Sequence<T>` rather than a second `Vec`, and fusion is untouched:
-`v.filter(p).to_vec()` is the same index loop with no closure it always was.
-
-The last thing left under that number was a value failing in a position, which
-is why it belonged here. A method call on the element of a Rask-bodied sequence
-died in lowering — `for w in words.as_sequence() { w.len() }` gave "method `len`
-on receiver of unresolved type". MIR knew a `Sequence<T>` holds `T`; the
-checker's own `container_elem_type` special-cased `Iterator` and `Range` and let
-`Sequence` fall through to "element type isn't readable from here", so the loop
-variable kept a free type variable and dispatch had nothing to name. One arm,
-four shapes in `t34_vec_as_sequence.rk`.
-
-Two things that carried #1046's number are not it and are filed on their own:
-[#1324](https://github.com/rask-lang/rask/issues/1324), the interpreter writing a
-`mutate` parameter back before a lazy chain has run, and
-[#1325](https://github.com/rask-lang/rask/issues/1325), a `Vec` not filling a
-`Sequence<T>` parameter because SEQ48's coercion only runs inside Vec's own
-adapter bodies.
-
-**Four came out of this list.** Same rule the three below came out under — a
-version is one theme, and a question `specs/` doesn't answer isn't a bug in it:
-
-- **#1244** — can a function type be the success side of `T or E`?
-  `-> func(i64) -> i64 or Oops` parses as `func(i64) -> (i64 or Oops)`, which is
-  a defensible reading; what is missing is a way to write the other one, and
-  there is no parenthesised type form. `specs/types/error-types.md` and
-  `specs/SYNTAX.md` don't cover it. Its two cells stay registered in
-  `known_red.txt` — the gate keeps watching them — and they are not what this
-  milestone closes on.
-- **#1245** — `Vec<Heap<i64>>` compiles, where `std.collections/C4` says it
-  shouldn't. A missing *rejection* is not a value failing in a position, and its
-  cells could never go green: the program isn't supposed to compile at all.
-- **#1233** — an array literal only takes its shape from an annotated `let`. An
-  inference gap that shows up in eight cells and is the reason `gen.py` writes
-  `Vec.from([…])`; the carriers still measure their carriers.
-- **#1248** — a generic function whose name ends in `_free` leaks the `Vec` it
-  returns. A name collision in the ownership metadata, not a position.
-
-Three of those four are fixed anyway, off the backlog rather than off this
-milestone — #1245, #1233 and #1248 all came in with #1298. #1244 is the one
-still open, and it was briefly closed by that same batch without anything in it
-answering the question; the repro still fails and it has been reopened. Its two
-cells are the 2 red in the number above.
-
-**What this list used to say.** It named eight. Two were already closed when
-the milestone was written (#843, #886), and three were not bugs at all — they
-were questions `specs/` didn't answer, which the "Not in any version" section
-below says don't belong in a version. They were answered first, before the
-matrix work, rather than left to stall it:
-
-- **#1152** — is `h.run(5)` on a function-typed field a call? No
-  (`type.structs/M6`). A struct of functions is a shape Rask answers with a
-  interface, and it appears in no spec, no validation program and no stdlib module;
-  the error says the name is a field and how to call it instead. `M7` — one
-  name per member — is separate and did land, and found three collisions on its
-  first run (`Range.step`, `Command.args`, `Session.id`).
-- **#1079** — what does consuming a `const` mean? It can't be consumed
-  (`mem.ownership/O11`). The error lands at the consume rather than at the next
-  read, which is what made it come and go per function. `PM6c` came with it:
-  `take` on a type that is always Copy is a signature that lies, so it is
-  rejected too.
-- **#869** — must a returned closure own its captures? No: it may borrow the
-  function's lent parameters, not its locals (`mem.closures/SL3`), and the
-  limit travels to the caller (`SL4`). Requiring `own` would have cost every
-  adapter chain a `take self`. The fix needed `spawn` to stop declaring that it
-  borrows a closure it keeps, and the ownership checker to be handed the stdlib
-  signatures it had never seen.
-
-**#985 went to the backlog.** It's a `Vec` layout and raw-pointer-width
-disagreement, not a value kind failing in a position — a narrow theme is the
-only kind that closes.
-
-## v0.5 — Concurrency you can trust — **shipped 2026-09-30**
-
-**Done when two numbers hold in CI:**
-
-- **The stress gate finds no deadlock, race or lost panic** across its seeds and
-  its soak.
-- **OS threads never exceed the worker count** under the soak: 100k tasks,
-  nested joins, `workers: 1`, panics mixed in. It holds on Linux since the
-  fiber switch. Before it, a worker blocked in join got a replacement thread
-  (up to 32), which is how [#1130](https://github.com/rask-lang/rask/issues/1130)
-  was first fixed, and a blocked receive kept its worker
-  ([#1353](https://github.com/rask-lang/rask/issues/1353)).
-
-Fibers are in this version, not after it. Writing them is cheap; knowing they
-work is what costs, so the bench comes first and has to fail on today's runtime
-before any fiber code lands. "Fibers work" then means those checks turned green.
-
-The payoff is one scheduler instead of three. `green.c` ran spawned closures
-as poll functions that ran to completion (it runs fibers now), `thread.c`
-gives `Thread.spawn` a pthread, and `green_threads.c` stands in with threads
-off Linux. Sim mode
-([#1337](https://github.com/rask-lang/rask/pull/1337)) adds a fourth shape: it
-builds without `green.c` and passes a baton between OS threads. With fibers,
-sim is the real scheduler with one worker and a seeded pick of the next fiber,
-so the deterministic tests run the code that ships.
-
-### The bench
-
-1. **Sim over many seeds.** Every concurrency and panic suite file, with the
-   deadlock report and a replay line on failure. `rask test --sim` is most of it.
-2. **The thread-count soak.** Real runtime, reads `/proc/self/task`, fails the
-   moment the count passes the worker count.
-3. **Fiber-aware checkers.** The runtime under TSan, with each switch announced
-   (`__tsan_switch_to_fiber`), and fiber stacks registered with valgrind so
-   `tests/memcheck_gate.sh` doesn't drown. This is the leg that catches deque
-   races.
-4. **Hostile cases.** Overflow on a fiber stack hits a guard page and panics
-   instead of segfaulting. A C call made from a fiber stack. A fiber that moves
-   workers mid-function still sees its own `errno` and runtime thread-locals.
-   `RASK_POISON_STACK` covers each new fiber stack.
-5. **Both architectures.** `fiber_switch` is assembly per target. Linux CI is
-   x86_64 and the macOS job is aarch64, but that job only builds and links one
-   program today. The fiber tests have to run there too. **Switch done:**
-   `tests/fiber_gate.sh` checks every callee-saved register and the float
-   control state across switches on x86_64 and, under qemu, aarch64 Linux, in
-   CI; deleting any one register's save makes it fail. Running whole programs
-   on macOS waits on the kqueue poller.
-
-### Order
-
-1. Bench legs 2 and 3, failing on today's runtime. Done: the soak held 1 of
-   5 programs in budget on the thread-per-join runtime, and `tests/tsan_gate.sh`
-   was clean. Both run in CI as `gates-concurrency`.
-2. Cooperative fibers. **Done on Linux:** a task parks in join, channel, lock
-   and sleep, and on a socket (one idle worker sleeps in `epoll_wait` as the
-   poller); the join helper threads are gone; the soak holds 6 of 6, including
-   a hundred idle connections on two workers, and TSan is clean with every
-   switch annotated. A started fiber stays on its worker
-   (`conc.runtime/S3a`). The dead poll-function path is deleted
-   ([#1336](https://github.com/rask-lang/rask/issues/1336)). Still to go in
-   this step: macOS, which needs a kqueue backend before `green_threads.c` can
-   go. Files and stdin still block their worker (that waits on io_uring). The
-   aarch64 switch runs under qemu in the fiber gate.
-3. Sim on fibers, replacing the baton. **Done:** every sim task is a fiber on
-   the test's own thread, so a sim run is one OS thread however many tasks it
-   spawns, and the switch, stacks and per-task state swap that ship are what
-   the sim gate exercises.
-4. Preemption. **Done:** a SIGURG timer marks a fiber past its 10 ms budget,
-   and codegen checks for that at every function entry and loop back edge, so
-   a loop that never calls anything still yields (`conc.runtime/P2`). The
-   interpreter hands its worker slot over at the same budget. Test: a task
-   spinning on a flag another task sets finishes on one worker
-   (`tests/suite/t_preemption.rk`).
-
-### Bugs in the theme
-
-What the bench finds joins this list. Fixed in #1344: #1311 (the closure form
-of a blocking `Shared` access is rejected, E0900), #1335 (`rask compile` hung
-on a reassigned closure), #1342 (select parks), #1353 (a blocked receive held
-its worker), #1302 (a box inside a box leaked), #830 (a link
-captured by `spawn` is rejected, E0901), #891 and #1288 (a group of handles
-runs natively, and is plain Rask: a linked list of handles, the shape anyone
-holding a run-time count of linear values writes; the uncallable free
-`join_all`/`select_first` are gone), #890 (its
-program is a compile error now, E0882), #1354 (a deadlock is reported instead
-of hanging), and five found on the way: an
-`ensure` running after its value was consumed, past the 256th ensure and after
-a `join` whose result returned early; E0353 on recursion through a spawned
-closure; the interpreter skipping every `ensure` inside a `using` or `with`
-block; and a `Thread` handle freed twice by `ensure t.detach()` after its
-join. Writing the group in Rask turned up more: matching a borrowed value
-demanded its parts be consumed (E0899 now covers giving one away), `Heap(x)`
-didn't move `x`, a `break` didn't count as consuming, a generic list inside a
-generic struct got a one-word slot and freed nothing, a generic `take self`
-didn't cancel its `ensure`, `Vec.reverse` overflowed on wide elements, a
-vector returned past an `ensure` was never freed, and the interpreter lost
-track of a resource stored into `mutate self` or closed by an empty method.
-Then the handle types went from two to one: `spawn`, `Thread.spawn` and
-`ThreadPool.spawn` all return `Handle<T>`, and one `Handles<T>` (`new`, `add`,
-`join_all`, `detach`) replaces `TaskGroup` and `ThreadGroup`. `cancel` works on
-threads and pool jobs now, and `cancelled()` works at all: the interpreter
-always said false, and native couldn't compile a call to it.
-Fixed in #1376: #1357 (a `Vec<T or E>` freed its error payloads), #1356 (a
-closure holding a link or a `Local` box is refused at spawn however it gets
-there), #1371 (cancel wakes a simulated socket), #1375 (sim resets module
-state per test), #1377 (native `read_http_request`), #1378 (the interpreter
-runs `http.rk` instead of a Rust copy), and a loop that rebuilt a
-value from itself releasing the old one early, which crashed
-`cli_calculator` once preemption moved its stack frame. #298 and #299 close:
-#298's last case was a `Pool` container, and `Pool` is gone.
-
-Ships open:
-
-- [#1218](https://github.com/rask-lang/rask/issues/1218): rare double free, two
-  tasks over one `Shared` plus a channel. It wouldn't reproduce on demand.
-- macOS runs tasks on threads until it has a kqueue poller.
-
-## v0.6 — The stdlib matches its own spec — **shipped 2026-10-22**
-
-**Done when the stdlib coverage gate reads 100% for every module.**
-
-The gate is `tests/stdlib_coverage_gate.sh`, over `rask stdlib-coverage`. Each
-stdlib spec states what it promises in `<!-- surface -->` blocks, body-less
-declarations in the shape `stdlib/*.rk` uses. A promised function counts once
-`stdlib/*.rk` declares it public with that signature and a suite program that's
-green on both backends calls it. It reaches 100% by being implemented or by the
-spec dropping it. Open gaps are registered in `tests/known_stdlib_gaps.txt`, and
-v0.6 ships when that file is empty.
-
-The per-module percentages [TODO.md](TODO.md) used to carry were typed by hand
-and checked by nobody. Two of the gaps they listed, `SystemTime` and
-`UdpSocket`, had already shipped.
-
-**Shipped at 855 of 855 promised items, `std.bytes` included; the gap registry is empty.** The last
-five took two pieces of real work: one size model, so `reflect.size_of` and
-`is_copy` agree with each other and with codegen (#791), and string views that
-share their source, so a slice's `.span()` knows where it was cut (#492). TLS
-left the stdlib for a package ([specs/packages/tls.md](specs/packages/tls.md)).
-
-[#726](https://github.com/rask-lang/rask/issues/726) ·
-[#980](https://github.com/rask-lang/rask/issues/980)
+- **v0.3, memory is settled** (2026-09-18). `tests/leak_gate.sh` at 0. The gate
+  runs suite files as `test` blocks, so a leak that only shows in `main` is
+  invisible to it (#1213 lived there). `tests/memcheck_gate.sh` came with it and
+  found a live bug in its first minute. #882 stays open for one cell: a resource
+  crossing a task boundary when the task panics.
+- **v0.4, a value works in every position** (2026-09-22). `tests/matrix/run.sh`
+  green. The lesson: the holes were never a wrong rule, always a position nobody
+  had listed, and crossed cells were caught by fixing uncrossed ones.
+- **v0.5, concurrency you can trust** (2026-09-30). Fibers, sim on fibers,
+  preemption, TSan, soak. Shipped open: #1218 (rare double free, two tasks over
+  one `Shared`, won't reproduce on demand) and macOS, which runs tasks on
+  threads until it has a kqueue poller. Neither has moved; there is still no
+  kqueue code in `compiler/runtime/`.
+- **v0.6, the stdlib matches its own spec** (2026-10-22). Coverage gate at 100%
+  with an empty gap registry. It has grown since, from 855 promised items to 873,
+  and stays at 100%.
 
 ## Next: v0.7 — Each fact has one owner
 
 **Done when `cargo test -p rask-cli --test one_owner_sites` reads every
-ratchet at its target. Today: 424 sites restate a fact, 417 to go.**
+ratchet at its target. Today: 222 sites restate a fact, 215 to go. Same as
+2026-11-16.**
 
-Most bugs here are one thing: a fact an earlier pass already knew, worked out
-again later from a name, a spelling or a hand-kept list, and drifting. The rule
-is that each fact has one owner, the earliest stage that knows it, and flows
-down as data. v0.6 ran into it at every turn: the stdlib declared its methods
-once and codegen kept a second table of them, the checker's call rewrites
-reached the program's copy of the stdlib but not the copy it compiles
-(#1621), and layout sizes opaque handles from a hand list (#1592).
-
-The audit is [#1570](https://github.com/rask-lang/rask/issues/1570). Its gate
-was "every listed issue closed", which is a list, and this file says a version
-is a number. So the number is the test: one ratchet per kind of restatement,
-each pinned at today's count, each with the count it has to reach.
+The rule is that each fact has one owner, the earliest stage that knows it, and
+flows down as data. Most bugs in this compiler are one fact worked out twice and
+drifting. The audit is [#1570](https://github.com/rask-lang/rask/issues/1570).
 
 | Restated fact | Today | Target | Issue |
 |---|---|---|---|
-| MIR or codegen asks a name what it is (`ends_with`/`starts_with` on a callee or type) | 29 | 0 | #1564, #1566 |
-| Method names the checker answers by matching the name instead of reading a declaration or interface | 26 | 0 | #1561, #1565 |
-| `_Any` wildcards that skip argument checks | 4 | 0 | #1561 |
-| Rows in `INTERNAL_SPELLINGS`, `TRANSFERS_OUT`, `BORROWS_ITS_CALLBACK` | 89 | 0 | #1564, #1565 |
-| Hand-written codegen dispatch entries (`internal_entries`) | 238 | 0 | #1555, #1565 |
-| Public entry points into the passes | 14 | 7 | #1568 |
-| Interpreters run without the driver's setup (`prepare_interpreter`) | 4 | 0 | #1568 |
-| Size or alignment computed outside the layout model | 5 | 0 | #1567 |
-| Readers of the pointer-width process global | 15 | 0 | #1568 |
+| Hand-written codegen dispatch entries (`internal_entries`) | 209 | 0 | #1555 |
+| Public entry points into the passes | 13 | 7 | #1568 |
+| Name sniffs in MIR and codegen | 0 | 0 | done |
+| Method names the checker answers by hand | 0 | 0 | done |
+| `_Any` wildcards in the checker | 0 | 0 | done |
+| MIR metadata rows keyed by spelling | 0 | 0 | done |
+| Interpreters run without the driver's setup | 0 | 0 | done |
+| Size or alignment computed outside the layout model | 0 | 0 | done |
 
-A ratchet at its target gets deleted, and the thing that made the sites
-impossible stays: a Cargo dependency that can't reach the old answer, or a type
-that can't hold it. The Cargo graph is the strongest guard there is. Once
-`rask-codegen` depends on `mir` and `mono` only, nothing in it can reach back
-for a checker type by accident, and no grep test has to say so.
+**The number didn't move across eleven merges, and that's the finding.** The
+week's work was real one-owner work: lowering reads callee signatures from the
+checker's resolved call (#1988), asks the checker what type a name has instead
+of guessing it from the code (#1994), and every call carries what it does with
+its arguments (#1979). #1565 closed. None of it is counted, because six of the
+eight ratchets were already at zero and the two that aren't measure something
+else. So 209 of the 215 sites left are one issue, #1555, and the rest is six
+entry points.
 
-**Order.** Not #1570's own; two things moved.
+By the cadence rule below, a number that stops moving means the theme is too
+wide. I don't think that's it here. The theme is fine; the ratchets have run
+out of things to count except the one big table. What's left is narrow: #1555.
 
-1. The crate split, in two halves.
+**Order.**
 
-   `rask-diagnostics` converts every crate's errors, so it depends on them
-   all, and MIR depends on it, so MIR and codegen are compiled against the
-   interpreter. Split it into a core (spans, codes, formatter) and move each
-   `ToDiagnostic` into the crate whose error it converts. Mechanical, and
-   it's what makes the layering in #1568 enforceable.
+1. **#1555.** MIR states what an assignment and a runtime call do; codegen
+   translates. 209 of 215 sites, and it's the last thing #1556 (comptime on the
+   MIR interpreter, the likely v0.8) waits on. The prerequisites it needed are
+   in: calls carry their callee symbol and a `CallShape`, and stdlib facts live
+   on the `.rk` declarations. Method: tally which rows the corpus hits, move
+   each into lowering, delete the row, lower the ratchet.
+2. **#1568**, the six extra pass entry points. Small and separate; a good lane
+   beside #1555.
+3. **#1569** any time.
 
-   Then the facts about the language, as opposed to facts about a program:
-   the operator table, the keyword list, the stdlib's declarations, the
-   runtime's constants and C signatures. Nobody computes these, so each is
-   stated once and read by every stage. They can't share one crate, because
-   reading the stdlib's declarations takes the parser and the parser needs
-   the keywords. So there are two homes, split by that line: what the
-   lexer, parser and desugarer need lives in `rask-ast` (keywords, binding
-   powers, the methods operators desugar to), and what is declared in Rask
-   lives in `rask-stdlib`, which parses `stdlib/*.rk` once and hands out
-   tables. Most of this was already true when step 1 started; the runtime
-   constants are generated into `rask_abi.h` from one Rust list. The
-   operator interfaces were the last copy: `OPERATOR_TRAITS` restated
-   `ops.rk` with nothing checking them, and `rask_stdlib::operators` now
-   reads the file. Facts about a program (a `Type`, a layout, a callee) are
-   a stage's output and stay with the stage that produces them; only their
-   shapes are shared.
+**Off the critical path.** Work left under the other issues that no ratchet
+counts. It doesn't hold v0.7, by the same rule that keeps bugs outside the theme
+out of it. Each either gets a ratchet or gets done; it doesn't get to stall the
+number.
 
-   What stops the drift is the dependency direction, not where the tables
-   live. `crate_layers` (`rask-cli/tests`) holds the graph: diagnostics
-   depends on the AST alone, and mono, MIR and codegen can't reach the
-   interpreter. Each later step that takes a crate's reach away adds its
-   edge there.
-2. **#1561** before anything is handed down. Every later step is "carry the
-   checker's answer to the next pass". If the checker's answer for
-   `Vec.capacity` comes from a table that says `u64` while `collections.rk`
-   says `usize?`, a pipe just delivers the wrong fact faster. The `.rk`
-   declaration becomes the only source first.
-3. The rest of **#1568**: the LSP and spec-test front ends, the interpreter
-   setups, the config built fifteen times, and node ids. Every tool readies
-   its interpreter with `rask_compiler::prepare_interpreter` now, from the
-   `cfg` the check recorded; what's left runs on declarations nothing
-   checked (build scripts, spec-test). `rask comptime` checks first now and
-   builds its evaluator the way the compile does.
-4. **#1566 + #1567.** The checker records what it decided per node (which
-   variant a pattern names, which side a return goes to, that a call was an
-   operator), and layout moves into its own crate. That needs the `Type`
-   data apart from the checker, since the checker reads sizes for the copy
-   rule and layout reads `Type`. Done: `rask-types` holds `Type` and
-   `TypeDef` on the AST alone, the checker is `rask-check`, and layout is
-   `rask-layout`, which the checker reads. Layout still computes from the
-   written declarations, not from `TypeDef`; that's next. The crate takes `Type`, type
-   definitions whose fields are already `Type`s, and a `Target`; the copy
-   rule, mono, MIR, codegen, the interpreter's `reflect` and miri all read it.
-   `compiler/CLAUDE.md` calls `rask_layout` "the one size model"
-   today; it will be right once the other five answers are gone. The
-   pointer-width global goes here too, not in step 3: most of its fifty-odd
-   readers are `MirType::size()` and `LayoutCache::new()`, which this step
-   replaces, so threading a `Target` through them first would be done twice.
-5. **#1564 + #1565.** A call carries its callee's identity and signature;
-   stdlib facts live only on the `.rk` declarations. #1656 is the first
-   consumer of that flow and a good proof it works, but not a gate.
-6. **#1555.** MIR states what an assignment and a runtime call do; codegen
-   translates. That's what v0.8 needs.
-7. **#1569** any time, and a good lane for a session that shouldn't touch
-   the middle of the pipeline.
+- #1564: the closure analysis still reads callee bodies
+  (`build_callee_escape_map` in `rask-mir/src/closures.rs`) to decide whether a
+  closure passed to a function can escape through it. Replacing it with the
+  parameter mode waits on a design answer: may a function store a closure it
+  only borrowed? Today it may, because a closure is Copy, so "borrowed" doesn't
+  promise "not kept".
+- #1566, #1567: small leftovers (a `catch` arm picks its side by type; mono
+  re-resolving field syntax).
+- `rask-codegen` and `rask-mir` still depend on `rask-check`. Taking that edge
+  away is what makes the layering hold without a grep test; `crate_layers`
+  gets the edge when it goes.
 
-**Cut: #1556.** Running comptime on the MIR interpreter is a new evaluator,
-not a copy removed, and it sits at the end of the longest chain here. It's the
-natural theme for v0.8, and step 6 is the last thing it waits on.
+**How each PR goes.** Tally which fallback answers on the whole corpus, close
+the gap upstream, delete the fallback, lower the ratchet. A PR that adds the new
+field and leaves the old sniff beside it "for now" doesn't merge.
 
-**How each PR goes.** The method is the one #425 used: tally which fallback
-answers on the whole corpus, close the gap upstream, delete the fallback, lower
-the ratchet. A PR that adds the new field and leaves the old sniff beside it
-"for now" is the shape this version exists to remove, so it doesn't merge.
-`expr.rs` is eleven thousand lines; it gets shorter by deletion, not rewritten.
+## What came off this list since the last pass
 
-**Lanes.** Three at most, partitioned by which fact they own, with `main`
-merged in daily. The seven-lane run in [PLAN.md](PLAN.md) cost seven
-collisions, four of them caught by nothing. Lane A owns structure (steps 1, 3
-and 7: `rask-compiler`, `rask-diagnostics`, `rask-lsp`, `rask-ast`). Lane B
-owns the checker as source of truth (step 2 and the checker half of 4). Lane C
-owns layout (the mono half of 4). Step 5 waits for B.
+- **v0.7 steps 1–5 are done or done enough not to lead.** #1565 closed
+  (stdlib facts live on declarations; `func_sigs`, `is_io_source` and
+  `elem_strs::CTORS` are gone). Callee identity is by resolved symbol. The
+  crate split has its `crate_layers` test. What's left of them is listed above
+  as off the critical path.
+- **#1561's ratchets are at zero.** Both bugs it was filed for now fail to
+  check: `"s".contains(5)` is a type mismatch and `Duration.from_millis` is
+  "no method". The issue is open on its notes about `Iterator` return types
+  and SIMD, not on checker tables.
+- **Two of three leaks:** #1902 and #1927 have suite files that run leak-clean,
+  and `known_leaks.txt` holds only #1609. That was already true at the last
+  pass; this file still counted three. Both issues are still open.
+- **#1834**, `T or E` match arms routed by name, is closed.
+- **#1601**, an imported `File` closed twice natively, is fixed by resolving
+  calls by symbol. `t_fs_handle_imported_ensure.rk` came off both the
+  divergence and memcheck ledgers.
 
-Bugs found inside the theme join it. Already filed and the same shape: #1553
-(the stdlib collected twice), #1592, #1610 (a hand list of typed modules) and
-#1621.
+Ordering changed: #1555 leads now, where it was step 6. Steps 2–5 were ahead of
+it because each delivered a fact #1555 needed, and they've delivered it.
 
 ## Cadence
 
@@ -587,7 +218,7 @@ scheduled — only earned. What has to be true first:
   consecutive releases, measured with `git log specs/` rather than by feel. This
   is the real gate and the others are downstream of it: a language is 1.0 when
   it has stopped changing, not when it is popular.
-- Every design question closed rather than deferred. Twenty are open, and each
+- Every design question closed rather than deferred. Eighteen are open, and each
   one is a spec that hasn't stopped moving yet.
 - The stdlib at 100% of its own spec, measured.
 - No untracked bugs, and nothing registered red without an issue and a decision.
@@ -610,7 +241,7 @@ Don't plan past the next two versions. v0.9's contents are fiction today.
 
 ## Not in any version
 
-**Design questions** — twenty open issues. They're upstream of features, they
+**Design questions**: eighteen open issues. They're upstream of features, they
 have no gate, and putting them in a version is how a version stops closing. Work
 them between releases, or when one blocks a scheduled feature, and say which.
 

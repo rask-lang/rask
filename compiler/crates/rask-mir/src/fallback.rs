@@ -190,6 +190,16 @@ pub fn unknown_type(site: &'static str) -> MirType {
     MirType::I64
 }
 
+/// A pattern reached lowering with no `PatternTarget`: whoever built it
+/// after checking didn't say what it means. Fails the enclosing function's
+/// lowering like `unknown_type`; the caller's answer is thrown away.
+pub fn unresolved_pattern(site: &'static str) {
+    HITS.with(|h| *h.borrow_mut().entry(site).or_insert(0) += 1);
+    if trace() {
+        eprintln!("[type-fallback] {site}: a pattern has no checker record");
+    }
+}
+
 /// True when the guess-and-continue escape hatch is set.
 pub fn fallback_allowed() -> bool {
     std::env::var_os("RASK_ALLOW_TYPE_FALLBACK").is_some()

@@ -194,7 +194,7 @@ import c "mylib.h"                              // 1. in the source
 ```
 ```rask
 func build(ctx: BuildContext) {
-    ctx.compile_c(["mylib.c"], ["-O2"])         // 2. in build.rk
+    ctx.compile_c(["mylib.c"], ["-O2"])!         // 2. in build.rk
 }
 ```
 

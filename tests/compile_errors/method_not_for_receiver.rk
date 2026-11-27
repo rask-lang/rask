@@ -1,0 +1,43 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Rejects: a method whose `extend` header doesn't fit the receiver (std.reflect/R5)
+//
+// `flatten` is declared on `Vec<Vec<T>>` and on `Sequence<Sequence<U>>`, and
+// `to_map` on `Sequence<(K, V)>`. A receiver that fits none of those headers
+// has no such method. The lookup fell through to the stdlib's flat list of
+// stubs, which doesn't read headers, so these compiled (#2045).
+//
+// One marker per rejection, on the line the compiler points at.
+
+import sequence.Sequence
+
+func nested(rows: Vec<Vec<i64>>) -> i64 {
+    // ERROR: no method `flatten` on `Sequence<Vec<i64>>` [E0981]
+    let s = rows.as_sequence().flatten()
+    mut n = 0
+    for x in s { n += x }
+    return n
+}
+
+func not_pairs(xs: Vec<i64>) -> i64 {
+    // ERROR: no method `to_map` on `Sequence<i64>` [E0981]
+    let m = xs.as_sequence().to_map()
+    return m.len().to<i64>()!
+}
+
+func ranges() -> Sequence<Sequence<i64>> {
+    return |yield| {
+        if !yield((0..3).as_sequence()) { return }
+        if !yield((5..7).as_sequence()) { return }
+    }
+}
+
+// The headers that do fit.
+func legal(grid: Vec<Vec<i64>>, xs: Vec<i64>) -> i64 {
+    mut n = 0
+    for x in grid.flatten() { n += x }
+    for x in ranges().flatten() { n += x }
+    let m = xs.as_sequence().map(|x| (x, x * 2)).to_map()
+    return n + m.len().to<i64>()!
+}
+
+func main() {}

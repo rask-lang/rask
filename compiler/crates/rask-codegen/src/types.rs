@@ -6,29 +6,27 @@ use cranelift::prelude::*;
 use rask_mir::MirType;
 use crate::CodegenResult;
 
-/// The MIR type of a type written in an extern function signature.
+/// The MIR type of a checked type in an extern function signature.
 ///
-/// Handles primitive types and raw pointers used in FFI declarations.
-/// Not a full type resolver — only covers types valid in extern "C" signatures.
-pub fn extern_type_to_mir(ty: &rask_ast::ty::TypeExpr) -> MirType {
-    use rask_ast::ty::TypeExpr;
+/// Handles primitive types and raw pointers used in FFI declarations. A C
+/// scalar name (`c_int`) and an alias of one have been resolved to the
+/// primitive by the checker. Anything else crosses as a word.
+pub fn extern_type_to_mir(ty: &rask_types::Type) -> MirType {
+    use rask_types::Type;
     match ty {
-        TypeExpr::RawPtr(_) => return MirType::RawPtr,
-        TypeExpr::Unit | TypeExpr::NoReturn => return MirType::Void,
-        _ => {}
-    }
-    match ty.bare_name().unwrap_or_default() {
-        "i8" => MirType::I8,
-        "i16" => MirType::I16,
-        "i32" => MirType::I32,
-        "i64" => MirType::I64,
-        "u8" => MirType::U8,
-        "u16" => MirType::U16,
-        "u32" => MirType::U32,
-        "u64" => MirType::U64,
-        "f32" => MirType::F32,
-        "f64" => MirType::F64,
-        "bool" => MirType::Bool,
+        Type::RawPtr(_) => MirType::RawPtr,
+        Type::Unit | Type::Never => MirType::Void,
+        Type::I8 => MirType::I8,
+        Type::I16 => MirType::I16,
+        Type::I32 => MirType::I32,
+        Type::I64 => MirType::I64,
+        Type::U8 => MirType::U8,
+        Type::U16 => MirType::U16,
+        Type::U32 => MirType::U32,
+        Type::U64 => MirType::U64,
+        Type::F32 => MirType::F32,
+        Type::F64 => MirType::F64,
+        Type::Bool => MirType::Bool,
         _ => MirType::I64, // default to pointer-sized
     }
 }

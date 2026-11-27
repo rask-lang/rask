@@ -31,13 +31,10 @@ void rask_fiber_destroy(RaskFiber *f);
 // switches back to `from`.
 void rask_fiber_switch(RaskFiber *from, RaskFiber *to);
 
-// Call first thing in a fiber's entry function.
-void rask_fiber_started(void);
+// Call first thing in a fiber's entry function, with the fiber.
+void rask_fiber_started(const RaskFiber *self);
 
 // The last switch off a fiber that will never be resumed.
 _Noreturn void rask_fiber_switch_final(RaskFiber *from, RaskFiber *to);
-
-// Whether `addr` is in `f`'s guard page — a stack overflow.
-int rask_fiber_in_guard(const RaskFiber *f, const void *addr);
 
 #endif // RASK_FIBER_H

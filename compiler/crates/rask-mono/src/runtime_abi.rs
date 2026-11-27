@@ -31,6 +31,9 @@ runtime_constants! {
     /// Where a `T or E` keeps the source line its error came from: a
     /// `uint32_t`, zero for none (`rask_types::abi`).
     RASK_RESULT_ORIGIN_LINE_OFFSET = rask_types::abi::RESULT_ORIGIN_LINE_OFFSET as i64;
+    /// Where it keeps the file: a `uint64_t`, the file's index in
+    /// `rask_origin_files` plus one, zero for none.
+    RASK_RESULT_ORIGIN_FILE_OFFSET = rask_types::abi::RESULT_ORIGIN_FILE_OFFSET as i64;
 
     /// How the runtime reads one element of a vector it formats or sorts. The
     /// vector only records a width, and a four-byte element could be an i32,
@@ -82,15 +85,6 @@ runtime_constants! {
     /// it freezes into `bytes` without moving.
     RASK_STRING_HEADER_SIZE = 16;
 
-    /// What a box's payload is, so the box's last release can give it back.
-    RASK_BOX_PAYLOAD_NONE = 0;
-    RASK_BOX_PAYLOAD_VEC = 1;
-    RASK_BOX_PAYLOAD_MAP = 2;
-    /// A closure block (#1253).
-    RASK_BOX_PAYLOAD_CLOSURE = 3;
-    /// Another box: freed through its own header (#1302).
-    RASK_BOX_PAYLOAD_BOX = 4;
-
     /// An owned-entry word: the byte offset in the low 28 bits, the kind in
     /// the top 4.
     RASK_OWNED_KIND_SHIFT = 28;
@@ -105,6 +99,20 @@ runtime_constants! {
     RASK_OWNED_HEAP = 6;
     /// The value here is described by the list being walked, from its start.
     RASK_OWNED_SELF = 7;
+    /// A link inside the element: owns nothing, but the rack has to find it
+    /// to null it when its node is deleted (`Vec<Cursor>`, #1804).
+    RASK_OWNED_LINK = 8;
+    /// A handle that frees itself (`@handle(release: …)`). The entry's offset
+    /// bits hold two things: the byte offset below
+    /// `RASK_OWNED_HANDLE_INDEX_SHIFT`, and above it the handle's index in
+    /// `RASK_HANDLE_RELEASES`.
+    RASK_OWNED_HANDLE = 9;
+    RASK_OWNED_HANDLE_INDEX_SHIFT = 20;
+    RASK_OWNED_HANDLE_OFFSET_MASK = 0xF_FFFF;
+    /// The element *is* a link (`Vec<Link<T>>`, a `Map` of them): the whole
+    /// list, alone. Owns nothing; it lets a container that arrives whole, a
+    /// clone above all, record its own edges (#1972).
+    RASK_OWNED_ELEM_LINK = 10;
 
     /// Word indexes into a vtable (`rask_mir::vtable_layout`): the concrete
     /// value's size and alignment, which size an interface box's block, and
@@ -139,6 +147,11 @@ runtime_constants! {
     RASK_JSON_ERR_PARSE = 1;
     RASK_JSON_ERR_TYPE = 2;
     RASK_JSON_ERR_MISSING = 3;
+    RASK_JSON_ERR_REFUSED = 4;
+
+    /// Which text of a failed decode `rask_json_error_message` hands back.
+    RASK_JSON_TEXT_MESSAGE = 0;
+    RASK_JSON_TEXT_PATH = 1;
 
     /// A decode shape's kind.
     RASK_JSHAPE_BOOL = 0;
@@ -164,8 +177,8 @@ runtime_constants! {
     RASK_JSHAPE_MAP = 16;
     RASK_JSHAPE_OPT = 17;
     RASK_JSHAPE_STRUCT = 18;
-    /// An enum: a tag, and per variant a struct of its payload. Claims build
-    /// these; JSON's enum form is still open (std.json).
+    /// An enum: a tag, and per variant its wire name and a struct of its
+    /// payload, tagged as std.encoding/E22–E24 write it.
     RASK_JSHAPE_ENUM = 19;
     /// A `T or E`: the tag, and the `T` or the `E` at the payload. Claims
     /// build these; JSON has no form for a result.
@@ -173,6 +186,11 @@ runtime_constants! {
     /// A type that builds itself through `claims.Generate`: the shape holds
     /// the function that calls its `generate`. Claims only.
     RASK_JSHAPE_GENERATED = 21;
+    /// A type that decodes through its own `decode` (std.encoding/E12b): the
+    /// shape of what `decode` reads, and the function that calls it.
+    RASK_JSHAPE_CUSTOM = 22;
+    /// `[T; N]`: N elements of one shape, back to back in place.
+    RASK_JSHAPE_ARRAY = 23;
 
     /// A decode shape field flag: `@no_serialize`, never read from the input.
     RASK_JFIELD_NOT_SERIALIZED = 1;
@@ -215,8 +233,25 @@ pub fn abi_header() -> String {
             out.push_str(&format!("#define {name} {value}\n"));
         }
     }
+    // The releases a `RASK_OWNED_HANDLE` entry
+    // indexes, as an X-macro the runtime builds its table from: every stdlib
+    // type's `@handle(release: …)`, in `handle_release_index` order.
+    out.push_str(
+        "\n// Every stdlib handle's declared release, in index order: what a\n\
+         // `RASK_OWNED_HANDLE` entry calls.\n\
+         #define RASK_HANDLE_RELEASES(X)",
+    );
+    for release in rask_stdlib::handles::declared_releases() {
+        out.push_str(&format!(" \\\n    X({release})"));
+    }
+    out.push('\n');
     out.push_str("\n#endif\n");
     out
+}
+
+/// A declared release's index in `RASK_HANDLE_RELEASES`.
+pub fn handle_release_index(release: &str) -> Option<i64> {
+    rask_stdlib::handles::declared_releases().iter().position(|r| *r == release).map(|i| i as i64)
 }
 
 #[cfg(test)]

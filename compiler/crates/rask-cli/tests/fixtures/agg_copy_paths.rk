@@ -16,15 +16,15 @@ func find(hit: bool) -> Big? {
 
 func main() {
     let present: Big? = find(true)
-    if present? {
-        println("{present.a} {present.b} {present.c}")
+    if present? as p {
+        println("{p.a} {p.b} {p.c}")
     } else {
         println("none")
     }
 
     let absent: Big? = find(false)
-    if absent? {
-        println("{absent.a} {absent.b} {absent.c}")
+    if absent? as q {
+        println("{q.a} {q.b} {q.c}")
     } else {
         println("none")
     }

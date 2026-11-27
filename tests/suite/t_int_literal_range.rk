@@ -5,7 +5,7 @@
 // type it ended up in. `i64::MIN` couldn't be written at all — the lexer typed
 // 9223372036854775808 as u64 (only place it fits) and unary minus then had
 // nothing to bind to, so `-9223372036854775808` asked for `neg` on a u64. And
-// an unsuffixed literal too big for the i32 default kept only its low 32 bits
+// an unsuffixed literal too big for the old i32 default kept only its low 32 bits
 // natively while the interpreter kept all of them: `let d = 3000000000`
 // printed 3000000000 interpreted and -1294967296 compiled.
 
@@ -33,7 +33,7 @@ test "an unsuffixed literal too big for i32 widens instead of wrapping" {
     assert "{big}" == "9223372036854775807"
 }
 
-test "the i32 default still holds where it fits" {
+test "the i64 default holds small values too" {
     let g = 300
     assert "{g}" == "300"
     let n = -5

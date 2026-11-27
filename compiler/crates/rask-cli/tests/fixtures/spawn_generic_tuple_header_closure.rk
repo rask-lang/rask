@@ -17,7 +17,7 @@ extend Pairs<(K, V)> {
     func second(self) -> func() -> i64 {
         let (k, v) = self.item
         return || {
-            let y = v
+            look(v)
             return 1
         }
     }
@@ -33,6 +33,9 @@ func main() {
         let f = p.second()
         println("before")
         let t2 = spawn { f() }
-        println("{t2.join()!}")
+        t2.detach()
     }
 }
+
+// Reads its argument without keeping it, so the closure captures it.
+func look<T>(x: T) {}

@@ -12,6 +12,7 @@ rask-comptime = { path = "../rask-comptime" }
 rask-lexer = { path = "../rask-lexer" }
 rask-parser = { path = "../rask-parser" }
 rask-types = { path = "../rask-types" }
+rask-resolve = { path = "../rask-resolve" }
 rask-layout = { path = "../rask-layout" }
 rask-check = { path = "../rask-check" }
 rask-stdlib = { path = "../rask-stdlib" }
@@ -29,6 +30,11 @@ unicode-width = "0.2"
 # (conc.async/CN3) instead of the wait checking for one on a timer.
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+# Compiles the runtime's math.c and CORE-MATH so both backends compute the
+# same float bits (build.rs).
+[build-dependencies]
+cc = "1"
 
 [dev-dependencies]
 rask-desugar = { path = "../rask-desugar" }

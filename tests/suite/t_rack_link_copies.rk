@@ -1,0 +1,64 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// Every place a link is stored is an edge the rack has to know about, however
+// it got there: an array element written by index, or a copy of a struct.
+// Native recorded neither (#1795).
+//
+// The interpreter still misses them (#1803), so this file runs natively only.
+import memory.Link
+import memory.Rack
+
+struct Leaf {
+    id: i32
+}
+
+struct Arr {
+    id: i32
+    to: [Link<Leaf>?; 2]
+}
+
+struct Cursor {
+    at: Link<Leaf>?
+}
+
+func main() {}
+
+test "an array element written by index moves its edge" {
+    mut leaves: Rack<Leaf> = Rack.new()
+    mut nodes: Rack<Arr> = Rack.new()
+    let a = leaves.insert(Leaf(id: 1))
+    let b = leaves.insert(Leaf(id: 2))
+    let h = nodes.insert(Arr(id: 1, to: [a, none]))
+    h.to[0] = b
+    leaves.delete(a)
+    if h.to[0]? as p {
+        assert p.id == 2
+    } else {
+        assert false
+    }
+    leaves.delete(b)
+    assert h.to[0] is none
+}
+
+test "an array element written by a computed index moves its edge" {
+    mut leaves: Rack<Leaf> = Rack.new()
+    mut nodes: Rack<Arr> = Rack.new()
+    let a = leaves.insert(Leaf(id: 1))
+    let h = nodes.insert(Arr(id: 1, to: [none, none]))
+    for i in 0..2 {
+        h.to[i] = a
+    }
+    leaves.delete(a)
+    assert h.to[0] is none
+    assert h.to[1] is none
+}
+
+test "a copy of a struct holding a link is an edge of its own" {
+    mut leaves: Rack<Leaf> = Rack.new()
+    let a = leaves.insert(Leaf(id: 1))
+    let c = Cursor(at: a)
+    let c2 = c
+    leaves.delete(a)
+    assert c.at is none
+    assert c2.at is none
+}

@@ -98,8 +98,31 @@ pub const COMPILER_ATTRS: &[(&str, ArgForm, Writer)] = &[
     // comp.effects/FX1)
     ("grows", ArgForm::Exprs, Writer::Stdlib),
     ("shrinks", ArgForm::Exprs, Writer::Stdlib),
+    // Moves elements to other slots without changing how many there are
+    // (`sort`, `swap`, `reverse`): a place held inside the receiver names a
+    // different element afterwards (mem.borrowing/W2)
+    ("reorders", ArgForm::Exprs, Writer::Stdlib),
     ("drops_elements", ArgForm::Exprs, Writer::Stdlib),
     ("copies_elements", ArgForm::Exprs, Writer::Stdlib),
+    // A sequence terminal that keeps the items it's handed (`to_vec`,
+    // `reduce`), or the one it answers with (`find`, `max_by_key`). Callers
+    // may hand it only items the chain owns (type.sequence/SEQ47), so its
+    // body may keep its receiver's.
+    ("keeps_items", ArgForm::Exprs, Writer::Stdlib),
+    ("picks_item", ArgForm::Exprs, Writer::Stdlib),
+    ("moves_out", ArgForm::Exprs, Writer::Stdlib),
+    // The last argument is a node going into a rack's storage, so the call
+    // carries the node type's layout (mem.racks)
+    ("places_node", ArgForm::Exprs, Writer::Stdlib),
+    // The C call's arguments in order, when it takes facts about a type
+    // parameter the program never wrote: `@runtime_args(size(T), n, desc(T))`
+    ("runtime_args", ArgForm::Exprs, Writer::Stdlib),
+    // An interface a type has by having its methods, with no
+    // `implements` block: `Error`, `Displayable`, `Debug`, `Hashable`
+    // (type.generics/G1, std.fmt/D5)
+    ("by_shape", ArgForm::Exprs, Writer::Stdlib),
+    // The call runs its closure argument to completion and keeps nothing of it
+    ("eager_callback", ArgForm::Exprs, Writer::Stdlib),
     ("blocks", ArgForm::Exprs, Writer::Stdlib),
     ("prints", ArgForm::Exprs, Writer::Stdlib),
     ("ambient", ArgForm::Exprs, Writer::StdlibOrExtern),
@@ -109,6 +132,11 @@ pub const COMPILER_ATTRS: &[(&str, ArgForm, Writer)] = &[
     ("releases", ArgForm::Exprs, Writer::Stdlib),
     // Stdlib declarations: a one-word value the runtime owns the storage of
     ("handle", ArgForm::Exprs, Writer::Stdlib),
+    // Stdlib declarations: a value the runtime holds as this scalar, with no
+    // fields for the compiler to lay out (`Duration` is an `i64` of nanoseconds)
+    ("runtime_scalar", ArgForm::Exprs, Writer::Stdlib),
+    // Stdlib declarations: one the compiler needs by identity (`LangItem`)
+    ("lang", ArgForm::Exprs, Writer::Stdlib),
     // Attached by the compiler itself, never written
     ("test_body", ArgForm::Exprs, Writer::Anyone),
     ("claim", ArgForm::Exprs, Writer::Anyone), // type.claims/CL1

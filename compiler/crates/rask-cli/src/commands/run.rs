@@ -5,9 +5,7 @@ use colored::Colorize;
 use rask_diagnostics::ToDiagnostic;
 use std::process;
 
-use rask_diagnostics::formatter::DiagnosticFormatter;
-
-use crate::{output, show_diagnostics, Format};
+use crate::{output, Format};
 
 /// What to tell the user about a fatal signal, beyond its name.
 fn signal_advice(sig: i32) -> Option<&'static str> {
@@ -86,15 +84,7 @@ pub fn cmd_run(path: &str, program_args: Vec<String>, format: Format) {
             // error propagated out of main (exit 1). (struct.targets/EX4, ctrl.panic/P4)
             let exit_code = if diag.error.is_panic() { 101 } else { 1 };
             let diagnostic = diag.to_diagnostic();
-            if let Some((file_path, source)) = find_diagnostic_file(&diagnostic, &result.source_files) {
-                let file_name = file_path.to_string_lossy();
-                let fmt = DiagnosticFormatter::new(&source).with_file_name(&file_name);
-                eprintln!("{}", fmt.format(&diagnostic));
-            } else if let Some((_, source)) = result.source_files.first() {
-                show_diagnostics(&[diagnostic], source, path, "runtime", format);
-            } else {
-                eprintln!("{}: {}", output::error_label(), diagnostic.message);
-            }
+            crate::show_runtime_diagnostic(&diagnostic, &result.source_files, format);
             if format == Format::Human {
                 eprintln!("\n{}", output::banner_fail("Runtime", 1));
             }
@@ -264,7 +254,7 @@ pub fn build_package_test_binary(
     let bin_str = bin_path.to_string_lossy().to_string();
     let obj_path = format!("{}.o", bin_str);
 
-    let input = rask_compiler::emit::BackEnd::of(&compiled, None, None);
+    let input = rask_compiler::emit::BackEnd::of(&compiled);
     if let Err(errors) = super::compile::emit_object(
         &input, &rask_compiler::emit::Entry::Tests(&tests), None,
         rask_compiler::emit::BuildMode::Debug, &obj_path,
@@ -723,9 +713,7 @@ pub fn build_test_binary(
     let bin_str = bin_path.to_string_lossy().to_string();
     let obj_path = format!("{}.o", bin_str);
 
-    let input = rask_compiler::emit::BackEnd::of(
-        &result, Some(path), source_files.first().map(|(_, s)| s.as_str()),
-    );
+    let input = rask_compiler::emit::BackEnd::of(&result);
     if let Err(errors) = super::compile::emit_object(
         &input, &rask_compiler::emit::Entry::Tests(&tests), None,
         rask_compiler::emit::BuildMode::Debug, &obj_path,
@@ -1128,9 +1116,12 @@ pub fn cmd_run_native(path: &str, program_args: Vec<String>, format: Format, lin
     // Compile quietly — suppress the "Compiled →" banner (errors still show)
     super::codegen::cmd_compile(path, Some(&bin_str), format, true, link_opts, release, None);
 
-    let status = process::Command::new(&bin_str)
-        .args(&program_args)
-        .status();
+    let mut cmd = process::Command::new(&bin_str);
+    // `os.args()[0]` is the script as it was named, as on the interpreter,
+    // not the temp file it was compiled to.
+    #[cfg(unix)]
+    std::os::unix::process::CommandExt::arg0(&mut cmd, path);
+    let status = cmd.args(&program_args).status();
 
     let _ = std::fs::remove_file(&bin_path);
 
@@ -1616,9 +1607,7 @@ fn run_benchmark_file(path: &str, filter: Option<&str>, format: Format) -> Bench
     let bin_str = bin_path.to_string_lossy().to_string();
     let obj_path = format!("{}.o", bin_str);
 
-    let input = rask_compiler::emit::BackEnd::of(
-        &result, Some(path), source_files.first().map(|(_, s)| s.as_str()),
-    );
+    let input = rask_compiler::emit::BackEnd::of(&result);
     if let Err(errors) = super::compile::emit_object(
         &input, &rask_compiler::emit::Entry::Benches(&benchmarks), None,
         rask_compiler::emit::BuildMode::Release, &obj_path,
@@ -1760,21 +1749,3 @@ fn run_c_baseline(c_path: &std::path::Path, opt_level: &str, format: Format) -> 
     }
 }
 
-/// Match a diagnostic to a source file by span validity.
-fn find_diagnostic_file<'a>(
-    d: &rask_diagnostics::Diagnostic,
-    source_files: &'a [(std::path::PathBuf, String)],
-) -> Option<(&'a std::path::PathBuf, &'a String)> {
-    let end = d.labels.iter()
-        .find(|l| l.style == rask_diagnostics::LabelStyle::Primary)
-        .map(|l| l.span.end)?;
-    let candidates: Vec<_> = source_files.iter()
-        .filter(|(_, src)| end <= src.len() && !src.is_empty())
-        .collect();
-    if candidates.len() == 1 {
-        let (p, s) = candidates[0];
-        Some((p, s))
-    } else {
-        None
-    }
-}

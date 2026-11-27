@@ -1,0 +1,26 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// An error out of main that leaves past an `ensure` runs the ensure, then
+// exits 1 with the error's message (#2081). The message is asked for after
+// the ensure has run, as the interpreter does: natively it was asked first.
+
+enum Fail {
+    Bad
+}
+
+extend Fail {
+    func message(self) -> string {
+        println("message asked")
+        return "the thing failed"
+    }
+}
+
+func risky() -> i64 or Fail {
+    return Fail.Bad
+}
+
+func main() -> void or Fail {
+    ensure println("cleaned up")
+    println("starting")
+    let _v = try risky()
+    println("unreachable")
+}

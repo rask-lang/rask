@@ -1,0 +1,61 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// Who frees a container a closure reaches. Each of these leaked or crashed natively.
+import sequence.Sequence
+
+func first_is(take v: Vec<i64>, want: i64) -> bool {
+    mut hit = false
+    each_of([1, 4], |x| { if x == v[0] && x == want { hit = true } })
+    return hit
+}
+
+func each_of(xs: Vec<i64>, f: func(i64)) {
+    for x in xs { f(x) }
+}
+
+func vecs() -> Sequence<Vec<i64>> {
+    return |yield| {
+        if !yield([1, 2, 3]) { return }
+        if !yield([4, 5, 6]) { return }
+    }
+}
+
+func pairs() -> Vec<Vec<i64>> {
+    mut out: Vec<Vec<i64>> = Vec.new()
+    for v in vecs() {
+        for w in vecs() {
+            if w[0] == v[0] { out.push(w.clone()) }
+        }
+    }
+    return out
+}
+
+func second(take v: Vec<i64>) -> func() -> i64 {
+    return || v[1]
+}
+
+// A `take` parameter a scope-limited closure reads lives in a stack cell, so
+// the frame frees the vector in the cell, not the cell.
+test "a take parameter read by a stack closure is freed once" {
+    assert first_is([4, 9], 4)
+    assert !first_is([1, 9], 4)
+}
+
+// The inner loop body reaches `out` through the outer body's capture.
+test "a vector built across two nested sequence loops is returned whole" {
+    let r = pairs()
+    assert r.len() == 2
+    assert r[1][2] == 6
+}
+
+// One closure body, two create sites: one environment goes into a vector and
+// owns its capture, the other is dropped by the frame that frees the capture.
+test "closures from one factory each free their own capture" {
+    mut fs: Vec<func() -> i64> = Vec.new()
+    for i in 0..3 {
+        fs.push(second(Vec.from([i, i + 10])))
+    }
+    let h = second(Vec.from([5, 6]))
+    assert h() == 6
+    assert fs[2]() == 12
+}

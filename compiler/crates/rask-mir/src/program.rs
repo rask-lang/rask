@@ -30,9 +30,6 @@ pub struct MirProgram {
 
     /// Interface name → method names, for vtable construction.
     pub interface_methods: HashMap<String, Vec<String>>,
-
-    /// Source file path (for error messages in generated code).
-    pub source_file: Option<String>,
 }
 
 impl MirProgram {
@@ -69,7 +66,6 @@ mod tests {
             enum_layouts: vec![],
             comptime_globals: HashMap::new(),
             interface_methods: HashMap::new(),
-            source_file: None,
         }
     }
 
@@ -99,8 +95,10 @@ mod tests {
             }],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
-            source_file: None,
+            param_modes: Vec::new(),
+            item_mode_from_body: false,
         });
         assert_eq!(prog.functions().len(), 1);
         assert_eq!(prog.functions()[0].name, "main");
@@ -110,6 +108,7 @@ mod tests {
     fn struct_layout_lookup() {
         let mut prog = empty_program();
         prog.struct_layouts.push(StructLayout {
+            key: None,
             name: "Point".to_string(),
             size: 16,
             align: 8,
@@ -136,8 +135,10 @@ mod tests {
             }],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
-            source_file: None,
+            param_modes: Vec::new(),
+            item_mode_from_body: false,
         });
         prog.functions_mut()[0].name = "bar".to_string();
         assert_eq!(prog.functions()[0].name, "bar");

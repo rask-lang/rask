@@ -74,6 +74,15 @@ test "a float that doesn't fit the target fails" {
     assert fits.floor<i32>()! == 42
 }
 
+// Widening f32 to f64 can't lose anything. Natively the exactness check
+// compared the f64 result against the f32 source and failed the verifier (#2078).
+test "to widens f32 to f64" {
+    let x: f32 = 0.25
+    assert 1.5 + x.to<f64>()! == 1.75
+    let back: f64 = 0.1
+    assert (back.to<f32>() catch _ => 0.0) == 0.0
+}
+
 // --- int → float via `as` (lossless widening, spec examples) ---
 test "as allows int to float" {
     let n: i32 = 300

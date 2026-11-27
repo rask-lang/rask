@@ -329,11 +329,11 @@ pub fn prepare_build(path: &str, opts: BuildOptions) -> PreparedBuild {
         if opts.verbose && !features.enabled.is_empty() {
             let mut names: Vec<_> = features.enabled.iter().collect();
             names.sort();
-            println!("  {} [{}]", "Features:".dimmed(), names.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", "));
+            eprintln!("  {} [{}]", "Features:".dimmed(), names.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", "));
         }
         if opts.verbose && !features.exclusive_selections.is_empty() {
             for (feat, sel) in &features.exclusive_selections {
-                println!("  {} {} = \"{}\"", "Feature:".dimmed(), feat, sel);
+                eprintln!("  {} {} = \"{}\"", "Feature:".dimmed(), feat, sel);
             }
         }
 
@@ -360,7 +360,7 @@ pub fn prepare_build(path: &str, opts: BuildOptions) -> PreparedBuild {
             process::exit(1);
         }
         if opts.verbose {
-            println!("  {} rask.lock", "Generated".green().bold());
+            eprintln!("  {} rask.lock", "Generated".green().bold());
         }
     }
     let mut lockfile = if lock_path.exists() {
@@ -453,7 +453,7 @@ pub fn prepare_build(path: &str, opts: BuildOptions) -> PreparedBuild {
                 if let Some(caps) = all_caps.get(&pkg.name) {
                     if *caps != pkg.capabilities {
                         if opts.verbose {
-                            println!("  {} capabilities changed for '{}'", "Note:".yellow(), pkg.name);
+                            eprintln!("  {} capabilities changed for '{}'", "Note:".yellow(), pkg.name);
                         }
                         pkg.capabilities = caps.clone();
                         changed = true;
@@ -474,22 +474,22 @@ pub fn prepare_build(path: &str, opts: BuildOptions) -> PreparedBuild {
         .unwrap_or_else(|| binary_name(&root));
 
     if opts.verbose {
-        println!("  {} {}", "Profile:".dimmed(), opts.profile);
+        eprintln!("  {} {}", "Profile:".dimmed(), opts.profile);
         if let Some(ref t) = opts.target {
-            println!("  {} {}", "Target:".dimmed(), t);
+            eprintln!("  {} {}", "Target:".dimmed(), t);
         }
-        println!("  {} {}", "Output:".dimmed(), out_dir.display());
-        println!("  {} {}", "Binary:".dimmed(), bin_name);
-        println!();
+        eprintln!("  {} {}", "Output:".dimmed(), out_dir.display());
+        eprintln!("  {} {}", "Binary:".dimmed(), bin_name);
+        eprintln!();
     }
 
     if opts.verbose {
-        println!("  Discovered {} package(s):", registry.len());
+        eprintln!("  Discovered {} package(s):", registry.len());
         for pkg in registry.packages() {
             let file_count = pkg.files.len();
             let decl_count: usize = pkg.files.iter().map(|f| f.decls.len()).sum();
             let dep_label = if pkg.is_external { " (dependency)" } else { "" };
-            println!(
+            eprintln!(
                 "    {}{} ({} file{}, {} decl{})",
                 pkg.path_string(),
                 dep_label,
@@ -499,7 +499,7 @@ pub fn prepare_build(path: &str, opts: BuildOptions) -> PreparedBuild {
                 if decl_count == 1 { "" } else { "s" }
             );
         }
-        println!();
+        eprintln!();
     }
 
     // === LC1 Step 6: Run build script if func build() exists ===
@@ -531,7 +531,7 @@ pub fn prepare_build(path: &str, opts: BuildOptions) -> PreparedBuild {
                 if current_hash == cached.hash {
                     // Cache hit — restore link state, skip execution
                     if opts.verbose {
-                        println!("  {} build script (unchanged)", "Skipping".dimmed());
+                        eprintln!("  {} build script (unchanged)", "Skipping".dimmed());
                     }
                     link_opts.libs = cached.libs;
                     link_opts.search_paths = cached.search_paths;
@@ -558,7 +558,7 @@ pub fn prepare_build(path: &str, opts: BuildOptions) -> PreparedBuild {
 
         if !skip_build_script {
             if opts.verbose {
-                println!("  {} build.rk", "Running".yellow().bold());
+                eprintln!("  {} build.rk", "Running".yellow().bold());
             }
 
             // Create .rk-gen/ directory for generated files
@@ -592,16 +592,40 @@ pub fn prepare_build(path: &str, opts: BuildOptions) -> PreparedBuild {
                 allowed_capabilities: None,
             };
 
+            // Checked on its own, as the separate unit it is (BL1): the
+            // package's code may need what the script generates. The
+            // interpreter runs what the checker resolved each name to.
+            let build_rk = root.join("build.rk");
+            let source = match fs::read_to_string(&build_rk) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("{}: failed to read {}: {}", output::error_label(), build_rk.display(), e);
+                    process::exit(1);
+                }
+            };
+            let config = crate::compiler_config(rask_compiler::CfgConfig::from_host("debug", vec![]));
+            let checked = rask_compiler::check_build_script(&build_rk, &source, &config);
+            crate::display_pipeline_output(&checked, &checked.source_files, crate::Format::Human);
+            let errors = checked
+                .diagnostics
+                .iter()
+                .filter(|d| matches!(d.severity, rask_diagnostics::Severity::Error))
+                .count();
+            let Some(checked) = checked.result.filter(|_| errors == 0) else {
+                eprintln!("\n{}", output::banner_fail("Check", errors.max(1)));
+                process::exit(1);
+            };
+
             let mut interp = rask_interp::Interpreter::new();
+            rask_compiler::prepare_interpreter(&mut interp, &checked);
             // The stdlib's Rask-written half comes along, as it does for
-            // `rask run --interp`: without it `ctx.package_dir.as_string()`
-            // was "no method `as_string` on type `Path`", since Path's
-            // methods live in stdlib/path.rk.
-            let script_decls = rask_compiler::program_decls(&build_decls, None);
+            // `rask run --interp`: `ctx.package_dir.as_string()` is in
+            // stdlib/path.rk.
+            let script_decls = rask_compiler::program_decls(&checked.decls, Some(&checked.typed));
             match interp.run_build(&script_decls, build_state) {
                 Ok(_) => {
                     if opts.verbose {
-                        println!("  {} build script", "Finished".green().bold());
+                        eprintln!("  {} build script", "Finished".green().bold());
                     }
 
                     // Extract accumulated link state + save LC2 cache
@@ -686,7 +710,7 @@ pub fn cmd_build(path: &str, opts: BuildOptions) {
     } else {
         opts.profile.clone()
     };
-    println!("{} {} ({})", "  Compiling".green().bold(), bin_name, compile_label);
+    eprintln!("{} {} ({})", "  Compiling".green().bold(), bin_name, compile_label);
 
     // Compile root package (full pipeline, with compilation cache XC1-XC5)
     if total_errors == 0 {
@@ -775,7 +799,7 @@ pub fn cmd_build(path: &str, opts: BuildOptions) {
         if !opts.no_cache && !opts.force {
             if let Some(cached_obj) = super::cache::lookup(&cache_dir, &cache_key) {
                 if opts.verbose {
-                    println!(
+                    eprintln!(
                         "  {} (cache hit, compiler {:016x})",
                         "Skipping codegen".dimmed(),
                         compiler_fp
@@ -800,7 +824,7 @@ pub fn cmd_build(path: &str, opts: BuildOptions) {
         }
 
         if opts.verbose {
-            println!("  {} {}", "Checking".dimmed(), pkg_path_string);
+            eprintln!("  {} {}", "Checking".dimmed(), pkg_path_string);
         }
 
         // Run the full pipeline through the shared driver. Moves `registry`
@@ -831,10 +855,7 @@ pub fn cmd_build(path: &str, opts: BuildOptions) {
             } else {
                 rask_compiler::emit::BuildMode::Debug
             };
-            // A package is several files, and the back end takes one source
-            // for locations. Giving it the right one per function needs the
-            // source map #1568 plans, so a package build has none yet.
-            let input = rask_compiler::emit::BackEnd::of(&result, None, None);
+            let input = rask_compiler::emit::BackEnd::of(&result);
             match super::compile::emit_object(
                 &input, &rask_compiler::emit::Entry::Main, target, build_mode, &obj_str,
             ) {
@@ -876,9 +897,9 @@ fn finish_build(path: &str, mut total_errors: usize, start: Instant, bin_path: &
         total_errors += 1;
     }
     let elapsed = start.elapsed();
-    println!();
+    eprintln!();
     if total_errors == 0 {
-        println!(
+        eprintln!(
             "   {} {} ({}) [{:.2}s]",
             "Finished".green().bold(),
             bin_path.display(),
@@ -898,14 +919,14 @@ pub fn cmd_clean(path: &str, all: bool) {
 
     if build_dir.exists() {
         match fs::remove_dir_all(&build_dir) {
-            Ok(_) => println!("  {} {}", "Removed".green(), build_dir.display()),
+            Ok(_) => eprintln!("  {} {}", "Removed".green(), build_dir.display()),
             Err(e) => {
                 eprintln!("{}: failed to remove {}: {}", output::error_label(), build_dir.display(), e);
                 process::exit(1);
             }
         }
     } else {
-        println!("  {} (nothing to clean)", "OK".green());
+        eprintln!("  {} (nothing to clean)", "OK".green());
     }
 
     if all {
@@ -913,7 +934,7 @@ pub fn cmd_clean(path: &str, all: bool) {
         if let Some(home) = dirs_home() {
             let cache_dir = home.join(".rask").join("cache");
             if cache_dir.exists() {
-                println!("  {} {}", "Cleaned".green(), cache_dir.display());
+                eprintln!("  {} {}", "Cleaned".green(), cache_dir.display());
             }
         }
     }

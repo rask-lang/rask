@@ -249,7 +249,7 @@ func main() -> void or Error {
             }
         }
 
-        signals.receive()          // wait for Ctrl-C or SIGTERM
+        signals.receive()!          // wait for Ctrl-C or SIGTERM
         let _ = serve.cancel()     // stop taking connections
     }
 }
@@ -323,7 +323,7 @@ struct Config {
 func load_config() -> Config {
     return Config(
         host: os.env_or("HOST", "localhost")
-        port: os.env("PORT")?.parse_int().ok() ?? 8080
+        port: (os.env("PORT") ?? "8080").parse<i64>() catch _ => 8080
         debug: os.env("DEBUG")?.to_lowercase() == "true"
     )
 }

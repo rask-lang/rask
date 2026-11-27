@@ -28,11 +28,21 @@ pub enum Slot {
     /// A map entry by position. A position stays put while the entry is
     /// borrowed: nothing can remove from the map until the borrow ends.
     Entry(Arc<Mutex<MapData>>, usize),
+    /// Element `i` of the tuple held at another place (`mutate t.1`). A
+    /// tuple is an immutable shared value, so there is no storage inside it
+    /// to point at: a write rebuilds the tuple and stores it in the parent.
+    TupleElem(Box<Slot>, usize),
 }
 
 /// Wrap a value in fresh storage.
 pub fn slot(value: Value) -> Slot {
-    Slot::Var(Arc::new(Mutex::new(value)))
+    let watched = crate::rack::may_hold_value_links(&value);
+    let cell = Arc::new(Mutex::new(value));
+    if watched {
+        let value = cell.lock().unwrap().clone();
+        crate::rack::register_var(&cell, None, &value);
+    }
+    Slot::Var(cell)
 }
 
 impl Slot {
@@ -48,6 +58,7 @@ impl Slot {
             }
             Slot::Elem(v, i) => base(Arc::as_ptr(v) as *const u8 as usize).wrapping_add(*i as u64 * 8),
             Slot::Entry(m, i) => base(Arc::as_ptr(m) as *const u8 as usize).wrapping_add(*i as u64 * 8),
+            Slot::TupleElem(parent, i) => parent.identity().wrapping_add((*i as u64 + 1) * 8),
         }
     }
 
@@ -59,6 +70,10 @@ impl Slot {
             Slot::Field(s, field) => s.lock().unwrap().fields.get(field).cloned(),
             Slot::Elem(v, i) => v.lock().unwrap().items.get(*i).cloned(),
             Slot::Entry(m, i) => m.lock().unwrap().get_index(*i).map(|(_, v)| v.clone()),
+            Slot::TupleElem(parent, i) => match &parent.get()? {
+                Value::Tuple(items) => items.get(*i).cloned(),
+                _ => None,
+            },
         }
     }
 
@@ -67,7 +82,12 @@ impl Slot {
     pub fn set(&self, value: Value) -> bool {
         match self {
             Slot::Var(cell) => {
-                *cell.lock().unwrap() = value;
+                let watched = crate::rack::may_hold_value_links(&value);
+                let previous = std::mem::replace(&mut *cell.lock().unwrap(), value);
+                if watched || crate::rack::may_hold_value_links(&previous) {
+                    let value = cell.lock().unwrap().clone();
+                    crate::rack::register_var(cell, Some(&previous), &value);
+                }
                 true
             }
             Slot::Field(s, field) => {
@@ -90,6 +110,13 @@ impl Slot {
                 }
                 None => false,
             },
+            Slot::TupleElem(parent, i) => {
+                let Some(Value::Tuple(items)) = &parent.get() else { return false };
+                let mut items = (**items).clone();
+                let Some(item) = items.get_mut(*i) else { return false };
+                *item = value;
+                parent.set(Value::tuple(items))
+            }
         }
     }
 }
@@ -201,10 +228,21 @@ impl Environment {
         self.slot_of(name)?.get()
     }
 
+    /// Whether the innermost binding of `name` is the module's own (a
+    /// `const`, a package), which anything a function binds shadows.
+    pub fn is_module_level(&self, name: &str) -> bool {
+        self.defined_at.get(name).and_then(|ix| ix.last()) == Some(&0)
+    }
+
     /// The storage a name is bound to, for sharing it with a closure.
     pub fn slot_of(&self, name: &str) -> Option<&Slot> {
         let index = *self.defined_at.get(name)?.last()?;
         self.scopes.get(index)?.bindings.get(name)
+    }
+
+    /// The storage a name is bound to, and whether it is borrowed.
+    pub fn binding(&self, name: &str) -> Option<(Slot, bool)> {
+        Some((self.slot_of(name)?.clone(), self.is_lent(name)))
     }
 
     /// Assign to an existing variable, in place.
@@ -249,10 +287,25 @@ impl Environment {
     /// Borrowed storage is the exception. A `mutate` parameter is the caller's
     /// variable, so the closure borrows it like the frame did (CM3); copying it
     /// sent every write the closure made later to a copy nobody reads (#1324).
-    pub fn capture_snapshot(&self) -> HashMap<String, Slot> {
+    ///
+    /// Only `names`, the closure's own captures: a clone copies every value
+    /// the closure holds (CV2), so holding anything else would copy it too.
+    ///
+    /// The root scope is the program's globals and builtins (`println`), not
+    /// a frame's variables. Nothing captures those, and a task running the
+    /// closure on another interpreter still has to find them, so they come
+    /// along shared.
+    pub fn capture_snapshot(&self, names: &[String]) -> HashMap<String, Slot> {
         let mut captured = HashMap::new();
-        for scope in &self.scopes {
+        for (depth, scope) in self.scopes.iter().enumerate() {
             for (name, cell) in &scope.bindings {
+                if depth == 0 && !names.contains(name) {
+                    captured.insert(name.clone(), cell.clone());
+                    continue;
+                }
+                if !names.contains(name) {
+                    continue;
+                }
                 let cell = if scope.lent.contains(name) {
                     cell.clone()
                 } else {
@@ -372,7 +425,7 @@ mod tests {
     fn a_snapshot_capture_leaves_the_definer_alone() {
         let mut env = Environment::new();
         env.define("a".into(), int(1));
-        let captured = env.capture_snapshot();
+        let captured = env.capture_snapshot(&["a".to_string()]);
 
         env.push_scope();
         for (name, cell) in &captured {
@@ -393,7 +446,7 @@ mod tests {
         env.define_lent("a".into(), caller.clone());
         env.define("b".into(), int(1));
         assert_eq!(env.lent_names(), HashSet::from(["a".to_string()]));
-        let captured = env.capture_snapshot();
+        let captured = env.capture_snapshot(&["a".to_string(), "b".to_string()]);
         captured["a"].set(int(5));
         captured["b"].set(int(5));
         assert_eq!(as_int(caller.get()), Some(5));

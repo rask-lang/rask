@@ -22,7 +22,7 @@ func heap(s: string) -> string {
 test "assigning a string element releases the one it replaces" {
     mut a: Vec<string> = [heap("first"), heap("second")]
     a[0] = heap("third")
-    a.set(1, heap("fourth"))
+    a[1] = heap("fourth")
     assert a[0] == heap("third")
     assert a[1] == heap("fourth")
 }

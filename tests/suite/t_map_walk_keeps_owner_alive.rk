@@ -1,0 +1,33 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Walking a Map that sits in a struct, where the struct isn't used after the
+// walk. The walk reads the map through a list of its entries, and each entry
+// points into the map's own values. The list counted as something fresh that
+// kept nothing alive, so the struct was released at its last read (the
+// `.lists` that fed the walk) and the loop read freed vectors. The memcheck
+// gate runs this file.
+
+import json
+
+struct Scene {
+    public lists: Map<string, Vec<i64>>
+}
+
+func scene() -> Scene {
+    mut lists: Map<string, Vec<i64>> = Map.new()
+    lists.insert("l", [1, 2, 3])
+    return Scene(lists: lists)
+}
+
+test "a for loop over a struct's map" {
+    let s = scene()
+    mut total: u64 = 0
+    for (k, v) in s.lists {
+        total += v.len()
+    }
+    assert total == 3
+}
+
+test "json.encode of a struct holding a map" {
+    let s = scene()
+    assert json.encode(s) == "{{\"lists\":{{\"l\":[1,2,3]}}}}"
+}

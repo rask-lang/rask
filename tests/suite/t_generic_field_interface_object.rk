@@ -1,0 +1,52 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+// A generic struct instantiated at `any Shape` gets its own layout, so the
+// two-word interface object fits. Natively `Wrap<any Shape>` had no instance
+// key, fell back to the shared layout, and lowering refused to put a 16-byte
+// value into its one-word slot (#1993).
+
+interface Shape {
+    func area(self) -> i64
+}
+
+struct Sq {
+    s: i64
+}
+
+Sq implements Shape {
+    func area(self) -> i64 {
+        return self.s * self.s
+    }
+}
+
+struct Wrap<T> {
+    n: i64
+    pad: i64
+    v: T
+}
+
+extend Wrap<T> {
+    func bump(mutate self) {
+        self.n = self.n + 1
+    }
+}
+
+struct Holder<T> {
+    tag: i64
+    w: Wrap<T>
+}
+
+test "a generic struct holds an interface object" {
+    let s: any Shape = Sq(s: 2) as any Shape
+    let w: Wrap<any Shape> = Wrap(n: 0, pad: 0, v: s)
+    assert w.v.area() == 4
+}
+
+test "a nested generic field holds one and its method mutates" {
+    let s: any Shape = Sq(s: 3) as any Shape
+    mut h = Holder(tag: 7, w: Wrap(n: 0, pad: 0, v: s))
+    h.w.bump()
+    assert h.tag == 7
+    assert h.w.n == 1
+    assert h.w.v.area() == 9
+}

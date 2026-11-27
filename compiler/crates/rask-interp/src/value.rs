@@ -34,15 +34,30 @@ pub enum IntKind {
 }
 
 impl IntKind {
-    /// P2: what `usize` is on this target — pointer-sized. The width comes
-    /// from `rask_ast::primitives::pointer_bits`, the one place that decides it.
-    pub fn usize_kind() -> IntKind {
-        if rask_ast::primitives::pointer_bits() == 32 { IntKind::U32 } else { IntKind::U64 }
+    /// The range a `comptime if` holds arithmetic on this value to
+    /// (`rask_ast::comptime_if::Fact`). `Untyped` is an `i64`.
+    pub fn fact_range(self) -> Option<(i128, i128)> {
+        use rask_ast::comptime_if::int_range;
+        match self {
+            IntKind::I8 => int_range("i8"),
+            IntKind::I16 => int_range("i16"),
+            IntKind::I32 => int_range("i32"),
+            IntKind::I64 | IntKind::Untyped => None,
+            IntKind::U8 => int_range("u8"),
+            IntKind::U16 => int_range("u16"),
+            IntKind::U32 => int_range("u32"),
+            IntKind::U64 => int_range("u64"),
+        }
+    }
+
+    /// P2: what `usize` is on this target — pointer-sized.
+    pub fn usize_kind(target: rask_ast::Target) -> IntKind {
+        if target.pointer_bits() == 32 { IntKind::U32 } else { IntKind::U64 }
     }
 
     /// P2: what `isize` is on this target.
-    pub fn isize_kind() -> IntKind {
-        if rask_ast::primitives::pointer_bits() == 32 { IntKind::I32 } else { IntKind::I64 }
+    pub fn isize_kind(target: rask_ast::Target) -> IntKind {
+        if target.pointer_bits() == 32 { IntKind::I32 } else { IntKind::I64 }
     }
 
     /// Unsigned widths carry their value as a bit pattern in the signed slot.
@@ -52,7 +67,7 @@ impl IntKind {
 
     /// Map a checker type to an int kind. Non-integers and i128/u128 (their own
     /// `Value` variants) map to `Untyped`.
-    pub fn from_type(ty: &rask_types::Type) -> IntKind {
+    pub fn from_type(ty: &rask_types::Type, target: rask_ast::Target) -> IntKind {
         use rask_types::Type;
         match ty {
             Type::I8 => IntKind::I8,
@@ -63,8 +78,8 @@ impl IntKind {
             Type::U16 => IntKind::U16,
             Type::U32 => IntKind::U32,
             Type::U64 => IntKind::U64,
-            Type::Usize => IntKind::usize_kind(),
-            Type::Isize => IntKind::isize_kind(),
+            Type::Usize => IntKind::usize_kind(target),
+            Type::Isize => IntKind::isize_kind(target),
             _ => IntKind::Untyped,
         }
     }
@@ -99,18 +114,18 @@ impl IntKind {
     }
 
     /// Map a type-name string (as used by `as` casts) to an int kind.
-    pub fn from_name(s: &str) -> Option<IntKind> {
+    pub fn from_name(s: &str, target: rask_ast::Target) -> Option<IntKind> {
         Some(match s {
             "i8" => IntKind::I8,
             "i16" => IntKind::I16,
             "i32" => IntKind::I32,
             "i64" => IntKind::I64,
-            "isize" => IntKind::isize_kind(),
+            "isize" => IntKind::isize_kind(target),
             "u8" => IntKind::U8,
             "u16" => IntKind::U16,
             "u32" => IntKind::U32,
             "u64" => IntKind::U64,
-            "usize" => IntKind::usize_kind(),
+            "usize" => IntKind::usize_kind(target),
             _ => return None,
         })
     }
@@ -375,6 +390,9 @@ pub enum Backlink {
     Element(Weak<Mutex<VecData>>),
     /// A value in an index.
     Entry(Weak<Mutex<MapData>>),
+    /// A local whose value is a tuple holding links: the tuple is a value,
+    /// not a cell, so the local's own storage is what a delete rewrites.
+    Var(Weak<Mutex<Value>>),
 }
 
 impl Backlink {
@@ -386,6 +404,7 @@ impl Backlink {
             },
             Backlink::Element(w) => BacklinkKey { holder: w.as_ptr() as usize, field: None },
             Backlink::Entry(w) => BacklinkKey { holder: w.as_ptr() as usize, field: None },
+            Backlink::Var(w) => BacklinkKey { holder: w.as_ptr() as usize, field: None },
         }
     }
 }
@@ -428,6 +447,32 @@ pub struct RackData {
     /// caller still holds into the equivalent node over here.
     pub origin_id: Option<u32>,
     pub origin: HashMap<usize, Arc<Mutex<StructData>>>,
+    /// Bumped by every node that leaves. A `Staged` buffer remembers it, and
+    /// one the rack has deleted past can't apply (mem.racks/RK21).
+    pub epoch: u64,
+}
+
+/// A `Staged<T>` buffer: structural changes recorded now and made by
+/// `rack.apply` (mem.racks/RK17). Its links are the nodes themselves, with no
+/// backlink recorded, so no delete fixup reaches them.
+#[derive(Debug)]
+pub struct StagedData {
+    pub rack_id: u32,
+    pub epoch: u64,
+    pub ops: Vec<StagedOp>,
+}
+
+#[derive(Debug)]
+pub struct StagedOp {
+    pub key: u64,
+    pub kind: StagedKind,
+}
+
+#[derive(Debug)]
+pub enum StagedKind {
+    Delete(Arc<Mutex<StructData>>),
+    Insert(Value),
+    Relink { node: Arc<Mutex<StructData>>, to: Arc<Mutex<StructData>>, f: Value },
 }
 
 impl RackData {
@@ -441,6 +486,7 @@ impl RackData {
             slot_of: HashMap::new(),
             origin_id: None,
             origin: HashMap::new(),
+            epoch: 0,
         }
     }
 
@@ -528,9 +574,6 @@ pub enum BuiltinKind {
     /// loop body it runs, and where the body's `break`/`return` go, live on the
     /// interpreter's `yield_stack`.
     SequenceYield,
-    Min,   // generic min(a, b) — prelude
-    Max,   // generic max(a, b) — prelude
-    Clamp, // generic clamp(value, lo, hi) — prelude
     Skip,       // skip("reason") — skip rest of test
     ExpectFail, // expect_fail() — invert pass/fail
     Drop,       // drop(ptr) — consume an Owned<T> (mem.owned/OW3); no-op here,
@@ -574,6 +617,25 @@ impl TypeConstructorKind {
             _ => return None,
         })
     }
+
+    /// The type's name as the stdlib declares it: `Vec` for `Vec.new`.
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::Vec => "Vec",
+            Self::Map => "Map",
+            Self::String => "string",
+            Self::Char => "char",
+            Self::Rack => "Rack",
+            Self::Cell => "Cell",
+            Self::Channel => "Channel",
+            Self::Shared => "Shared",
+            Self::Mutex => "Mutex",
+            Self::Atomic => "Atomic",
+            Self::Ordering => "Ordering",
+            Self::F32 => "f32",
+            Self::F64 => "f64",
+        }
+    }
 }
 
 impl Value {
@@ -596,7 +658,6 @@ pub enum ModuleKind {
     Io,     // io.read_line, io.print, etc.
     Cli,    // cli.Parser, cli.CliError
     Std,    // std.exit (legacy alias for os.exit)
-    Env,    // env.var, env.vars (legacy alias for os.env)
     Time,   // time.Instant, time.Duration, time.sleep
     Random, // random.f64, random.range, Rng, etc.
     Math,   // math.sin, math.PI, etc.
@@ -618,7 +679,6 @@ impl ModuleKind {
             ModuleKind::Io => "io",
             ModuleKind::Cli => "cli",
             ModuleKind::Std => "std",
-            ModuleKind::Env => "env",
             ModuleKind::Time => "time",
             ModuleKind::Random => "random",
             ModuleKind::Math => "math",
@@ -665,7 +725,6 @@ pub const ALL_MODULE_KINDS: &[ModuleKind] = &[
     ModuleKind::Io,
     ModuleKind::Cli,
     ModuleKind::Std,
-    ModuleKind::Env,
     ModuleKind::Time,
     ModuleKind::Random,
     ModuleKind::Math,
@@ -823,6 +882,32 @@ pub struct ThreadPoolInner {
     pub sender: Mutex<Option<mpsc::Sender<PoolTask>>>,
     pub workers: Mutex<Vec<std::thread::JoinHandle<()>>>,
     pub size: usize,
+    /// Jobs spawned and not yet finished, detached ones included.
+    pub pending: Mutex<usize>,
+    pub idle: std::sync::Condvar,
+}
+
+impl ThreadPoolInner {
+    pub fn job_started(&self) {
+        *self.pending.lock().unwrap() += 1;
+    }
+
+    pub fn job_done(&self) {
+        let mut n = self.pending.lock().unwrap();
+        *n -= 1;
+        if *n == 0 {
+            self.idle.notify_all();
+        }
+    }
+
+    /// Wait for every job to finish. A job still running may spawn onto the
+    /// pool, so the block is open until this returns.
+    pub fn drain(&self) {
+        let mut n = self.pending.lock().unwrap();
+        while *n > 0 {
+            n = self.idle.wait(n).unwrap();
+        }
+    }
 }
 
 impl fmt::Debug for ThreadPoolInner {
@@ -979,11 +1064,9 @@ impl std::hash::Hash for MapKey {
 /// be insertion order per determinism/D7 — those call sites go through
 /// `map_entries_seeded` instead of iterating this directly.
 ///
-/// json.rs is the one exception, and it's narrower than it was: a JsonValue now
-/// goes to the Rask encoder in stdlib/json.rk, which iterates the Map as user
-/// code does and so gets seeded order. What's left on the Rust path is a struct
-/// encoded by reflection, where the fields must come out in declaration order —
-/// that's what #540 was about, and it isn't a Rask `Map` being iterated.
+/// json.rs's `value_to_json` reads a Rask Map through `map_entries_seeded`
+/// too, so `json.encode` writes entries in the order `for` visits them
+/// (#1938). The JSON object it builds keeps that order in a `MapData`.
 pub type MapData = IndexMap<MapKey, Value>;
 
 /// Per-process random value mixed into a key's hash to order a Map's
@@ -998,6 +1081,17 @@ fn map_order_seed() -> u64 {
     *SEED
 }
 
+/// Every bit of the result depends on every bit of `x` (splitmix64's
+/// finalizer). Sorting by `hash ^ seed` alone kept most of the hashes' own
+/// order: a seed only flips the bits where keys first differ, so eight keys
+/// came out in about sixteen orders, and five runs agreeing was a coin toss
+/// away from happening.
+fn scramble(mut x: u64) -> u64 {
+    x = (x ^ (x >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    x = (x ^ (x >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    x ^ (x >> 31)
+}
+
 /// A Map's entries in seeded hash order — what every user-observable Map
 /// operation (`.keys()`, `.values()`, `.iter()`, `for`, printing, `take_all`)
 /// iterates instead of the insertion-ordered backing store. Stable for a
@@ -1006,7 +1100,7 @@ fn map_order_seed() -> u64 {
 pub fn map_entries_seeded(map: &MapData) -> Vec<(Value, Value)> {
     let seed = map_order_seed();
     let mut entries: Vec<(u64, Value, Value)> = map.iter()
-        .map(|(k, v)| (k.hash ^ seed, k.value.clone(), v.clone()))
+        .map(|(k, v)| (scramble(k.hash ^ seed), k.value.clone(), v.clone()))
         .collect();
     entries.sort_by_key(|(order, _, _)| *order);
     entries.into_iter().map(|(_, k, v)| (k, v)).collect()
@@ -1022,15 +1116,69 @@ pub struct VecData {
     /// CP2: the ceiling this vector may not grow past. `None` is unbounded.
     /// `Vec.fixed(0)` is a real bound of zero, so it can't be spelled with 0.
     pub bound: Option<usize>,
+    /// Set when the node that owned this vector is deleted: natively the
+    /// vector is freed with it, so a loop still walking it stops there
+    /// (mem.racks/RK15).
+    pub freed: bool,
+    /// A fixed-size array `[T; N]`, which is a value: binding, assigning or
+    /// passing it makes a copy (`copy_on_bind`), the way a struct is copied.
+    /// A `Vec` is a handle and moves instead. Both are this storage, so the
+    /// type checker's word for the literal is what sets this.
+    pub array: bool,
+    /// Loops walking this vector right now. A removal moves each one back so
+    /// it still visits every entry present when it gets there (mem.racks/RK15).
+    pub cursors: Cursors,
+}
+
+/// Where a `for` loop over a vector stands: the next index to visit and the
+/// end it stops at, fixed when the loop began so entries added during it are
+/// not visited. A vector dropped under the loop detaches it.
+#[derive(Debug, Default)]
+pub struct VecCursor {
+    pub next: usize,
+    pub end: usize,
+    pub detached: bool,
+}
+
+/// The cursors registered on one vector. A copy of the vector's storage is
+/// not being walked by anyone, so cloning gives an empty list.
+#[derive(Debug, Default)]
+pub struct Cursors(pub Vec<Arc<Mutex<VecCursor>>>);
+
+impl Clone for Cursors {
+    fn clone(&self) -> Self {
+        Cursors(Vec::new())
+    }
 }
 
 impl VecData {
+    /// An element left the vector at `index`: every loop past it steps back,
+    /// the way native's `remove_at` moves its registered cursors.
+    pub fn removed_at(&self, index: usize) {
+        for c in &self.cursors.0 {
+            let mut c = c.lock().unwrap();
+            if index < c.next {
+                c.next -= 1;
+            }
+            if index < c.end {
+                c.end -= 1;
+            }
+        }
+    }
+
+    /// The vector stopped being its owner's: loops still walking it end.
+    pub fn detach_cursors(&mut self) {
+        for c in self.cursors.0.drain(..) {
+            c.lock().unwrap().detached = true;
+        }
+    }
+
     pub fn new(items: Vec<Value>) -> Self {
-        VecData { items, bound: None }
+        VecData { items, bound: None, freed: false, array: false, cursors: Cursors::default() }
     }
 
     pub fn fixed(n: usize) -> Self {
-        VecData { items: Vec::with_capacity(n), bound: Some(n) }
+        VecData { items: Vec::with_capacity(n), bound: Some(n), freed: false, array: false, cursors: Cursors::default() }
     }
 
     /// CP2: at the bound, and so refusing further growth.
@@ -1061,6 +1209,16 @@ impl std::ops::DerefMut for VecData {
     fn deref_mut(&mut self) -> &mut Vec<Value> {
         &mut self.items
     }
+}
+
+/// What a closure's type says it returns.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ClosureRet {
+    /// Returns a `T or E`: a bare value (a `void` body, a bare `return`) is
+    /// the success side, as for a function declared that way.
+    pub wraps_ok: bool,
+    /// Optional layers on the success side; `None` while the type is open.
+    pub layers: Option<usize>,
 }
 
 /// A runtime value in the interpreter.
@@ -1146,21 +1304,25 @@ pub enum Value {
     /// which is what capturing by move means.
     Closure {
         params: Vec<String>,
-        body: Expr,
+        body: Arc<Expr>,
         captured_env: HashMap<String, crate::env::Slot>,
         /// Captures that are the caller's storage behind a `mutate`
         /// parameter. Shared even by a carrying closure, and still borrowed
         /// inside its body, so a closure built there shares them too (CM3).
         lent: std::collections::HashSet<String>,
+        /// The captures it holds copies of rather than the definer's storage
+        /// (CM1: it was returned, stored or handed to a `take`). Empty for a
+        /// closure that points at all of them. A clone copies these and
+        /// points at the rest again (CV2).
+        carried: Vec<String>,
         /// Captured a link or a `Local` box, so `spawn` refuses it (#1356).
         task_bound: bool,
         /// The type arguments of the generic body it was built in, for
         /// whatever generic calls and closures its own body makes.
         generics: GenericFrame,
-        /// Its type returns a `T or E`, so a body that hands back a bare
-        /// value (a `void` body, a bare `return`) is the success side, as for
-        /// a function declared that way.
-        wraps_ok: bool,
+        /// What its type says it returns, so the value its body hands back
+        /// is shaped the way a function's declared return shapes it.
+        ret: ClosureRet,
     },
     /// Duration (time span in nanoseconds)
     Duration(u64),
@@ -1168,10 +1330,16 @@ pub enum Value {
     Instant(std::time::Instant),
     /// Type value (for accessing static methods like Instant.now())
     Type(String),
+    /// A checked type held by reflection metadata, hidden behind a `__` key
+    /// so `param.is<T>()` compares types rather than their spellings. Never
+    /// reaches user code (ctrl.comptime/CT66).
+    ReflectedType(Arc<rask_types::Type>),
     /// Cell<T> (CE1–CE6: single heap-allocated mutable value)
     Cell(Arc<Mutex<Value>>),
     /// Rack (arena of nodes; edges into it are fixed at delete)
     Rack(Arc<Mutex<RackData>>),
+    /// Structural changes to a rack, waiting for `rack.apply`.
+    Staged(Arc<Mutex<StagedData>>),
     /// Link — one edge to a node. Holds the node pointer directly, so following
     /// it is a deref with no generation check and no rack lookup. `rack_id`
     /// only names the owning rack for structural ops and for delete's fixup.
@@ -1185,8 +1353,6 @@ pub enum Value {
     Sender(Arc<crate::chan::SenderEnd>),
     /// Channel receiver
     Receiver(Arc<crate::chan::ReceiverEnd>),
-    /// Thread pool (from `using ThreadPool(workers: n) { }`)
-    ThreadPool(Arc<ThreadPoolInner>),
     /// Multitasking runtime (from `using Multitasking { }`)
     MultitaskingRuntime(Arc<MultitaskingRuntime>),
     /// Map (key-value storage with Value keys)
@@ -1390,6 +1556,14 @@ impl Value {
         Value::Vec(Arc::new(Mutex::new(VecData::new(items))))
     }
 
+    /// A fixed-size array `[T; N]`: the same storage as a `Vec`, but a value
+    /// that is copied wherever it changes owner.
+    pub fn array(items: Vec<Value>) -> Value {
+        let mut data = VecData::new(items);
+        data.array = true;
+        Value::Vec(Arc::new(Mutex::new(data)))
+    }
+
     /// A tuple of these elements.
     pub fn tuple(items: Vec<Value>) -> Value {
         Value::Tuple(Arc::new(items))
@@ -1457,15 +1631,15 @@ impl Value {
             Value::Closure { .. } => "closure",
             Value::Duration(_) => "Duration",
             Value::Instant(_) => "Instant",
-            Value::Type(_) => "type",
+            Value::Type(_) | Value::ReflectedType(_) => "type",
             Value::Cell(_) => "Cell",
             Value::Rack(_) => "Rack",
+            Value::Staged(_) => "Staged",
             Value::Link { .. } => "Link",
             Value::Handle(_) => "Handle",
             Value::MultitaskingRuntime(_) => "MultitaskingRuntime",
             Value::Sender(_) => "Sender",
             Value::Receiver(_) => "Receiver",
-            Value::ThreadPool(_) => "ThreadPool",
             Value::Map(_) => "Map",
             Value::Atomic(_) => "Atomic",
             Value::Shared(_) => "Shared",
@@ -1518,42 +1692,54 @@ impl Value {
             },
             // A tuple's elements are owned the way a struct's fields are.
             Value::Tuple(items) => Value::tuple(items.iter().map(|v| v.copy_on_bind()).collect()),
+            // A fixed-size array is a value: the new owner gets its own
+            // elements, so `mut b = a; b[0] = 9` leaves `a` alone. A `Vec`
+            // is not copied; it is a handle that moves.
+            Value::Vec(v) => {
+                let guard = v.lock().unwrap();
+                if !guard.array {
+                    return self.clone();
+                }
+                let mut copy = VecData::new(guard.items.iter().map(Value::copy_on_bind).collect());
+                copy.array = true;
+                Value::Vec(Arc::new(Mutex::new(copy)))
+            }
             // Reference/box types share; scalars are cheap clones.
             other => other.clone(),
         }
     }
 
+    /// Whether dropping this value can drop other values: what `Drop` checks
+    /// before it looks at the stack.
+    fn holds_values(&self) -> bool {
+        match self {
+            Value::Enum { fields, .. } => !fields.is_empty(),
+            Value::Vec(_) | Value::Map(_) | Value::Tuple(_) | Value::Struct(_)
+            | Value::Cell(_) | Value::Atomic(_) | Value::Shared(_) | Value::RaskMutex(_)
+            | Value::Closure { .. } | Value::Nominal { .. } | Value::Link { .. }
+            | Value::Rack(_) => true,
+            _ => false,
+        }
+    }
+
     /// Deep clone a value — creates independent copies of reference-counted internals.
     pub fn deep_clone(&self) -> Value {
-        self.deep_clone_impl(false)
+        crate::with_stack_room(|| self.deep_clone_here())
     }
 
-    /// What a container's `clone` gives each element: a deep copy, except
-    /// that a closure is shared rather than detached, the way native's
-    /// cloned `Vec<func>` shares its closures.
-    ///
-    /// Not only a match for native. A closure's environment can hold the
-    /// container being cloned, so detaching it would lock that container
-    /// again from inside its own clone and hang.
-    pub fn clone_as_element(&self) -> Value {
-        self.deep_clone_impl(true)
-    }
-
-    fn deep_clone_impl(&self, share_closures: bool) -> Value {
+    fn deep_clone_here(&self) -> Value {
         match self {
-            Value::Closure { .. } if share_closures => self.clone(),
             Value::String(s) => Value::String(Arc::new(Mutex::new(s.lock().unwrap().clone()))),
             Value::Vec(v) => {
-                let deep: Vec<Value> = v.lock().unwrap().iter().map(|val| val.deep_clone_impl(share_closures)).collect();
-                Value::vec(deep)
+                let guard = v.lock().unwrap();
+                let deep: Vec<Value> = guard.iter().map(Value::deep_clone).collect();
+                if guard.array { Value::array(deep) } else { Value::vec(deep) }
             }
-            Value::Tuple(items) => {
-                Value::tuple(items.iter().map(|v| v.deep_clone_impl(share_closures)).collect())
-            }
+            Value::Tuple(items) => Value::tuple(items.iter().map(Value::deep_clone).collect()),
             Value::Struct(s) => {
                 let guard = s.lock().unwrap();
                 let deep_fields: IndexMap<String, Value> = guard.fields.iter()
-                    .map(|(k, v)| (k.clone(), v.deep_clone_impl(share_closures)))
+                    .map(|(k, v)| (k.clone(), v.deep_clone()))
                     .collect();
                 Value::new_struct(guard.name.clone(), deep_fields, guard.resource_id)
             }
@@ -1561,47 +1747,58 @@ impl Value {
                 Value::Enum {
                     name: name.clone(),
                     variant: variant.clone(),
-                    fields: fields.iter().map(|f| f.deep_clone_impl(share_closures)).collect(),
+                    fields: fields.iter().map(Value::deep_clone).collect(),
                     variant_index: *variant_index,
                     origin: origin.clone(),
                 }
             }
             Value::Cell(c) => {
-                let inner = c.lock().unwrap().deep_clone_impl(share_closures);
+                let inner = c.lock().unwrap().deep_clone();
                 Value::Cell(Arc::new(Mutex::new(inner)))
             }
-            Value::Closure { params, body, captured_env, task_bound, generics, wraps_ok, .. } => {
-                // Deep-cloning a closure detaches it from what it borrowed, so
-                // each capture gets storage of its own.
-                let deep_env: HashMap<String, crate::env::Slot> = captured_env.iter()
-                    .map(|(k, v)| (k.clone(), crate::env::slot(v.get().unwrap_or(Value::Unit).deep_clone_impl(share_closures))))
+            Value::Closure { params, body, captured_env, lent, carried, task_bound, generics, ret } => {
+                // CV2: a carried capture is copied, so writes one closure
+                // makes to its state don't show in the other. A pointed-at
+                // capture is the definer's storage, and the clone points at
+                // it again. A carried closure inside the environment is
+                // cloned the same way (CV3).
+                let env: HashMap<String, crate::env::Slot> = captured_env.iter()
+                    .map(|(k, v)| {
+                        let slot = if carried.contains(k) && !lent.contains(k) {
+                            crate::env::slot(v.get().unwrap_or(Value::Unit).deep_clone())
+                        } else {
+                            v.clone()
+                        };
+                        (k.clone(), slot)
+                    })
                     .collect();
                 Value::Closure {
                     params: params.clone(),
                     body: body.clone(),
-                    captured_env: deep_env,
-                    // Detached: nothing in it is borrowed any more.
-                    lent: Default::default(),
+                    captured_env: env,
+                    lent: lent.clone(),
+                    carried: carried.clone(),
                     task_bound: *task_bound,
                     generics: generics.clone(),
-                    wraps_ok: *wraps_ok,
+                    ret: *ret,
                 }
             }
             Value::Map(m) => {
                 let map = m.lock().unwrap();
                 let deep: MapData = map.iter()
-                    .map(|(k, v)| (MapKey { value: k.value.deep_clone_impl(share_closures), hash: k.hash }, v.deep_clone_impl(share_closures)))
+                    .map(|(k, v)| (MapKey { value: k.value.deep_clone(), hash: k.hash }, v.deep_clone()))
                     .collect();
                 Value::Map(Arc::new(Mutex::new(deep)))
             }
             Value::RaskMutex(m) => {
                 let inner = m.lock().unwrap();
-                Value::RaskMutex(Arc::new(std::sync::Mutex::new(inner.deep_clone_impl(share_closures))))
+                Value::RaskMutex(Arc::new(std::sync::Mutex::new(inner.deep_clone())))
             }
             // Value types — regular clone is sufficient
             other => other.clone(),
         }
     }
+
 
     /// Extract u64 from Value::Int (for Duration constructors).
     pub fn as_int(&self) -> Result<i64, String> {
@@ -1657,6 +1854,11 @@ impl Value {
 
 impl fmt::Display for Value {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // A value can nest deeper than one stack holds (#2084).
+        if crate::stack_nearly_exhausted() {
+            let text = crate::grow_interp_stack(|| self.to_string());
+            return f.write_str(&text);
+        }
         match self {
             Value::Unit => write!(f, "()"),
             Value::Bool(b) => write!(f, "{}", b),
@@ -1774,6 +1976,7 @@ impl fmt::Display for Value {
             }
             Value::Instant(_) => write!(f, "<Instant>"),
             Value::Type(name) => write!(f, "<type {}>", name),
+            Value::ReflectedType(ty) => write!(f, "<type {}>", ty),
             Value::Cell(c) => {
                 let inner = c.lock().unwrap();
                 write!(f, "Cell({})", inner)
@@ -1782,6 +1985,7 @@ impl fmt::Display for Value {
                 let rack = s.lock().unwrap();
                 write!(f, "<Rack len={}>", rack.len)
             }
+            Value::Staged(s) => write!(f, "<Staged len={}>", s.lock().unwrap().ops.len()),
             // Print the node, not the address — a link is the node, as far as
             // reading it goes.
             Value::Link { node, .. } => {
@@ -1792,7 +1996,6 @@ impl fmt::Display for Value {
             Value::MultitaskingRuntime(r) => write!(f, "<Multitasking runtime workers={}>", r.workers),
             Value::Sender(_) => write!(f, "<Sender>"),
             Value::Receiver(_) => write!(f, "<Receiver>"),
-            Value::ThreadPool(p) => write!(f, "<ThreadPool size={}>", p.size),
             Value::Map(m) => {
                 let entries = map_entries_seeded(&m.lock().unwrap());
                 write!(f, "Map {{ ")?;
@@ -1882,4 +2085,17 @@ pub fn range_count(start: i64, end: i64, inclusive: bool, step: i64) -> i64 {
         q
     };
     n.max(0)
+}
+
+/// Rust drops what a value holds by recursing into it, a host frame or more per
+/// level, so dropping a list built by a loop a million deep ran off the stack
+/// and aborted the interpreter (#2084). When the stack is nearly spent, the rest
+/// of the drop continues on a fresh segment.
+impl Drop for Value {
+    fn drop(&mut self) {
+        if self.holds_values() && crate::stack_nearly_exhausted() {
+            let rest = std::mem::replace(self, Value::Unit);
+            crate::grow_interp_stack(move || drop(rest));
+        }
+    }
 }

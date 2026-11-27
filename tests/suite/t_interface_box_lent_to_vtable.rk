@@ -1,0 +1,63 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A box passed to a method through a vtable is freed when no body keeps it.
+//
+// `a.bigger(b)` counted `b`'s box as handed to the call whatever the method
+// did with it, so nobody freed it. Now it stays the caller's when every body
+// the slot can land in only reads it, and goes to the call when a body
+// keeps it. The tags are long enough to live on the heap.
+
+interface Other {
+    func area(self) -> i64
+}
+
+struct Sq { s: i64, tag: string }
+Sq implements Other {
+    func area(self) -> i64 {
+        return self.s * self.s
+    }
+}
+
+interface Judge {
+    func bigger(self, o: any Other) -> bool
+}
+
+struct Plain { s: i64 }
+Plain implements Judge {
+    func bigger(self, o: any Other) -> bool {
+        return self.s > o.area()
+    }
+}
+
+struct Strict { s: i64 }
+Strict implements Judge {
+    func bigger(self, o: any Other) -> bool {
+        return self.s >= o.area()
+    }
+}
+
+interface Keeper {
+    func keep(mutate self, take o: any Other) -> i64
+}
+
+struct Pile { items: Vec<any Other> }
+Pile implements Keeper {
+    func keep(mutate self, take o: any Other) -> i64 {
+        self.items.push(o)
+        return self.items.len().to<i64>()!
+    }
+}
+
+test "a box only read by every body" {
+    let a: any Judge = Plain(s: 2)
+    let b: any Other = Sq(s: 3, tag: "lent-box-tag-padded-long-enough")
+    assert !a.bigger(b)
+    let c: any Judge = Strict(s: 9)
+    assert c.bigger(b)
+}
+
+test "a box the body keeps" {
+    mut k: any Keeper = Pile(items: [])
+    let b: any Other = Sq(s: 3, tag: "kept-box-tag-padded-long-enough")
+    assert k.keep(b) == 1
+}

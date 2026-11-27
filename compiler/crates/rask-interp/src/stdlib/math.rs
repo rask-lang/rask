@@ -5,6 +5,7 @@
 //! Layer: PURE — mathematical functions, no OS access.
 
 use crate::interp::{Interpreter, RuntimeError};
+use crate::float_math as fm;
 use crate::value::{FloatKind, Value};
 
 impl Interpreter {
@@ -18,57 +19,57 @@ impl Interpreter {
             // Trigonometric functions
             "sin" => {
                 let x = self.expect_float_or_int(&args, 0)?;
-                Ok(Value::Float(x.sin(), FloatKind::Untyped))
+                Ok(Value::Float(fm::sin(x), FloatKind::Untyped))
             }
             "cos" => {
                 let x = self.expect_float_or_int(&args, 0)?;
-                Ok(Value::Float(x.cos(), FloatKind::Untyped))
+                Ok(Value::Float(fm::cos(x), FloatKind::Untyped))
             }
             "tan" => {
                 let x = self.expect_float_or_int(&args, 0)?;
-                Ok(Value::Float(x.tan(), FloatKind::Untyped))
+                Ok(Value::Float(fm::tan(x), FloatKind::Untyped))
             }
             "asin" => {
                 let x = self.expect_float_or_int(&args, 0)?;
-                Ok(Value::Float(x.asin(), FloatKind::Untyped))
+                Ok(Value::Float(fm::asin(x), FloatKind::Untyped))
             }
             "acos" => {
                 let x = self.expect_float_or_int(&args, 0)?;
-                Ok(Value::Float(x.acos(), FloatKind::Untyped))
+                Ok(Value::Float(fm::acos(x), FloatKind::Untyped))
             }
             "atan" => {
                 let x = self.expect_float_or_int(&args, 0)?;
-                Ok(Value::Float(x.atan(), FloatKind::Untyped))
+                Ok(Value::Float(fm::atan(x), FloatKind::Untyped))
             }
             "atan2" => {
                 let y = self.expect_float_or_int(&args, 0)?;
                 let x = self.expect_float_or_int(&args, 1)?;
-                Ok(Value::Float(y.atan2(x), FloatKind::Untyped))
+                Ok(Value::Float(fm::atan2(y, x), FloatKind::Untyped))
             }
 
             // Exponential and logarithmic
             "exp" => {
                 let x = self.expect_float_or_int(&args, 0)?;
-                Ok(Value::Float(x.exp(), FloatKind::Untyped))
+                Ok(Value::Float(fm::exp(x), FloatKind::Untyped))
             }
             "ln" => {
                 let x = self.expect_float_or_int(&args, 0)?;
-                Ok(Value::Float(x.ln(), FloatKind::Untyped))
+                Ok(Value::Float(fm::ln(x), FloatKind::Untyped))
             }
             "log2" => {
                 let x = self.expect_float_or_int(&args, 0)?;
-                Ok(Value::Float(x.log2(), FloatKind::Untyped))
+                Ok(Value::Float(fm::log2(x), FloatKind::Untyped))
             }
             "log10" => {
                 let x = self.expect_float_or_int(&args, 0)?;
-                Ok(Value::Float(x.log10(), FloatKind::Untyped))
+                Ok(Value::Float(fm::log10(x), FloatKind::Untyped))
             }
 
             // Multi-argument
             "hypot" => {
                 let x = self.expect_float_or_int(&args, 0)?;
                 let y = self.expect_float_or_int(&args, 1)?;
-                Ok(Value::Float(x.hypot(y), FloatKind::Untyped))
+                Ok(Value::Float(fm::hypot(x, y), FloatKind::Untyped))
             }
             // Conversion
             "to_radians" => {

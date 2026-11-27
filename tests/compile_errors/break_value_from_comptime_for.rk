@@ -1,0 +1,17 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Rejects: `break` with a value out of a `comptime for` (ctrl.comptime/CT70).
+// The loop is written out once per item, so there's no value for it to give;
+// this was reported as "break outside of loop", once per item.
+import std.reflect
+
+struct Row {
+    a: i64
+    b: i64
+}
+
+func main() {
+    comptime for f in reflect.fields<Row>() {
+        // ERROR: `break` with a value out of a `comptime for` [E0970]
+        break 5
+    }
+}

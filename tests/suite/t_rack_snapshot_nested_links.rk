@@ -1,0 +1,80 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+// A snapshot re-points every link it copies at the copy's nodes, including
+// links in containers that a node's elements own. Natively only the node's own
+// vector was re-pointed, so one level further down the copy read the
+// original's node, and a delete in the original reached into the copy (#2071).
+
+import memory.Link
+import memory.Rack
+
+struct Edge {
+    to: Link<Node>?
+    sub: Vec<Edge>
+}
+
+struct Tag {
+    to: Link<Node>?
+    by_name: Map<string, Edge>
+}
+
+struct Node {
+    id: i32
+    out: Vec<Edge>
+    tags: Vec<Tag>
+}
+
+func node(id: i32) -> Node {
+    return Node(id: id, out: Vec.new(), tags: Vec.new())
+}
+
+test "a link in an element's own vector names the copy's node" {
+    mut s: Rack<Node> = Rack.new()
+    let a = s.insert(node(1))
+    let b = s.insert(node(2))
+    mut sub: Vec<Edge> = Vec.new()
+    sub.push(Edge(to: b, sub: Vec.new()))
+    a.out.push(Edge(to: b, sub: sub))
+    mut copy = s.snapshot()
+    b.id = 999
+    let ca = copy.corresponding(a)!
+    assert ca.out[0].to!.id == 2
+    assert ca.out[0].sub[0].to!.id == 2
+    s.delete(b)
+    let again = copy.corresponding(a)!
+    assert again.out[0].sub[0].to?
+}
+
+test "a delete in the copy reaches the nested link" {
+    mut s: Rack<Node> = Rack.new()
+    let a = s.insert(node(1))
+    let b = s.insert(node(2))
+    mut sub: Vec<Edge> = Vec.new()
+    sub.push(Edge(to: b, sub: Vec.new()))
+    a.out.push(Edge(to: b, sub: sub))
+    mut copy = s.snapshot()
+    let ca = copy.corresponding(a)!
+    let cb = copy.corresponding(b)!
+    assert ca.out[0].sub[0].to?
+    copy.delete(cb)
+    for n in copy.nodes() {
+        assert n.id == 1
+        assert n.out[0].sub[0].to is none
+    }
+}
+
+test "a link in a map an element owns names the copy's node" {
+    mut s: Rack<Node> = Rack.new()
+    let a = s.insert(node(1))
+    let b = s.insert(node(2))
+    mut m: Map<string, Edge> = Map.new()
+    m.insert("x", Edge(to: b, sub: Vec.new()))
+    a.tags.push(Tag(to: none, by_name: m))
+    mut copy = s.snapshot()
+    b.id = 999
+    let ca = copy.corresponding(a)!
+    assert ca.tags[0].by_name["x"].to!.id == 2
+    s.delete(b)
+    let again = copy.corresponding(a)!
+    assert again.tags[0].by_name["x"].to?
+}

@@ -13,7 +13,9 @@ pub mod forwarders;
 pub mod stubs;
 pub mod modules;
 pub mod mir_metadata;
+pub mod runtime_header;
 pub mod operators;
+pub mod interfaces;
 pub mod ordering;
 pub mod panic_messages;
 pub mod wrappers;
@@ -23,13 +25,13 @@ pub use ordering::{
 };
 pub use builtins::{Builtin, BuiltinKind};
 pub use types::{MethodStub, any_builtin_method_mutates, has_method, lookup_method, methods_for};
-pub use stubs::{is_stdlib_span, CompilableStdlib, NativeDecl, NativeReturn, StubParamMode, StubRegistry};
+pub use stubs::{is_stdlib_span, CompilableStdlib, NativeDecl, NativeReturn, FactOf, RuntimeArg, StubParamMode, TypeFact, StubRegistry};
 pub use modules::ModuleExports;
 pub use registry::{
     type_method_names, module_method_names, has_type_method, has_module_method,
     StdlibLayer, type_layer, module_layer,
 };
-pub use handles::{is_runtime_handle, runtime_handle, RuntimeHandle};
+pub use handles::spelled_handle;
 pub use ptr_methods::{PtrMethod, PtrSig, PTR_METHODS};
 
 /// Information about a built-in function for the resolver

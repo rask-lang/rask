@@ -46,6 +46,10 @@ struct RaskMap {
     // once at construction. See `RaskElemStrs` in rask_runtime.h.
     RaskElemStrs key_strs;
     RaskElemStrs val_strs;
+    // The rack's edge records that name this map; see `RaskVec.link_edges`.
+    void *link_edges;
+    // Whether values hold links inside them; see `RaskVec.links`.
+    int32_t links;
 };
 
 // ─── Hash seed ───────────────────────────────────────────────
@@ -227,6 +231,11 @@ static void map_check_no_borrows(const RaskMap *m, const char *op) {
     }
 }
 
+static void map_drop_borrow(int64_t handle) {
+    RaskMap *m = (RaskMap *)(intptr_t)handle;
+    if (m && m->borrows > 0) m->borrows--;
+}
+
 // Value pointer lent straight out of the table, so a `mutate` callee writes the
 // real value instead of a copy. Paired with rask_map_release_elem.
 void *rask_map_borrow_elem(RaskMap *m, const void *key) {
@@ -238,11 +247,15 @@ void *rask_map_borrow_elem(RaskMap *m, const void *key) {
         rask_panic("key not found in map");
     }
     m->borrows++;
+    // A callee that panics never reaches the release the caller emitted after
+    // the call; the held-access list gives it back on the way out (ctrl.panic/U3).
+    rask_access_push(map_drop_borrow, (int64_t)(intptr_t)m);
     return slot;
 }
 
 void rask_map_release_elem(RaskMap *m) {
     if (m && m->borrows > 0) m->borrows--;
+    rask_access_pop((int64_t)(intptr_t)m);
 }
 
 static void map_rehash(RaskMap *m) {
@@ -270,9 +283,8 @@ static void map_rehash(RaskMap *m) {
 
 // ─── Public API ─────────────────────────────────────────────
 
-// Take a reference to what one key/value pair owns, for a map that copied it
-// out of another. Without it the clone and the original point at one buffer and
-// the second free reads memory that is already gone.
+// Take a reference to what one key/value pair owns, for a map about to insert
+// a copy of it (`Map.from` on an array the caller keeps).
 //
 // Into a scratch copy rather than in place: retaining a *nested container*
 // replaces the handle with a clone, and doing that to the source would leave
@@ -281,6 +293,23 @@ static void map_rehash(RaskMap *m) {
 static void map_retain_entry(const RaskMap *m, char *key, char *val) {
     rask_owned_retain_all(key, m->key_strs.offsets, m->key_strs.count);
     rask_owned_retain_all(val, m->val_strs.offsets, m->val_strs.count);
+}
+
+// Take references for the first occupied slot at or after `slot` of a map
+// that copied its entries from another, and return that slot, or -1 when
+// there are none left. A step of the clone work list (`rask_clone_contents`).
+//
+// In place, since `m` is the copy: retaining a nested container replaces its
+// handle with a clone, and the copy is the one that should hold it. A key
+// holding a container keeps its hash, as the clone has the same contents.
+int64_t rask_map_retain_from(RaskMap *m, int64_t slot) {
+    for (int64_t i = slot; i < m->cap; i++) {
+        if (m->states[i] != MAP_OCCUPIED) continue;
+        rask_owned_retain_all(m->keys + i * m->key_size, m->key_strs.offsets, m->key_strs.count);
+        rask_owned_retain_all(m->vals + i * m->val_size, m->val_strs.offsets, m->val_strs.count);
+        return i;
+    }
+    return -1;
 }
 
 // Every constructor's element description, gathered so the tables can be
@@ -293,6 +322,11 @@ static void map_retain_entry(const RaskMap *m, char *key, char *val) {
 // nothing else, so a map built with one grows exactly like a map built
 // without. Probing is `% cap`, so any positive number works — no rounding to
 // a power of two.
+static inline int map_links_inline(RaskMap *m) {
+    if (__builtin_expect(m->links == 1, 1)) return 0;
+    return m->links == 2 || rask_map_holds_struct_links(m);
+}
+
 static RaskMap *map_new(int64_t key_size, int64_t val_size,
                         RaskHashFn hash, RaskEqFn eq, int64_t cap,
                         RaskElemStrs key_strs, RaskElemStrs val_strs) {
@@ -309,6 +343,10 @@ static RaskMap *map_new(int64_t key_size, int64_t val_size,
     };
     map_alloc_tables(m, cap > 0 ? cap : MAP_INITIAL_CAP);
     return m;
+}
+
+void **rask_map_link_edges(RaskMap *m) {
+    return &m->link_edges;
 }
 
 RaskMap *rask_map_new(int64_t key_size, int64_t val_size,
@@ -379,6 +417,7 @@ RaskMap *rask_map_new_link_keys_cap(int64_t key_size, int64_t val_size, int64_t 
 void rask_map_free(RaskMap *m) {
     if (!m) return;
     map_check_no_borrows(m, "free");
+    if (m->link_edges) rask_link_holder_died(&m->link_edges);
     int has_key = m->key_strs.offsets && m->key_strs.count > 0;
     int has_val = m->val_strs.offsets && m->val_strs.count > 0;
     if ((has_key || has_val) && m->states) {
@@ -461,7 +500,33 @@ static int64_t map_insert_impl(RaskMap *m, const void *key, const void *val,
 // Returns 0 if inserted new, 1 if updated existing. Used where the caller
 // discards the answer — `m[k] = v`, rehashing, cloning, the runtime's own maps.
 int64_t rask_map_insert(RaskMap *m, const void *key, const void *val) {
-    return map_insert_impl(m, key, val, NULL);
+    int64_t r = map_insert_impl(m, key, val, NULL);
+    if (map_links_inline(m)) rask_link_register_entry_fields(m, val);
+    return r;
+}
+
+int64_t rask_map_holds_struct_links(RaskMap *m) {
+    if (!m) return 0;
+    if (!m->links) {
+        m->links = 1;
+        for (int64_t i = 0; m->val_strs.offsets && i < m->val_strs.count; i++) {
+            if (((uint32_t)m->val_strs.offsets[i] >> RASK_OWNED_KIND_SHIFT) == RASK_OWNED_LINK) {
+                m->links = 2;
+            }
+        }
+    }
+    return m->links == 2;
+}
+
+const RaskElemStrs *rask_map_val_strs(const RaskMap *m) {
+    return &m->val_strs;
+}
+
+void rask_map_each_value(RaskMap *m, void (*fn)(char *value, void *ctx), void *ctx) {
+    if (!m) return;
+    for (int64_t i = 0; i < m->cap; i++) {
+        if (m->states[i] == MAP_OCCUPIED) fn(m->vals + i * m->val_size, ctx);
+    }
 }
 
 // `Map.insert` is declared `-> V?`, so this is what it calls: a pointer to the
@@ -470,19 +535,8 @@ int64_t rask_map_insert(RaskMap *m, const void *key, const void *val) {
 void *rask_map_insert_displaced(RaskMap *m, const void *key, const void *val) {
     void *old = NULL;
     map_insert_impl(m, key, val, &old);
+    if (map_links_inline(m)) rask_link_register_entry_fields(m, val);
     return old;
-}
-
-// Put back a value `with m[k]` or `for mutate` took out of the entry for `key`
-// (`Map_lend` in MIR). The key stays as it is, and what the copy owns is what
-// the entry owned, less whatever the body released and plus whatever it
-// stored, so nothing is released here.
-void rask_map_write_back(RaskMap *m, const void *key, const void *val) {
-    void *slot = rask_map_get(m, key);
-    if (!slot) {
-        rask_panic("key not found in map");
-    }
-    memcpy(slot, val, (size_t)m->val_size);
 }
 
 void *rask_map_get(const RaskMap *m, const void *key) {
@@ -536,6 +590,11 @@ void *rask_map_take(RaskMap *m, const void *key) {
             m->states[slot] = MAP_TOMBSTONE;
             m->len--;
             m->tombstones++;
+            // The value goes to the caller. The key the map stored is nobody's
+            // once the entry is gone, and the caller's own `key` is a separate
+            // buffer that stays theirs (#1873).
+            rask_owned_release_all(m->keys + slot * m->key_size,
+                                   m->key_strs.offsets, m->key_strs.count);
             return m->vals + slot * m->val_size;
         }
     }
@@ -557,6 +616,23 @@ int64_t rask_map_is_empty(const RaskMap *m) {
 void rask_map_clear(RaskMap *m) {
     map_check_no_borrows(m, "clear");
     if (!m) return;
+    // What the entries own goes back first; resetting the states leaves no way
+    // to find them (#1828).
+    int has_key = m->key_strs.offsets && m->key_strs.count > 0;
+    int has_val = m->val_strs.offsets && m->val_strs.count > 0;
+    if (has_key || has_val) {
+        for (int64_t i = 0; i < m->cap; i++) {
+            if (m->states[i] != MAP_OCCUPIED) continue;
+            if (has_key) {
+                rask_owned_release_all(m->keys + i * m->key_size,
+                                       m->key_strs.offsets, m->key_strs.count);
+            }
+            if (has_val) {
+                rask_owned_release_all(m->vals + i * m->val_size,
+                                       m->val_strs.offsets, m->val_strs.count);
+            }
+        }
+    }
     memset(m->states, MAP_EMPTY, (size_t)m->cap);
     m->len = 0;
     m->tombstones = 0;
@@ -636,8 +712,7 @@ RaskVec *rask_map_entries(const RaskMap *m, int64_t voff, int64_t stride) {
 
 // `Map.from(pairs)` on an array held somewhere: insert a copy of each
 // `(key, value)` tuple, laid out as `rask_map_entries` lays one out. The array
-// keeps its own, so each entry is retained the way `rask_map_clone` retains
-// one. A repeated key keeps the later value and releases the earlier.
+// keeps its own, so each entry takes references of its own first. A repeated key keeps the later value and releases the earlier.
 void rask_map_insert_pairs(RaskMap *m, const char *pairs, int64_t count,
                            int64_t voff, int64_t stride) {
     if (!m || !pairs) return;
@@ -682,22 +757,28 @@ RaskVec *rask_map_take_all(RaskMap *m, int64_t voff, int64_t stride,
     return v;
 }
 
+// Slot for slot, under the source's seed, so no key is hashed again. Hashing
+// a key can run its own Rask `hash` or `eq`, and that code can clone and drop
+// values while a clone's work list still has to visit them.
 RaskMap *rask_map_clone(const RaskMap *m) {
     if (!m) return rask_map_new(8, 8, NULL, 0, 0, NULL, 0, 0);
-    RaskMap *dst = map_new(m->key_size, m->val_size, m->hash_fn, m->eq_fn, MAP_INITIAL_CAP,
+    RaskMap *dst = map_new(m->key_size, m->val_size, m->hash_fn, m->eq_fn, m->cap,
                            m->key_strs, m->val_strs);
-    char *key_copy = (char *)rask_alloc(m->key_size);
-    char *val_copy = (char *)rask_alloc(m->val_size);
-    for (int64_t i = 0; i < m->cap; i++) {
-        if (m->states[i] == MAP_OCCUPIED) {
-            memcpy(key_copy, m->keys + i * m->key_size, (size_t)m->key_size);
-            memcpy(val_copy, m->vals + i * m->val_size, (size_t)m->val_size);
-            map_retain_entry(dst, key_copy, val_copy);
-            rask_map_insert(dst, key_copy, val_copy);
-        }
+    dst->seed = m->seed;
+    memcpy(dst->states, m->states, (size_t)m->cap);
+    memcpy(dst->keys, m->keys, (size_t)rask_safe_mul(m->cap, m->key_size));
+    memcpy(dst->vals, m->vals, (size_t)rask_safe_mul(m->cap, m->val_size));
+    dst->len = m->len;
+    dst->tombstones = m->tombstones;
+    // The entries name what the source's do until the work list gives each
+    // one references of its own. Nothing reads `dst` before that: the drain
+    // finishes inside the outermost clone.
+    rask_clone_contents(RASK_CLONE_MAP, dst);
+    // The copy holds the source's links, and the rack has to hear about it or
+    // a delete leaves the copy naming a freed node (#1972).
+    if (rask_map_holds_struct_links(dst) || rask_elem_strs_are_links(&dst->val_strs)) {
+        rask_link_register_map(dst);
     }
-    rask_realloc(key_copy, m->key_size, 0);
-    rask_realloc(val_copy, m->val_size, 0);
     return dst;
 }
 

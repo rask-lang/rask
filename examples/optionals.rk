@@ -1,60 +1,45 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 // Learn: a value or nothing — `T?`, `match`, `if x? as v`, `??`, `?.`
 //
-// The chapter at docs/book/src/guide/when-there-might-be-nothing.md includes
-// the anchored regions below rather than quoting them, so what the page shows
-// is what CI runs. tests/examples_gate.sh runs this on both backends against
+// tests/examples_gate.sh runs this on both backends against
 // tests/golden/optionals.out.
 
-// ANCHOR: type
 struct Profile {
     name: string
     email: string?
 }
-// ANCHOR_END: type
 
-// The `match` is here to be the "before" — `shout` below writes the same
-// thing with `if p? as found`, which is the point of the page. The `@allow`
-// sits above the anchor so it doesn't show up in the book.
+// The `match` is here to be the "before": `shout` below writes the same
+// thing with `if p? as found`.
 @allow(idiom/match-on-optional)
-// ANCHOR: simplest
 func greet(p: Profile?) -> string {
     match p {
         Profile as found => return "hello {found.name}"
         none => return "nobody here"
     }
 }
-// ANCHOR_END: simplest
 
-// ANCHOR: bind
 func shout(p: Profile?) -> string {
     if p? as found {
         return "HELLO {found.name}"
     }
     return "nobody here"
 }
-// ANCHOR_END: bind
 
-// ANCHOR: test
 func anybody(p: Profile?) -> string {
     if p? {
         return "yes"
     }
     return "no"
 }
-// ANCHOR_END: test
 
-// ANCHOR: fallback
 func email_of(p: Profile) -> string {
     return p.email ?? "no email"
 }
-// ANCHOR_END: fallback
 
-// ANCHOR: chain
 func email_or(p: Profile?, fallback: string) -> string {
     return p?.email ?? fallback
 }
-// ANCHOR_END: chain
 
 func main() {
     let ada = Profile(name: "ada", email: "ada@example.com")

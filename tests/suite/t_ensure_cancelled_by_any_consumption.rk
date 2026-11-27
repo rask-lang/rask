@@ -1,0 +1,89 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// ctrl.ensure/C1: a value consumed before scope exit cancels the ensure that
+// names it. The ownership pass is what knows a value was consumed, so it
+// records which expressions cancel which ensures and both backends act on
+// that record. Before, each backend guessed again from the shape of the code
+// and missed a spelling at a time: a call through a function value (#1989),
+// and an ensure on a chain like `w.take().close()` (#1992). A value the
+// ensure only reads can't be given away at all (#1978); that is
+// tests/compile_errors/ensure_reads_moved.rk.
+
+import sync.Atomic
+
+const CLOSES: Atomic<i64> = Atomic<i64>.new(0)
+
+@resource
+struct Conn {
+    id: i64
+}
+
+extend Conn {
+    func close(take self) -> i64 {
+        CLOSES.fetch_add(1)
+        return self.id
+    }
+}
+
+@resource
+struct Wrapper {
+    inner: Conn
+}
+
+extend Wrapper {
+    func take(take self) -> Conn {
+        return self.inner
+    }
+}
+
+func eat(take c: Conn) -> i64 {
+    return c.close()
+}
+
+// #1989: the call goes through a function value.
+func via_value() -> i64 {
+    let f = eat
+    let c = Conn(id: 1)
+    ensure c.close()
+    return f(c)
+}
+
+func via_closure() -> i64 {
+    let f = |take c: Conn| c.close()
+    let c = Conn(id: 2)
+    ensure c.close()
+    return f(c)
+}
+
+func via_param(g: func(take Conn) -> i64) -> i64 {
+    let c = Conn(id: 3)
+    ensure c.close()
+    return g(c)
+}
+
+// #1992: the ensure's receiver is a chain whose root is `w`.
+func chained() -> i64 {
+    let w = Wrapper(inner: Conn(id: 4))
+    ensure w.take().close()
+    let c = w.take()
+    return c.close()
+}
+
+test "ctrl.ensure/C1 — a take argument through a function value cancels the ensure" {
+    CLOSES.store(0)
+    assert via_value() == 1
+    assert CLOSES.load() == 1
+    CLOSES.store(0)
+    assert via_closure() == 2
+    assert CLOSES.load() == 1
+    CLOSES.store(0)
+    assert via_param(eat) == 3
+    assert CLOSES.load() == 1
+}
+
+test "ctrl.ensure/C1 — consuming the root of an ensure's chain cancels it" {
+    CLOSES.store(0)
+    assert chained() == 4
+    assert CLOSES.load() == 1
+}
+
+func main() {}

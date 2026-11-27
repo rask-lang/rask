@@ -1,0 +1,86 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// 30. Shared state
+//
+// A channel hands a value from one task to another. Sometimes several tasks
+// need the same value at once instead: a counter they all add to, a table
+// they all fill in. Two tasks changing one value at the same moment can
+// leave it half of each, and that kind of bug shows up once in a thousand
+// runs. So in Rask a value that more than one task changes has to live in a
+// `Shared`, which lets one task at a time change it.
+//
+// `with total.write() as n { ... }` waits its turn, then gives you the value
+// for the block. A block of one line can follow a colon instead, `with
+// total.write() as n: n += 1`. `.read()` instead of `.write()` only looks,
+// and lets several readers in together. Each task gets its own `.clone()` of
+// the Shared: a second way to reach the same value, not a copy of it.
+//
+// `total.get()` copies a small value out. Anything bigger you clone out of a
+// `.read()` block, `with table.read() as t { return t.clone() }`, since the
+// Shared still owns what's in it.
+
+import sync.Shared
+
+func count_both(times: i32) -> i32 {
+    let total = Shared.new(0)
+    using Multitasking {
+        let mine = total.clone()
+        let theirs = total.clone()
+        let a = spawn {
+            for _ in 0..times {
+                with mine.write() as n: n += 1
+            }
+        }
+        let b = spawn {
+            for _ in 0..times {
+                with theirs.write() as n: n += 1
+            }
+        }
+        a.join()!
+        b.join()!
+    }
+    return total.get()
+}
+
+// Your turn: `tally` counts the words in both lists, one task per list,
+// into one shared Map.
+
+func tally(first: Vec<string>, second: Vec<string>) -> Map<string, i32> {
+    let counts = Shared.new(Map.new())
+    using Multitasking {
+        let mine = counts.clone()
+        let theirs = counts.clone()
+        let a = spawn {
+            for w in first {
+                with mine.write() as m {
+                    m[w] = (m.get(w) ?? 0) + 1
+                }
+            }
+        }
+        let b = spawn {
+            for w in second {
+                with theirs.write() as m {
+                    m[w] = (m.get(w) ?? 0) + 1
+                }
+            }
+        }
+        a.join()!
+        b.join()!
+    }
+    with counts.read() as m {
+        return m.clone()
+    }
+}
+
+test "count both" {
+    assert count_both(1000) == 2000
+}
+
+test "tally" {
+    let counts = tally(Vec.from(["a", "b", "a"]), Vec.from(["b", "c"]))
+    assert counts["a"] == 2
+    assert counts["b"] == 2
+    assert counts["c"] == 1
+    assert counts.len() == 3
+    assert tally(Vec.new(), Vec.from(["x"]))["x"] == 1
+}

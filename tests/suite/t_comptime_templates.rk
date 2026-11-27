@@ -1,0 +1,58 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A generic function with comptime control is written out as a plain
+// function per instance and checked like one (ctrl.comptime/CT50, #1919).
+// Before, the body was checked once with `v.(f.name)` typed as nothing, so a
+// generic call fed from a field never learned its type.
+import std.reflect
+
+struct Point {
+    x: i64
+    y: i64
+    label: string
+}
+
+annotation @unit {
+    name: string
+}
+
+struct Reading {
+    id: i64
+    @unit(name: "kelvin")
+    temp: f64
+}
+
+func show<T>(v: T) -> string {
+    mut out = ""
+    comptime for f in reflect.fields<T>() {
+        out = "{out}{f.name}={v.(f.name)};"
+    }
+    return out
+}
+
+func units<T>() -> string {
+    mut out = ""
+    comptime for f in reflect.fields<T>() {
+        comptime if f.has<unit>() {
+            out = "{out}{f.name}:{f.get<unit>().name};"
+        }
+    }
+    return out
+}
+
+// A generic function reaching a template: the instance is settled here.
+func shown_twice<T>(v: T) -> string {
+    return "{show(v)}{show(v)}"
+}
+
+test "a field read through the loop, string fields included" {
+    assert show(Point(x: 1, y: 2, label: "a label long enough for the heap")) == "x=1;y=2;label=a label long enough for the heap;"
+}
+
+test "an annotation read on the field that has it" {
+    assert units<Reading>() == "temp:kelvin;"
+}
+
+test "two instances, and one reached through a generic function" {
+    assert show(Reading(id: 7, temp: 1.5)) == "id=7;temp=1.5;"
+    assert shown_twice(Point(x: 2, y: 3, label: "b")) == "x=2;y=3;label=b;x=2;y=3;label=b;"
+}

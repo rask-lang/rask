@@ -1,0 +1,192 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// Constructors whose runtime takes more than the program wrote: the element's
+// size, what it owns, a key's own `hash` and `eq`. Each declaration lists them
+// with `@runtime_args`, and lowering builds every such call from that list,
+// including the ones it emits itself (`to_vec`, `to_map`, `zip`,
+// `sort_by_key`).
+//
+// Before that, `sort_by_key` built its key vector without saying what a key
+// owns, so string keys leaked, and `to_map` never asked for a key's own
+// `hash`/`eq`. A box's value is wrapped into the box's type because its
+// parameter is declared `T`; while that went by the constructor's name, a
+// version of this change that dropped the name stored `Shared<i64?>.new(5)`
+// as a bare 5 and read back `0`.
+//
+// A box frees what its payload owns with the same element description a
+// `Vec` of that type carries. It used to take a one-number kind (vector, map,
+// closure, handle) worked out from the payload's type, which had no answer for
+// an optional vector or a struct holding a string, so those leaked.
+//
+// Which arguments go into a slot is read the same way: a parameter declared
+// as the type's own `T`, `K` or `V`. A table of method names used to say it,
+// and `try_insert`, `get_clone` and `read` were missing from it. A Rask-bodied
+// method (`try_insert`, `try_push`) had its argument widened twice.
+
+import sync.Shared
+import sync.Atomic
+import collections.GrowError
+
+struct Cell2 {
+    row: i64
+    col: i64
+}
+
+extend Cell2 {
+    // Equal on `row` alone, so byte-wise hashing would find two keys here.
+    func hash(self) -> u64 {
+        return self.row.wrap<u64>()
+    }
+    func eq(self, other: Cell2) -> bool {
+        return self.row == other.row
+    }
+}
+
+struct Tagged {
+    label: string
+    weight: i64
+}
+
+const TABLE: Map<Cell2, i64> = comptime cells()
+
+comptime func cells() -> Map<Cell2, i64> {
+    mut m = Map<Cell2, i64>.new()
+    m.insert(Cell2(row: 1, col: 1), 10)
+    m.insert(Cell2(row: 2, col: 2), 20)
+    return m
+}
+
+struct Person {
+    name: string
+    age: i64
+}
+
+func main() {}
+
+test "a box's value goes in as the box's type" {
+    let a = Shared<i64?>.new(5)
+    assert (a.get() ?? 0) == 5
+    let b = Shared<i64?>.mutex(none)
+    assert (b.get() ?? 9) == 9
+    let c = Shared<i32>.local(7)
+    assert c.get() == 7
+}
+
+test "an atomic's value goes in at its own width" {
+    let a = Atomic<i32>.new(41)
+    a.fetch_add(1)
+    assert a.load() == 42
+}
+
+test "sort_by_key owns the keys it computes" {
+    mut people = Vec<Person>.new()
+    people.push(Person(name: "carol-with-a-long-name", age: 3))
+    people.push(Person(name: "alice-with-a-long-name", age: 1))
+    people.push(Person(name: "bob-with-a-long-name", age: 2))
+    people.sort_by_key(|p| p.name.to_uppercase())
+    assert people[0].age == 1
+    people.sort_by_key(|p| p.name)
+    assert people[2].age == 3
+}
+
+test "to_map uses a key's own hash and eq" {
+    let pairs = Vec.from([(Cell2(row: 1, col: 1), 10), (Cell2(row: 1, col: 2), 20)])
+    let m: Map<Cell2, i64> = pairs.to_map()
+    assert m.len() == 1
+    assert (m.get(Cell2(row: 1, col: 9)) ?? 0) == 20
+}
+
+test "zip and to_vec describe the pairs they build" {
+    let names = Vec.from(["alpha-long-string-a", "beta-long-string-b"])
+    let nums = Vec.from([1, 2])
+    let pairs: Vec<(string, i64)> = names.zip(nums).to_vec()
+    assert pairs[1].0 == "beta-long-string-b"
+    let m: Map<string, i64> = names.zip(nums).to_map()
+    assert (m.get("alpha-long-string-a") ?? 0) == 1
+}
+
+test "a box frees what an optional payload owns" {
+    let v = Vec.from([1, 2, 3])
+    let a = Shared<Vec<i64>?>.new(v)
+    assert (a.get() ?? Vec.new()).len() == 3
+    let inner = Shared.new(6)
+    let b = Shared<Shared<i64>?>.mutex(inner)
+    mut seen = 0
+    if b.get()? as box {
+        seen = box.get()
+    }
+    assert seen == 6
+    let m: Map<string, i64> = Map.new()
+    let c = Shared<Map<string, i64>?>.local(m)
+    mut len = 9
+    if c.get()? as held {
+        len = held.len()
+    }
+    assert len == 0
+}
+
+test "a box frees the strings inside a struct payload" {
+    let t = Shared.new(Tagged(label: "a-label-long-enough-to-allocate".to_uppercase(), weight: 2))
+    assert t.get().weight == 2
+    assert t.get().label.len() == 31
+}
+
+test "a comptime map keeps its key's own hash and eq" {
+    assert TABLE.len() == 2
+    assert (TABLE.get(Cell2(row: 1, col: 5)) ?? -1) == 10
+}
+
+test "a value going into a slot widens to the slot's type, by declaration" {
+    mut v = Vec<i32?>.new()
+    try v.try_insert(0, 5)
+    try v.try_push(7)
+    assert (v[0] ?? 0) == 5
+    assert (v[1] ?? 0) == 7
+    mut m = Map<i32, string>.new()
+    m.insert(3, "three")
+    assert (m.get_clone(3) ?? "") == "three"
+    let n = m.read(3, |s| s.len()) ?? 0
+    assert n == 5
+}
+
+test "try_push runs its declared body at each element type" {
+    mut nums = Vec<i32>.fixed(1)
+    try nums.try_push(4)
+    mut back: i32 = 0
+    if nums.try_push(9) is GrowError<i32> as e {
+        match e {
+            GrowError.Full(x) => { back = x }
+            GrowError.NoMemory(x) => { back = -x }
+        }
+    }
+    assert nums[0] == 4
+    assert back == 9
+    mut words = Vec<string>.fixed(1)
+    try words.try_push("first-word-long-enough-to-allocate".to_uppercase())
+    mut kept = ""
+    if words.try_push("second-word-long-enough-to-allocate".to_uppercase()) is GrowError<string> as e {
+        match e {
+            GrowError.Full(w) => { kept = w }
+            GrowError.NoMemory(w) => { kept = w }
+        }
+    }
+    assert words[0].len() == 34
+    assert kept.len() == 35
+}
+
+test "Map.take_all lays out and owns its pairs from the declaration" {
+    mut m = Map<i32, string>.new()
+    m.insert(1, "one-long-enough-to-allocate".to_uppercase())
+    m.insert(2, "two-long-enough-to-allocate".to_uppercase())
+    let pairs = m.take_all()
+    assert m.len() == 0
+    assert pairs.len() == 2
+    mut keys: i32 = 0
+    mut chars: usize = 0
+    for p in pairs {
+        keys += p.0
+        chars += p.1.len()
+    }
+    assert keys == 3
+    assert chars == 54
+}

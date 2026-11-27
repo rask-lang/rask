@@ -14,7 +14,7 @@
 //! Eliminates O(n²) copying and per-iteration allocation.
 
 use crate::analysis::uses;
-use crate::{LocalId, MirFunction, MirOperand, MirRValue, MirStmt, MirStmtKind};
+use crate::{FunctionRef, LocalId, MirFunction, MirOperand, MirRValue, MirStmt, MirStmtKind};
 
 /// Rewrite self-concat patterns to in-place append across all functions.
 pub fn optimize_string_concat(fns: &mut [MirFunction]) {
@@ -30,7 +30,7 @@ fn optimize_function(func: &mut MirFunction) {
 }
 
 fn optimize_block(stmts: &mut Vec<MirStmt>) {
-    // Scan for the pattern: Call{dst=Some(t), func="concat", args=[Local(s), arg]}
+    // Scan for the pattern: Call{dst=Some(t), func="rask_string_concat", args=[Local(s), arg]}
     // followed by Assign{dst=s, rvalue=Use(Local(t))}
     let mut i = 0;
     while i + 1 < stmts.len() {
@@ -58,7 +58,7 @@ fn match_self_concat(call_stmt: &MirStmt, assign_stmt: &MirStmt) -> Option<(Loca
             dst: Some(temp),
             func,
             args,
-        } if func.name == "concat" && args.len() == 2 => {
+        } if func.name == "rask_string_concat" && args.len() == 2 => {
             match &args[0] {
                 MirOperand::Local(s) => (*temp, *s, &args[1]),
                 _ => return None,
@@ -99,19 +99,16 @@ fn temp_used_elsewhere(stmts: &[MirStmt], call_idx: usize, temp: LocalId) -> boo
     false
 }
 
-/// Rewrite a `concat` call to in-place append.
-/// Uses `string_append_cstr` when the second arg is a string constant
+/// Rewrite a `rask_string_concat` call to in-place append.
+/// Uses `rask_string_append_cstr` when the second arg is a string constant
 /// (avoids allocating a temporary RaskString for the literal).
 /// The return value is captured because append may COW (copy-on-write)
 /// when the string is shared via refcounting, returning a new pointer.
 fn rewrite_to_append(stmt: &mut MirStmt, target: LocalId) {
     if let MirStmtKind::Call { dst, func, args } = &mut stmt.kind {
         let use_cstr = matches!(args.get(1), Some(MirOperand::Constant(crate::MirConst::String(_))));
-        func.name = if use_cstr {
-            "string_append_cstr".to_string()
-        } else {
-            "string_append".to_string()
-        };
+        let append = if use_cstr { "rask_string_append_cstr" } else { "rask_string_append" };
+        *func = FunctionRef::reading(append).writing_string();
         *dst = Some(target); // capture return — COW may return a new pointer
     }
 }
@@ -119,7 +116,7 @@ fn rewrite_to_append(stmt: &mut MirStmt, target: LocalId) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{BlockId, FunctionRef, MirTerminator, MirTerminatorKind, MirType};
+    use crate::{BlockId, MirTerminator, MirTerminatorKind, MirType};
     use crate::function::{MirBlock, MirLocal};
 
     fn local(id: u32) -> LocalId {
@@ -144,15 +141,17 @@ mod tests {
             }],
             entry_block: BlockId(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
-            source_file: None,
+            param_modes: Vec::new(),
+            item_mode_from_body: false,
         }
     }
 
     fn concat_call(dst: u32, src: u32, arg: MirOperand) -> MirStmt {
         MirStmt::dummy(MirStmtKind::Call {
             dst: Some(local(dst)),
-            func: FunctionRef::internal("concat".to_string()),
+            func: FunctionRef::reading("rask_string_concat").writing_string(),
             args: vec![MirOperand::Local(local(src)), arg],
         })
     }
@@ -176,7 +175,7 @@ mod tests {
         assert_eq!(stmts.len(), 1);
         match &stmts[0].kind {
             MirStmtKind::Call { dst, func, args } => {
-                assert_eq!(func.name, "string_append");
+                assert_eq!(func.name, "rask_string_append");
                 // Return value captured — COW may return a new pointer
                 assert_eq!(*dst, Some(local(0)));
                 assert_eq!(args.len(), 2);
@@ -198,7 +197,7 @@ mod tests {
         assert_eq!(stmts.len(), 1);
         match &stmts[0].kind {
             MirStmtKind::Call { dst, func, .. } => {
-                assert_eq!(func.name, "string_append_cstr");
+                assert_eq!(func.name, "rask_string_append_cstr");
                 assert_eq!(*dst, Some(local(0)));
             }
             other => panic!("expected Call, got {:?}", other),
@@ -216,7 +215,7 @@ mod tests {
         let stmts = &f.blocks[0].statements;
         assert_eq!(stmts.len(), 2); // no change
         match &stmts[0].kind {
-            MirStmtKind::Call { func, .. } => assert_eq!(func.name, "concat"),
+            MirStmtKind::Call { func, .. } => assert_eq!(func.name, "rask_string_concat"),
             other => panic!("expected concat Call, got {:?}", other),
         }
     }
@@ -238,7 +237,7 @@ mod tests {
         let stmts = &f.blocks[0].statements;
         assert_eq!(stmts.len(), 3); // no change
         match &stmts[0].kind {
-            MirStmtKind::Call { func, .. } => assert_eq!(func.name, "concat"),
+            MirStmtKind::Call { func, .. } => assert_eq!(func.name, "rask_string_concat"),
             other => panic!("expected concat Call, got {:?}", other),
         }
     }
@@ -274,14 +273,14 @@ mod tests {
         assert_eq!(stmts.len(), 2);
         match &stmts[0].kind {
             MirStmtKind::Call { dst, func, .. } => {
-                assert_eq!(func.name, "string_append");
+                assert_eq!(func.name, "rask_string_append");
                 assert_eq!(*dst, Some(local(0)));
             }
             other => panic!("expected string_append, got {:?}", other),
         }
         match &stmts[1].kind {
             MirStmtKind::Call { dst, func, .. } => {
-                assert_eq!(func.name, "string_append_cstr");
+                assert_eq!(func.name, "rask_string_append_cstr");
                 assert_eq!(*dst, Some(local(0)));
             }
             other => panic!("expected string_append_cstr, got {:?}", other),
@@ -294,7 +293,7 @@ mod tests {
         let mut f = make_fn(vec![
             MirStmt::dummy(MirStmtKind::Call {
                 dst: Some(local(1)),
-                func: FunctionRef::internal("concat".to_string()),
+                func: FunctionRef::reading("rask_string_concat").writing_string(),
                 args: vec![
                     MirOperand::Constant(crate::MirConst::String("hello".into())),
                     MirOperand::Local(local(2)),

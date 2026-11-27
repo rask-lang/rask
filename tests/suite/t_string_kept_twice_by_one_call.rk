@@ -1,0 +1,42 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// One string handed to two kept slots of the same call needs two references.
+//
+// `m.insert(x, x)` gives the map the string as key and as value, and the map
+// releases both. The retain pass asked "does this call keep the string?" as a
+// yes or no, so it took one reference for the two slots and the map's release
+// freed the buffer twice (#2029). The strings are long enough to live on the
+// heap; short ones are inline and hide the double free.
+
+func s(n: i64) -> string {
+    return "item-{n}-padded-past-sso-length"
+}
+
+func map_copy(v: Vec<string>) -> Map<string, string> {
+    mut m: Map<string, string> = Map.new()
+    for x in v {
+        m.insert(x, x)
+    }
+    return m
+}
+
+test "an element handed over as key and value" {
+    let m = map_copy(Vec.from([s(11), s(12)]))
+    assert m.len() == 2
+    assert m.get(s(12)) == s(12)
+}
+
+test "an owned string handed over twice at its last use" {
+    mut m: Map<string, string> = Map.new()
+    let x = s(1)
+    m.insert(x, x)
+    assert m.get(s(1)) == s(1)
+}
+
+test "an owned string handed over twice and read afterwards" {
+    mut m: Map<string, string> = Map.new()
+    let x = s(2)
+    m.insert(x, x)
+    assert x.len() == s(2).len()
+    assert m.len() == 1
+}

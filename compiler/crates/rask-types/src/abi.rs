@@ -2,7 +2,7 @@
 
 //! The in-memory layout of `T?`, `T or E` and an error union `(A | B)`.
 //!
-//! The only definition. Mono's layouts, `MirType::size`, codegen's slot sizes
+//! The only definition. Mono's layouts, MIR's sizes (`rask_layout::size_of`), codegen's slot sizes
 //! and the C runtime all take theirs from here. Every value sits at its own
 //! size and alignment; nothing is padded out to a word to make it easier to
 //! move.
@@ -22,7 +22,8 @@ pub const TAG_BYTES: u32 = 1;
 /// The source line a propagated error came from, as a `u32`.
 pub const RESULT_ORIGIN_LINE_OFFSET: u32 = 4;
 pub const RESULT_ORIGIN_LINE_BYTES: u32 = 4;
-/// The source file it came from, as a pointer to its name.
+/// The source file it came from: its index in the table the entry point
+/// gives the runtime (`rask_add_origin_file`), plus one. 0 is no origin.
 pub const RESULT_ORIGIN_FILE_OFFSET: u32 = 8;
 pub const RESULT_ORIGIN_FILE_BYTES: u32 = 8;
 /// Where a `T or E`'s payload starts, unless it needs a stricter alignment

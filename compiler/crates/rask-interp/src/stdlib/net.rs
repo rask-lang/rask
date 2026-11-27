@@ -135,15 +135,12 @@ impl Interpreter {
                     Ok(n) => n.max(0) as usize,
                     Err(e) => return Some(Err(e)),
                 };
-                let guard = stream.lock().unwrap();
-                let Some(s) = guard.as_ref() else {
-                    return Some(Err(RuntimeError::ResourceClosed {
-                        resource_type: "TcpConnection".to_string(),
-                        operation: "read from".to_string(),
-                    }));
+                let conn = match Self::unlocked_socket(stream, "read from") {
+                    Ok(conn) => conn,
+                    Err(e) => return Some(Err(e)),
                 };
                 let mut buf = vec![0u8; max];
-                match Cancellable::new(s).and_then(|mut c| c.read(&mut buf)) {
+                match conn.and_then(|mut c| c.read(&mut buf)) {
                     Ok(n) => {
                         buf.truncate(n);
                         let bytes: Vec<Value> =
@@ -242,22 +239,28 @@ fn wait_ready(
     }
 }
 
-/// A socket a cancel can interrupt (conc.async/CN3). In a task it's
-/// non-blocking while this is alive, and a call that would block waits in
+/// A socket a cancel can interrupt (conc.async/CN3). In a task each call
+/// asks not to wait (`MSG_DONTWAIT`), and one that would wait does so in
 /// `wait_ready`; outside one it's the plain blocking socket.
+///
+/// Per call, not `set_nonblocking`: that flag belongs to the socket, which
+/// every clone of the connection shares. A task clearing it on its way out
+/// put a socket another task was reading back into blocking mode, and that
+/// read could no longer be cancelled.
 struct Cancellable {
     s: std::net::TcpStream,
     token: Option<Arc<crate::value::CancelToken>>,
 }
 
+#[cfg(target_os = "linux")]
+const SEND_FLAGS: libc::c_int = libc::MSG_DONTWAIT | libc::MSG_NOSIGNAL;
+// Elsewhere std sets SO_NOSIGPIPE on the socket when it makes it.
+#[cfg(not(target_os = "linux"))]
+const SEND_FLAGS: libc::c_int = libc::MSG_DONTWAIT;
+
 impl Cancellable {
     fn new(s: &std::net::TcpStream) -> std::io::Result<Self> {
-        let s = s.try_clone()?;
-        let token = crate::value::current_cancel();
-        if token.is_some() {
-            s.set_nonblocking(true)?;
-        }
-        Ok(Cancellable { s, token })
+        Ok(Cancellable { s: s.try_clone()?, token: crate::value::current_cancel() })
     }
 
     fn retry<T>(
@@ -283,26 +286,43 @@ impl Cancellable {
     }
 }
 
-impl Drop for Cancellable {
-    fn drop(&mut self) {
-        if self.token.is_some() {
-            let _ = self.s.set_nonblocking(false);
-        }
+/// `n` from a `recv`/`send`, or the error it set.
+fn sock_result(n: isize) -> std::io::Result<usize> {
+    if n < 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(n as usize)
     }
 }
 
 impl Read for Cancellable {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        self.retry(false, |s| s.read(buf))
+        use std::os::fd::AsRawFd;
+        if self.token.is_none() {
+            return self.s.read(buf);
+        }
+        self.retry(false, |s| {
+            let n = unsafe {
+                libc::recv(s.as_raw_fd(), buf.as_mut_ptr() as *mut libc::c_void, buf.len(), libc::MSG_DONTWAIT)
+            };
+            sock_result(n)
+        })
     }
 }
 
 impl Write for Cancellable {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.retry(true, |s| s.write(buf))
+        use std::os::fd::AsRawFd;
+        if self.token.is_none() {
+            return self.s.write(buf);
+        }
+        self.retry(true, |s| {
+            let n = unsafe { libc::send(s.as_raw_fd(), buf.as_ptr() as *const libc::c_void, buf.len(), SEND_FLAGS) };
+            sock_result(n)
+        })
     }
     fn flush(&mut self) -> std::io::Result<()> {
-        self.retry(true, |s| s.flush())
+        Ok(())
     }
 }
 
@@ -546,6 +566,22 @@ impl Interpreter {
         }
     }
 
+    /// A handle of the connection's own, taken under the lock and used after
+    /// it's released. `clone()` shares the lock, so I/O that waited while
+    /// holding it stalled every other clone: a task reading the socket kept
+    /// the task writing to it from ever sending what the read waited for.
+    fn unlocked_socket(
+        stream: &Arc<Mutex<Socket<std::net::TcpStream>>>,
+        operation: &str,
+    ) -> Result<std::io::Result<Cancellable>, RuntimeError> {
+        let guard = stream.lock().unwrap();
+        let s = guard.as_ref().ok_or_else(|| RuntimeError::ResourceClosed {
+            resource_type: "TcpConnection".to_string(),
+            operation: operation.to_string(),
+        })?;
+        Ok(Cancellable::new(s))
+    }
+
     /// Handle TcpConnection instance methods.
     pub(crate) fn call_tcp_stream_method(
         &mut self,
@@ -564,12 +600,9 @@ impl Interpreter {
             // in net.rk over these; their Rust copies here used to win, and a
             // failure came back as `Err(<a string>)` (#1562).
             "read_bytes_raw" => {
-                let mut guard = stream.lock().unwrap();
-                let s = guard.as_mut().ok_or_else(|| {
-                    RuntimeError::ResourceClosed { resource_type: "TcpConnection".to_string(), operation: "read from".to_string() }
-                })?;
+                let conn = Self::unlocked_socket(stream, "read from")?;
                 let mut buf = Vec::new();
-                match Cancellable::new(s).and_then(|mut c| c.read_to_end(&mut buf)) {
+                match conn.and_then(|mut c| c.read_to_end(&mut buf)) {
                     Ok(_) => {
                         let bytes: Vec<Value> = buf.into_iter().map(|b| Value::int(b as i64)).collect();
                         Ok(Value::some(Value::vec(bytes)))
@@ -591,11 +624,8 @@ impl Interpreter {
                         args.first().map(|v| v.type_name()).unwrap_or("missing")
                     ))),
                 };
-                let mut guard = stream.lock().unwrap();
-                let s = guard.as_mut().ok_or_else(|| {
-                    RuntimeError::ResourceClosed { resource_type: "TcpConnection".to_string(), operation: "write to".to_string() }
-                })?;
-                match Cancellable::new(s).and_then(|mut c| c.write_all(&bytes).and_then(|_| c.flush())) {
+                let conn = Self::unlocked_socket(stream, "write to")?;
+                match conn.and_then(|mut c| c.write_all(&bytes).and_then(|_| c.flush())) {
                     Ok(()) => Ok(Value::int(bytes.len() as i64)),
                     Err(e) => {
                         set_last_os_error(&e);

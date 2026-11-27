@@ -6,7 +6,7 @@
 
 # Function Types
 
-`func(A, B) -> R` is the type of a function value: a named function used as a value, a closure, a `Sequence<T>`'s underlying function. `|A, B| -> R` is the same type spelled closure-style.
+`func(A, B) -> R` is the type of a function value: a named function used as a value, a closure, a `Sequence<T>`'s underlying function. `|A, B| -> R` is the same type spelled closure-style. A function value moves and copies by `.clone()`, whichever of the three it is (`mem.closures/CV1`).
 
 | Rule | Description |
 |------|-------------|

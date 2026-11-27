@@ -136,6 +136,10 @@ renaming the field, since the method is the surface the specs name.
 | `take self` | Take | Consumes struct |
 | (no self) | Static | Associated function, no instance |
 
+A public method's mode is what it declares. A non-public method may write plain
+`self` and have the mode inferred from its body (`type.gradual/GC9`): a body that
+writes a field gets `mutate self`.
+
 <!-- test: parse -->
 ```rask
 struct Point {
@@ -352,6 +356,13 @@ func describe(point: Point) -> string {
 A field pattern either tests a value or binds one. `x: 0` tests; `y` binds, and
 the same shorthand as construction applies — `y` means `y: y`. Arms are tried in
 order, so the general one goes last.
+
+After the colon goes a pattern, and a bare type name there is a type test
+(type.errors/ER27, per field): `Job(id, result: IoError)` asks whether `result`
+holds an `IoError`, which means something when the field is a union or an
+optional. `Point(x: i32, y)` doesn't: `x` is an `i32` already, the test always
+passes and binds nothing, and it doesn't rename or annotate `x`. That is E0423;
+write `Point(x, y)`.
 
 The braces make this a `match`-only form: in `if point is Point { … }` the `{`
 opens the branch, so an `is` test names the type and nothing else.

@@ -1,0 +1,37 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Rejects: a declared type parameter reusing the name of a type the program
+// declares (type.gradual/PC4). `Meters` in the body read as the parameter on
+// the interpreter and as the struct natively (#1913).
+
+interface Val {
+    func val(self) -> i64
+}
+
+struct Meters {
+    v: i64
+}
+
+Meters implements Val {
+    func val(self) -> i64 {
+        return self.v
+    }
+}
+
+// ERROR: `Meters` is a type this program declares [E0968]
+func named<Meters: Val>(m: Meters) -> i64 {
+    return m.val()
+}
+
+// FIX: a name of its own
+func unit<Unit: Val>(m: Unit) -> i64 {
+    return m.val()
+}
+
+// A stdlib type's name is fine: the program never wrote it.
+func first<Output>(xs: Vec<Output>) -> Output {
+    return xs[0]
+}
+
+func main() {
+    println("{named(Meters(v: 1))} {unit(Meters(v: 2))} {first([3])}")
+}

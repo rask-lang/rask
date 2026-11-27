@@ -1,0 +1,18 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+// An arithmetic C macro in `comptime`: computed while compiling, as a
+// constant call to it already is outside `comptime` (#1731).
+
+@c_macro("((X) << 2)")
+extern "C" func QUAD(X: _) -> _
+
+comptime func table() -> i32 {
+    return QUAD(3) + QUAD(1)
+}
+
+const T: i32 = comptime table()
+
+func main() {
+    let b: i32 = comptime QUAD(2u8)
+    println("{T} {b} {comptime QUAD(10)}")
+}

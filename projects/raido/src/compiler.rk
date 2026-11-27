@@ -169,14 +169,15 @@ extend Compiler {
         return self.advance()
     }
 
-    func skip_newlines(self) {
+    func skip_newlines(self) -> void or CompileError {
         // Skip newlines (they're statement terminators, but sometimes optional)
         loop {
             match self.current {
-                Token.Newline => self.advance()
+                Token.Newline => try self.advance()
                 _ => break
             }
         }
+        return
     }
 
     func alloc_reg(self) -> i64 {
@@ -226,7 +227,7 @@ extend Compiler {
         let instr = self.proto.code.get(idx)!
         let op = decode_opcode(instr)!
         let a = decode_a(instr)
-        self.proto.code.set(idx, encode_asbx(op, a as i64, offset) as u32)
+        self.proto.code[idx] = encode_asbx(op, a as i64, offset) as u32
     }
 
     func declare_local(self, name: string) -> i64 {
@@ -250,8 +251,7 @@ extend Compiler {
         // always true and `i - 1` at zero wraps to u64::MAX.
         mut i = (self.scope.locals.len().wrap<i64>()) - 1
         while i >= 0 {
-            let local = self.scope.locals.get(i)
-            if local? {
+            if self.scope.locals.get(i)? as local {
                 if local.name == name {
                     return local.reg
                 }
@@ -269,8 +269,8 @@ extend Compiler {
 
     func end_scope(self) {
         while self.scope.locals.len() > 0 {
-            let last = self.scope.locals.last()
-            if last.depth < self.scope.depth {
+            let depth = self.scope.locals.last()!.depth
+            if depth < self.scope.depth {
                 break
             }
             self.scope.locals.pop()

@@ -46,3 +46,50 @@ Saturating<T> implements Mul where T: Integer {
         return Saturating(self.value.saturating_mul(other.value))
     }
 }
+
+// A number type that builds itself from literals (type.primitives/L9). Not
+// in ops.rk: every interface there is an operator.
+
+/// A type a number literal can build (type.primitives/L9). `FromLiteral<f64>`
+/// takes float literals and `FromLiteral<i64>` integer ones: `let half: Fixed =
+/// 0.5` is `Fixed.from_literal(0.5)`, computed while compiling, so the binary
+/// holds the constant and no float. The conversion has to be a `comptime
+/// func`, and a literal it panics on is a compile error there. A type may
+/// take both kinds; the literal's kind picks the conformance (type.generics/GT7).
+public interface FromLiteral<T> {
+    func from_literal(value: T) -> Self
+}
+
+// The numeric interfaces (type.primitives/NT1-NT3). Every integer primitive is
+// an `Integer` and both floats are `Float`, by what they are; a type of the
+// program's own may declare `Numeric`. The constants the rules promise
+// (`MIN`, `MAX`, `BITS`, `EPSILON`) are the primitives' own.
+
+public interface Numeric {
+    func add(self, other: Self) -> Self
+    func sub(self, other: Self) -> Self
+    func mul(self, other: Self) -> Self
+    func div(self, other: Self) -> Self
+    func neg(self) -> Self
+    func zero() -> Self
+    func one() -> Self
+    func from_int(n: i64) -> Self
+}
+
+/// Adds the remainder and the order every integer has, and the one-off
+/// wrapping and saturating operators (type.overflow/M1), so a body bounded by
+/// `T: Integer` can call them.
+public interface Integer: Numeric, Comparable {
+    func rem(self, other: Self) -> Self
+    func wrapping_add(self, other: Self) -> Self
+    func wrapping_sub(self, other: Self) -> Self
+    func wrapping_mul(self, other: Self) -> Self
+    func saturating_add(self, other: Self) -> Self
+    func saturating_sub(self, other: Self) -> Self
+    func saturating_mul(self, other: Self) -> Self
+}
+
+public interface Float: Numeric, Comparable {
+    func rem(self, other: Self) -> Self
+    func is_nan(self) -> bool
+}

@@ -1,0 +1,62 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A `return` of an element read out of a struct a match arm made.
+//
+// Inlined into its caller, the `return` jumps past the end of the arm, to a
+// join where the arm's normal exit has already released the struct. The
+// struct is still needed past the join (the returned element was read out of
+// it), so it is released there under a flag. The name it was released under
+// held the struct on the returning path and the already-released one on the
+// other, and that counted as not knowing what it held, so nothing released
+// the struct (#2038). The strings are long enough to live on the heap.
+
+struct Big {
+    b: Vec<string>
+}
+
+func mk(n: i64) -> Big {
+    return Big(b: Vec.from(["a string long enough to live on the heap, number {n}"]))
+}
+
+func in_arm(k: i64) -> string {
+    let r = match k {
+        0 => {
+            let v = mk(k)
+            if k == 0 {
+                return v.b[0]
+            }
+            "x"
+        },
+        1 => {
+            let v = mk(k)
+            if v.b.len() > 5 {
+                return v.b[0]
+            }
+            "short"
+        },
+        _ => "none",
+    }
+    return r
+}
+
+func flat(k: i64) -> string {
+    let v = mk(k)
+    if k == 0 {
+        return v.b[0]
+    }
+    return "x"
+}
+
+test "returned from inside an arm" {
+    assert in_arm(0) == "a string long enough to live on the heap, number 0"
+}
+
+test "the arm's normal exit" {
+    assert in_arm(1) == "short"
+    assert in_arm(2) == "none"
+}
+
+test "returned outside a match" {
+    assert flat(0) == "a string long enough to live on the heap, number 0"
+    assert flat(1) == "x"
+}

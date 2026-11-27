@@ -1,4 +1,5 @@
 {
+  "autoCompactWindow": 250000,
   "hooks": {
     "SessionStart": [
       {

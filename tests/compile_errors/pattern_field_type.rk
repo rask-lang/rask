@@ -1,0 +1,65 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A type in a field's pattern that tests nothing (E0423), and the ones that do.
+//
+// After the colon a pattern goes, and a bare type name there tests the field's
+// type (ER27, per field). On a union or optional field that is a real question:
+// `result: IoError` asks which branch the field holds. On a field of exactly
+// that type, `amount: i32`, it always matches and binds nothing. The learner
+// meant a type annotation, and the field is bound by its name: `Cash(amount)`.
+// The arm body still sees `amount`, so E0423 is the only error there.
+
+struct Money {
+    cents: i64
+}
+
+enum IoError {
+    Missing
+}
+
+enum Payment {
+    Cash(amount: i32)
+    Card(total: Money, last4: i32)
+}
+
+struct Job {
+    id: i64
+    result: i64 or IoError
+}
+
+struct Plain {
+    n: i64
+}
+
+func describe(p: Payment) -> i32 {
+    match p {
+        Payment.Cash(amount: i32) => return amount     // ERROR: E0423 a primitive after the colon
+        Payment.Card(total: Money, last4) => return last4  // ERROR: E0423 a type in scope
+    }
+}
+
+func kept(j: Job) -> i64 {
+    match j {
+        // ERROR: E0424 a type test binds no name, so `result` is not defined
+        Job(id, result: i64) => return result
+        Job(id, result: IoError) => return id
+    }
+}
+
+func cannot_hold(j: Job) -> i64 {
+    // ERROR: E0398 a `Money` is neither branch of the field
+    match j {
+        Job(id, result: Money) => return id
+        _ => return 0
+    }
+}
+
+func by_position(p: Plain) -> i64 {
+    // ERROR: E0416 a struct matches by name, and `n: i64` would be E0423
+    match p {
+        Plain(i64) => return 1
+    }
+}
+
+func main() {
+    println("{describe(Payment.Cash(amount: 5))}")
+}

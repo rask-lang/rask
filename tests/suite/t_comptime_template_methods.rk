@@ -1,0 +1,93 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A method with comptime control is written out per instance too
+// (ctrl.comptime/CT50, #1919): one with type parameters of its own, and one
+// of a generic type. Assigning through the loop in a method was an error,
+// since only free functions were written out.
+import std.reflect
+
+struct Pair {
+    a: i64
+    b: i64
+}
+
+struct Named {
+    id: i64
+    name: string
+}
+
+struct Holder {
+    tag: string
+}
+
+extend Holder {
+    func dump<T>(self, v: T) -> string {
+        mut out = "{self.tag}:"
+        comptime for f in reflect.fields<T>() {
+            out = "{out}{f.name}={v.(f.name)};"
+        }
+        return out
+    }
+
+    func bump<T>(self, mutate v: T) {
+        comptime for f in reflect.fields<T>() {
+            comptime if f.type_name == "i64" {
+                v.(f.name) += 1
+            }
+        }
+    }
+}
+
+struct Box<T> {
+    item: T
+}
+
+extend Box<T> {
+    func names(self) -> string {
+        mut out = ""
+        comptime for f in reflect.fields<T>() {
+            out = "{out}{f.name},"
+        }
+        return out
+    }
+
+    func clear(mutate self) {
+        comptime for f in reflect.fields<T>() {
+            comptime if f.type_name == "i64" {
+                self.item.(f.name) = 0
+            }
+        }
+    }
+
+    // No `self`: the type's own parameter comes from the call.
+    func count() -> i64 {
+        mut n = 0
+        comptime for f in reflect.fields<T>() {
+            n += 1
+        }
+        return n
+    }
+}
+
+// Reached through a generic function, the instance is settled there.
+func names_of<T>(take v: T) -> string {
+    return Box(item: v).names()
+}
+
+test "a method with its own type parameter" {
+    let h = Holder(tag: "h")
+    assert h.dump(Pair(a: 1, b: 2)) == "h:a=1;b=2;"
+    assert h.dump(Named(id: 3, name: "a name long enough for the heap")) == "h:id=3;name=a name long enough for the heap;"
+    mut n = Named(id: 3, name: "n")
+    h.bump(mutate n)
+    assert n.id == 4
+}
+
+test "a method of a generic type" {
+    mut b = Box(item: Pair(a: 1, b: 2))
+    assert b.names() == "a,b,"
+    b.clear()
+    assert b.item.a == 0
+    assert b.item.b == 0
+    assert Box<Named>.count() == 2
+    assert names_of(Named(id: 1, name: "x")) == "id,name,"
+}

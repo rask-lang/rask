@@ -100,7 +100,7 @@ loop {
 <!-- test: skip -->
 ```rask
 let rx = Timer.after(5.seconds)
-rx.receive()  // Blocks for 5 seconds, returns ()
+rx.receive()  // Blocks for 5 seconds, returns ()!
 
 select {
     work -> w: process(w),

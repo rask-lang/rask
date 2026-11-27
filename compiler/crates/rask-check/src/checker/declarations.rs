@@ -51,7 +51,7 @@ impl TypeChecker {
             .collect();
         for (name, target) in aliases {
             if self.types.check_alias_cycle(&name, &target).is_none() {
-                self.types.register_alias(name, target);
+                self.types.register_alias(name, Vec::new(), target);
             }
         }
         // `import time as tm`, so `tm.Duration` in a signature finds the
@@ -69,6 +69,108 @@ impl TypeChecker {
             .collect();
         for (alias, module) in modules {
             self.types.register_module_alias(alias, module);
+        }
+    }
+
+    /// type.generics/GT7: a type with more than one conformance of a generic
+    /// interface keeps one method per conformance, filed under a name of its
+    /// own (`render$0`, `render$1`, in declaration order). The declarations
+    /// and the calls are rewritten to that name (`FiledMethods`), so the
+    /// backends see one name per body. A type with one conformance keeps the
+    /// plain name. An operator conformance that left its method to an
+    /// `extend` block gets that method filed under its name (`mul$V2`), as if
+    /// written in the block. Runs once every block is registered, so the
+    /// answer doesn't depend on which block came first.
+    pub(super) fn file_conformance_methods(&mut self) {
+        let resolved: Vec<((rask_types::TypeId, String), Vec<Vec<Type>>)> = self
+            .types
+            .conformance_methods
+            .iter()
+            .map(|(k, list)| {
+                let args = list
+                    .iter()
+                    .map(|e| e.written.iter().map(|a| resolve_type_expr(a, &self.types).unwrap_or(Type::Error)).collect())
+                    .collect();
+                (k.clone(), args)
+            })
+            .collect();
+        for (k, args) in resolved {
+            if let Some(list) = self.types.conformance_methods.get_mut(&k) {
+                for (e, a) in list.iter_mut().zip(args) {
+                    e.args = a;
+                }
+            }
+        }
+        let mut keys: Vec<(rask_types::TypeId, String)> = self
+            .types
+            .conformance_methods
+            .iter()
+            .filter(|(_, list)| list.len() > 1)
+            .map(|(k, _)| k.clone())
+            .collect();
+        keys.sort_by(|a, b| (a.0 .0, &a.1).cmp(&(b.0 .0, &b.1)));
+        for (type_id, plain) in keys {
+            let entries = self.types.conformance_methods[&(type_id, plain.clone())].clone();
+            let mut filed_all = Vec::new();
+            for (i, entry) in entries.iter().enumerate() {
+                let filed = format!("{plain}${i}");
+                if let Some(TypeDef::Struct { methods, .. } | TypeDef::Enum { methods, .. } | TypeDef::NominalAlias { methods, .. }) =
+                    self.types.get_mut(type_id)
+                {
+                    let params = |m: &MethodSig| m.params.iter().map(|(t, _)| t.clone()).collect::<Vec<_>>();
+                    if let Some(sig) = methods.iter_mut().find(|m| m.name == plain && params(m) == entry.params) {
+                        sig.name = filed.clone();
+                    }
+                }
+                self.filed_methods.decls.insert((entry.decl, plain.clone()), filed.clone());
+                filed_all.push(filed.clone());
+                if let Some(list) = self.types.conformance_methods.get_mut(&(type_id, plain.clone())) {
+                    list[i].filed = Some(filed);
+                }
+            }
+            self.types.filed_methods.entry((type_id, plain)).or_default().extend(filed_all);
+        }
+        for (type_id, op, filed) in std::mem::take(&mut self.operators_left_to_inherent) {
+            let Some(&decl) = self.inherent_method_blocks.get(&(type_id, op.clone())) else { continue };
+            let Some(TypeDef::Struct { methods, .. } | TypeDef::Enum { methods, .. } | TypeDef::NominalAlias { methods, .. }) =
+                self.types.get_mut(type_id)
+            else {
+                continue;
+            };
+            let Some(sig) = methods.iter_mut().find(|m| m.name == op) else { continue };
+            sig.name = filed.clone();
+            self.filed_methods.decls.insert((decl, op.clone()), filed.clone());
+            self.types.filed_methods.entry((type_id, op)).or_default().push(filed);
+        }
+    }
+
+    /// type.primitives/L9: a literal is built while compiling, so the
+    /// conversion a type builds literals with has to be a `comptime func`.
+    /// The interface can't say so, and the method may sit in any block on the
+    /// type, so every block is asked once every conformance is known.
+    pub(super) fn check_literal_conversions(&mut self, decls: &[Decl]) {
+        for decl in decls {
+            let (owner, methods) = match &decl.kind {
+                DeclKind::Struct(st) => (st.name.as_str(), st.methods.as_slice()),
+                DeclKind::Enum(e) => (e.name.as_str(), e.methods.as_slice()),
+                DeclKind::Impl(i) => match i.target_ty.last_segment() {
+                    Some(n) => (n, i.methods.as_slice()),
+                    None => continue,
+                },
+                _ => continue,
+            };
+            let Some(id) = self.types.get_type_id(owner) else { continue };
+            for m in methods.iter().filter(|m| !m.is_comptime) {
+                let builds = self.types.literal_conversion_method() == Some(m.name.as_str())
+                    && [false, true].into_iter().any(|float| self.types.builds_from_literal(id, float));
+                if builds {
+                    self.errors.push(TypeError::LiteralConversionNotComptime {
+                        ty: owner.to_string(),
+                        method: m.name.clone(),
+                        span: m.span,
+                    });
+                }
+            }
         }
     }
 
@@ -102,6 +204,22 @@ impl TypeChecker {
     }
 
     pub(super) fn collect_type_declarations(&mut self, decls: &[Decl]) {
+        self.types.declarations_settled = false;
+        // `const W = 4` then `[i32; W]`, and `const TWICE = W * 2`. The length
+        // has to be known before any declared type is parsed, so the consts
+        // are folded here rather than where each is checked (#906). The fold is
+        // the one the backends use for `comptime if`.
+        let consts = decls.iter().filter_map(|d| match &d.kind {
+            DeclKind::Const(c) => Some((c.name.as_str(), &c.init, c.ty.as_ref().and_then(|t| t.bare_name()))),
+            _ => None,
+        });
+        for (name, fact) in rask_ast::comptime_if::const_facts(consts) {
+            if let rask_ast::comptime_if::Fact::Int(n, _) = fact {
+                if let Ok(len) = usize::try_from(n) {
+                    self.types.register_const_length(name, len);
+                }
+            }
+        }
         // Transparent aliases first: a struct field or another declaration's
         // signature may name one declared further down, and resolving it
         // before the alias is in the table gives a type nobody declared.
@@ -125,6 +243,13 @@ impl TypeChecker {
             let params = owner_type_params(&decl.kind, &self.types);
             self.with_type_params(params, |this| this.resolve_forward_field_types(decl));
         }
+        // Before anything is measured: a size walked through a type that
+        // holds itself never settles.
+        for decl in decls {
+            let params = owner_type_params(&decl.kind, &self.types);
+            self.with_type_params(params, |this| this.reject_recursive_decl(decl));
+        }
+        self.types.declarations_settled = true;
         for decl in decls {
             if let DeclKind::Impl(i) = &decl.kind {
                 let params = owner_type_params(&decl.kind, &self.types);
@@ -184,14 +309,33 @@ impl TypeChecker {
         // A field that would store its own type inline stays a name: the type
         // has no size, `reject_recursive_type` says so when the declaration is
         // checked, and until then every walk over the table has to end.
+        // Layout answers that type a placeholder instead of walking the name
+        // (#1973).
         let mut seen = Vec::new();
         let mut chain = Vec::new();
+        let mut sizeless = None;
         let mut cycles = |types: &Self, new: &Type, owner| {
             seen.clear();
             chain.clear();
-            types.reaches_inline(new, owner, &mut seen, &mut chain)
+            let hit = types.reaches_inline(new, owner, &mut seen, &mut chain);
+            if hit {
+                sizeless = Some(owner);
+            }
+            hit
         };
         match &decl.kind {
+            // An interface's methods were read before the interface itself was
+            // in the table, so `any Shape` in `Shape`'s own `func copy(self) ->
+            // any Shape` named no declaration, and no implementation's
+            // `-> any Shape` matched it. The same for an interface named
+            // further down. Every interface is registered now: read them again.
+            DeclKind::Interface(t) => {
+                let Some(id) = self.types.get_type_id(&t.name) else { return };
+                let fresh = self.interface_method_signatures(t);
+                if let Some(TypeDef::Interface { methods, .. }) = self.types.get_mut(id) {
+                    *methods = fresh;
+                }
+            }
             DeclKind::Struct(s) if !s.attrs.iter().any(|a| a.is("binary")) => {
                 let Some(id) = self.types.get_type_id(&s.name) else { return };
                 let Some(TypeDef::Struct { fields, .. }) = self.types.get(id) else { return };
@@ -235,6 +379,9 @@ impl TypeChecker {
             }
             _ => {}
         }
+        if let Some(id) = sizeless {
+            self.types.sizeless.insert(id);
+        }
     }
 
     /// Register one type declaration, with its own type parameters in scope.
@@ -242,7 +389,11 @@ impl TypeChecker {
         match &decl.kind {
             DeclKind::Struct(s) => {
                 self.check_declared_type_name(&s.name, "struct", decl.span, s.fields.is_empty());
+                self.check_length_params(&s.type_params, s.fields.iter().map(|f| &f.ty), decl.span);
                 let id = self.register_struct(s);
+                if s.type_params.is_empty() {
+                    self.pending_value_sizes.push((Type::Named(id), decl.span, self.types.type_params_in_scope()));
+                }
                 self.types.record_declared_type(decl.id, id);
                 self.types.record_param_bounds(id, &s.type_params);
                 self.types.record_method_decl(id, decl.id);
@@ -251,6 +402,9 @@ impl TypeChecker {
             DeclKind::Enum(e) => {
                 self.check_declared_type_name(&e.name, "enum", decl.span, false);
                 let id = self.register_enum(e, decl.span);
+                if e.type_params.is_empty() {
+                    self.pending_value_sizes.push((Type::Named(id), decl.span, self.types.type_params_in_scope()));
+                }
                 self.types.record_declared_type(decl.id, id);
                 self.types.record_param_bounds(id, &e.type_params);
                 self.types.record_method_decl(id, decl.id);
@@ -270,6 +424,7 @@ impl TypeChecker {
             DeclKind::Union(u) => {
                 self.check_declared_type_name(&u.name, "union", decl.span, false);
                 let id = self.register_union(u);
+                self.pending_value_sizes.push((Type::Named(id), decl.span, self.types.type_params_in_scope()));
                 self.types.record_declared_type(decl.id, id);
             }
             // AN6: annotations register as nominal struct types so
@@ -303,16 +458,6 @@ impl TypeChecker {
                     }
                 }
             }
-            // `const W = 4` then `[i32; W]`. The length has to be known
-            // before any declared type is parsed, so it's recorded in this
-            // pass rather than where the const is checked (#906).
-            DeclKind::Const(c) => {
-                if let rask_ast::expr::ExprKind::Int(n, _) = &c.init.kind {
-                    if let Ok(len) = usize::try_from(*n) {
-                        self.types.register_const_length(c.name.clone(), len);
-                    }
-                }
-            }
             DeclKind::Fn(f) => {
                 if f.params.iter().any(|p| p.default.is_some()) {
                     if let Some(&sym_id) = self.resolved.decl_symbols.get(&decl.id) {
@@ -331,6 +476,11 @@ impl TypeChecker {
                 if !type_param_names.is_empty() {
                     if let Some(&sym_id) = self.resolved.decl_symbols.get(&decl.id) {
                         self.fn_type_params.insert(sym_id, type_param_names);
+                        let comptime: Vec<String> =
+                            f.type_params.iter().filter(|p| p.is_comptime).map(|p| p.name.clone()).collect();
+                        if !comptime.is_empty() {
+                            self.fn_comptime_params.insert(sym_id, comptime);
+                        }
                         // #314: record bounds so call sites can verify the
                         // type arg satisfies the declared interface bounds.
                         let bounds: std::collections::HashMap<String, Vec<TypeExpr>> = f.type_params.iter()
@@ -619,7 +769,22 @@ impl TypeChecker {
             let checker = crate::interfaces::InterfaceChecker::new(&self.types);
             checker.declared_method_names(interface)
         };
-        let Some(allowed) = allowed else { return };
+        let Some(mut allowed) = allowed else { return };
+        // E12b: `Decode` and `Encode` have nothing required, but a block may
+        // hold the type's own `decode` or `encode`. The signature varies with
+        // the type, which an interface can't say, so the checker validates it
+        // (`check_custom_wire`).
+        match interface_name.as_str() {
+            "Decode" => {
+                allowed.push("decode".to_string());
+                allowed.push(rask_ast::decl::field_attrs::DECODE_ADAPTER.to_string());
+            }
+            "Encode" => {
+                allowed.push("encode".to_string());
+                allowed.push(rask_ast::decl::field_attrs::ENCODE_ADAPTER.to_string());
+            }
+            _ => {}
+        }
         for m in &i.methods {
             if !allowed.iter().any(|a| a == &m.name) {
                 self.errors.push(TypeError::MethodOutsideInterface {
@@ -632,9 +797,167 @@ impl TypeChecker {
         }
     }
 
+    /// Which of the two wire methods a conformance block may hold: `Decode`'s
+    /// `decode`, `Encode`'s `encode` (std.encoding/E12b).
+    fn wire_hook_of(&self, interface: &TypeExpr) -> Option<super::WireHook> {
+        match self.types.interface_name(interface).as_str() {
+            "Decode" => Some(super::WireHook::Decode),
+            "Encode" => Some(super::WireHook::Encode),
+            _ => None,
+        }
+    }
+
+    /// E12b: is this `decode` something a decoder can call? A static function
+    /// of one plain parameter returning `Self or E`. What it reads and what it
+    /// rejects with are the parameter's type and the `E`; whether those are
+    /// `Decode` and `Error` is the check pass's question, once every type is in.
+    fn custom_decode_of(
+        &self,
+        type_id: rask_types::TypeId,
+        decl: rask_ast::NodeId,
+        sig: &rask_types::MethodSig,
+    ) -> Result<super::CustomDecode, super::WireHookProblem> {
+        use super::WireHookProblem as P;
+        if sig.self_param != rask_types::SelfParam::None {
+            return Err(P::TakesSelf);
+        }
+        let [(wire, mode)] = sig.params.as_slice() else {
+            return Err(P::ParamCount(sig.params.len()));
+        };
+        if *mode != rask_ast::ty::ParamMode::Borrow {
+            return Err(P::NotPlain);
+        }
+        let Type::Result { ok, err } = &sig.ret else {
+            return Err(P::Returns { found: self.types.display_type(&sig.ret) });
+        };
+        if matches!(**err, Type::None) || !self.types.names_type(ok, type_id) {
+            return Err(P::Returns { found: self.types.display_type(&sig.ret) });
+        }
+        Ok(super::CustomDecode { wire: wire.clone(), err: (**err).clone(), decl })
+    }
+
+    /// E12b: the same for `encode`: a method with a plain `self` and nothing
+    /// else, returning the type that is written in its place. It can't fail,
+    /// since writing a value out can't make an invalid one, so a `T or E` is
+    /// not a wire type.
+    fn custom_encode_of(
+        &self,
+        decl: rask_ast::NodeId,
+        sig: &rask_types::MethodSig,
+    ) -> Result<super::CustomEncode, super::WireHookProblem> {
+        use super::WireHookProblem as P;
+        match sig.self_param {
+            rask_types::SelfParam::None => return Err(P::NeedsSelf),
+            rask_types::SelfParam::Value => {}
+            _ => return Err(P::NotPlain),
+        }
+        if !sig.params.is_empty() {
+            return Err(P::ParamCount(sig.params.len()));
+        }
+        let fails = matches!(&sig.ret, Type::Result { err, .. } if !matches!(**err, Type::None));
+        if fails || matches!(sig.ret, Type::Unit | Type::Never) {
+            return Err(P::Returns { found: self.types.display_type(&sig.ret) });
+        }
+        Ok(super::CustomEncode { wire: sig.ret.clone(), decl })
+    }
+
+    /// E12b: report a `decode` or `encode` that is the wrong shape, or goes
+    /// through a type that can't be read or written, or goes round in a circle.
+    /// One that isn't usable is taken back out of the table, and its adapter
+    /// isn't checked: the adapter only repeats the problem, in code the author
+    /// never wrote.
+    ///
+    /// A rejection type with no `message()` isn't reported here: the signature
+    /// itself says so (E0344), once.
+    ///
+    /// Answers whether the block's adapter should be checked.
+    fn check_custom_wire(&mut self, i: &ImplDecl) -> bool {
+        let Some(interface) = &i.interface else { return true };
+        let Some(hook) = self.wire_hook_of(interface) else { return true };
+        let Some(m) = i.methods.iter().find(|m| m.name == hook.method()) else { return true };
+        let Some(type_id) = self.impl_target_id(&i.target_ty) else { return true };
+        let problem = self.custom_wire_problem(i, m, type_id, hook);
+        let Some(problem) = problem else { return true };
+        if let Some(problem) = problem {
+            self.errors.push(TypeError::BadCustomWire { ty: i.target_ty.to_string(), hook, problem, span: m.span });
+        }
+        match hook {
+            super::WireHook::Decode => _ = self.types.custom_decodes.remove(&type_id),
+            super::WireHook::Encode => _ = self.types.custom_encodes.remove(&type_id),
+        }
+        false
+    }
+
+    /// `None` when the method is fine, `Some(None)` when it isn't and the
+    /// error is reported elsewhere, `Some(Some(_))` when it isn't and this says why.
+    fn custom_wire_problem(
+        &self,
+        i: &ImplDecl,
+        m: &FnDecl,
+        type_id: rask_types::TypeId,
+        hook: super::WireHook,
+    ) -> Option<Option<super::WireHookProblem>> {
+        use super::WireHookProblem as P;
+        let generic = !i.target_ty.args().is_empty()
+            || self.types.get(type_id).is_some_and(|d| !d.type_params().is_empty());
+        if generic {
+            return Some(Some(P::GenericType));
+        }
+        // Read back off the table: the signature as registered, `Self` resolved.
+        let sig = match self.types.get(type_id) {
+            Some(TypeDef::Struct { methods, .. }) | Some(TypeDef::Enum { methods, .. }) => {
+                methods.iter().find(|s| s.decl == Some(m.id)).cloned()
+            }
+            _ => None,
+        }?;
+        match hook {
+            super::WireHook::Decode => {
+                let custom = match self.custom_decode_of(type_id, m.id, &sig) {
+                    Ok(custom) => custom,
+                    Err(problem) => return Some(Some(problem)),
+                };
+                if self.types.decodes_through(&custom.wire, type_id) {
+                    return Some(Some(P::ChainsBack));
+                }
+                let mut decode = crate::interfaces::InterfaceChecker::for_decode(&self.types);
+                if decode.check_satisfies(&custom.wire, &TypeExpr::named("Decode"), m.span).is_err() {
+                    let wire = self.types.display_type(&custom.wire);
+                    return Some(Some(P::WireNotCodable { wire }));
+                }
+                // A union of errors is an error: its `message()` is the member's.
+                let members = match &custom.err {
+                    Type::Union(parts) => parts.clone(),
+                    one => vec![one.clone()],
+                };
+                let mut plain = crate::interfaces::InterfaceChecker::new(&self.types);
+                let all_errors = members
+                    .iter()
+                    .all(|e| plain.check_satisfies(e, &TypeExpr::named("Error"), m.span).is_ok());
+                (!all_errors).then_some(None)
+            }
+            super::WireHook::Encode => {
+                let custom = match self.custom_encode_of(m.id, &sig) {
+                    Ok(custom) => custom,
+                    Err(problem) => return Some(Some(problem)),
+                };
+                if self.types.encodes_through(&custom.wire, type_id) {
+                    return Some(Some(P::ChainsBack));
+                }
+                let mut encode = crate::interfaces::InterfaceChecker::for_encode(&self.types);
+                if encode.check_satisfies(&custom.wire, &TypeExpr::named("Encode"), m.span).is_err() {
+                    let wire = self.types.display_type(&custom.wire);
+                    return Some(Some(P::WireNotCodable { wire }));
+                }
+                None
+            }
+        }
+    }
+
     fn check_overlapping_conformances(&mut self, i: &ImplDecl, span: rask_ast::Span) {
-        // MN3: two conformances wanting different methods of one name is an
-        // error; the way out is a nominal type of its own.
+        // MN3: two conformances of one interface whose methods of one name
+        // take the same arguments is an error: a call picks between them by
+        // its arguments (GT7) and has nothing to go on. The way out is a
+        // nominal type of its own.
         let Some(type_id) = self.impl_target_id(&i.target_ty) else {
             return;
         };
@@ -672,7 +995,14 @@ impl TypeChecker {
                 let theirs = checker.required_signatures(&self_ty, &other);
                 for a in &mine {
                     if let Some(b) = theirs.iter().find(|b| b.name == a.name) {
-                        if !checker.signatures_agree(a, b) {
+                        // Could the two take the same arguments for some
+                        // instantiation? A type parameter matches anything:
+                        // `Render<T>` and `Render<Html>` on `Boxed<T>` meet at
+                        // `Boxed<Html>`.
+                        let mut bound = std::collections::HashMap::new();
+                        let same_args = a.params.len() == b.params.len()
+                            && a.params.iter().zip(&b.params).all(|((x, _), (y, _))| self.could_coincide(x, y, &mut bound));
+                        if same_args {
                             clash = Some(a.name.clone());
                             break;
                         }
@@ -789,6 +1119,7 @@ impl TypeChecker {
                             context: super::InterfaceBoundContext::ConformanceHeader,
                             missing: None,
                             namesake: false,
+                            undeclared: None,
                             span: bound_span,
                         });
                     }
@@ -1236,6 +1567,18 @@ impl TypeChecker {
             .iter()
             .map(|m| {
                 let mut sig = self.method_signature(m, &decl_params, &owner_patterns);
+                // A written `Self` in the block is the type being extended.
+                // Left as the bare name, every reader of the signature had to
+                // know to replace it, and the ones that didn't (a `decode`
+                // written `-> Self or E` going unseen by std.encoding/E12b) saw
+                // a type called "Self" that doesn't exist.
+                if let Some(self_ty) = &self_ty {
+                    let this = std::collections::HashMap::from([("Self".to_string(), self_ty.clone())]);
+                    for (ty, _) in &mut sig.params {
+                        *ty = crate::interfaces::substitute_type(ty, &this);
+                    }
+                    sig.ret = crate::interfaces::substitute_type(&sig.ret, &this);
+                }
                 sig.owner_bounds = condition.clone();
                 if interface.is_some() {
                     receiver_as_written(m, &mut sig);
@@ -1244,6 +1587,16 @@ impl TypeChecker {
                     rask_stdlib::operators::conformance_method_name(&i.target_ty, t, name, &m.name)
                 }) {
                     sig.name = filed;
+                } else if let Some(args) = interface.as_ref().and_then(|(t, _)| {
+                    self.types.generic_conformance_args(t, &self.types.type_name(type_id))
+                }) {
+                    // GT7: noted here, filed once every block is in
+                    // (`file_conformance_methods`).
+                    self.types
+                        .conformance_methods
+                        .entry((type_id, m.name.clone()))
+                        .or_default()
+                        .push(super::type_table::ConformanceMethod { written: args, args: Vec::new(), params: sig.params.iter().map(|(t, _)| t.clone()).collect(), decl: decl_id, filed: None });
                 }
                 sig
             })
@@ -1286,6 +1639,48 @@ impl TypeChecker {
                 }
                 self.filed_methods.decls.insert((decl_id, plain), filed.clone());
                 sig.name = filed;
+            }
+        }
+        // G1: an empty operator conformance answers with the type's own
+        // method (`V2 implements Mul<V2> { }` beside `extend V2 { func mul(…)
+        // }`). That method is filed under the conformance's name, the same as
+        // one written in the block, once every block is in
+        // (`file_conformance_methods`); left plain, a call through a bound
+        // asked for `V2_mul$V2` and nothing generated it (#1946).
+        if let Some((t, name)) = &interface {
+            if let Some(op) = rask_stdlib::operators::operator_interface_method(name) {
+                if !i.methods.iter().any(|m| m.name == op) {
+                    if let Some(filed) = rask_stdlib::operators::conformance_method_name(&i.target_ty, t, name, op) {
+                        self.operators_left_to_inherent.push((type_id, op.to_string(), filed));
+                    }
+                }
+            }
+        } else {
+            for sig in &new_methods {
+                self.inherent_method_blocks.entry((type_id, sig.name.clone())).or_insert(decl_id);
+            }
+        }
+        // E12b: a `decode` in a `Decode` block is how the type decodes, an
+        // `encode` in an `Encode` block how it is written. Filed once here, off
+        // the signature, for every codec to read. One that isn't the right
+        // shape is reported at the check pass and filed nowhere.
+        if let Some(hook) = interface.as_ref().and_then(|(t, _)| self.wire_hook_of(t)) {
+            let generic = !i.target_ty.args().is_empty()
+                || self.types.get(type_id).is_some_and(|d| !d.type_params().is_empty());
+            let found = i.methods.iter().zip(new_methods.iter()).find(|(m, _)| m.name == hook.method());
+            if let (Some((m, sig)), false) = (found, generic) {
+                match hook {
+                    super::WireHook::Decode => {
+                        if let Ok(custom) = self.custom_decode_of(type_id, m.id, sig) {
+                            self.types.custom_decodes.insert(type_id, custom);
+                        }
+                    }
+                    super::WireHook::Encode => {
+                        if let Ok(custom) = self.custom_encode_of(m.id, sig) {
+                            self.types.custom_encodes.insert(type_id, custom);
+                        }
+                    }
+                }
             }
         }
         // OR12: `@builtin` says the pair's types are written here and the
@@ -1370,8 +1765,9 @@ impl TypeChecker {
         if let Some(pkg) = self.foreign_block_owner(type_id, span) {
             self.conformance_disambiguation.insert(decl_id, pkg.clone());
             for m in &new_methods {
-                self.types
-                    .record_impl_method_package(type_id, &m.name, &pkg, decl_id);
+                if let Some(body) = m.decl {
+                    self.types.record_impl_method_package(type_id, &m.name, &pkg, body);
+                }
             }
         }
         let stdlib_mode = self.types.stdlib_mode;
@@ -1838,16 +2234,19 @@ impl TypeChecker {
         }
     }
 
-    pub(super) fn register_interface(&mut self, t: &InterfaceDecl) {
-        let methods = t
-            .methods
+    fn interface_method_signatures(&mut self, t: &InterfaceDecl) -> Vec<MethodSig> {
+        t.methods
             .iter()
             .map(|m| {
                 let mut sig = self.method_signature(m, &[], &[]);
                 receiver_as_written(m, &mut sig);
                 sig
             })
-            .collect();
+            .collect()
+    }
+
+    pub(super) fn register_interface(&mut self, t: &InterfaceDecl) {
+        let methods = self.interface_method_signatures(t);
         let generic_methods = t.methods.iter()
             .filter(|m| !m.type_params.is_empty())
             .map(|m| m.name.clone())
@@ -1869,7 +2268,9 @@ impl TypeChecker {
             })
             .collect();
 
-        self.types.register_type(TypeDef::Interface {
+        let defaults: std::collections::HashSet<String> =
+            t.methods.iter().filter(|m| !m.body.is_empty()).map(|m| m.name.clone()).collect();
+        let id = self.types.register_type(TypeDef::Interface {
             name: t.name.clone(),
             type_params,
             super_interfaces: t.super_interfaces.clone(),
@@ -1878,7 +2279,11 @@ impl TypeChecker {
             generic_methods,
             is_unsafe: t.is_unsafe,
             is_duck: t.is_duck,
+            by_shape: rask_ast::attr::has(&t.attrs, "by_shape"),
         });
+        if !defaults.is_empty() {
+            self.types.interface_defaults.insert(id, defaults);
+        }
     }
 
     /// Put a transparent alias in the table. Runs before any other declaration
@@ -1893,7 +2298,8 @@ impl TypeChecker {
             });
             return;
         }
-        self.types.register_alias(a.name.clone(), a.target.clone());
+        let params = a.type_params.iter().map(|p| p.name.clone()).collect();
+        self.types.register_alias(a.name.clone(), params, a.target.clone());
     }
 
     pub(super) fn register_type_alias(&mut self, a: &TypeAliasDecl, span: rask_ast::Span) {
@@ -1994,7 +2400,8 @@ impl TypeChecker {
                     let Some(attr) = rask_ast::attr::c_macro(&e.attrs) else {
                         // A function a macro's body may call.
                         let params = e.params.iter().filter_map(|p| p.ty.clone()).collect();
-                        self.c_functions.insert(e.name.clone(), (params, e.ret_ty.clone(), e.is_variadic));
+                        // By its C name: a macro's body calls it as C does.
+                        self.c_functions.insert(e.c_symbol(), (params, e.ret_ty.clone(), e.is_variadic));
                         continue;
                     };
                     let params: Vec<String> = e.params.iter().map(|p| p.name.clone()).collect();
@@ -2067,7 +2474,7 @@ impl TypeChecker {
                 Type::Bool | Type::Char | Type::I8 | Type::I16 | Type::I32 | Type::I64
                     | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::F32 | Type::F64
                     | Type::RawPtr(_) | Type::Var(_) | Type::Error
-            ) || matches!(&ty, Type::UnresolvedNamed(n) if rask_ast::primitives::c_type_spelling(n).is_some());
+            ) || matches!(&ty, Type::UnresolvedNamed(n) if rask_ast::target::is_c_scalar(n));
             if !ok {
                 self.errors.push(TypeError::VariadicArg { ty, span });
             }
@@ -2308,6 +2715,7 @@ impl TypeChecker {
         MethodSig {
             param_names,
             origin: rask_types::MethodOrigin::Declared,
+            decl: (m.id != rask_ast::NodeId::DUMMY).then_some(m.id),
             effect: m.declared_effects(),
             is_public: m.is_pub,
             // The parser folds `<E>` into the declared name for display, so the
@@ -2493,6 +2901,9 @@ impl TypeChecker {
                 if m != "clone" && self.compares_through_field(id) {
                     continue;
                 }
+                if m == "clone" && self.frees_itself(id) {
+                    continue;
+                }
                 candidates.push((id, m, shape.clone()));
             }
         }
@@ -2510,6 +2921,14 @@ impl TypeChecker {
             }
             set = keep;
         }
+    }
+
+    /// A handle that frees itself is a pointer to state it owns, with no
+    /// fields to copy: a copied pointer would leave two owners to free one
+    /// block. It clones only by declaring `clone`, and so does anything
+    /// holding one.
+    fn frees_itself(&self, id: rask_types::TypeId) -> bool {
+        self.types.get(id).and_then(|d| d.runtime_handle()).is_some_and(|h| h.release.is_some())
     }
 
     /// type.reads-as/RA6: comparing a value is reading it, so a type that
@@ -2557,6 +2976,7 @@ impl TypeChecker {
             let sig = |name: &str, self_param: SelfParam, params: Vec<(Type, ParamMode)>, ret: Type| MethodSig {
                 param_names: Vec::new(),
                 origin: rask_types::MethodOrigin::Structural,
+                decl: None,
                 effect: Default::default(),
                 is_public: true,
                 owner_patterns: Vec::new(),
@@ -2576,7 +2996,7 @@ impl TypeChecker {
             let reads = self.compares_through_field(id);
             let eq_ok = !reads && self.parts_derive(&shape, "eq");
             let hash_ok = !reads && self.parts_derive(&shape, "hash");
-            let clone_ok = self.parts_derive(&shape, "clone");
+            let clone_ok = !self.frees_itself(id) && self.parts_derive(&shape, "clone");
             let cmp_ok = !reads && self.parts_derive(&shape, "compare");
 
             let mut new_methods = Vec::new();
@@ -2660,15 +3080,11 @@ impl TypeChecker {
                     match def {
                         TypeDef::Struct { methods, .. } |
                         TypeDef::Enum { methods, .. } => {
-                            let family = match method {
-                                "eq" => Some("eq"),
-                                "hash" => Some("hash"),
-                                "clone" => Some("clone"),
-                                m if Self::is_ordering_method(m) => Some("compare"),
-                                _ => None,
-                            };
+                            // The four operators ORD1 derives answer with `compare`;
+                            // every other derived method is its own entry.
+                            let family = if Self::is_ordering_method(method) { "compare" } else { method };
                             methods.iter().any(|m| m.name == method)
-                                || family.is_some_and(|f| self.derive_assumed.contains(&(*id, f)))
+                                || self.derive_assumed.contains(&(*id, family))
                         }
                         _ => false,
                     }
@@ -2729,19 +3145,19 @@ impl TypeChecker {
             {
                 args.iter().all(|a| match a {
                     rask_types::GenericArg::Type(t) => self.type_has_method_in(t, method, params),
-                    _ => false,
                 })
             }
-            // A program's generic type clones when its own declaration does
-            // and each argument does: `Vec<List<T>>` inside `List<T>`.
-            Type::Generic { base, args }
-                if method == "clone"
-                    && !matches!(self.types.declared_by(*base), super::type_table::TypeOwner::Stdlib) =>
+            // Any other generic type clones when its own declaration does and
+            // each argument does: `Vec<List<T>>` inside `List<T>`, or a
+            // `Link<Leaf>?` edge. Limited to the program's own types, a struct
+            // holding a link derived no `clone`, and native copied it in place:
+            // the copy shared the source's vectors and read them after the
+            // source was freed (#1972).
+            Type::Generic { base, args } if method == "clone" =>
             {
                 self.type_has_method_in(&Type::Named(*base), method, params)
                     && args.iter().all(|a| match a {
                         rask_types::GenericArg::Type(t) => self.type_has_method_in(t, method, params),
-                        _ => true,
                     })
             }
             Type::UnresolvedGeneric { name, args } if method == "clone" => {
@@ -2754,6 +3170,11 @@ impl TypeChecker {
                     None => false,
                 }
             }
+            // A closure's clone copies its environment (mem.closures/CV2),
+            // and everything it carries can be cloned (CV4). Without this a
+            // struct with a closure field had no derived `clone`, and native
+            // copied it in place: two structs, one environment, freed twice.
+            Type::Fn { .. } => method == "clone",
             _ => false,
         }
     }
@@ -2788,6 +3209,28 @@ impl TypeChecker {
         }
     }
 
+    /// E0890 for a struct or enum declaration that holds itself inline. Runs
+    /// once every type is registered, so a field may name one declared below.
+    /// Unknown names are left for `check_decl` to report.
+    fn reject_recursive_decl(&mut self, decl: &Decl) {
+        let (name, fields): (&str, Vec<_>) = match &decl.kind {
+            // `@binary` fields are wire specifiers, never a declared type.
+            DeclKind::Struct(s) if !s.attrs.iter().any(|a| a.is("binary")) => {
+                (&s.name, s.fields.iter().map(|f| (&f.ty, f.name_span)).collect())
+            }
+            DeclKind::Enum(e) => {
+                (&e.name, e.variants.iter().flat_map(|v| v.fields.iter()).map(|f| (&f.ty, f.name_span)).collect())
+            }
+            _ => return,
+        };
+        let Some(owner) = self.types.get_type_id(name) else { return };
+        for (ty, span) in fields {
+            if let Ok(ty) = resolve_type_expr(ty, &self.types) {
+                self.reject_recursive_type(owner, &ty, span);
+            }
+        }
+    }
+
     /// A struct or enum whose fields reach itself with nothing in between.
     ///
     /// Every field is stored inline, so room for a `Node` inside a `Node`
@@ -2802,10 +3245,6 @@ impl TypeChecker {
     /// and arrays. `Heap<T>`, `Link<T>`, `Vec` and the rest put the value
     /// somewhere else and hold an address, which is exactly what breaks the
     /// cycle — and what the message tells the author to reach for.
-    ///
-    /// A generic carrier (`struct Wrap<T> { v: T }`, then `Wrap<Node>`) is not
-    /// walked: the field's declared type is `T`, so seeing through it needs the
-    /// substitution, which isn't done here. That case still reaches layout.
     fn reject_recursive_type(&mut self, owner: rask_types::TypeId, ty: &Type, span: Span) {
         let mut chain: Vec<String> = Vec::new();
         let mut seen: Vec<rask_types::TypeId> = Vec::new();
@@ -2816,6 +3255,7 @@ impl TypeChecker {
             Some(TypeDef::Struct { name, .. }) | Some(TypeDef::Enum { name, .. }) => name.clone(),
             _ => return,
         };
+        self.types.sizeless.insert(owner);
         let through = if chain.is_empty() {
             String::new()
         } else {
@@ -2837,42 +3277,31 @@ impl TypeChecker {
         chain: &mut Vec<String>,
     ) -> bool {
         match ty {
-            Type::Named(id) => {
-                if *id == owner {
-                    return true;
-                }
-                if seen.contains(id) {
-                    return false;
-                }
-                seen.push(*id);
-                let (name, inner): (String, Vec<Type>) = match self.types.get(*id) {
-                    Some(TypeDef::Struct { name, fields, .. }) => (
-                        name.clone(),
-                        fields.iter().map(|(_, t)| t.clone()).collect(),
-                    ),
-                    Some(TypeDef::Enum { name, variants, .. }) => (
-                        name.clone(),
-                        variants.iter().flat_map(|(_, tys)| tys.clone()).collect(),
-                    ),
-                    Some(TypeDef::Union { name, fields, .. }) => (
-                        name.clone(),
-                        fields.iter().map(|(_, t)| t.clone()).collect(),
-                    ),
-                    // A nominal alias is the underlying type wearing a new
-                    // name, so it stores whatever that does.
-                    Some(TypeDef::NominalAlias { name, underlying, .. }) => {
-                        (name.clone(), vec![underlying.clone()])
-                    }
-                    _ => return false,
-                };
-                chain.push(name);
-                for t in &inner {
-                    if self.reaches_inline(t, owner, seen, chain) {
-                        return true;
-                    }
-                }
-                chain.pop();
-                false
+            Type::Named(id) => self.reaches_inline_through(*id, &[], owner, seen, chain),
+            // The owner at any arguments is the owner: `Grow<T>` holding
+            // `Grow<(T, T)>` needs room for itself at every bigger instance,
+            // so no size satisfies it. Another generic is walked with its
+            // arguments written into its fields, so `Wrap<Node>` holds a
+            // `Node` and `Wrap<Heap<Node>>` doesn't.
+            Type::Generic { base, args } => {
+                let args: Vec<Type> = args
+                    .iter()
+                    .filter_map(|a| match a {
+                        rask_types::GenericArg::Type(t) => Some((**t).clone()),
+                    })
+                    .collect();
+                self.reaches_inline_through(*base, &args, owner, seen, chain)
+            }
+            // The same generic before its name is settled to an id.
+            Type::UnresolvedGeneric { name, args } => {
+                let Some(base) = self.types.get_type_id(name) else { return false };
+                let args: Vec<Type> = args
+                    .iter()
+                    .filter_map(|a| match a {
+                        rask_types::GenericArg::Type(t) => Some((**t).clone()),
+                    })
+                    .collect();
+                self.reaches_inline_through(base, &args, owner, seen, chain)
             }
             // `T?` and `T or E` are a tag beside the payload, not a pointer to
             // it, so both sides are inline.
@@ -2886,6 +3315,56 @@ impl TypeChecker {
             Type::Array { elem, .. } => self.reaches_inline(elem, owner, seen, chain),
             _ => false,
         }
+    }
+
+    /// `reaches_inline` for a declared type `id` held with `args`: its fields
+    /// and payloads, with the arguments in place of its parameters.
+    fn reaches_inline_through(
+        &self,
+        id: rask_types::TypeId,
+        args: &[Type],
+        owner: rask_types::TypeId,
+        seen: &mut Vec<rask_types::TypeId>,
+        chain: &mut Vec<String>,
+    ) -> bool {
+        if id == owner {
+            return true;
+        }
+        if seen.contains(&id) {
+            return false;
+        }
+        // A stdlib generic is a handle or has its own layout; what it holds
+        // sits behind its pointer.
+        if !args.is_empty() && matches!(self.types.declared_by(id), super::type_table::TypeOwner::Stdlib) {
+            return false;
+        }
+        seen.push(id);
+        let Some(def) = self.types.get(id) else { return false };
+        let name = match def {
+            TypeDef::Struct { name, .. }
+            | TypeDef::Enum { name, .. }
+            | TypeDef::Union { name, .. }
+            // A nominal alias is the underlying type wearing a new
+            // name, so it stores whatever that does.
+            | TypeDef::NominalAlias { name, .. } => name.clone(),
+            _ => return false,
+        };
+        let params = def.type_params();
+        let subst: std::collections::HashMap<&str, &Type> =
+            params.iter().map(String::as_str).zip(args.iter()).collect();
+        let inner: Vec<Type> = def
+            .held_types()
+            .into_iter()
+            .map(|t| rask_layout::substitute_inside(t, &subst))
+            .collect();
+        chain.push(name);
+        for t in &inner {
+            if self.reaches_inline(t, owner, seen, chain) {
+                return true;
+            }
+        }
+        chain.pop();
+        false
     }
 
     /// Check a declaration with the type parameters it owns in scope for
@@ -2911,7 +3390,6 @@ impl TypeChecker {
                 // spelling here as well rejected every `@binary` struct there
                 // is, with a message telling you to declare `u16be`.
                 if !s.attrs.iter().any(|a| a.is("binary")) {
-                    let owner = self.types.get_type_id(&s.name);
                     let fields: Vec<_> = s
                         .fields
                         .iter()
@@ -2919,9 +3397,6 @@ impl TypeChecker {
                         .collect();
                     for (ty, span) in fields {
                         self.reject_non_optional_link(&ty, span);
-                        if let Some(owner) = owner {
-                            self.reject_recursive_type(owner, &ty, span);
-                        }
                     }
                 }
                 self.current_self_type = self.types.get_type_id(&s.name).map(Type::Named);
@@ -2932,7 +3407,6 @@ impl TypeChecker {
             }
             DeclKind::Enum(e) => {
                 // PC2: variant payload types must name declared types
-                let owner = self.types.get_type_id(&e.name);
                 let payloads: Vec<_> = e
                     .variants
                     .iter()
@@ -2941,9 +3415,6 @@ impl TypeChecker {
                     .collect();
                 for (ty, span) in payloads {
                     self.reject_non_optional_link(&ty, span);
-                    if let Some(owner) = owner {
-                        self.reject_recursive_type(owner, &ty, span);
-                    }
                 }
                 self.current_self_type = self.types.get_type_id(&e.name).map(Type::Named);
                 for method in &e.methods {
@@ -2998,6 +3469,7 @@ impl TypeChecker {
                     .fold(true, |ok, t| self.check_interface_arity(t, decl.span) && ok);
                 self.check_overlapping_conformances(i, decl.span);
                 self.check_block_is_the_contract(i);
+                let check_adapter = self.check_custom_wire(i);
                 let assoc_ok = self.check_conformance_assoc_types(i, decl.span);
 
                 if arity_ok && assoc_ok && i.interface.is_some() && i.target_ty.args().is_empty() {
@@ -3028,6 +3500,23 @@ impl TypeChecker {
                                     known: self.declared_interface_names(),
                                     span: decl.span,
                                 });
+                                continue;
+                            }
+                            // `Encode` or `Decode` declared on a type the derive
+                            // refuses (an empty `Encode` block on a type that
+                            // reads itself through `decode`) isn't missing a
+                            // method: they have none. Say what it is, as a bound
+                            // on that type would.
+                            if matches!(interface_name.to_string().as_str(), "Encode" | "Decode")
+                                && matches!(e, crate::interfaces::InterfaceError::NotSatisfied { .. })
+                            {
+                                let err = self.bound_error(
+                                    &target_ty,
+                                    i.target_ty.to_string(),
+                                    interface_name.to_string(),
+                                    decl.span,
+                                );
+                                self.errors.push(err);
                                 continue;
                             }
                             // The method is there and its signature is wrong —
@@ -3065,6 +3554,7 @@ impl TypeChecker {
                                 context: super::InterfaceBoundContext::ConformanceHeader,
                                 missing,
                                 namesake: false,
+                                undeclared: None,
                                 span: decl.span,
                             });
                         }
@@ -3082,6 +3572,11 @@ impl TypeChecker {
                         .extend(tp.bound_types());
                 }
                 for method in &i.methods {
+                    let is_adapter = method.name == rask_ast::decl::field_attrs::DECODE_ADAPTER
+                        || method.name == rask_ast::decl::field_attrs::ENCODE_ADAPTER;
+                    if !check_adapter && is_adapter {
+                        continue;
+                    }
                     self.check_fn(method);
                 }
                 self.current_impl_type_param_bounds = std::collections::HashMap::new();
@@ -3148,10 +3643,8 @@ impl TypeChecker {
                 self.allowed_warnings = old_allowed;
             }
             DeclKind::Import(imp) => {
-                // Register module name as local for field/method resolution.
-                // Modules handled by BuiltinModules (net, json, fs) route through
-                // check_method_call directly. Others like 'time' need local registration
-                // so field access (time.Instant) flows through resolve_field.
+                // Register the module name as a local, so field access
+                // (`time.Instant`) flows through resolve_field.
                 if imp.path.len() == 1 {
                     let pkg_name = &imp.path[0];
                     let module_name = imp.alias.as_ref().unwrap_or(pkg_name).clone();
@@ -3166,12 +3659,10 @@ impl TypeChecker {
 
                     // The marker names the module, not the alias, so `import
                     // time as tm` checks `tm.sleep` as `time.sleep`.
-                    if !self.types.builtin_modules.is_module(pkg_name) {
-                        self.define_local(
-                            module_name.clone(),
-                            Type::UnresolvedNamed(format!("__module_{}", pkg_name)),
-                        );
-                    }
+                    self.define_local(
+                        module_name.clone(),
+                        Type::UnresolvedNamed(format!("__module_{}", pkg_name)),
+                    );
                 }
             }
             // Registration resolved these quietly, before every type they

@@ -1,0 +1,168 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A `comptime if` inside an unrolled `comptime for` can compare the item's
+// string and integer properties (#1868). Natively only boolean facts folded,
+// so `field.type_name == "f64"` stopped the build with "reached lowering
+// unsettled" while the interpreter ran it.
+import std.reflect
+
+const WIDE: usize = 16
+const FLOAT: string = "f64"
+const TWICE: usize = WIDE / 2 * 2
+
+annotation @scale {
+    by: i64
+}
+
+struct Reading {
+    public id: i64
+    @scale(by: 10)
+    public value: f64
+    public label: string
+}
+
+test "compare a field's type_name and name" {
+    mut out = ""
+    comptime for f in reflect.fields<Reading>() {
+        comptime if f.type_name == "f64" {
+            out = "{out}float:{f.name};"
+        }
+        comptime if f.name != "id" && f.type_name != "f64" {
+            out = "{out}other:{f.name};"
+        }
+    }
+    assert out == "float:value;other:label;"
+}
+
+test "compare integer properties" {
+    mut wide = 0
+    mut first = ""
+    comptime for f in reflect.fields<Reading>() {
+        comptime if f.size >= 16 {
+            wide += 1
+        }
+        comptime if f.offset == 0 {
+            first = f.name
+        }
+    }
+    assert wide == 1
+    assert first == "id"
+}
+
+test "a comparison can guard an annotation read" {
+    // Only `value` is an f64, and only `value` carries @scale, so the read
+    // survives in exactly the iteration that has something to read.
+    mut by = 0
+    comptime for f in reflect.fields<Reading>() {
+        comptime if f.type_name == "f64" {
+            by = f.get<scale>().by
+        }
+    }
+    assert by == 10
+}
+
+func sys(mutate a: i64, b: string) {}
+
+func second_index<F>(f: F) -> string {
+    mut out = ""
+    comptime for p in reflect.params<F>() {
+        comptime if p.index == 1 {
+            out = p.type_name
+        }
+    }
+    return out
+}
+
+test "a parameter's index" {
+    assert second_index(sys) == "string"
+}
+
+test "an else-if chain dispatches on the type" {
+    mut out = ""
+    comptime for f in reflect.fields<Reading>() {
+        comptime if f.type_name == "i64" {
+            out = "{out}int;"
+        } else if f.type_name == "f64" {
+            out = "{out}float;"
+        } else {
+            out = "{out}other;"
+        }
+    }
+    assert out == "int;float;other;"
+}
+
+test "the other side can be a const, arithmetic or a reflect answer" {
+    mut out = ""
+    comptime for f in reflect.fields<Reading>() {
+        comptime if f.size >= WIDE {
+            out = "{out}wide:{f.name};"
+        }
+        comptime if f.type_name == FLOAT {
+            out = "{out}const:{f.name};"
+        }
+        comptime if f.offset == 4 + 4 {
+            out = "{out}second:{f.name};"
+        }
+        comptime if f.type_name == reflect.name_of<string>() {
+            out = "{out}name_of:{f.name};"
+        }
+        comptime if f.name < "m" {
+            out = "{out}before_m:{f.name};"
+        }
+    }
+    assert out == "before_m:id;const:value;second:value;wide:label;name_of:label;before_m:label;"
+}
+
+test "a const-guarded annotation read" {
+    mut by = 0
+    comptime for f in reflect.fields<Reading>() {
+        comptime if f.type_name == FLOAT {
+            by = f.get<scale>().by
+        }
+    }
+    assert by == 10
+}
+
+test "a const computed from other consts" {
+    mut out = ""
+    comptime for f in reflect.fields<Reading>() {
+        comptime if f.size == TWICE {
+            out = "{out}{f.name};"
+        }
+    }
+    assert out == "label;"
+}
+
+test "a computed const already read at run time still folds" {
+    // Reading `TWICE` first makes a local holding it; natively that local
+    // used to read as a binding shadowing the const.
+    assert TWICE == 16
+    mut out = ""
+    comptime for f in reflect.fields<Reading>() {
+        comptime if f.size == TWICE {
+            out = "{out}{f.name};"
+        }
+    }
+    assert out == "label;"
+}
+
+test "&& short-circuits: the guarded side is only asked when the guard holds" {
+    // `id` has no @scale, so `f.get<scale>().by` has no answer there; the
+    // left side already says no.
+    mut by = 0
+    comptime for f in reflect.fields<Reading>() {
+        comptime if f.has<scale>() && f.get<scale>().by > 5 {
+            by = f.get<scale>().by
+        }
+    }
+    assert by == 10
+}
+
+test "|| short-circuits too" {
+    mut n = 0
+    comptime for f in reflect.fields<Reading>() {
+        comptime if !f.has<scale>() || f.get<scale>().by > 5 {
+            n += 1
+        }
+    }
+    assert n == 3
+}

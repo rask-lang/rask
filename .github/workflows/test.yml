@@ -6,6 +6,9 @@ on:
   push:
     branches: [ main ]
   pull_request:
+  # The merge queue tests each PR merged onto the current main before it lands,
+  # so a PR doesn't have to be brought up to date by hand to merge.
+  merge_group:
   workflow_dispatch:
 
 # Ten jobs that all start at once, on twelve runners — gates-memcheck and
@@ -181,9 +184,9 @@ jobs:
       if: ${{ !cancelled() && steps.compiler.outcome == 'success' }}
       run: tests/matrix/run.sh
 
-  # ── What the runtime hands back, and what a learner reads.
+  # ── What the runtime hands back.
   gates-memory:
-    name: gates-memory (leaks, tutorials)
+    name: gates-memory (leaks)
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
@@ -232,15 +235,6 @@ jobs:
     - name: Memory leak gate
       if: ${{ !cancelled() && steps.compiler.outcome == 'success' }}
       run: tests/leak_gate.sh
-
-    # The tutorial answer key. `tutorials/learn-rask/solutions/` was referenced
-    # by nothing at all, and seven of nineteen solutions didn't compile (#1030)
-    # — they'd been broken for a while, since the same seven fail on the commit
-    # before the string-API change that surfaced them. These are what a learner
-    # reads when they're stuck, so a wrong one costs more than a missing one.
-    - name: Tutorial solutions
-      if: ${{ !cancelled() && steps.compiler.outcome == 'success' }}
-      run: tests/tutorials_gate.sh
 
   # ── valgrind, on its own runners.
   #
@@ -306,12 +300,14 @@ jobs:
       run: cargo build --release -p rask-cli
       working-directory: compiler
 
-    # Through tests/lib/apt_install.sh: a slow Azure mirror falls back to
-    # Ubuntu's main archive instead of running out the clock.
+    # From GitHub's cache, or a mirror when the runner image is new; see
+    # .github/actions/apt-install.
     - name: Install valgrind
       if: ${{ !cancelled() && steps.compiler.outcome == 'success' }}
       timeout-minutes: 8
-      run: tests/lib/apt_install.sh valgrind
+      uses: ./.github/actions/apt-install
+      with:
+        packages: valgrind
 
     - name: Memory error gate (valgrind)
       if: ${{ !cancelled() && steps.compiler.outcome == 'success' }}
@@ -423,13 +419,13 @@ jobs:
       working-directory: compiler
 
     # MIR mints names for operations the stdlib declares under another spelling,
-    # and `INTERNAL_SPELLINGS` says what each stands for — that is what decides
-    # who owns what crosses the call. A name with no line there is treated as
-    # owning everything it touches, which leaks rather than double-frees; this
-    # is what stops it staying that way. Runs the suite through `rask test` as
-    # well as `compile`, because the two lowering paths reach different names.
-    # Parallel too (SPELL_JOBS): 3m13 -> 1m16.
-    - name: Internal spelling gate
+    # or not at all, and states at the emit site what each does with what
+    # crosses the call (`FunctionRef::like`, `borrowing`, `releasing`). A call in
+    # a stdlib family that states nothing is treated as reading everything and
+    # keeping nothing; this is what stops it staying that way. Runs the suite
+    # through `rask test` as well as `compile`, because the two lowering paths
+    # reach different names. Parallel too (SPELL_JOBS): 3m13 -> 1m16.
+    - name: Unshaped call gate
       if: ${{ !cancelled() && steps.compiler.outcome == 'success' }}
       run: tests/spellings_gate.sh
 
@@ -508,11 +504,14 @@ jobs:
     # The context switch on x86_64 and, under qemu, aarch64 — the one place
     # the aarch64 switch runs at all. Needs no compiler, so it goes first.
     # A stalled mirror once held the install until the job's 20 minutes ran
-    # out, which reads as a fiber hang. Bound it, retry it, and keep it a step
-    # of its own so the log says which half stopped.
+    # out, which reads as a fiber hang. So it comes from GitHub's cache, is
+    # bounded when it can't, and is a step of its own so the log says which
+    # half stopped.
     - name: Install qemu and the aarch64 toolchain
       timeout-minutes: 8
-      run: tests/lib/apt_install.sh qemu-user gcc-aarch64-linux-gnu libc6-dev-arm64-cross
+      uses: ./.github/actions/apt-install
+      with:
+        packages: qemu-user gcc-aarch64-linux-gnu libc6-dev-arm64-cross
     - name: Fiber switch (x86_64, aarch64 under qemu)
       timeout-minutes: 3
       run: FIBER_GATE_REQUIRE_AARCH64=1 tests/fiber_gate.sh
@@ -559,6 +558,13 @@ jobs:
       if: ${{ !cancelled() && steps.compiler.outcome == 'success' }}
       timeout-minutes: 3
       run: C_ABI_GATE_REQUIRE_AARCH64=1 tests/c_abi_gate.sh
+
+    # A float workload's bits, pinned: native, interpreter and aarch64 under
+    # the qemu above all have to print the same hash (determinism/D12).
+    - name: Float bits (native, interpreter, aarch64 under qemu)
+      if: ${{ !cancelled() && steps.compiler.outcome == 'success' }}
+      timeout-minutes: 3
+      run: FLOAT_GATE_REQUIRE_AARCH64=1 tests/float_gate.sh
 
     - name: Data-race gate (ThreadSanitizer)
       if: ${{ !cancelled() && steps.compiler.outcome == 'success' }}
@@ -669,12 +675,19 @@ jobs:
     # snippet parsed fine while calling an API the real grep program doesn't
     # use, with both imports missing. This gate adds what parsing can't see:
     # every block must be an {{#include}} from a program another gate runs or
-    # carry a compile/run marker; every include must resolve; and the compile
-    # errors a chapter teaches with are pinned renderings of `rask check`, so
-    # improving a diagnostic shows up as a diff on the page that teaches it.
+    # carry a compile/run marker; every include must resolve; and the code on
+    # the landing page runs.
     - name: Book gate
       if: ${{ !cancelled() && steps.compiler.outcome == 'success' }}
       run: tests/book_gate.sh
+
+    # The tour, the book's "Learn the language". Each step fails as shipped and
+    # its solution passes on both backends; no step uses an idea a later step
+    # teaches (the old tutorial's chapter 5 exercise needed chapter 6); and the
+    # book's pages can be made from the step files.
+    - name: Tour gate
+      if: ${{ !cancelled() && steps.compiler.outcome == 'success' }}
+      run: tests/tour_gate.sh
 
     # The opt-in Claude Code hook in editors/claude-code/ parses
     # `rask check --json`. Nothing else reads that output the same way, so a

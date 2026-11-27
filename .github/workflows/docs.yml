@@ -11,6 +11,7 @@ on:
       - 'docs/landing/**'
       - 'docs/showcase/**'
       - 'docs/shared/**'
+      - 'docs/install.sh'
       - 'writing/**'
       - 'examples/**'
       - 'compiler/crates/rask-wasm/**'
@@ -77,6 +78,8 @@ jobs:
         cp docs/shared/tokens.css docs/build/tokens.css
         cp docs/shared/rask-vocabulary.js docs/build/rask-vocabulary.js
         cp docs/shared/rask-highlight.js docs/build/rask-highlight.js
+        # The tour's pages are made from its step files, not committed.
+        python3 docs/book/learn_pages.py
         cd docs/book
         mdbook build -d ../build/book
 
@@ -124,6 +127,10 @@ jobs:
         find docs/build -type f \( -name '*.html' -o -name '*.css' -o -name '*.js' \) -print0 \
           | xargs -0 sed -i "s/?v=dev/?v=${GITHUB_SHA::12}/g"
 
+
+        # The installer is fetched as rask-lang.dev/install.sh, the one curl
+        # line the install page and the README give.
+        cp docs/install.sh docs/build/install.sh
 
         # Copy meta files
         cp docs/CNAME docs/build/CNAME

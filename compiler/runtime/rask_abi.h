@@ -16,6 +16,10 @@
 // `uint32_t`, zero for none (`rask_types::abi`).
 #define RASK_RESULT_ORIGIN_LINE_OFFSET 4
 
+// Where it keeps the file: a `uint64_t`, the file's index in
+// `rask_origin_files` plus one, zero for none.
+#define RASK_RESULT_ORIGIN_FILE_OFFSET 8
+
 // How the runtime reads one element of a vector it formats or sorts. The
 // vector only records a width, and a four-byte element could be an i32,
 // a u32 or an f32 — which print and order differently — so the caller
@@ -72,17 +76,6 @@
 // it freezes into `bytes` without moving.
 #define RASK_STRING_HEADER_SIZE 16
 
-// What a box's payload is, so the box's last release can give it back.
-#define RASK_BOX_PAYLOAD_NONE 0
-#define RASK_BOX_PAYLOAD_VEC 1
-#define RASK_BOX_PAYLOAD_MAP 2
-
-// A closure block (#1253).
-#define RASK_BOX_PAYLOAD_CLOSURE 3
-
-// Another box: freed through its own header (#1302).
-#define RASK_BOX_PAYLOAD_BOX 4
-
 // An owned-entry word: the byte offset in the low 28 bits, the kind in
 // the top 4.
 #define RASK_OWNED_KIND_SHIFT 28
@@ -99,6 +92,23 @@
 
 // The value here is described by the list being walked, from its start.
 #define RASK_OWNED_SELF 7
+
+// A link inside the element: owns nothing, but the rack has to find it
+// to null it when its node is deleted (`Vec<Cursor>`, #1804).
+#define RASK_OWNED_LINK 8
+
+// A handle that frees itself (`@handle(release: …)`). The entry's offset
+// bits hold two things: the byte offset below
+// `RASK_OWNED_HANDLE_INDEX_SHIFT`, and above it the handle's index in
+// `RASK_HANDLE_RELEASES`.
+#define RASK_OWNED_HANDLE 9
+#define RASK_OWNED_HANDLE_INDEX_SHIFT 20
+#define RASK_OWNED_HANDLE_OFFSET_MASK 1048575
+
+// The element *is* a link (`Vec<Link<T>>`, a `Map` of them): the whole
+// list, alone. Owns nothing; it lets a container that arrives whole, a
+// clone above all, record its own edges (#1972).
+#define RASK_OWNED_ELEM_LINK 10
 
 // Word indexes into a vtable (`rask_mir::vtable_layout`): the concrete
 // value's size and alignment, which size an interface box's block, and
@@ -135,6 +145,11 @@
 #define RASK_JSON_ERR_PARSE 1
 #define RASK_JSON_ERR_TYPE 2
 #define RASK_JSON_ERR_MISSING 3
+#define RASK_JSON_ERR_REFUSED 4
+
+// Which text of a failed decode `rask_json_error_message` hands back.
+#define RASK_JSON_TEXT_MESSAGE 0
+#define RASK_JSON_TEXT_PATH 1
 
 // A decode shape's kind.
 #define RASK_JSHAPE_BOOL 0
@@ -163,8 +178,8 @@
 #define RASK_JSHAPE_OPT 17
 #define RASK_JSHAPE_STRUCT 18
 
-// An enum: a tag, and per variant a struct of its payload. Claims build
-// these; JSON's enum form is still open (std.json).
+// An enum: a tag, and per variant its wire name and a struct of its
+// payload, tagged as std.encoding/E22–E24 write it.
 #define RASK_JSHAPE_ENUM 19
 
 // A `T or E`: the tag, and the `T` or the `E` at the payload. Claims
@@ -174,6 +189,13 @@
 // A type that builds itself through `claims.Generate`: the shape holds
 // the function that calls its `generate`. Claims only.
 #define RASK_JSHAPE_GENERATED 21
+
+// A type that decodes through its own `decode` (std.encoding/E12b): the
+// shape of what `decode` reads, and the function that calls it.
+#define RASK_JSHAPE_CUSTOM 22
+
+// `[T; N]`: N elements of one shape, back to back in place.
+#define RASK_JSHAPE_ARRAY 23
 
 // A decode shape field flag: `@no_serialize`, never read from the input.
 #define RASK_JFIELD_NOT_SERIALIZED 1
@@ -188,5 +210,22 @@
 #define RASK_CHAN_FULL (-2)
 #define RASK_CHAN_EMPTY (-3)
 #define RASK_CHAN_CANCELLED (-4)
+
+// Every stdlib handle's declared release, in index order: what a
+// `RASK_OWNED_HANDLE` entry calls.
+#define RASK_HANDLE_RELEASES(X) \
+    X(rask_atomic_free) \
+    X(rask_cell_free) \
+    X(rask_cstring_free) \
+    X(rask_map_free) \
+    X(rask_mutex_drop) \
+    X(rask_rack_free) \
+    X(rask_recver_drop_i64) \
+    X(rask_rng_free) \
+    X(rask_sender_drop_i64) \
+    X(rask_shared_drop_i64) \
+    X(rask_staged_free) \
+    X(rask_string_builder_free) \
+    X(rask_vec_free)
 
 #endif

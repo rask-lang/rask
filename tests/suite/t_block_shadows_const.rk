@@ -1,0 +1,21 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A block that declares a local over a module const and yields it hands out
+// the local, a fresh value it owns. Ownership treated the yielded name as the
+// const, so the block's value was taken to be a read of `ORG`.
+
+struct Pt {
+    x: i64
+    y: i64
+    z: i64
+}
+
+const ORG: Pt = Pt(x: 1, y: 2, z: 3)
+
+test "a block yields its own local, not the const it shadows" {
+    let p = {
+        let ORG = Pt(x: 5, y: 0, z: 0)
+        ORG
+    }
+    assert p.x == 5
+    assert ORG.x == 1
+}

@@ -229,7 +229,6 @@ Atomics aren't in it yet. They're scheduling points (S3), but an atomic op with 
 ## Non-goals
 
 - **Production record-replay.** Capturing real inputs to replay a production incident is a different, heavier feature. Still parked (`determinism` open questions).
-- **Cross-platform bit-exact floats.** Same binary, same platform (`determinism/D12`). Bit-exactness across machines is Raido's job.
 - **Performance realism.** Virtual latencies are plausible, not measured. Sim finds interleaving and fault bugs; it will never tell you something is slow.
 - **Model checking.** Sim samples the schedule space at random. It does not enumerate it, and a green sweep is evidence, not proof.
 - **Crash and restart.** Torn writes surviving a process death need a durability model. Out of v1; it is the obvious next step after it.

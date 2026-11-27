@@ -1,0 +1,105 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A `return` from a loop over a sequence nested in another one.
+//
+// Each loop body is a closure, and a `return` in it leaves its answer in a
+// slot for the function to return. The inner loop had a slot of its own, and
+// the outer body copied the answer on into the function's slot as if it were
+// borrowed: nothing released the inner slot's reference, so one string leaked
+// per return (#2042). The inner loop now writes the function's slot directly.
+// The strings are long enough to live on the heap.
+
+import sequence.Sequence
+
+func long(n: i64) -> string {
+    return "long-heap-string-number-{n}-xxxxxxxxxxxxxxxxxxxx"
+}
+
+func strs() -> Sequence<string> {
+    return |yield| {
+        for i in 0..4 {
+            if !yield(long(i)) { return }
+        }
+    }
+}
+
+func vecs() -> Sequence<Vec<string>> {
+    return |yield| {
+        for i in 0..4 {
+            if !yield([long(i), long(i + 1)]) { return }
+        }
+    }
+}
+
+struct Pair { a: string, b: string }
+
+func outer_item() -> string {
+    for a in strs() {
+        for b in strs() {
+            if b.len() == a.len() { return a }
+        }
+    }
+    return ""
+}
+
+func three_deep() -> string {
+    for a in strs() {
+        for b in strs() {
+            for c in strs() {
+                if c != b { return a }
+            }
+        }
+    }
+    return ""
+}
+
+func pair() -> Pair {
+    for a in strs() {
+        for b in strs() {
+            if b != a { return Pair(a: a, b: b) }
+        }
+    }
+    return Pair(a: "", b: "")
+}
+
+func maybe() -> string? {
+    for a in strs() {
+        for b in strs() {
+            if b != a { return b }
+        }
+    }
+    return none
+}
+
+func find_pair() -> Vec<string> {
+    for a in vecs() {
+        for b in vecs() {
+            if b[0] == a[1] { return a.clone() }
+        }
+    }
+    return Vec.new()
+}
+
+test "the outer item" {
+    assert outer_item() == long(0)
+}
+
+test "three loops deep" {
+    assert three_deep() == long(0)
+}
+
+test "a struct built from both items" {
+    let p = pair()
+    assert p.a == long(0)
+    assert p.b == long(1)
+}
+
+test "an optional" {
+    assert (maybe() ?? "none") == long(1)
+}
+
+test "a copy of the outer vector" {
+    let v = find_pair()
+    assert v[0] == long(0)
+    assert v[1] == long(1)
+}

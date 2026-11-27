@@ -114,7 +114,7 @@ pub fn collect_function_debug(
     inline_regions: &[rask_mir::InlineRegion],
     struct_layouts: &[StructLayout],
     enum_layouts: &[EnumLayout],
-    line_map: Option<&LineMap>,
+    target: rask_ast::Target,
 ) -> Option<FunctionDebugInfo> {
     let all_srclocs = compiled.buffer.get_srclocs_sorted();
     let mut srclocs = Vec::new();
@@ -136,18 +136,18 @@ pub fn collect_function_debug(
     let params: Vec<_> = mir_fn.params.iter()
         .map(|p| mir_type_to_var_info(
             p.name.as_deref().unwrap_or("_"),
-            &p.ty, struct_layouts, enum_layouts,
+            &p.ty, struct_layouts, enum_layouts, target,
         ))
         .collect();
     let locals: Vec<_> = mir_fn.locals.iter()
         .filter(|l| l.name.is_some() && !l.is_param)
         .map(|l| mir_type_to_var_info(
             l.name.as_deref().unwrap(),
-            &l.ty, struct_layouts, enum_layouts,
+            &l.ty, struct_layouts, enum_layouts, target,
         ))
         .collect();
 
-    let inlined_callees = compute_inline_ranges(&srclocs, inline_regions, line_map);
+    let inlined_callees = compute_inline_ranges(&srclocs, inline_regions);
 
     Some(FunctionDebugInfo {
         func_id,
@@ -183,51 +183,53 @@ pub fn resolve_debug_info(
 
 // ── MIR type → VarInfo conversion ────────────────────────────────────────────
 
-/// Convert a MIR local's type to the VarInfo needed for DWARF DI3/DI4.
+/// Convert a MIR local's type to the VarInfo needed for DWARF DI3/DI4. The
+/// size is the layout's, like every other size the backend uses.
 fn mir_type_to_var_info(
     name: &str,
     ty: &rask_mir::MirType,
     struct_layouts: &[StructLayout],
     enum_layouts: &[EnumLayout],
+    target: rask_ast::Target,
 ) -> VarInfo {
     use rask_mir::{EnumLayoutId, StructLayoutId};
 
-    let (type_name, byte_size, type_kind) = match ty {
-        rask_mir::MirType::Void     => ("void".into(), 0u32, TypeKind::Other),
-        rask_mir::MirType::Bool     => ("bool".into(), 1, TypeKind::Boolean),
-        rask_mir::MirType::I8       => ("i8".into(), 1, TypeKind::Signed),
-        rask_mir::MirType::I16      => ("i16".into(), 2, TypeKind::Signed),
-        rask_mir::MirType::I32      => ("i32".into(), 4, TypeKind::Signed),
-        rask_mir::MirType::I64      => ("i64".into(), 8, TypeKind::Signed),
-        rask_mir::MirType::U8       => ("u8".into(), 1, TypeKind::Unsigned),
-        rask_mir::MirType::U16      => ("u16".into(), 2, TypeKind::Unsigned),
-        rask_mir::MirType::U32      => ("u32".into(), 4, TypeKind::Unsigned),
-        rask_mir::MirType::U64      => ("u64".into(), 8, TypeKind::Unsigned),
-        rask_mir::MirType::F32      => ("f32".into(), 4, TypeKind::Float),
-        rask_mir::MirType::F64      => ("f64".into(), 8, TypeKind::Float),
-        rask_mir::MirType::Char     => ("char".into(), 4, TypeKind::Unsigned),
-        rask_mir::MirType::Ptr | rask_mir::MirType::RawPtr | rask_mir::MirType::Container(_) => ("ptr".into(), 8, TypeKind::Address),
-        rask_mir::MirType::Buffer   => ("buffer".into(), 8, TypeKind::Address),
-        rask_mir::MirType::Struct(StructLayoutId { id, byte_size, .. }) => {
+    let (type_name, type_kind): (String, TypeKind) = match ty {
+        rask_mir::MirType::Void     => ("void".into(), TypeKind::Other),
+        rask_mir::MirType::Bool     => ("bool".into(), TypeKind::Boolean),
+        rask_mir::MirType::I8       => ("i8".into(), TypeKind::Signed),
+        rask_mir::MirType::I16      => ("i16".into(), TypeKind::Signed),
+        rask_mir::MirType::I32      => ("i32".into(), TypeKind::Signed),
+        rask_mir::MirType::I64      => ("i64".into(), TypeKind::Signed),
+        rask_mir::MirType::U8       => ("u8".into(), TypeKind::Unsigned),
+        rask_mir::MirType::U16      => ("u16".into(), TypeKind::Unsigned),
+        rask_mir::MirType::U32      => ("u32".into(), TypeKind::Unsigned),
+        rask_mir::MirType::U64      => ("u64".into(), TypeKind::Unsigned),
+        rask_mir::MirType::F32      => ("f32".into(), TypeKind::Float),
+        rask_mir::MirType::F64      => ("f64".into(), TypeKind::Float),
+        rask_mir::MirType::Char     => ("char".into(), TypeKind::Unsigned),
+        rask_mir::MirType::Ptr | rask_mir::MirType::RawPtr | rask_mir::MirType::Container(_) => ("ptr".into(), TypeKind::Address),
+        rask_mir::MirType::Buffer   => ("buffer".into(), TypeKind::Address),
+        rask_mir::MirType::Struct(StructLayoutId { id, .. }) => {
             let sname = struct_layouts.get(*id as usize)
                 .map(|s| s.name.clone())
                 .unwrap_or_else(|| "struct".into());
-            (sname, *byte_size, TypeKind::Other)
+            (sname, TypeKind::Other)
         }
-        rask_mir::MirType::Enum(EnumLayoutId { id, byte_size, .. }) => {
+        rask_mir::MirType::Enum(EnumLayoutId { id, .. }) => {
             let ename = enum_layouts.get(*id as usize)
                 .map(|e| e.name.clone())
                 .unwrap_or_else(|| "enum".into());
-            (ename, *byte_size, TypeKind::Other)
+            (ename, TypeKind::Other)
         }
         rask_mir::MirType::Option(inner) => {
-            let inner = mir_type_to_var_info("", inner, struct_layouts, enum_layouts);
-            (format!("Option<{}>", inner.type_name), ty.size(), TypeKind::Other)
+            let inner = mir_type_to_var_info("", inner, struct_layouts, enum_layouts, target);
+            (format!("Option<{}>", inner.type_name), TypeKind::Other)
         }
-        rask_mir::MirType::Tuple(_) => ("tuple".into(), 8, TypeKind::Other),
-        _ => ("unknown".into(), 8, TypeKind::Other),
+        rask_mir::MirType::Tuple(_) => ("tuple".into(), TypeKind::Other),
+        _ => ("unknown".into(), TypeKind::Other),
     };
-    VarInfo { name: name.to_owned(), type_name, byte_size, type_kind }
+    VarInfo { name: name.to_owned(), type_name, byte_size: rask_layout::size_of(ty, target), type_kind }
 }
 
 // ── DI5: inline range computation ────────────────────────────────────────────
@@ -237,7 +239,6 @@ fn mir_type_to_var_info(
 fn compute_inline_ranges(
     srclocs: &[SrcLocEntry],
     inline_regions: &[rask_mir::InlineRegion],
-    _line_map: Option<&LineMap>,
 ) -> Vec<InlinedCalleeInfo> {
     let mut result = Vec::new();
     for region in inline_regions {

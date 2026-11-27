@@ -11,7 +11,7 @@ use super::check_expr::ContainerElem;
 use super::TypeChecker;
 use rask_types::TypeDef;
 
-use rask_types::{FnParam, GenericArg, Type};
+use rask_types::{ArrayLen, FnParam, GenericArg, Type, TypeId};
 use rask_ast::ty::ParamMode;
 
 /// Can a bare literal of this kind stand in for `ty`? An integer literal takes
@@ -109,7 +109,7 @@ impl TypeChecker {
                 // later statement. Kept for the next round; anything nothing
                 // ever pins becomes an array in `settle_collection_literals`.
                 c @ TypeConstraint::CollectionLiteral { .. } => still_open.push(c),
-                TypeConstraint::HasField { ty, field, expected, span, self_type } => {
+                TypeConstraint::HasField { ty, field, expected, span, self_type, through_chain } => {
                     let resolved = self.resolve_named(&self.ctx.apply(&ty));
                     // A receiver that's still a variable has something left to
                     // wait for, the same as the `HasMethod` case below — and the
@@ -120,9 +120,18 @@ impl TypeChecker {
                     // at all: four open nodes per `sort_by` (#1026). Retry it
                     // once everything else has settled.
                     if matches!(resolved, Type::Var(_)) {
-                        self.deferred_fields.push(TypeConstraint::HasField {
-                            ty, field, expected, span, self_type,
+                        self.deferred_shapes.push(TypeConstraint::HasField {
+                            ty, field, expected, span, self_type, through_chain,
                         });
+                        continue;
+                    }
+                    // A `?.` read whose object settled late still needs its
+                    // optional layer peeled, or rejected.
+                    if through_chain {
+                        let c = TypeConstraint::HasField { ty, field, expected, span, self_type, through_chain };
+                        if let Err(e) = self.solve_constraint(c) {
+                            self.errors.push(e);
+                        }
                         continue;
                     }
                     if !Self::is_placeholder_type(&resolved) {
@@ -202,6 +211,26 @@ impl TypeChecker {
                         });
                     }
                 }
+                // A `for` item whose source is still open. The source is often
+                // a call that deferred itself and resolves in the retry after
+                // literal defaults: `for r in rows.as_sequence().map(|v|
+                // v.as_sequence()).flatten()` settles `flatten` only there.
+                // Dropped here, `r` took any type at all, and native lowering
+                // found no receiver type for `r.len()` (#2045).
+                c @ TypeConstraint::ElementOf { .. } => self.deferred_shapes.push(c),
+                // The same holds for anything else waiting on that item, or on
+                // any value that settles in the retry: `r[0]`, `x!`, a `?.`
+                // read. Dropped here, `let first = r[0]` had no type (#2045).
+                c @ (TypeConstraint::Index { .. }
+                | TypeConstraint::Unwrap { .. }
+                | TypeConstraint::ErrorBranch { .. }
+                | TypeConstraint::OptionalChain { .. }
+                | TypeConstraint::TakePlace { .. }
+                | TypeConstraint::Projection { .. }) => {
+                    if Self::shape_waits_on(&c).is_some_and(|t| matches!(self.ctx.apply(t), Type::Var(_))) {
+                        self.deferred_shapes.push(c);
+                    }
+                }
                 // A widening into `T?` whose value never settled. The coercion
                 // re-defers while the value is a variable, waiting to find out
                 // whether it's already optional — and if nothing ever tells it,
@@ -217,12 +246,16 @@ impl TypeChecker {
                 // `pop()` in the same position was fine, because it answers
                 // `T?` outright and unified. There is only one answer left for
                 // the widening case — the value is the payload — so give it.
-                TypeConstraint::Coerce { value, target, span, .. } => {
-                    if !matches!(self.ctx.apply(&value), Type::Var(_)) {
-                        continue;
-                    }
-                    if let Some(inner) = self.ctx.apply(&target).as_option().cloned() {
-                        let _ = self.unify(&value, &inner, span);
+                //
+                // The value may yet settle in the retry of deferred calls, so
+                // the coercion waits for that first: a `for` item checked
+                // before its source resolved took `let z: i32 = v` on an `i64`
+                // and native truncated it (#2045). Whatever is still open
+                // afterwards gets the payload answer in
+                // `settle_deferred_before_defaults`.
+                c @ TypeConstraint::Coerce { .. } => {
+                    if Self::shape_waits_on(&c).is_some_and(|t| matches!(self.ctx.apply(t), Type::Var(_))) {
+                        self.deferred_shapes.push(c);
                     }
                 }
                 _ => {}
@@ -231,24 +264,25 @@ impl TypeChecker {
         self.ctx.constraints.extend(still_open);
     }
 
-    /// A primitive on one side and a stdlib container on the other.
+    /// Whether `id` is a newtype whose wrapped type would unify with `other`,
+    /// so a mismatch between them is fixed by wrapping or by `.value`.
     ///
-    /// `unify` defers instead of deciding whenever either side is an unresolved
-    /// generic, because the name may still resolve — and every deferred `Equal`
-    /// that never resolved was dropped here in silence. So this type-checked:
-    ///
-    /// ```text
-    /// let m = Mutex.new(0)
-    /// let probe: string = m
-    /// ```
-    ///
-    /// This is deliberately the narrowest pair that can't be anything else. A
-    /// primitive and a `Mutex`/`Sender`/`Vec` have no coercion between them in
-    /// either direction, so the constraint is a mismatch rather than something
-    /// still settling. Two *named* types are left alone — union members, enum
-    /// variants, interface objects and nominal aliases all legitimately unify across
-    /// names, and judging those from here reported the stdlib's own source as
-    /// broken (#730).
+    /// It has to be a trial unify, not `==`: `Vec.new()` into
+    /// `type Names = Vec<string>` is still `Vec<_>`, and a newtype declared
+    /// above the struct it wraps holds that struct by name. Whatever the trial
+    /// binds is thrown away, since the caller is reporting an error anyway.
+    fn wraps(&mut self, id: TypeId, other: &Type, span: Span) -> bool {
+        let Some(underlying) = self.types.get_nominal_underlying(id).cloned() else {
+            return false;
+        };
+        let substitutions = self.ctx.substitutions.clone();
+        let constraints = self.ctx.constraints.len();
+        let fits = matches!(self.unify(&underlying, other, span), Ok(_));
+        self.ctx.substitutions = substitutions;
+        self.ctx.constraints.truncate(constraints);
+        fits
+    }
+
     /// A number literal where a type parameter is expected: `let y: T = 5`.
     /// Only a numeric bound gives the literal a way to become a `T`
     /// (type.generics, numeric literals): `Integer`, `Float` or `Numeric` for
@@ -298,6 +332,24 @@ impl TypeChecker {
         }
     }
 
+    /// A primitive on one side and a stdlib container on the other.
+    ///
+    /// `unify` defers instead of deciding whenever either side is an unresolved
+    /// generic, because the name may still resolve — and every deferred `Equal`
+    /// that never resolved was dropped here in silence. So this type-checked:
+    ///
+    /// ```text
+    /// let m = Mutex.new(0)
+    /// let probe: string = m
+    /// ```
+    ///
+    /// This is deliberately the narrowest pair that can't be anything else. A
+    /// primitive and a `Mutex`/`Sender`/`Vec` have no coercion between them in
+    /// either direction, so the constraint is a mismatch rather than something
+    /// still settling. Two *named* types are left alone — union members, enum
+    /// variants, interface objects and nominal aliases all legitimately unify across
+    /// names, and judging those from here reported the stdlib's own source as
+    /// broken (#730).
     fn primitive_against_container(&self, a: &Type, b: &Type) -> bool {
         let is_primitive = |t: &Type| matches!(
             t,
@@ -323,21 +375,46 @@ impl TypeChecker {
     /// method that doesn't exist on the type the literal defaulted to was
     /// accepted here and failed later — in MIR lowering, in codegen, or not at
     /// all.
-    /// Field accesses whose receiver was still a variable when the leftovers
-    /// pass ran. Same shape as the deferred methods next door: one pass, and
-    /// anything still open after it had nothing to wait for.
-    fn retry_deferred_fields(&mut self) {
-        let deferred = std::mem::take(&mut self.deferred_fields);
+    /// Field accesses and `for` items whose receiver or source was still a
+    /// variable when the leftovers pass ran. One still open stays queued for
+    /// the next round; true when any was solved.
+    /// The type a deferred shape constraint is waiting to see settle.
+    fn shape_waits_on(c: &TypeConstraint) -> Option<&Type> {
+        match c {
+            TypeConstraint::HasField { ty, .. } => Some(ty),
+            TypeConstraint::ElementOf { container, .. } => Some(container),
+            TypeConstraint::Index { object, .. } => Some(object),
+            TypeConstraint::Unwrap { value, .. }
+            | TypeConstraint::ErrorBranch { value, .. }
+            | TypeConstraint::Coerce { value, .. } => Some(value),
+            TypeConstraint::OptionalChain { field, .. } => Some(field),
+            TypeConstraint::TakePlace { place, .. } => Some(place),
+            TypeConstraint::Projection { base, .. } => Some(base),
+            _ => None,
+        }
+    }
+
+    fn retry_deferred_shapes(&mut self) -> bool {
+        let deferred = std::mem::take(&mut self.deferred_shapes);
+        let mut solved = false;
         for constraint in deferred {
-            let TypeConstraint::HasField { ref ty, .. } = constraint else { continue };
-            if matches!(self.ctx.apply(ty), Type::Var(_) | Type::Error) {
+            let Some(waits_on) = Self::shape_waits_on(&constraint) else {
                 continue;
+            };
+            match self.ctx.apply(waits_on) {
+                Type::Error => continue,
+                Type::Var(_) => {
+                    self.deferred_shapes.push(constraint);
+                    continue;
+                }
+                _ => {}
             }
-            match self.solve_constraint(constraint) {
-                Ok(_) => {}
-                Err(e) => self.errors.push(e),
+            solved = true;
+            if let Err(e) = self.solve_constraint(constraint) {
+                self.errors.push(e);
             }
         }
+        solved
     }
 
     /// Settle the `??`s still carried with an open operand. First the deferred
@@ -357,7 +434,39 @@ impl TypeChecker {
         self.late_coalesce = false;
     }
 
-    pub(super) fn retry_deferred_methods(&mut self) {
+    /// Give the literals that method calls are waiting on their default, then
+    /// resolve those calls, before any other literal defaults.
+    ///
+    /// `let x = 3.75` then `x.powi(2)` defers on the unsuffixed receiver. The
+    /// `2` stays an open literal until the call resolves and meets `exp: i32`.
+    /// Defaulting every literal first made the `2` an `i64` on its own, and
+    /// the call then failed to take it. It only worked while the default
+    /// happened to be `i32` (#1935).
+    pub(super) fn settle_literal_receivers(&mut self) {
+        let mut receivers = std::collections::HashSet::new();
+        for c in &self.deferred_methods {
+            if let TypeConstraint::HasMethod { ty, .. } = c {
+                if let Type::Var(tail) = self.ctx.apply(ty) {
+                    receivers.insert(tail);
+                }
+            }
+        }
+        if receivers.is_empty() {
+            return;
+        }
+        let waited_on: std::collections::HashSet<_> = self
+            .ctx
+            .literal_vars
+            .keys()
+            .copied()
+            .filter(|id| matches!(self.ctx.apply(&Type::Var(*id)), Type::Var(t) if receivers.contains(&t)))
+            .collect();
+        self.ctx.apply_literal_defaults_where(|id| waited_on.contains(&id));
+        self.drain_deferred_methods();
+    }
+
+    /// Retry deferred method calls until a round resolves nothing new.
+    pub(super) fn drain_deferred_methods(&mut self) {
         // A deferred call can be waiting on another deferred call. The receiver
         // of `"{n.compare(m)}"`'s `to_string` is compare's *result*, which only
         // binds once compare itself resolves — and compare deferred too, since
@@ -377,6 +486,19 @@ impl TypeChecker {
             }
             let before = deferred.len();
             for constraint in deferred {
+                // Still nothing to resolve against. Solving it would file it
+                // with the main constraints, which have finished and are never
+                // read again, so it stays here for the next round. In
+                // `users.map(|u| (0, u.name)).to_map().len()` the `to_map`
+                // waits for the `0` to default, and `len` waits for `to_map`:
+                // retried before the default landed, `len` went to the main
+                // queue and was dropped with it, leaving no dispatch record.
+                if let TypeConstraint::HasMethod { ty, .. } = &constraint {
+                    if matches!(self.resolve_named(&self.ctx.apply(ty)), Type::Var(_)) {
+                        self.deferred_methods.push(constraint);
+                        continue;
+                    }
+                }
                 match self.solve_constraint(constraint) {
                     Ok(_) => {}
                     Err(e) => self.errors.push(e),
@@ -386,7 +508,71 @@ impl TypeChecker {
                 break;
             }
         }
-        self.retry_deferred_fields();
+    }
+
+    /// Resolve the deferred calls, fields and `for` items whose receiver the
+    /// main solve settled, before literals default. In
+    /// `mut c = 0; for r in rows.map(|v| v.seq()).flatten() { c += r.len() }`
+    /// the `flatten` waits on the closure's return type, `r.len()` waits on
+    /// `flatten`, and `c`'s `0` waits on `len`. Left to the retry after
+    /// defaults, `c` became an `i64` and `c += r.len()` a mismatch (#2045).
+    /// Calls on a still-open receiver stay queued for that retry.
+    pub(super) fn settle_deferred_before_defaults(&mut self) {
+        const MAX_ROUNDS: usize = 8;
+        for _ in 0..MAX_ROUNDS {
+            let waiting = self.deferred_methods.len();
+            self.drain_deferred_methods();
+            let methods_moved = self.deferred_methods.len() < waiting;
+            let shapes_moved = self.retry_deferred_shapes();
+            if !methods_moved && !shapes_moved {
+                break;
+            }
+            self.solve_constraints();
+        }
+        // A coercion whose value nothing settled gets the one answer left: into
+        // `T?` the value is the payload (#1026), into `any I` it is the
+        // interface. Any other has nothing to check.
+        let shapes = std::mem::take(&mut self.deferred_shapes);
+        for c in shapes {
+            match c {
+                TypeConstraint::Coerce { value, target, span, .. } => {
+                    if !matches!(self.ctx.apply(&value), Type::Var(_)) {
+                        continue;
+                    }
+                    let target = self.ctx.apply(&target);
+                    if let Some(inner) = target.as_option().cloned() {
+                        let _ = self.unify(&value, &inner, span);
+                    } else if matches!(self.resolve_named(&target), Type::InterfaceObject { .. }) {
+                        if let Err(e) = self.unify(&target, &value, span) {
+                            self.errors.push(e);
+                        }
+                    }
+                }
+                c => self.deferred_shapes.push(c),
+            }
+        }
+    }
+
+    pub(super) fn retry_deferred_methods(&mut self) {
+        // Methods, fields and `for` items wait on each other: `r.len()` waits
+        // on `r`, which waits on the `flatten` call its loop walks. Go round
+        // until a round settles no field or item.
+        const MAX_ROUNDS: usize = 8;
+        for _ in 0..MAX_ROUNDS {
+            self.drain_deferred_methods();
+            if !self.retry_deferred_shapes() {
+                break;
+            }
+        }
+        self.deferred_shapes.clear();
+        // GT7: a call still unsure which conformance it reaches has nothing
+        // left to tell it. Dropping it would leave the plain name, which no
+        // longer names any body once the methods are filed.
+        let mut waiting: Vec<_> = std::mem::take(&mut self.waiting_conformance_calls).into_values().collect();
+        waiting.sort_by_key(|(_, _, _, span)| (span.file_id, span.start));
+        for (ty, method, candidates, span) in waiting {
+            self.errors.push(TypeError::AmbiguousConformanceCall { ty, method, candidates, span });
+        }
         // Anything still deferred has nothing left to wait for. Those were
         // silently dropped before this existed, and reporting them is a
         // separate question from reporting a real no-such-method — leave them.
@@ -443,8 +629,10 @@ impl TypeChecker {
         }
     }
 
-    /// Operator methods desugared from +, *, etc. on primitive types.
-    /// These are resolved at the MIR level, not in the type checker.
+    /// A method a primitive answers: one its conformances require (`add` on
+    /// an integer, `compare` on a float) or one its stdlib file declares
+    /// (`abs`, `pow`). Read from the declarations, so a float has no
+    /// `bit_and` here just as it has none in `stdlib/float.rk` (#813).
     fn is_operator_on_primitive(ty: &Type, method: &str) -> bool {
         let is_primitive = matches!(
             ty,
@@ -452,17 +640,11 @@ impl TypeChecker {
             | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128 | Type::Usize
             | Type::F32 | Type::F64 | Type::Bool | Type::Char
         );
-        if !is_primitive {
-            return false;
-        }
-        matches!(
-            method,
-            "add" | "sub" | "mul" | "div" | "rem"
-            | "eq" | "ne" | "lt" | "gt" | "le" | "ge"
-            | "neg" | "not" | "and" | "or"
-            | "bit_and" | "bit_or" | "bit_xor" | "shl" | "shr" | "bit_not"
-            | "abs" | "min" | "max" | "pow" | "to_float" | "compare"
-        )
+        is_primitive
+            && (crate::interfaces::primitive_conformances(ty)
+                .iter()
+                .any(|i| crate::interfaces::interface_requires(i, method))
+                || rask_stdlib::has_method(&ty.to_string(), method))
     }
 
     /// Whether an operator's operand type works with its receiver.
@@ -548,7 +730,50 @@ impl TypeChecker {
                 expected,
                 span,
                 self_type,
+                through_chain,
             } => {
+                let ty = if through_chain {
+                    let settled = self.resolve_named(&self.ctx.apply(&ty));
+                    match settled {
+                        Type::Var(_) => {
+                            self.ctx.add_constraint(TypeConstraint::HasField {
+                                ty: settled,
+                                field,
+                                expected,
+                                span,
+                                self_type,
+                                through_chain,
+                            });
+                            return Ok(false);
+                        }
+                        Type::Error => settled,
+                        _ => match settled.as_option() {
+                            // `?.` unwraps one layer at run time, so a payload
+                            // that is itself optional has no fields (OPT19).
+                            Some(payload) if payload.is_option() => {
+                                self.poison(&expected);
+                                return Err(TypeError::WrapperFieldCut {
+                                    field,
+                                    receiver: payload.clone(),
+                                    chained: true,
+                                    span,
+                                });
+                            }
+                            Some(payload) => payload.clone(),
+                            // `T or E` has no `?.` either; `resolve_field` reports it.
+                            None if matches!(settled, Type::Result { .. }) => settled,
+                            // `?.` is for optionals (OPT3). On a plain value
+                            // native read the field and the interpreter failed
+                            // at run time.
+                            None => {
+                                self.poison(&expected);
+                                return Err(TypeError::TryOnNonResult { found: settled, op: "?.", span });
+                            }
+                        },
+                    }
+                } else {
+                    ty
+                };
                 // A read that failed was reported here; its result is an
                 // error, not an open variable to report again (#1485).
                 let result = expected.clone();
@@ -631,7 +856,14 @@ impl TypeChecker {
                 return Ok(false);
             }
             Type::Error => return Ok(false),
-            Type::Array { elem, len } if *len == elems.len() => (**elem).clone(),
+            Type::Array { elem, len } if len.known() == Some(elems.len()) => (**elem).clone(),
+            // `[i64; N]` at a call: the literal says what `N` is.
+            Type::Array { elem, len: ArrayLen::Of(n) } => {
+                if self.unify(n, &Type::Len(elems.len()), span).is_err() {
+                    return Err(self.literal_mismatch(shape.clone(), &elems, span));
+                }
+                (**elem).clone()
+            }
             Type::Generic { base, args } if self.types.type_name(*base) == "Vec" => {
                 match args.first() {
                     Some(GenericArg::Type(t)) => (**t).clone(),
@@ -674,7 +906,7 @@ impl TypeChecker {
         };
         TypeError::Mismatch {
             expected,
-            found: Type::Array { elem: Box::new(elem), len: elems.len() },
+            found: Type::Array { elem: Box::new(elem), len: elems.len().into() },
             span,
             convert: Vec::new(),
         }
@@ -710,7 +942,7 @@ impl TypeChecker {
                     self.errors.push(err);
                 }
             }
-            let own = Type::Array { elem: Box::new(elem), len: elems.len() };
+            let own = Type::Array { elem: Box::new(elem), len: elems.len().into() };
             if let Err(err) = self.unify(&literal, &own, span) {
                 self.errors.push(err);
             }
@@ -740,10 +972,24 @@ impl TypeChecker {
             return Ok(false);
         }
         match self.container_elem_type(&resolved) {
-            ContainerElem::Known(found) => {
-                self.unify(&elem, &found, span)?;
-                Ok(true)
-            }
+            // Directional: the source's element fills the item. Plain unify
+            // accepts integer narrowing either way round, so a body that pinned
+            // the item to `i32` before an `i64` source settled went unreported
+            // and native truncated the value.
+            ContainerElem::Known(found) => match self
+                .check_fits(&found, &elem, span)
+                .and_then(|_| self.unify(&elem, &found, span))
+            {
+                Ok(_) => Ok(true),
+                // The body pinned the item before the source settled, so a plain
+                // mismatch would name the use's type as what the loop expects.
+                Err(TypeError::Mismatch { .. } | TypeError::NarrowingNeedsPolicy { .. }) => Err(TypeError::LoopItemMismatch {
+                    yields: self.ctx.apply(&found),
+                    used_as: self.ctx.apply(&elem),
+                    span,
+                }),
+                Err(e) => Err(e),
+            },
             ContainerElem::Deferred => {
                 if let Some(seq) = self.chain_head_sequence(&resolved, node, span)? {
                     self.ctx.add_constraint(TypeConstraint::ElementOf { container: seq, elem, node, span });
@@ -1183,7 +1429,16 @@ impl TypeChecker {
                     ((**def_ok).clone(), def.clone())
                 }
             }
-            other => (other.clone(), other.clone()),
+            // An erased payload is what the expression produces, and the
+            // default is boxed into it. Typed as the default's own struct,
+            // `f.maybe(1) ?? Tag(…)` read the present branch's box as a `Tag`.
+            other => match self.ctx.apply(&value) {
+                Type::Result { ok, .. } if matches!(self.ctx.apply(&ok), Type::InterfaceObject { .. }) => {
+                    let payload = self.ctx.apply(&ok);
+                    (payload.clone(), payload)
+                }
+                _ => (other.clone(), other.clone()),
+            },
         };
 
         // OPT3/OPT11: `??` supplies the branch a `T?` has and nothing else
@@ -1275,6 +1530,13 @@ impl TypeChecker {
         value_node: Option<rask_ast::NodeId>,
         span: Span,
     ) -> Result<bool, TypeError> {
+        if let Some(node) = value_node {
+            let applied = self.ctx.apply(param_ty);
+            let peeled = applied.as_option().cloned().unwrap_or_else(|| applied.clone());
+            if matches!(peeled, Type::InterfaceObject { .. }) {
+                self.pending_interface_coercions.push((node, applied, arg_ty.clone()));
+            }
+        }
         self.resolve_coercion(
             arg_ty.clone(),
             param_ty.clone(),
@@ -1384,8 +1646,10 @@ impl TypeChecker {
         span: Span,
     ) -> Result<bool, TypeError> {
         let resolved_expected = self.ctx.apply(&expected);
+        // The whole expression's type. Widening recurses into inner layers
+        // with the same node, and those calls mustn't replace it.
         if let (CoercionSite::Branch, Some(node)) = (site, value_node) {
-            self.arm_widenings.insert(node, expected.clone());
+            self.arm_widenings.entry(node).or_insert_with(|| expected.clone());
         }
 
         // CB1/CB2: a function where C wants a function pointer passes its
@@ -1427,6 +1691,19 @@ impl TypeChecker {
             // wrap only at return.
             let err_is_none = matches!(self.ctx.apply(err), Type::None);
             let allow_wrap = site.wraps_error_branch() || err_is_none;
+            // A newtype over this very `T?` or `T or E` (`type Opt = i64?`) is
+            // unwrapped with `.value`. Widening would compare it against the
+            // `T` inside and blame the wrong pair.
+            if let Type::Named(id) = resolved_ret {
+                if self.wraps(id, &resolved_expected, span) {
+                    return Err(TypeError::NominalMismatch {
+                        expected: resolved_expected.clone(),
+                        found: resolved_ret.clone(),
+                        nominal_name: self.types.get_nominal_name(id).unwrap(),
+                        span,
+                    });
+                }
+            }
             // OPT29/OPT31: widening adds an optional layer. A value already
             // typed as the target's *inner* optional fills the outer present
             // branch — `const x: T?? = y` where `y: T?` means "the inner one".
@@ -1455,16 +1732,17 @@ impl TypeChecker {
                     // `none` up against `E` (#383).
                     let ok_is_option = self.ctx.apply(ok).is_option();
                     let ret_is_option = matches!(self.ctx.apply(ret_err), Type::None);
+                    //
+                    // The success side is itself an optional slot, so the
+                    // value widens into it like into any other: `return a`
+                    // with `a: i64?` in an `i64?? or E` function gains the
+                    // one layer it lacks (OPT31, #2064).
                     if allow_wrap
                         && ok_is_option
                         && ret_is_option
                         && !resolved_expected.is_option()
                     {
-                        let wrapped = Type::Result {
-                            ok: Box::new(ret_ty),
-                            err: err.clone(),
-                        };
-                        return self.unify(&expected, &wrapped, span);
+                        return self.resolve_coercion(ret_ty, *ok.clone(), site, value_node, span);
                     }
                     self.unify(&expected, &ret_ty, span)
                 }
@@ -1559,12 +1837,17 @@ impl TypeChecker {
                         return Ok(true);
                     }
                     let is_err_branch = match &resolved_err {
-                        Type::Union(variants) => variants.iter().any(|v| v == &resolved_ret),
-                        // ER32: `any Interface` error — concrete types implementing the interface go to err
+                        Type::Union(variants) => self.error_member_for(variants, &resolved_ret, span),
+                        // ER32: `any Interface` error. A concrete type implementing
+                        // the interface goes to err, and so does a value that is
+                        // already that `any Interface`: no type implements an
+                        // interface object, so `return pick()` with
+                        // `pick() -> any Error` was sent to the success side.
                         Type::InterfaceObject { interface_name, decl } => {
-                            crate::interfaces::implements_interface_object(&self.types, &resolved_ret, interface_name, *decl)
+                            resolved_ret == resolved_err
+                                || crate::interfaces::implements_interface_object(&self.types, &resolved_ret, interface_name, *decl)
                         }
-                        other => other == &resolved_ret,
+                        other => self.error_member_for(std::slice::from_ref(other), &resolved_ret, span),
                     };
                     // ER32 again, from the other side: deciding the branch is
                     // only half of it. The value is a concrete error and the
@@ -1594,13 +1877,11 @@ impl TypeChecker {
                             ok: ok.clone(),
                             err: Box::new(resolved_err),
                         }
-                    } else if resolved_ok.is_option() && !resolved_ret.is_option() {
-                        // `return k` in a `KV? or E` function fills the present
-                        // side — two layers to add, not one (#383).
-                        Type::Result {
-                            ok: Box::new(Type::option(ret_ty)),
-                            err: err.clone(),
-                        }
+                    } else if resolved_ok.is_option() {
+                        // `return k` in a `KV? or E` function fills the
+                        // present side, as many layers deep as the side has
+                        // (#383, #2064).
+                        return self.resolve_coercion(ret_ty, *ok.clone(), site, value_node, span);
                     } else {
                         Type::Result {
                             ok: Box::new(ret_ty),
@@ -1632,6 +1913,21 @@ impl TypeChecker {
                     self.unify(&expected, &wrapped, span)
                 }
             }
+        } else if matches!(self.resolve_named(&resolved_expected), Type::InterfaceObject { .. })
+            && matches!(self.ctx.apply(&ret_ty), Type::Var(_))
+        {
+            // A value still open going into `any I` waits to be boxed rather
+            // than becoming the interface itself. A `for` item checked before
+            // its source resolved turned into `any Describe` at `show(d)`,
+            // lost its fields, and native failed in MIR (#2045).
+            self.ctx.add_constraint(TypeConstraint::Coerce {
+                value: ret_ty,
+                target: expected,
+                site,
+                value_node,
+                span,
+            });
+            Ok(false)
         } else {
             self.unify(&expected, &ret_ty, span)
         }
@@ -1757,9 +2053,18 @@ impl TypeChecker {
                     });
                 }
                 if let Some(kind) = self.ctx.literal_vars.get(id).copied() {
-                    // Literal vars cannot implicitly coerce to nominal types
+                    // L9: a type that builds itself from literals takes one,
+                    // nominal or not. `validate_pending_literals` records it.
+                    if self.literal_builder(kind, other).is_some() {
+                        self.ctx.substitutions.insert(*id, other.clone());
+                        return Ok(true);
+                    }
+                    // A literal the wrapped type takes still needs wrapping
+                    // to become the newtype.
                     if let Type::Named(type_id) = other {
-                        if let Some(name) = self.types.get_nominal_name(*type_id) {
+                        let fits_wrapped = self.types.get_nominal_underlying(*type_id)
+                            .is_some_and(|u| literal_fits(kind, u));
+                        if let Some(name) = self.types.get_nominal_name(*type_id).filter(|_| fits_wrapped) {
                             return Err(TypeError::NominalMismatch {
                                 expected: other.clone(),
                                 found: t1,
@@ -1790,9 +2095,18 @@ impl TypeChecker {
                     });
                 }
                 if let Some(kind) = self.ctx.literal_vars.get(id).copied() {
-                    // Literal vars cannot implicitly coerce to nominal types
+                    // L9: a type that builds itself from literals takes one,
+                    // nominal or not. `validate_pending_literals` records it.
+                    if self.literal_builder(kind, other).is_some() {
+                        self.ctx.substitutions.insert(*id, other.clone());
+                        return Ok(true);
+                    }
+                    // A literal the wrapped type takes still needs wrapping
+                    // to become the newtype.
                     if let Type::Named(type_id) = other {
-                        if let Some(name) = self.types.get_nominal_name(*type_id) {
+                        let fits_wrapped = self.types.get_nominal_underlying(*type_id)
+                            .is_some_and(|u| literal_fits(kind, u));
+                        if let Some(name) = self.types.get_nominal_name(*type_id).filter(|_| fits_wrapped) {
                             return Err(TypeError::NominalMismatch {
                                 expected: other.clone(),
                                 found: t2,
@@ -1955,16 +2269,24 @@ impl TypeChecker {
                     len: l2,
                 },
             ) => {
-                // len 0 is a placeholder for comptime-dependent sizes
-                if l1 != l2 && *l1 != 0 && *l2 != 0 {
-                    return Err(TypeError::Mismatch {
-                        expected: t1,
-                        found: t2,
-                        span,
-                        convert: Vec::new(),
-                    });
-                }
-                self.unify(e1, e2, span)
+                // Two numbers agree or don't. A `comptime N` length unifies
+                // the way a type parameter does: at a call it is a variable,
+                // and meeting `[i64; 3]` binds it to 3.
+                let mismatch = || TypeError::Mismatch {
+                    expected: t1.clone(),
+                    found: t2.clone(),
+                    span,
+                    convert: Vec::new(),
+                };
+                let lens = match (l1, l2) {
+                    (ArrayLen::Known(a), ArrayLen::Known(b)) if a == b => false,
+                    (ArrayLen::Known(_), ArrayLen::Known(_)) => return Err(mismatch()),
+                    (ArrayLen::Known(n), ArrayLen::Of(t)) | (ArrayLen::Of(t), ArrayLen::Known(n)) => {
+                        self.unify(t, &Type::Len(*n), span).map_err(|_| mismatch())?
+                    }
+                    (ArrayLen::Of(a), ArrayLen::Of(b)) => self.unify(a, b, span).map_err(|_| mismatch())?,
+                };
+                Ok(self.unify(e1, e2, span)? || lens)
             }
 
             // `*void` is the untyped pointer — an address with no element type,
@@ -1992,6 +2314,36 @@ impl TypeChecker {
                 if resolved1.iter().all(|t| resolved2.contains(t)) {
                     return Ok(false);
                 }
+                // A union is a set. Members the two share are settled; what is
+                // left of each side pairs up by shape, so a member still open
+                // at an argument (`GrowError<_>`, or a bare `T` the callee has
+                // not been instantiated at yet) meets the one member it can be,
+                // wherever the two spellings happen to list it. Zipping them in
+                // written order paired `Mm` with `Aa` (#1853).
+                let rest1: Vec<&Type> = resolved1.iter().filter(|t| !resolved2.contains(t)).collect();
+                let rest2: Vec<&Type> = resolved2.iter().filter(|t| !resolved1.contains(t)).collect();
+                if rest1.len() == rest2.len() {
+                    let mut taken = vec![false; rest2.len()];
+                    let mut pairs: Vec<(Type, Type)> = Vec::new();
+                    for a in &rest1 {
+                        let fits: Vec<usize> = (0..rest2.len())
+                            .filter(|&i| !taken[i] && self.fits_with_holes(a, rest2[i]))
+                            .collect();
+                        if let [only] = fits.as_slice() {
+                            taken[*only] = true;
+                            pairs.push(((*a).clone(), rest2[*only].clone()));
+                        }
+                    }
+                    if pairs.len() == rest1.len() {
+                        let mut progress = false;
+                        for (a, b) in &pairs {
+                            if self.unify(a, b, span)? {
+                                progress = true;
+                            }
+                        }
+                        return Ok(progress);
+                    }
+                }
                 if types1.len() != types2.len() {
                     return Err(TypeError::Mismatch {
                         expected: t1,
@@ -2016,7 +2368,17 @@ impl TypeChecker {
             (single, Type::Union(types)) if !matches!(single, Type::Union(_)) => {
                 let single_r = self.resolve_named(single);
                 if types.iter().any(|t| self.resolve_named(t) == single_r) {
-                    Ok(false) // member of the union — compatible
+                    return Ok(false); // member of the union — compatible
+                }
+                // Still open somewhere (`Gen<Vec<_>>`): it meets the one member
+                // it can be, as members do between two unions.
+                let fits: Vec<Type> = types
+                    .iter()
+                    .map(|t| self.resolve_named(t))
+                    .filter(|t| self.fits_with_holes(&single_r, t))
+                    .collect();
+                if let [only] = fits.as_slice() {
+                    self.unify(&single_r, only, span)
                 } else if matches!(single_r, Type::UnresolvedNamed(_)) {
                     self.ctx.add_constraint(TypeConstraint::Equal(t1, t2, span));
                     Ok(false)
@@ -2134,22 +2496,17 @@ impl TypeChecker {
                 }
             }
 
-            // Nominal type vs non-nominal: produce specific error
-            (Type::Named(id), _) if self.types.get_nominal_name(*id).is_some() => {
-                let name = self.types.get_nominal_name(*id).unwrap();
+            // A newtype met its own wrapped type: say how to wrap or unwrap.
+            // Anything else (`Money` against `Board`) is a plain mismatch, so
+            // the hint never offers a `.value` that has the wrong type.
+            (Type::Named(id), other) | (other, Type::Named(id))
+                if self.wraps(*id, other, span) =>
+            {
+                let nominal_name = self.types.get_nominal_name(*id).unwrap();
                 Err(TypeError::NominalMismatch {
                     expected: t1,
                     found: t2,
-                    nominal_name: name,
-                    span,
-                })
-            }
-            (_, Type::Named(id)) if self.types.get_nominal_name(*id).is_some() => {
-                let name = self.types.get_nominal_name(*id).unwrap();
-                Err(TypeError::NominalMismatch {
-                    expected: t1,
-                    found: t2,
-                    nominal_name: name,
+                    nominal_name,
                     span,
                 })
             }
@@ -2236,7 +2593,6 @@ impl TypeChecker {
         }
         match &args[0] {
             GenericArg::Type(t) => Some(((**t).clone(), mode)),
-            GenericArg::ConstUsize(_) => None,
         }
     }
 
@@ -2281,28 +2637,6 @@ impl TypeChecker {
     pub(super) fn unify_generic_arg(&mut self, arg1: &GenericArg, arg2: &GenericArg, span: Span) -> Result<bool, TypeError> {
         match (arg1, arg2) {
             (GenericArg::Type(t1), GenericArg::Type(t2)) => self.unify(t1, t2, span),
-            (GenericArg::ConstUsize(n1), GenericArg::ConstUsize(n2)) => {
-                if n1 == n2 {
-                    Ok(false)
-                } else {
-                    Err(TypeError::GenericError(
-                        format!("const generic mismatch: {} vs {}", n1, n2),
-                        span,
-                    ))
-                }
-            }
-            (GenericArg::Type(_), GenericArg::ConstUsize(_)) => {
-                Err(TypeError::GenericError(
-                    "expected type argument, found const argument".to_string(),
-                    span,
-                ))
-            }
-            (GenericArg::ConstUsize(_), GenericArg::Type(_)) => {
-                Err(TypeError::GenericError(
-                    "expected const argument, found type argument".to_string(),
-                    span,
-                ))
-            }
         }
     }
 
@@ -2413,6 +2747,82 @@ impl TypeChecker {
         Err(TypeError::NarrowingNeedsPolicy { from: source, to: target, span })
     }
 
+    /// Is `value` one of the error types in `members`?
+    ///
+    /// A generic error whose argument isn't known yet (`GrowError.Closed` is
+    /// `GrowError<_>` until the slot says which) is the member that has its
+    /// head, when exactly one does: it can't be the success side, and the
+    /// unify that follows settles the argument. Deciding on exact equality
+    /// alone sent it to the success side, and the author was told to change a
+    /// `GrowError` into a `string` (#1853).
+    fn error_member_for(&mut self, members: &[Type], value: &Type, span: Span) -> bool {
+        if members.iter().any(|m| m == value) {
+            return true;
+        }
+        // An error type nothing has fixed yet (`E` in `E or void`) is not a
+        // reason to call the value an error: a `void` body is the success
+        // side there, and `E` is settled by the values that really are errors.
+        // Only a member with a head to match counts.
+        let has_head = |t: &Type| !matches!(self.ctx.apply(t), Type::Var(_));
+        if !has_head(value) {
+            return false;
+        }
+        let open: Vec<&Type> =
+            members.iter().filter(|m| has_head(m) && self.fits_with_holes(m, value)).collect();
+        let [only] = open.as_slice() else { return false };
+        let only = (*only).clone();
+        self.unify(&only, value, span).is_ok()
+    }
+
+    /// A declared generic's name and arguments, by id or by the name it
+    /// hasn't been settled from.
+    fn generic_head_args<'a>(&self, t: &'a Type) -> Option<(String, &'a [rask_types::GenericArg])> {
+        match t {
+            Type::Generic { base, args } => Some((self.types.type_name(*base), args.as_slice())),
+            Type::UnresolvedGeneric { name, args } => Some((name.clone(), args.as_slice())),
+            _ => None,
+        }
+    }
+
+    /// Could `value` be `member` once the type variables in either are
+    /// settled? Variables match anything; everything else matches by shape.
+    pub(super) fn fits_with_holes(&self, member: &Type, value: &Type) -> bool {
+        let (member, value) = (self.ctx.apply(member), self.ctx.apply(value));
+        let args_fit = |a: &[rask_types::GenericArg], b: &[rask_types::GenericArg]| {
+            a.len() == b.len()
+                && a.iter().zip(b).all(|(x, y)| match (x, y) {
+                    (rask_types::GenericArg::Type(x), rask_types::GenericArg::Type(y)) => {
+                        self.fits_with_holes(x, y)
+                    }
+                    (x, y) => x == y,
+                })
+        };
+        if let (Some((h1, a1)), Some((h2, a2))) = (self.generic_head_args(&member), self.generic_head_args(&value)) {
+            return h1 == h2 && args_fit(a1, a2);
+        }
+        match (&member, &value) {
+            (Type::Var(x), Type::Var(y)) if x == y => true,
+            // A literal's variable only fits the family it can become: a
+            // `{float}` is never an `i64`, so `E<f64> | E<i64>` still has one
+            // member a `2.25` payload can be.
+            (Type::Var(id), other) | (other, Type::Var(id)) => {
+                use super::inference::LiteralKind;
+                match self.ctx.literal_vars.get(id) {
+                    Some(LiteralKind::Float) => Self::is_float_type(other) || matches!(other, Type::Var(_)),
+                    Some(LiteralKind::Integer) => Self::is_integer_type(other) || matches!(other, Type::Var(_)),
+                    None => true,
+                }
+            }
+            (Type::Tuple(x), Type::Tuple(y)) => {
+                x.len() == y.len() && x.iter().zip(y).all(|(x, y)| self.fits_with_holes(x, y))
+            }
+            (Type::Array { elem: x, len: l1 }, Type::Array { elem: y, len: l2 }) => {
+                l1 == l2 && self.fits_with_holes(x, y)
+            }
+            _ => member == value,
+        }
+    }
+
     /// The first error type `from` can hold that `to` can't, when both are
     /// settled nominal errors or unions of them. `None` when every member fits,
     /// and when either side is still open, absent (`T?`) or an interface —
@@ -2429,7 +2839,9 @@ impl TypeChecker {
                 .then_some(list)
         };
         let (from, to) = (members(from)?, members(to)?);
-        from.into_iter().find(|m| !to.contains(m))
+        // A member still open at an argument (`GrowError<_>`) is the one in
+        // `to` it can become; the unify after this settles which.
+        from.into_iter().find(|m| !to.iter().any(|t| self.fits_with_holes(t, m)))
     }
 
     /// The narrowest and widest an integer type is on any target, and its

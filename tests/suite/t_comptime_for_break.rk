@@ -1,0 +1,98 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// `break` and `continue` in a `comptime for` act on the comptime loop
+// (ctrl.comptime/CT70): `break` skips the items after it, `continue` the rest
+// of this item. Once the loop was written out per item, a `break` found the
+// runtime loop around it instead, and one with no loop around it was refused.
+import std.reflect
+
+struct Row {
+    a: i64
+    b: i64
+    c: i64
+}
+
+// Fields up to the first zero.
+func until_zero<T>(v: T) -> string {
+    mut out = ""
+    comptime for f in reflect.fields<T>() {
+        if v.(f.name) == 0 {
+            break
+        }
+        out = "{out}{f.name}"
+    }
+    return out
+}
+
+// Every field but the zeros.
+func non_zero<T>(v: T) -> string {
+    mut out = ""
+    comptime for f in reflect.fields<T>() {
+        if v.(f.name) == 0 {
+            continue
+        }
+        out = "{out}{f.name}"
+    }
+    return out
+}
+
+test "break stops the comptime loop, not the one around it" {
+    let rows = [Row(a: 1, b: 0, c: 3), Row(a: 4, b: 5, c: 6)]
+    mut out = ""
+    for row in rows {
+        out = "{out}{until_zero(row)}|"
+    }
+    assert out == "a|abc|"
+}
+
+test "continue goes on to the next item" {
+    assert non_zero(Row(a: 0, b: 2, c: 0)) == "b"
+    assert non_zero(Row(a: 1, b: 2, c: 3)) == "abc"
+}
+
+test "a loop inside the body keeps its own break" {
+    mut out = ""
+    comptime for f in reflect.fields<Row>() {
+        for i in 0..5 {
+            if i == 2 {
+                break
+            }
+            out = "{out}{f.name}{i}"
+        }
+        if f.name == "b" {
+            break
+        }
+    }
+    assert out == "a0a1b0b1"
+}
+
+test "both in one body, without a type parameter" {
+    let r = Row(a: 1, b: 0, c: 0)
+    mut out = ""
+    comptime for f in reflect.fields<Row>() {
+        if r.(f.name) == 1 {
+            continue
+        }
+        out = "{out}{f.name}"
+        if r.(f.name) == 0 {
+            break
+        }
+    }
+    assert out == "b"
+}
+
+test "in a comptime block, where the loop is evaluated while compiling" {
+    let k = comptime {
+        mut n = 0
+        comptime for x in [1, 2, 3, 4] {
+            if x == 2 {
+                continue
+            }
+            if x == 4 {
+                break
+            }
+            n += x
+        }
+        n
+    }
+    assert k == 4
+}

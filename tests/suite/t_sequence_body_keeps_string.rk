@@ -1,0 +1,55 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A string from a user sequence, stored into an outer variable by the loop
+// body. The body reaches that variable through its environment, so the stored
+// string belongs to the variable, not to the body. The body took a reference
+// for the store and then released it on its way out, so the variable kept a
+// freed buffer: natively the "first" item read as the last (#2011), and
+// `max_by_key`, which keeps its best item the same way, did the same (#2012).
+
+import sequence.Sequence
+
+func long(i: i64) -> string {
+    return "long-heap-string-number-{i}-xxxxxxxxxxxxxxxxxxxx"
+}
+
+func strs() -> Sequence<string> {
+    return |yield| {
+        if !yield(long(1)) { return }
+        if !yield(long(2)) { return }
+        if !yield(long(3)) { return }
+    }
+}
+
+func first_opt() -> string? {
+    mut best: string? = none
+    for s in strs() {
+        if best is none {
+            best = s
+        }
+    }
+    return best
+}
+
+func first_plain() -> string {
+    mut best = ""
+    for s in strs() {
+        if best == "" {
+            best = s
+        }
+    }
+    return best
+}
+
+test "an optional keeper holds the first item" {
+    assert first_opt() == "long-heap-string-number-1-xxxxxxxxxxxxxxxxxxxx"
+}
+
+test "a plain keeper holds the first item" {
+    assert first_plain() == "long-heap-string-number-1-xxxxxxxxxxxxxxxxxxxx"
+}
+
+test "max_by_key keeps the first of a tie" {
+    let m = strs().max_by_key(|s| s.len())
+    assert m == "long-heap-string-number-1-xxxxxxxxxxxxxxxxxxxx"
+}

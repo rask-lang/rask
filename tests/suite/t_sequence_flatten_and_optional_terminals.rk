@@ -1,0 +1,90 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// `flatten` over a sequence of sequences whose items are vectors, and the
+// keeping terminals over a sequence of optional vectors. The checker left
+// `flatten`'s `U` unbound when the inner sequence came out of a `map`, so the
+// item took any type and native lowering found no receiver type for
+// `r.len()` (#2045). The optional terminals once crashed or answered 0
+// natively (#2044); they need a `map` that owns what it hands on.
+import sequence.Sequence
+
+interface Describe {
+    func describe(self) -> string
+}
+
+struct Dog {
+    name: string
+}
+
+Dog implements Describe {
+    func describe(self) -> string {
+        return "dog {self.name}"
+    }
+}
+
+func show(d: any Describe) -> string {
+    return d.describe()
+}
+
+func longest(take s: Sequence<Vec<i64>?>) -> u64 {
+    if s.map(|x| x.clone()).max_by_key(|x| (x ?? Vec.new()).len())? as o {
+        return (o ?? Vec.new()).len()
+    }
+    return 0
+}
+
+func has_none(take s: Sequence<Vec<i64>?>) -> bool {
+    if s.map(|x| x.clone()).find(|x| x is none)? as _ {
+        return true
+    }
+    return false
+}
+
+test "flatten yields the inner vectors" {
+    let rows: Vec<Vec<Vec<i64>>> = [[[1, 2], [3, 4, 5]], [[6]]]
+    mut c = 0
+    for r in rows.as_sequence().map(|v| v.as_sequence()).flatten() {
+        c += r.len()
+    }
+    assert c == 6
+    assert rows[0][1].len() == 3
+}
+
+test "flatten yields scalars" {
+    let rows: Vec<Vec<i64>> = [[1, 2], [3, 4, 5]]
+    mut c = 0
+    for x in rows.as_sequence().map(|v| v.as_sequence()).flatten() {
+        c += x
+    }
+    assert c == 15
+}
+
+test "a flattened item can be indexed" {
+    let rows: Vec<Vec<Vec<i32>>> = [[[1, 2], [3, 4, 5]], [[6]]]
+    mut firsts: Vec<i32> = Vec.new()
+    for r in rows.as_sequence().map(|v| v.as_sequence()).flatten() {
+        let first = r[0]
+        firsts.push(first)
+    }
+    assert firsts.len() == 3
+    assert firsts[2] == 6
+}
+
+test "a flattened item is boxed where an interface is wanted" {
+    let dogs: Vec<Vec<Dog>> = [[Dog(name: "a")], [Dog(name: "b")]]
+    mut out: Vec<string> = Vec.new()
+    for d in dogs.as_sequence().map(|v| v.as_sequence()).flatten() {
+        out.push(show(d))
+        out.push(d.name.clone())
+    }
+    assert out.len() == 4
+    assert out[0] == "dog a"
+    assert out[3] == "b"
+}
+
+test "terminals over optional vectors" {
+    let o2: Vec<Vec<i64>?> = [[1], [2, 3]]
+    assert longest(o2.as_sequence()) == 2
+    assert !has_none(o2.as_sequence())
+    let o3: Vec<Vec<i64>?> = [[1], none]
+    assert has_none(o3.as_sequence())
+}

@@ -5,7 +5,7 @@
 //! Subject to restrictions: no I/O, no pools, no concurrency.
 
 use rask_ast::decl::{Decl, DeclKind, FnDecl};
-use rask_ast::expr::{BinOp, Expr, ExprKind, Pattern, UnaryOp};
+use rask_ast::expr::{BinOp, Expr, ExprKind, Pattern, PatternKind, UnaryOp};
 use rask_ast::stmt::{ForBinding, Stmt, StmtKind};
 use std::collections::HashMap;
 use thiserror::Error;
@@ -56,24 +56,12 @@ impl CfgConfig {
         }
     }
 
-    /// Whether C's `char` is unsigned here: on ARM, AArch64, RISC-V and
-    /// PowerPC it is, on x86 and wasm it isn't.
-    pub fn c_char_unsigned(&self) -> bool {
-        let a = self.arch.as_str();
-        a.starts_with("arm") || a.starts_with("aarch64") || a.starts_with("riscv") || a.starts_with("powerpc")
-    }
-
-    /// How wide a pointer is on this target, in bits.
-    ///
-    /// The arch names are the ones a target triple uses, so this reads the
-    /// same string `cfg.arch` shows a Rask program. Anything unrecognised is
-    /// 64: every arch the compiler can reach today is, and guessing 32 would
-    /// silently narrow `usize` rather than fail loudly.
-    pub fn pointer_bits(&self) -> u32 {
-        match self.arch.as_str() {
-            "x86" | "i686" | "arm" | "armv7" | "wasm32" | "riscv32" | "mips" => 32,
-            _ => 64,
-        }
+    /// The machine this configuration is for: how wide a pointer is, whether
+    /// C's `char` is signed. Read from the same arch string `cfg.arch` shows a
+    /// Rask program, so the width and the `cfg` values can't describe two
+    /// machines.
+    pub fn target(&self) -> rask_ast::Target {
+        rask_ast::Target::for_arch(&self.arch)
     }
 
     /// Convert to a `ComptimeValue::Struct` for injection into the comptime environment.
@@ -317,6 +305,8 @@ pub enum ComptimeValue {
         /// Captured environment at time of closure creation.
         captures: Vec<HashMap<String, ComptimeValue>>,
     },
+    /// A named function used as a value (`const PICK = answer`).
+    Function(String),
 }
 
 impl PartialEq for ComptimeValue {
@@ -350,6 +340,7 @@ impl PartialEq for ComptimeValue {
             ) => n1 == n2 && v1 == v2 && d1 == d2,
             // Closures are never equal (identity semantics)
             (ComptimeValue::Closure { .. }, ComptimeValue::Closure { .. }) => false,
+            (ComptimeValue::Function(a), ComptimeValue::Function(b)) => a == b,
             _ => false,
         }
     }
@@ -399,6 +390,7 @@ fn show(v: &ComptimeValue) -> String {
         ComptimeValue::Struct { name, .. } => format!("{name} {{ … }}"),
         ComptimeValue::Enum { name, variant, .. } => format!("{name}.{variant}"),
         ComptimeValue::Closure { .. } => "<closure>".to_string(),
+        ComptimeValue::Function(name) => name.clone(),
     }
 }
 
@@ -429,6 +421,7 @@ impl ComptimeValue {
             ComptimeValue::Struct { .. } => "Struct",
             ComptimeValue::Enum { .. } => "Enum",
             ComptimeValue::Closure { .. } => "Closure",
+            ComptimeValue::Function(_) => "Function",
         }
     }
 
@@ -842,10 +835,10 @@ impl ComptimeEnv {
 enum ControlFlow {
     /// Normal execution continues.
     Normal(ComptimeValue),
-    /// Break statement encountered.
-    Break(Option<ComptimeValue>),
-    /// Continue statement encountered.
-    Continue,
+    /// Break statement encountered: the loop it names, if any, and its value.
+    Break(Option<String>, Option<ComptimeValue>),
+    /// Continue statement encountered, with the loop it names.
+    Continue(Option<String>),
     /// Return statement encountered.
     Return(ComptimeValue),
 }
@@ -853,10 +846,33 @@ enum ControlFlow {
 impl ControlFlow {
     fn value(self) -> ComptimeValue {
         match self {
-            ControlFlow::Normal(v) | ControlFlow::Break(Some(v)) | ControlFlow::Return(v) => v,
-            ControlFlow::Break(None) | ControlFlow::Continue => ComptimeValue::Unit,
+            ControlFlow::Normal(v) | ControlFlow::Break(_, Some(v)) | ControlFlow::Return(v) => v,
+            ControlFlow::Break(_, None) | ControlFlow::Continue(_) => ComptimeValue::Unit,
         }
     }
+
+    /// What a loop labelled `own` does with what its body ended with.
+    fn in_loop(self, own: Option<&String>) -> LoopStep {
+        let mine = |label: &Option<String>| label.is_none() || label.as_ref() == own;
+        match self {
+            ControlFlow::Normal(_) => LoopStep::Next,
+            ControlFlow::Continue(label) if mine(&label) => LoopStep::Next,
+            ControlFlow::Break(label, value) if mine(&label) => LoopStep::Exit(value.unwrap_or(ComptimeValue::Unit)),
+            other => LoopStep::Leave(other),
+        }
+    }
+}
+
+/// One iteration's outcome for the loop running it.
+enum LoopStep {
+    Next,
+    /// Out of this loop, with its value.
+    Exit(ComptimeValue),
+    /// Out past this loop: a `return`, or a jump to a loop around it.
+    Leave(ControlFlow),
+}
+
+impl ControlFlow {
 
 }
 
@@ -1021,15 +1037,15 @@ impl CtInt {
         }
     }
     /// The kind a type annotation names, or `None` if it isn't an integer width.
-    fn from_name(name: &str) -> Option<CtInt> {
+    fn from_name(name: &str, target: rask_ast::Target) -> Option<CtInt> {
         Some(match name.trim() {
             "i8" => CtInt::I8, "i16" => CtInt::I16, "i32" => CtInt::I32,
             "i64" => CtInt::I64, "i128" => CtInt::I128,
             "u8" => CtInt::U8, "u16" => CtInt::U16, "u32" => CtInt::U32,
             "u64" => CtInt::U64, "u128" => CtInt::U128,
             // P2: pointer-sized, decided in one place.
-            "isize" => if rask_ast::primitives::pointer_bits() == 32 { CtInt::I32 } else { CtInt::I64 },
-            "usize" => if rask_ast::primitives::pointer_bits() == 32 { CtInt::U32 } else { CtInt::U64 },
+            "isize" => if target.pointer_bits() == 32 { CtInt::I32 } else { CtInt::I64 },
+            "usize" => if target.pointer_bits() == 32 { CtInt::U32 } else { CtInt::U64 },
             _ => return None,
         })
     }
@@ -1242,26 +1258,41 @@ pub struct EnumRef {
     pub units: Vec<String>,
 }
 
+/// A literal its type builds (type.primitives/L9): `Fixed.from_literal(0.5)`.
+#[derive(Debug, Clone)]
+pub struct LiteralCall {
+    /// The type, by the name its functions are registered under.
+    pub owner: String,
+    pub method: String,
+    /// The literal, as the conversion's parameter takes it.
+    pub arg: ComptimeValue,
+}
+
 pub struct ComptimeInterpreter {
     env: ComptimeEnv,
     /// Each expression the checker typed as an enum, by its node. Nothing in
     /// the AST says `Level` names a type, and matching on the spelling picked
     /// the wrong enum when two shared a name.
     enums: HashMap<rask_ast::NodeId, EnumRef>,
+    literals: HashMap<rask_ast::NodeId, LiteralCall>,
+    /// Nominal types (`type Cents = i64`). One is its underlying value, so
+    /// building one hands the value back and `.value` reads it.
+    nominals: std::collections::HashSet<String>,
+    /// Each call the checker typed as a C function-like macro (PP4).
+    c_macros: HashMap<rask_ast::NodeId, rask_c_parse::cexpr::MacroCall>,
+    /// What `usize` is wide as, and the C scalars.
+    target: rask_ast::Target,
 }
 
 impl ComptimeInterpreter {
-    pub fn new() -> Self {
+    pub fn new(target: rask_ast::Target) -> Self {
         Self {
             env: ComptimeEnv::new(),
             enums: HashMap::new(),
-        }
-    }
-
-    pub fn with_quota(quota: usize) -> Self {
-        Self {
-            env: ComptimeEnv::with_quota(quota),
-            enums: HashMap::new(),
+            literals: HashMap::new(),
+            nominals: std::collections::HashSet::new(),
+            c_macros: HashMap::new(),
+            target,
         }
     }
 
@@ -1308,7 +1339,56 @@ impl ComptimeInterpreter {
                     self.env.register_function(f.name.clone(), f.clone());
                 }
             }
+            if let DeclKind::TypeAlias(a) = &decl.kind {
+                if !a.is_transparent {
+                    self.nominals.insert(a.name.clone());
+                }
+            }
+            // A type's functions with no `self`, as `Type.name`: what
+            // `Fixed.from_literal(0.5)` and the calls inside it reach.
+            let (owner, methods) = match &decl.kind {
+                DeclKind::Struct(st) => (Some(st.name.as_str()), st.methods.as_slice()),
+                DeclKind::Enum(e) => (Some(e.name.as_str()), e.methods.as_slice()),
+                DeclKind::Impl(i) => (i.target_ty.last_segment(), i.methods.as_slice()),
+                _ => (None, &[][..]),
+            };
+            let Some(owner) = owner else { continue };
+            for m in methods {
+                let takes_self = m.params.first().is_some_and(|p| p.name == "self");
+                if !takes_self && (m.is_comptime || !m.body.is_empty()) {
+                    self.env.register_function(format!("{owner}.{}", m.name), m.clone());
+                }
+            }
         }
+    }
+
+    /// Call `Type.name(args)`, a function `register_functions` registered.
+    pub fn call_type_function(
+        &mut self,
+        owner: &str,
+        name: &str,
+        args: Vec<ComptimeValue>,
+    ) -> ComptimeResult<ComptimeValue> {
+        let qualified = format!("{owner}.{name}");
+        let func = self
+            .env
+            .get_function(&qualified)
+            .cloned()
+            .ok_or(ComptimeError::UndefinedFunction(qualified))?;
+        self.call_function(&func, args)
+    }
+
+    /// The literals the checker found their type builds. Evaluating one
+    /// calls the conversion, wherever it sits: a default, a `comptime` block,
+    /// another conversion's body.
+    pub fn know_literals(&mut self, literals: HashMap<rask_ast::NodeId, LiteralCall>) {
+        self.literals = literals;
+    }
+
+    /// Build the literal `node` names, if its type builds itself from literals.
+    pub fn eval_literal_call(&mut self, node: rask_ast::NodeId) -> Option<ComptimeResult<ComptimeValue>> {
+        let call = self.literals.get(&node)?.clone();
+        Some(self.call_type_function(&call.owner, &call.method, vec![call.arg]))
     }
 
     /// The expressions the checker typed as enums.
@@ -1316,17 +1396,78 @@ impl ComptimeInterpreter {
         self.enums = enums;
     }
 
+    /// The calls the checker typed as C macros.
+    pub fn know_c_macros(&mut self, calls: HashMap<rask_ast::NodeId, rask_c_parse::cexpr::MacroCall>) {
+        self.c_macros = calls;
+    }
+
+    /// A C macro called with values: its body computed the way C would.
+    fn eval_c_macro(&mut self, call: &rask_c_parse::cexpr::MacroCall, args: &[&Expr]) -> ComptimeResult<ComptimeValue> {
+        use rask_c_parse::cexpr::CVal;
+        if call.header.is_some() {
+            return Err(ComptimeError::NotSupported(format!(
+                "`{}` is a C macro that takes a pointer, reads memory or calls C, which only the compiled program can run",
+                call.name
+            )));
+        }
+        let mut vals = Vec::with_capacity(args.len());
+        for (arg, ty) in args.iter().zip(&call.args) {
+            let v = self.eval_expr(arg)?;
+            vals.push(match v {
+                ComptimeValue::Bool(b) => CVal::Int(b as i128, ty.clone()),
+                ComptimeValue::F32(f) => CVal::Float(f as f64, ty.clone()),
+                ComptimeValue::F64(f) => CVal::Float(f, ty.clone()),
+                other => match other.as_int() {
+                    Some((CtNum::Signed(i), _)) => CVal::Int(i, ty.clone()),
+                    Some((CtNum::Big(u), _)) => CVal::Int(u as i128, ty.clone()),
+                    None => return Err(ComptimeError::NotSupported(format!(
+                        "`{}` is a C macro, and got a `{}`",
+                        call.name,
+                        other.type_name()
+                    ))),
+                },
+            });
+        }
+        let result = call.compute(&vals).ok_or_else(|| ComptimeError::Panic(format!(
+            "`{}` did what C leaves undefined: a division by zero or a shift past the width",
+            call.name
+        )))?;
+        let scalar = rask_c_parse::cexpr::rask_scalar(&call.result, self.target);
+        Ok(match (scalar, result) {
+            (Some("bool"), CVal::Int(v, _)) => ComptimeValue::Bool(v != 0),
+            (Some("i8"), CVal::Int(v, _)) => ComptimeValue::I8(v as i8),
+            (Some("u8"), CVal::Int(v, _)) => ComptimeValue::U8(v as u8),
+            (Some("i16"), CVal::Int(v, _)) => ComptimeValue::I16(v as i16),
+            (Some("u16"), CVal::Int(v, _)) => ComptimeValue::U16(v as u16),
+            (Some("i32"), CVal::Int(v, _)) => ComptimeValue::I32(v as i32),
+            (Some("u32"), CVal::Int(v, _)) => ComptimeValue::U32(v as u32),
+            (Some("u64"), CVal::Int(v, _)) => ComptimeValue::U64(v as u64),
+            (_, CVal::Int(v, _)) => ComptimeValue::I64(v as i64),
+            (Some("f32"), CVal::Float(f, _)) => ComptimeValue::F32(f as f32),
+            (_, CVal::Float(f, _)) => ComptimeValue::F64(f),
+            (_, CVal::Str(_)) => return Err(ComptimeError::NotSupported(format!(
+                "`{}` is a C macro that doesn't answer a number",
+                call.name
+            ))),
+        })
+    }
+
     /// Evaluate a comptime expression.
     pub fn eval_expr(&mut self, expr: &Expr) -> ComptimeResult<ComptimeValue> {
         match self.eval_expr_cf(expr)? {
             ControlFlow::Normal(v) => Ok(v),
             ControlFlow::Return(v) => Ok(v),
-            ControlFlow::Break(_) => Err(ComptimeError::BreakOutsideLoop),
-            ControlFlow::Continue => Err(ComptimeError::ContinueOutsideLoop),
+            ControlFlow::Break(..) => Err(ComptimeError::BreakOutsideLoop),
+            ControlFlow::Continue(_) => Err(ComptimeError::ContinueOutsideLoop),
         }
     }
 
     fn eval_expr_cf(&mut self, expr: &Expr) -> ComptimeResult<ControlFlow> {
+        if matches!(expr.kind, ExprKind::Int(..) | ExprKind::Float(..)) {
+            if let Some(built) = self.eval_literal_call(expr.id) {
+                return Ok(ControlFlow::Normal(built?));
+            }
+        }
         let value = match &expr.kind {
             // Literals. An explicit width suffix picks the variant so arithmetic
             // is checked at that width (type.overflow); unsuffixed defaults to
@@ -1338,7 +1479,7 @@ impl ComptimeInterpreter {
                     Some(IntSuffix::I16) => ComptimeValue::I16(*v as i16),
                     Some(IntSuffix::I32) => ComptimeValue::I32(*v as i32),
                     Some(IntSuffix::I64) => ComptimeValue::I64(*v as i64),
-                    Some(IntSuffix::Isize) => if rask_ast::primitives::pointer_bits() == 32 {
+                    Some(IntSuffix::Isize) => if self.target.pointer_bits() == 32 {
                         ComptimeValue::I32(*v as i32)
                     } else {
                         ComptimeValue::I64(*v as i64)
@@ -1349,7 +1490,7 @@ impl ComptimeInterpreter {
                     Some(IntSuffix::U64) | Some(IntSuffix::U64ByMagnitude) => {
                         ComptimeValue::U64(*v as u64)
                     }
-                    Some(IntSuffix::Usize) => if rask_ast::primitives::pointer_bits() == 32 {
+                    Some(IntSuffix::Usize) => if self.target.pointer_bits() == 32 {
                         ComptimeValue::U32(*v as u32)
                     } else {
                         ComptimeValue::U64(*v as u64)
@@ -1379,12 +1520,11 @@ impl ComptimeInterpreter {
             ExprKind::None => Self::ct_none(),
 
             // Identifier
-            ExprKind::Ident(name) => {
-                self.env
-                    .get(name)
-                    .cloned()
-                    .ok_or_else(|| ComptimeError::UndefinedVariable(name.clone()))?
-            }
+            ExprKind::Ident(name) => match self.env.get(name) {
+                Some(v) => v.clone(),
+                None if self.env.get_function(name).is_some() => ComptimeValue::Function(name.clone()),
+                None => return Err(ComptimeError::UndefinedVariable(name.clone())),
+            },
 
             // Binary operation (after desugaring, most become method calls)
             // But logical operators remain as binary
@@ -1400,7 +1540,10 @@ impl ComptimeInterpreter {
             // Function call
             ExprKind::Call { func, args } => {
                 let arg_exprs: Vec<_> = args.iter().map(|a| &a.expr).collect();
-                self.eval_call(func, &arg_exprs)?
+                match self.c_macros.get(&expr.id).cloned() {
+                    Some(call) => self.eval_c_macro(&call, &arg_exprs)?,
+                    None => self.eval_call(func, &arg_exprs)?,
+                }
             }
 
             // Method call (from desugared operators)
@@ -1425,6 +1568,11 @@ impl ComptimeInterpreter {
                 }
                 let obj = self.eval_expr(object)?;
                 match obj {
+                    // A nominal type's `.value` is the value itself
+                    // (`register_functions`); a struct field named `value`
+                    // is the arm below.
+                    ref scalar if field == "value" && !self.nominals.is_empty()
+                        && !matches!(scalar, ComptimeValue::Struct { .. }) => scalar.clone(),
                     ComptimeValue::Struct { name, fields } => {
                         fields.get(field).cloned().ok_or_else(|| {
                             ComptimeError::NoSuchField {
@@ -1734,8 +1882,8 @@ impl ComptimeInterpreter {
                     // checker lets `as` only widen (type.primitives/CV3), so the
                     // value carries over whole. Listed pair by pair, `3u32 as
                     // u64` wasn't a pair and came back still a `u32`.
-                    (_, target) if val.as_int().is_some() && CtInt::from_name(target).is_some() => {
-                        let kind = CtInt::from_name(target).expect("checked above");
+                    (_, target) if val.as_int().is_some() && CtInt::from_name(target, self.target).is_some() => {
+                        let kind = CtInt::from_name(target, self.target).expect("checked above");
                         match val.as_int().expect("checked above").0 {
                             CtNum::Signed(n) => kind.make(n),
                             CtNum::Big(n) => kind.make_u128(n),
@@ -1758,6 +1906,32 @@ impl ComptimeInterpreter {
                             ty.source()
                         )));
                     }
+                }
+            }
+
+            // `x.round<f64>()`: the one conversion that can't fail (CV14), and
+            // what an integer takes to become a float. Nearest, ties to even,
+            // which is what Rust's own int-to-float conversion does.
+            ExprKind::Convert { expr, target, kind: rask_ast::expr::ConvertKind::Round }
+                if matches!(target.bare_name(), Some("f32" | "f64")) =>
+            {
+                let val = self.eval_expr(expr)?;
+                let wide = match (val.as_int(), val.as_f64()) {
+                    (Some((CtNum::Signed(n), _)), _) => n as f64,
+                    (Some((CtNum::Big(n), _)), _) => n as f64,
+                    (None, Some(f)) => f,
+                    (None, None) => {
+                        return Err(ComptimeError::NotSupported(format!(
+                            "rounding a `{}` to `{}`",
+                            val.type_name(),
+                            target.source()
+                        )))
+                    }
+                };
+                if target.bare_name() == Some("f32") {
+                    ComptimeValue::F32(wide as f32)
+                } else {
+                    ComptimeValue::F64(wide)
                 }
             }
 
@@ -1828,8 +2002,8 @@ impl ComptimeInterpreter {
     pub fn eval_block_to_value(&mut self, stmts: &[Stmt]) -> ComptimeResult<ComptimeValue> {
         match self.eval_block(stmts)? {
             ControlFlow::Normal(v) | ControlFlow::Return(v) => Ok(v),
-            ControlFlow::Break(_) => Err(ComptimeError::BreakOutsideLoop),
-            ControlFlow::Continue => Err(ComptimeError::ContinueOutsideLoop),
+            ControlFlow::Break(..) => Err(ComptimeError::BreakOutsideLoop),
+            ControlFlow::Continue(_) => Err(ComptimeError::ContinueOutsideLoop),
         }
     }
 
@@ -1840,8 +2014,7 @@ impl ComptimeInterpreter {
             match self.eval_stmt(stmt)? {
                 ControlFlow::Normal(v) => last_value = v,
                 cf @ ControlFlow::Return(_) => return Ok(cf),
-                cf @ ControlFlow::Break(_) => return Ok(cf),
-                cf @ ControlFlow::Continue => return Ok(cf),
+                cf @ (ControlFlow::Break(..) | ControlFlow::Continue(_)) => return Ok(cf),
             }
         }
 
@@ -1948,7 +2121,7 @@ impl ComptimeInterpreter {
                 // in u64>` bound a `u64` — and a fold of it came out `u64`-wide,
                 // which printed the same digits and compared unequal against a
                 // `u128` (#826).
-                let value = match ty.as_ref().and_then(|t| t.bare_name()).and_then(CtInt::from_name) {
+                let value = match ty.as_ref().and_then(|t| t.bare_name()).and_then(|n| CtInt::from_name(n, self.target)) {
                     Some(kind) => Self::coerce_int_width(value, kind)?,
                     None => value,
                 };
@@ -1981,7 +2154,7 @@ impl ComptimeInterpreter {
             // `let Point { x, .. } = p` — bind the fields the pattern names.
             StmtKind::LetStruct { pattern, init, .. } => {
                 let value = self.eval_expr(init)?;
-                let Pattern::Struct { fields: pat_fields, .. } = pattern else {
+                let PatternKind::Struct { fields: pat_fields, .. } = &pattern.kind else {
                     return Err(ComptimeError::NotSupported(
                         "destructuring binding on a non-struct pattern".to_string(),
                     ));
@@ -1998,7 +2171,7 @@ impl ComptimeInterpreter {
                             "no field `{}` to bind", field_name
                         )));
                     };
-                    let Pattern::Ident(binding) = pat else {
+                    let PatternKind::Ident(binding) = &pat.kind else {
                         return Err(ComptimeError::NotSupported(
                             "only a name can bind a field at comptime".to_string(),
                         ));
@@ -2030,25 +2203,17 @@ impl ComptimeInterpreter {
             }
 
             StmtKind::Break { label, value } => {
-                if label.is_some() {
-                    return Err(ComptimeError::NotSupported("labeled break".to_string()));
-                }
                 let val = if let Some(v) = value {
                     Some(self.eval_expr(v)?)
                 } else {
                     None
                 };
-                Ok(ControlFlow::Break(val))
+                Ok(ControlFlow::Break(label.clone(), val))
             }
 
-            StmtKind::Continue(label) => {
-                if label.is_some() {
-                    return Err(ComptimeError::NotSupported("labeled continue".to_string()));
-                }
-                Ok(ControlFlow::Continue)
-            }
+            StmtKind::Continue(label) => Ok(ControlFlow::Continue(label.clone())),
 
-            StmtKind::While { cond, body, .. } => {
+            StmtKind::While { label, cond, body } => {
                 loop {
                     self.env.count_branch()?;
 
@@ -2063,13 +2228,13 @@ impl ComptimeInterpreter {
                     }
 
                     self.env.push_scope();
-                    match self.eval_block(body)? {
-                        ControlFlow::Normal(_) | ControlFlow::Continue => {}
-                        ControlFlow::Break(v) => {
+                    match self.eval_block(body)?.in_loop(label.as_ref()) {
+                        LoopStep::Next => {}
+                        LoopStep::Exit(v) => {
                             self.env.pop_scope();
-                            return Ok(ControlFlow::Normal(v.unwrap_or(ComptimeValue::Unit)));
+                            return Ok(ControlFlow::Normal(v));
                         }
-                        cf @ ControlFlow::Return(_) => {
+                        LoopStep::Leave(cf) => {
                             self.env.pop_scope();
                             return Ok(cf);
                         }
@@ -2079,18 +2244,18 @@ impl ComptimeInterpreter {
                 Ok(ControlFlow::Normal(ComptimeValue::Unit))
             }
 
-            StmtKind::Loop { body, .. } => {
+            StmtKind::Loop { label, body } => {
                 loop {
                     self.env.count_branch()?;
 
                     self.env.push_scope();
-                    match self.eval_block(body)? {
-                        ControlFlow::Normal(_) | ControlFlow::Continue => {}
-                        ControlFlow::Break(v) => {
+                    match self.eval_block(body)?.in_loop(label.as_ref()) {
+                        LoopStep::Next => {}
+                        LoopStep::Exit(v) => {
                             self.env.pop_scope();
-                            return Ok(ControlFlow::Normal(v.unwrap_or(ComptimeValue::Unit)));
+                            return Ok(ControlFlow::Normal(v));
                         }
-                        cf @ ControlFlow::Return(_) => {
+                        LoopStep::Leave(cf) => {
                             self.env.pop_scope();
                             return Ok(cf);
                         }
@@ -2099,7 +2264,7 @@ impl ComptimeInterpreter {
                 }
             }
 
-            StmtKind::For { binding, iter, body, .. } => {
+            StmtKind::For { label, binding, iter, body, .. } => {
                 let iter_val = self.eval_expr(iter)?;
                 let items = match iter_val {
                     ComptimeValue::Array(arr) => arr,
@@ -2126,13 +2291,13 @@ impl ComptimeInterpreter {
                         }
                     }
 
-                    match self.eval_block(body)? {
-                        ControlFlow::Normal(_) | ControlFlow::Continue => {}
-                        ControlFlow::Break(v) => {
+                    match self.eval_block(body)?.in_loop(label.as_ref()) {
+                        LoopStep::Next => {}
+                        LoopStep::Exit(v) => {
                             self.env.pop_scope();
-                            return Ok(ControlFlow::Normal(v.unwrap_or(ComptimeValue::Unit)));
+                            return Ok(ControlFlow::Normal(v));
                         }
-                        cf @ ControlFlow::Return(_) => {
+                        LoopStep::Leave(cf) => {
                             self.env.pop_scope();
                             return Ok(cf);
                         }
@@ -2168,9 +2333,14 @@ impl ComptimeInterpreter {
                                     }
                                 }
                             }
-                            match self.eval_block(body)? {
-                                ControlFlow::Normal(_) => {}
-                                cf => {
+                            // `break` and `continue` act on this loop (CT70).
+                            match self.eval_block(body)?.in_loop(None) {
+                                LoopStep::Next => {}
+                                LoopStep::Exit(_) => {
+                                    self.env.pop_scope();
+                                    return Ok(ControlFlow::Normal(ComptimeValue::Unit));
+                                }
+                                LoopStep::Leave(cf) => {
                                     self.env.pop_scope();
                                     return Ok(cf);
                                 }
@@ -2297,19 +2467,26 @@ impl ComptimeInterpreter {
         let arg_values: ComptimeResult<Vec<_>> = args.iter().map(|a| self.eval_expr(a)).collect();
         let arg_values = arg_values?;
 
-        // If the callee is an identifier, check named functions/builtins first,
-        // then fall back to variable lookup (could be a closure).
+        // A variable shadows a function of the same name; a variable can hold
+        // a closure or a function value (`const PICK = answer`).
         if let Some(name) = func.name() {
-            if let Some(func_decl) = self.env.get_function(name).cloned() {
-                self.env.count_branch()?;
-                return self.call_function(&func_decl, arg_values);
+            match self.env.get(name).cloned() {
+                Some(callee @ (ComptimeValue::Closure { .. } | ComptimeValue::Function(_))) => {
+                    return self.call_value(callee, arg_values);
+                }
+                Some(_) => {}
+                None => {
+                    if let Some(func_decl) = self.env.get_function(name).cloned() {
+                        self.env.count_branch()?;
+                        return self.call_function(&func_decl, arg_values);
+                    }
+                }
             }
 
-            // Check if it's a closure stored in a variable
-            if let Some(val) = self.env.get(name).cloned() {
-                if let ComptimeValue::Closure { params, body, captures } = val {
-                    self.env.count_branch()?;
-                    return self.call_closure(&params, &body, &captures, arg_values);
+            // `Cents(250)`: a nominal type is its one value.
+            if self.nominals.contains(name) && self.env.get(name).is_none() {
+                if let [value] = arg_values.as_slice() {
+                    return Ok(value.clone());
                 }
             }
 
@@ -2324,13 +2501,20 @@ impl ComptimeInterpreter {
             }
         }
 
-        // Non-ident callee — evaluate it; if it produces a closure, call it
         let callee = self.eval_expr(func)?;
-        if let ComptimeValue::Closure { params, body, captures } = callee {
-            self.env.count_branch()?;
-            self.call_closure(&params, &body, &captures, arg_values)
-        } else {
-            Err(ComptimeError::NotSupported("indirect function calls".to_string()))
+        self.call_value(callee, arg_values)
+    }
+
+    /// Call a closure or a function value.
+    fn call_value(&mut self, callee: ComptimeValue, args: Vec<ComptimeValue>) -> ComptimeResult<ComptimeValue> {
+        self.env.count_branch()?;
+        match callee {
+            ComptimeValue::Closure { params, body, captures } => self.call_closure(&params, &body, &captures, args),
+            ComptimeValue::Function(name) => match self.env.get_function(&name).cloned() {
+                Some(decl) => self.call_function(&decl, args),
+                None => Err(ComptimeError::UndefinedFunction(name)),
+            },
+            other => Err(ComptimeError::NotSupported(format!("calling a `{}`", other.type_name()))),
         }
     }
 
@@ -2346,6 +2530,11 @@ impl ComptimeInterpreter {
                 let arg_values: ComptimeResult<Vec<_>> = args.iter().map(|a| self.eval_expr(a)).collect();
                 let arg_values = arg_values?;
                 return self.call_static_method(name, method, arg_values);
+            }
+            // A program type's own function: `Fixed.from_int(3)`.
+            if self.env.get(name).is_none() && self.env.get_function(&format!("{name}.{method}")).is_some() {
+                let arg_values: ComptimeResult<Vec<_>> = args.iter().map(|a| self.eval_expr(a)).collect();
+                return self.call_type_function(name, method, arg_values?);
             }
         }
 
@@ -2386,7 +2575,7 @@ impl ComptimeInterpreter {
         // expression evaluated to otherwise, which is a different type from the
         // one the signature promises.
         for (param, value) in func.params.iter().zip(args) {
-            let value = match param.ty.as_ref().and_then(|t| t.bare_name()).and_then(CtInt::from_name) {
+            let value = match param.ty.as_ref().and_then(|t| t.bare_name()).and_then(|n| CtInt::from_name(n, self.target)) {
                 Some(kind) => Self::coerce_int_width(value, kind)?,
                 None => value,
             };
@@ -2411,7 +2600,7 @@ impl ComptimeInterpreter {
         if matches!(ret, Some(rask_ast::ty::TypeExpr::Optional(_))) {
             return Ok(Self::ct_some(value));
         }
-        match ret.and_then(|t| t.bare_name()).and_then(CtInt::from_name) {
+        match ret.and_then(|t| t.bare_name()).and_then(|n| CtInt::from_name(n, self.target)) {
             Some(kind) => Self::coerce_int_width(value, kind),
             None => Ok(value),
         }
@@ -2735,6 +2924,44 @@ impl ComptimeInterpreter {
                     return Ok(ComptimeValue::Bool(arr.contains(needle)));
                 }
                 _ => {} // fall through to numeric/string methods
+            }
+        }
+
+        // A float's exact methods: every one has a single right answer, so
+        // the value computed here is the one the program would compute. The
+        // transcendental ones (`sin`, `exp`) aren't here: the runtime's are
+        // correctly rounded and Rust's aren't, and a constant that differs from
+        // the run-time answer in the last bit is worse than an error.
+        if let Some(x) = match obj {
+            ComptimeValue::F64(x) => Some(*x),
+            ComptimeValue::F32(x) => Some(f64::from(*x)),
+            _ => None,
+        } {
+            let same_width = |v: f64| match obj {
+                ComptimeValue::F32(_) => ComptimeValue::F32(v as f32),
+                _ => ComptimeValue::F64(v),
+            };
+            match method {
+                // Toward zero. A value with no `i64` is an error, not the
+                // saturated or wrapped one a run-time conversion gives.
+                "to_int" => {
+                    let t = x.trunc();
+                    return if t.is_finite() && t >= -9_223_372_036_854_775_808.0 && t < 9_223_372_036_854_775_808.0 {
+                        Ok(ComptimeValue::I64(t as i64))
+                    } else {
+                        Err(ComptimeError::IntegerOverflow(format!("{x:?} has no `i64` value")))
+                    };
+                }
+                "floor" => return Ok(same_width(x.floor())),
+                "ceil" => return Ok(same_width(x.ceil())),
+                "round" => return Ok(same_width(x.round())),
+                "trunc" => return Ok(same_width(x.trunc())),
+                "abs" => return Ok(same_width(x.abs())),
+                "sqrt" => return Ok(same_width(x.sqrt())),
+                "is_nan" => return Ok(ComptimeValue::Bool(x.is_nan())),
+                "is_finite" => return Ok(ComptimeValue::Bool(x.is_finite())),
+                "is_inf" => return Ok(ComptimeValue::Bool(x.is_infinite())),
+                _ => {}
             }
         }
 
@@ -3065,22 +3292,22 @@ impl ComptimeInterpreter {
     }
 
     fn pattern_matches(&mut self, pattern: &Pattern, value: &ComptimeValue) -> ComptimeResult<bool> {
-        match pattern {
-            Pattern::Wildcard => Ok(true),
+        match &pattern.kind {
+            PatternKind::Wildcard => Ok(true),
             // `Level.Low` parses as a name. It was taken as a binding, so the
             // first such arm matched every value. The checker has already
             // held the pattern to the scrutinee's enum; the variant decides.
-            Pattern::Ident(name) if name.contains('.') => Ok(matches!(
+            PatternKind::Ident(name) if name.contains('.') => Ok(matches!(
                 value,
                 ComptimeValue::Enum { variant, data: None, .. }
                     if name.rsplit('.').next() == Some(variant.as_str())
             )),
-            Pattern::Ident(_) => Ok(true), // Binds anything
-            Pattern::Literal(lit) => {
+            PatternKind::Ident(_) => Ok(true), // Binds anything
+            PatternKind::Literal(lit) => {
                 let lit_val = self.eval_expr(lit)?;
                 Ok(lit_val == *value)
             }
-            Pattern::Constructor { name, fields } => {
+            PatternKind::Constructor { name, fields } => {
                 if let ComptimeValue::Enum { variant, data, .. } = value {
                     if variant != name {
                         return Ok(false);
@@ -3110,7 +3337,7 @@ impl ComptimeInterpreter {
                     Ok(false)
                 }
             }
-            Pattern::Tuple(patterns) => {
+            PatternKind::Tuple(patterns) => {
                 if let ComptimeValue::Tuple(values) = value {
                     if patterns.len() != values.len() {
                         return Ok(false);
@@ -3125,7 +3352,7 @@ impl ComptimeInterpreter {
                     Ok(false)
                 }
             }
-            Pattern::Struct { name, fields, rest } => {
+            PatternKind::Struct { name, fields, rest } => {
                 if let ComptimeValue::Struct { name: sname, fields: sfields } = value {
                     if name != sname {
                         return Ok(false);
@@ -3144,7 +3371,7 @@ impl ComptimeInterpreter {
                     Ok(false)
                 }
             }
-            Pattern::Or(patterns) => {
+            PatternKind::Or(patterns) => {
                 for p in patterns {
                     if self.pattern_matches(p, value)? {
                         return Ok(true);
@@ -3152,7 +3379,7 @@ impl ComptimeInterpreter {
                 }
                 Ok(false)
             }
-            Pattern::Range { start, end } => {
+            PatternKind::Range { start, end } => {
                 let start_val = self.eval_expr(start)?;
                 let end_val = self.eval_expr(end)?;
                 Ok(match (value, &start_val, &end_val) {
@@ -3168,7 +3395,7 @@ impl ComptimeInterpreter {
                     _ => false,
                 })
             }
-            Pattern::TypePat { ty, .. } => {
+            PatternKind::TypePat { ty, .. } => {
                 // Match when the value's enum tag matches the named type.
                 Ok(matches!(value, ComptimeValue::Enum { variant, .. } if ty.name().as_deref() == Some(variant.as_str())))
             }
@@ -3176,15 +3403,15 @@ impl ComptimeInterpreter {
     }
 
     fn bind_pattern(&mut self, pattern: &Pattern, value: &ComptimeValue) -> ComptimeResult<()> {
-        match pattern {
-            Pattern::Wildcard => Ok(()),
-            Pattern::Ident(name) if name.contains('.') => Ok(()),
-            Pattern::Ident(name) => {
+        match &pattern.kind {
+            PatternKind::Wildcard => Ok(()),
+            PatternKind::Ident(name) if name.contains('.') => Ok(()),
+            PatternKind::Ident(name) => {
                 self.env.define(name.clone(), value.clone());
                 Ok(())
             }
-            Pattern::Literal(_) => Ok(()),
-            Pattern::Constructor { fields, .. } => {
+            PatternKind::Literal(_) => Ok(()),
+            PatternKind::Constructor { fields, .. } => {
                 if let ComptimeValue::Enum { data, .. } = value {
                     match (fields.len(), data) {
                         (0, _) => Ok(()),
@@ -3203,7 +3430,7 @@ impl ComptimeInterpreter {
                     Ok(())
                 }
             }
-            Pattern::Tuple(patterns) => {
+            PatternKind::Tuple(patterns) => {
                 if let ComptimeValue::Tuple(values) = value {
                     for (p, v) in patterns.iter().zip(values.iter()) {
                         self.bind_pattern(p, v)?;
@@ -3211,7 +3438,7 @@ impl ComptimeInterpreter {
                 }
                 Ok(())
             }
-            Pattern::Struct { fields, .. } => {
+            PatternKind::Struct { fields, .. } => {
                 if let ComptimeValue::Struct { fields: sfields, .. } = value {
                     for (fname, fpat) in fields {
                         if let Some(fval) = sfields.get(fname) {
@@ -3221,7 +3448,7 @@ impl ComptimeInterpreter {
                 }
                 Ok(())
             }
-            Pattern::Or(patterns) => {
+            PatternKind::Or(patterns) => {
                 // Bind from first matching pattern
                 for p in patterns {
                     if self.pattern_matches(p, value)? {
@@ -3230,8 +3457,8 @@ impl ComptimeInterpreter {
                 }
                 Ok(())
             }
-            Pattern::Range { .. } => Ok(()),
-            Pattern::TypePat { binding, .. } => {
+            PatternKind::Range { .. } => Ok(()),
+            PatternKind::TypePat { binding, .. } => {
                 if let Some(name) = binding {
                     self.env.define(name.clone(), value.clone());
                 }
@@ -3241,19 +3468,13 @@ impl ComptimeInterpreter {
     }
 }
 
-impl Default for ComptimeInterpreter {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn test_arithmetic() {
-        let mut interp = ComptimeInterpreter::new();
+        let mut interp = ComptimeInterpreter::new(rask_ast::Target::LP64);
 
         // We'd need to construct AST nodes for proper testing
         // For now, just verify the interpreter can be created

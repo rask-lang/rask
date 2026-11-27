@@ -127,7 +127,7 @@ if x > 0 {
 Types inferred within function bodies. Public signatures require explicit types; private functions can omit them entirely.
 
 ```rask
-let x = 42            // i32 inferred (within body)
+let x = 42            // i64 inferred (within body)
 let y: u64 = 42       // Explicit when needed
 
 // Public: full signature required
@@ -203,7 +203,7 @@ func compute() -> i32 {
 
 ```rask
 // Numbers
-42                  // i32
+42                  // i64
 42u64               // u64 (suffix)
 3.14                // f64
 3.14f32             // f32
@@ -636,7 +636,7 @@ func sort(items: Vec<T>) {
 // It never appears on a signature.
 using Multitasking {
     let t = spawn { return work() }
-    t.join()
+    let answer = t.join()!
 }
 ```
 
@@ -857,7 +857,7 @@ while reader.next()? as line {
 
 // Combined with other conditions
 if state is Connected(sock) && sock.is_ready() {
-    sock.send(data)
+    sock.send(data)!
 }
 ```
 
@@ -1059,6 +1059,11 @@ spawn { conn.close() }.detach()
 // An OS thread, a pool job
 let t = Thread.spawn { work() }
 let j = ThreadPool.spawn { crunch(x) }
+// Joined in the block that spawned it, a task borrows instead of copying.
+// With no pool, `requires_pool: false` runs it right here.
+let h = ThreadPool.spawn(requires_pool: false) { total(left) }
+let r = total(right)
+let sum = try h.join() + r
 
 // Channels
 let (tx, rx) = Channel<Message>.buffered(100)

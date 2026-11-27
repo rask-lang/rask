@@ -8,13 +8,21 @@ use cranelift_module::{DataDescription, Linkage, Module};
 use cranelift_object::{ObjectBuilder, ObjectModule};
 use std::collections::{HashMap, HashSet};
 
-use rask_ast::LineMap;
-use rask_mir::{MirConst, MirFunction, MirOperand};
+use rask_ast::SourceMap;
+use rask_mir::{MirConst, MirFunction, MirOperand, MirStmtKind};
 use rask_layout::{EnumLayout, StructLayout};
 use rask_mono::{MonoProgram};
 use crate::builder::FunctionBuilder;
 use crate::types::{mir_to_cranelift_type, extern_type_to_mir};
 use crate::{BuildMode, CodegenError, CodegenResult};
+
+/// Runtime symbols codegen calls itself rather than through a MIR call: a
+/// string comparison operator lowers to compare/eq, a string temporary codegen
+/// builds is released with free, an `RcInc` shares a string with clone, and `ensure` and unwinding frames push and pop.
+const CODEGEN_RUNTIME_CALLS: &[&str] = &[
+    "rask_string_compare", "rask_string_eq", "rask_string_free", "rask_string_clone",
+    "rask_ensure_push", "rask_ensure_pop", "rask_unwind_push", "rask_unwind_pop",
+];
 
 pub struct CodeGenerator {
     pub(crate) module: ObjectModule,
@@ -24,6 +32,8 @@ pub struct CodeGenerator {
     pub(crate) struct_layouts: Vec<StructLayout>,
     /// The checker's name for each type id, from monomorphization.
     type_names: HashMap<rask_types::TypeId, String>,
+    /// What frees each declared handle, by its id; from mono.
+    handle_releases: rask_mono::drop_names::HandleReleases,
     /// Enum layouts from monomorphization
     enum_layouts: Vec<EnumLayout>,
     /// String literal data (content → DataId in the object module)
@@ -49,6 +59,13 @@ pub struct CodeGenerator {
     /// The runtime's `rask_preempt_requested`, which every function entry and
     /// loop back-edge checks (conc.runtime/P3).
     preempt_flag_data: Option<cranelift_module::DataId>,
+    /// The runtime's thread-local `rask_stack_limit`, which every function
+    /// entry compares its stack pointer against (ctrl.panics/S5). None on a
+    /// target whose runtime has no stack bounds.
+    stack_limit_data: Option<cranelift_module::DataId>,
+    /// Whether the target can reach a thread-local, so functions check the
+    /// stack limit. Set from the target when the generator is made.
+    stack_checks: bool,
     /// MIR names of stdlib functions that can panic at runtime
     panicking_fns: HashSet<String>,
     /// Names of functions compiled as Rask code (not C stdlib)
@@ -77,10 +94,9 @@ pub struct CodeGenerator {
     owned_release_fns: HashMap<String, cranelift_module::FuncId>,
     /// Collected debug info per function (debug builds only)
     debug_srclocs: Vec<crate::debug_info::FunctionDebugInfo>,
-    /// Line map for converting byte offsets to line:col (debug builds)
-    line_map: Option<LineMap>,
-    /// Source file name for DWARF emission
-    source_file_name: Option<String>,
+    /// Every source file of the program, by `Span::file_id`: panic
+    /// locations, error origins and DWARF read from it.
+    sources: SourceMap,
     /// DI5: inline region metadata from the inlining pass (caller name → regions)
     inline_regions: HashMap<String, Vec<rask_mir::InlineRegion>>,
     /// Each layout's field types as MIR types, from lowering.
@@ -98,6 +114,13 @@ impl CodeGenerator {
         // LLVM's own convention — a register pair on SysV — which is what a C
         // compiler already does with `__int128`, so the two agree (#762).
         let _ = flag_builder.set("enable_llvm_abi_extensions", "true");
+        // A frame over a page touches each page from the top down before it's
+        // used. A stack overflow is caught by the entry check against the
+        // stack limit (ctrl.panics/S5) before any frame gets near the guard;
+        // the probes make anything that slips past that fault in the guard
+        // rather than step over it into whatever is mapped below (#2066).
+        let _ = flag_builder.set("enable_probestack", "true");
+        let _ = flag_builder.set("probestack_strategy", "inline");
         // Darwin has no non-PIE option. Without this Cranelift reaches a string
         // constant by writing its absolute address into the instruction stream,
         // which is a relocation in __text — and ld64 refuses those outright
@@ -106,6 +129,16 @@ impl CodeGenerator {
         if cfg!(target_os = "macos") {
             let _ = flag_builder.set("is_pic", "true");
         }
+        // How a thread-local is reached: the stack limit every function
+        // checks is one (ctrl.panics/S5).
+        let stack_checks = match stack_check_tls_model(
+            cfg!(target_os = "linux"),
+            cfg!(target_os = "macos"),
+            cfg!(any(target_arch = "x86_64", target_arch = "aarch64")),
+        ) {
+            Some(model) => flag_builder.set("tls_model", model).is_ok(),
+            None => false,
+        };
         let isa = isa_builder.finish(settings::Flags::new(flag_builder))
             .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
 
@@ -126,11 +159,14 @@ impl CodeGenerator {
             struct_layouts: Vec::new(),
             enum_layouts: Vec::new(),
             type_names: HashMap::new(),
+            handle_releases: HashMap::new(),
             string_data: HashMap::new(),
             string_header_data: HashMap::new(),
             element_offset_data: HashMap::new(),
             comptime_data: HashMap::new(),
             preempt_flag_data: None,
+            stack_limit_data: None,
+            stack_checks,
             panicking_fns: crate::dispatch::panicking_functions(),
             internal_fns: HashSet::new(),
             fn_param_types: HashMap::new(),
@@ -139,8 +175,7 @@ impl CodeGenerator {
             vtable_data: HashMap::new(),
             owned_release_fns: HashMap::new(),
             debug_srclocs: Vec::new(),
-            line_map: None,
-            source_file_name: None,
+            sources: SourceMap::default(),
             inline_regions: HashMap::new(),
             field_types: rask_mir::FieldTypes::default(),
         })
@@ -165,6 +200,9 @@ impl CodeGenerator {
         let _ = flag_builder.set("opt_level", "speed");
         // See `new` — 128-bit values in signatures need this (#762).
         let _ = flag_builder.set("enable_llvm_abi_extensions", "true");
+        // See `new`: stack probes, so nothing steps over the guard (#2066).
+        let _ = flag_builder.set("enable_probestack", "true");
+        let _ = flag_builder.set("probestack_strategy", "inline");
         // Position-independent code. Linux wants it; Darwin *requires* it —
         // see `new` above: a non-PIC build puts an absolute address in __text
         // and ld64 rejects the object.
@@ -176,6 +214,22 @@ impl CodeGenerator {
         ) {
             let _ = flag_builder.set("is_pic", "true");
         }
+        // See `new`: the stack limit is a thread-local.
+        let darwin = matches!(
+            target.operating_system,
+            target_lexicon::OperatingSystem::Darwin | target_lexicon::OperatingSystem::MacOSX { .. }
+        );
+        let stack_checks = match stack_check_tls_model(
+            matches!(target.operating_system, target_lexicon::OperatingSystem::Linux),
+            darwin,
+            matches!(
+                target.architecture,
+                target_lexicon::Architecture::X86_64 | target_lexicon::Architecture::Aarch64(_)
+            ),
+        ) {
+            Some(model) => flag_builder.set("tls_model", model).is_ok(),
+            None => false,
+        };
         let flags = settings::Flags::new(flag_builder);
 
         let isa = isa::lookup(target)
@@ -200,11 +254,14 @@ impl CodeGenerator {
             struct_layouts: Vec::new(),
             enum_layouts: Vec::new(),
             type_names: HashMap::new(),
+            handle_releases: HashMap::new(),
             string_data: HashMap::new(),
             string_header_data: HashMap::new(),
             element_offset_data: HashMap::new(),
             comptime_data: HashMap::new(),
             preempt_flag_data: None,
+            stack_limit_data: None,
+            stack_checks,
             panicking_fns: crate::dispatch::panicking_functions(),
             internal_fns: HashSet::new(),
             fn_param_types: HashMap::new(),
@@ -213,20 +270,62 @@ impl CodeGenerator {
             vtable_data: HashMap::new(),
             owned_release_fns: HashMap::new(),
             debug_srclocs: Vec::new(),
-            line_map: None,
-            source_file_name: None,
+            sources: SourceMap::default(),
             inline_regions: HashMap::new(),
             field_types: rask_mir::FieldTypes::default(),
         })
     }
 
-    /// Set debug info context for DWARF emission.
-    /// Call before gen_function() if you want debug line tables.
-    pub fn set_debug_context(&mut self, source_file: &str, line_map: LineMap) {
-        self.source_file_name = Some(source_file.to_string());
-        self.line_map = Some(line_map);
-        // Register source file name in data section for error origin (ER15)
-        let _ = self.register_string(source_file);
+    /// Hand over the program's source files. Call before gen_function():
+    /// panic locations and error origins name the file a statement came from.
+    pub fn set_sources(&mut self, sources: SourceMap) -> CodegenResult<()> {
+        for (_, file) in sources.files() {
+            self.register_string(&file.name)?;
+        }
+        self.sources = sources;
+        Ok(())
+    }
+
+    /// `rask_origin_files`: each file's name at its `file_id`, null in the
+    /// gaps, and `rask_origin_file_count` entries long. A `T or E` records
+    /// the file it was raised in as `file_id + 1`; the runtime names it from
+    /// here. Always defined, empty when there are no sources, so the runtime
+    /// links against it unconditionally, as it does `rask_const_free`.
+    fn define_origin_files(&mut self) -> CodegenResult<()> {
+        let files: Vec<(u16, String)> = self
+            .sources
+            .files()
+            .map(|(id, f)| (id, f.name.clone()))
+            .collect();
+        let count = files.iter().map(|(id, _)| *id as usize + 1).max().unwrap_or(0);
+
+        let table_id = self.module
+            .declare_data("rask_origin_files", Linkage::Export, false, false)
+            .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+        let mut desc = DataDescription::new();
+        // One word even when empty: a zero-sized symbol is not one every
+        // object format can say.
+        desc.define(vec![0u8; count.max(1) * 8].into_boxed_slice());
+        desc.set_align(8);
+        for (id, name) in &files {
+            let data_id = self.string_data[name.as_str()];
+            let gv = self.module.declare_data_in_data(data_id, &mut desc);
+            desc.write_data_addr(*id as u32 * 8, gv, 0);
+        }
+        self.module
+            .define_data(table_id, &desc)
+            .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+
+        let count_id = self.module
+            .declare_data("rask_origin_file_count", Linkage::Export, false, false)
+            .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+        let mut desc = DataDescription::new();
+        desc.define((count as u64).to_le_bytes().to_vec().into_boxed_slice());
+        desc.set_align(8);
+        self.module
+            .define_data(count_id, &desc)
+            .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+        Ok(())
     }
 
     /// Set DI5 inline region metadata from the inlining pass.
@@ -238,8 +337,26 @@ impl CodeGenerator {
     /// Each layout's field types as MIR types (`MirContext::field_types`), for
     /// the walks over what a struct or a variant owns. Call before
     /// gen_function().
-    pub fn set_field_types(&mut self, field_types: rask_mir::FieldTypes) {
+    ///
+    /// The table also says what machine the program was laid out for. The
+    /// backend only emits code for its own pointer width, so a program laid
+    /// out for another is refused here rather than miscompiled.
+    pub fn set_field_types(&mut self, field_types: rask_mir::FieldTypes) -> CodegenResult<()> {
+        let backend = u32::from(self.module.isa().pointer_bits());
+        if field_types.target.pointer_bits() != backend {
+            return Err(CodegenError::UnsupportedFeature(format!(
+                "the program is laid out for {}-bit pointers, and this backend emits {}-bit code",
+                field_types.target.pointer_bits(),
+                backend,
+            )));
+        }
         self.field_types = field_types;
+        Ok(())
+    }
+
+    /// The machine the code is for: the one lowering laid the types out for.
+    pub(crate) fn target(&self) -> rask_ast::Target {
+        self.field_types.target
     }
 
     /// Declare runtime functions as external imports.
@@ -586,8 +703,12 @@ impl CodeGenerator {
             self.func_ids.insert("main_error_exit".to_string(), id);
         }
 
-        // assert_fail_cmp_str(left: ptr, right: ptr, op: ptr, file: ptr, line: i32, col: i32)
-        {
+        // assert_fail_cmp_str / _debug (left: ptr, right: ptr, op: ptr, file: ptr, line: i32, col: i32)
+        // `_debug` takes operands lowering has already rendered to text.
+        for (internal, symbol) in [
+            ("assert_fail_cmp_str", "rask_assert_fail_cmp_str"),
+            ("assert_fail_cmp_debug", "rask_assert_fail_cmp_debug"),
+        ] {
             let mut sig = self.module.make_signature();
             sig.params.push(AbiParam::new(types::I64)); // left str ptr
             sig.params.push(AbiParam::new(types::I64)); // right str ptr
@@ -596,9 +717,9 @@ impl CodeGenerator {
             sig.params.push(AbiParam::new(types::I32)); // line
             sig.params.push(AbiParam::new(types::I32)); // col
             let id = self.module
-                .declare_function("rask_assert_fail_cmp_str", Linkage::Import, &sig)
+                .declare_function(symbol, Linkage::Import, &sig)
                 .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
-            self.func_ids.insert("assert_fail_cmp_str".to_string(), id);
+            self.func_ids.insert(internal.to_string(), id);
         }
 
         // assert_fail_cmp_f64/_f32(left, right, op: ptr, file: ptr, line: i32, col: i32)
@@ -633,6 +754,7 @@ impl CodeGenerator {
             ("check_fail_cmp_char", "rask_check_fail_cmp_char", types::I64),
             ("check_fail_cmp_bool", "rask_check_fail_cmp_bool", types::I64),
             ("check_fail_cmp_str",  "rask_check_fail_cmp_str",  types::I64),
+            ("check_fail_cmp_debug", "rask_check_fail_cmp_debug", types::I64),
             ("check_fail_cmp_i128", "rask_check_fail_cmp_i128", types::I128),
             ("check_fail_cmp_u128", "rask_check_fail_cmp_u128", types::I128),
             ("check_fail_cmp_f64",  "rask_check_fail_cmp_f64",  types::F64),
@@ -777,17 +899,6 @@ impl CodeGenerator {
             self.func_ids.insert("set_panic_location".to_string(), id);
         }
 
-        // rask_set_origin_file(file: *const char) -> void
-        // Sets the source file name for error origin formatting (ER15).
-        {
-            let mut sig = self.module.make_signature();
-            sig.params.push(AbiParam::new(types::I64)); // file name C string
-            let id = self.module
-                .declare_function("rask_set_origin_file", Linkage::Import, &sig)
-                .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
-            self.func_ids.insert("rask_set_origin_file".to_string(), id);
-        }
-
         // ─── I/O functions ──────────────────────────────────────
 
         // rask_io_write(fd: i64, buf: i64, len: i64) -> i64
@@ -863,10 +974,11 @@ impl CodeGenerator {
             self.func_ids.insert("rask_free".to_string(), id);
         }
 
-        // rask_closure_alloc(block_size: i64, env_drop: i64, flags: i64,
-        // env_align: i64) -> i64 (pointer past the header words)
+        // rask_closure_alloc(block_size: i64, entries: i64, count: i64,
+        // flags: i64, env_align: i64) -> i64 (pointer past the header words)
         {
             let mut sig = self.module.make_signature();
+            sig.params.push(AbiParam::new(types::I64));
             sig.params.push(AbiParam::new(types::I64));
             sig.params.push(AbiParam::new(types::I64));
             sig.params.push(AbiParam::new(types::I64));
@@ -892,6 +1004,23 @@ impl CodeGenerator {
             self.preempt_flag_data = Some(flag);
         }
 
+        // Stack overflow (ctrl.panics/S5): the limit every function entry
+        // reads, and what it calls when the stack pointer is below it.
+        if self.stack_checks {
+            let mut sig = self.module.make_signature();
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I32));
+            sig.params.push(AbiParam::new(types::I32));
+            let id = self.module
+                .declare_function("rask_stack_overflow_at", Linkage::Import, &sig)
+                .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+            self.func_ids.insert("rask_stack_overflow_at".to_string(), id);
+            let limit = self.module
+                .declare_data("rask_stack_limit", Linkage::Import, true, true)
+                .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+            self.stack_limit_data = Some(limit);
+        }
+
         // rask_closure_free(ptr: i64) -> void
         {
             let mut sig = self.module.make_signature();
@@ -902,14 +1031,15 @@ impl CodeGenerator {
             self.func_ids.insert("rask_closure_free".to_string(), id);
         }
 
-        // rask_closure_retain(ptr: i64) -> void
+        // rask_closure_clone(ptr: i64) -> i64
         {
             let mut sig = self.module.make_signature();
             sig.params.push(AbiParam::new(types::I64));
+            sig.returns.push(AbiParam::new(types::I64));
             let id = self.module
-                .declare_function("rask_closure_retain", Linkage::Import, &sig)
+                .declare_function("rask_closure_clone", Linkage::Import, &sig)
                 .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
-            self.func_ids.insert("rask_closure_retain".to_string(), id);
+            self.func_ids.insert("rask_closure_clone".to_string(), id);
         }
 
         // rask_box_alloc(vtable: i64) -> ptr — an interface object's block,
@@ -1223,6 +1353,44 @@ impl CodeGenerator {
     ///
     /// Call this after `declare_runtime_functions()` and before `declare_functions()`.
     /// User-defined functions declared later will shadow any matching stdlib names.
+    /// The runtime functions lowering calls by symbol (`FunctionRef::runtime`)
+    /// and the ones codegen calls on its own (`CODEGEN_RUNTIME_CALLS`),
+    /// declared with the prototype `rask_runtime.h` gives them. The header owns
+    /// the signature, so there is no dispatch row to keep in step.
+    fn declare_runtime_calls(&mut self, mir_functions: &[MirFunction]) -> CodegenResult<()> {
+        let mut names: Vec<&str> = mir_functions
+            .iter()
+            .flat_map(|f| f.blocks.iter())
+            .flat_map(|b| b.statements.iter())
+            .filter_map(|stmt| match &stmt.kind {
+                MirStmtKind::Call { func, .. } if func.runtime => Some(func.name.as_str()),
+                _ => None,
+            })
+            .collect();
+        names.extend(CODEGEN_RUNTIME_CALLS);
+        names.sort_unstable();
+        names.dedup();
+        for name in names {
+            if self.func_ids.contains_key(name) {
+                continue;
+            }
+            let proto = crate::c_header::prototype(name).ok_or_else(|| {
+                CodegenError::UnsupportedFeature(format!(
+                    "runtime call `{name}`: `rask_runtime.h` has no prototype for it that codegen can read"
+                ))
+            })?;
+            let mut sig = self.module.make_signature();
+            sig.params.extend(proto.params.iter().map(|&t| AbiParam::new(t)));
+            sig.returns.extend(proto.ret.map(AbiParam::new));
+            let id = self
+                .module
+                .declare_function(name, Linkage::Import, &sig)
+                .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+            self.func_ids.insert(name.to_string(), id);
+        }
+        Ok(())
+    }
+
     pub fn declare_stdlib_functions(&mut self) -> CodegenResult<()> {
         crate::dispatch::declare_stdlib(&mut self.module, &mut self.func_ids)
     }
@@ -1333,7 +1501,7 @@ impl CodeGenerator {
         // `StructReturn` signature to return nothing — the pointer the caller
         // passed *is* the answer, so there is nothing left to hand back (#1109).
         let through_dst = !is_main
-            && crate::builder::FunctionBuilder::returns_through_dst(&mir_fn.ret_ty);
+            && crate::builder::FunctionBuilder::returns_through_dst(&mir_fn.ret_ty, self.target());
         if through_dst {
             sig.params.push(AbiParam::special(
                 cranelift_codegen::ir::types::I64,
@@ -1353,7 +1521,9 @@ impl CodeGenerator {
         // Store layouts for use during code generation
         self.struct_layouts = mono.struct_layouts.clone();
         self.type_names = mono.type_names.clone();
+        self.handle_releases = mono.handle_releases.clone();
         self.enum_layouts = mono.enum_layouts.clone();
+        self.declare_runtime_calls(mir_functions)?;
 
         for mir_fn in mir_functions {
             // Skip empty-body stubs that shadow stdlib entries (e.g.
@@ -1374,6 +1544,20 @@ impl CodeGenerator {
                 &mir_fn.name
             };
 
+            // Only what C reaches by name is global: `extern "C"` functions,
+            // the entry point and the constants' release. Everything else is
+            // local to the object. A global `write` or `read` in the program
+            // was the one the linker handed the C runtime, so `sock_write`'s
+            // call to libc's `write(2)` ran a Rask function instead.
+            let linkage = if mir_fn.is_extern_c
+                || mir_fn.name == "main"
+                || mir_fn.name == rask_mir::CONST_FREE_FN
+            {
+                Linkage::Export
+            } else {
+                Linkage::Local
+            };
+
             // C calls it with a struct by value: the exported name goes to a
             // thunk that follows C's rules, and the body keeps Rask's.
             let func_id = match self.c_entry_plan(mir_fn) {
@@ -1382,7 +1566,7 @@ impl CodeGenerator {
                     self.declare_c_entry(mir_fn, &export_name, &sig, params, ret)?
                 }
                 None => self.module
-                    .declare_function(export_name, Linkage::Export, &sig)
+                    .declare_function(export_name, linkage, &sig)
                     .map_err(|e| CodegenError::CraneliftError(e.to_string()))?,
             };
 
@@ -1608,7 +1792,7 @@ impl CodeGenerator {
                 .elem
                 .iter()
                 .chain(meta.map_types.iter().flat_map(|(k, v)| [k, v]))
-                .map(|t| u64::from(t.align()))
+                .map(|t| u64::from(rask_layout::align_of(t, self.target())))
                 .max()
                 .unwrap_or(8);
             desc.set_align(elem_align.max(8));
@@ -1710,8 +1894,15 @@ impl CodeGenerator {
             // Only a moved-in box reads it — a container element, a struct
             // field, a return. `InterfaceDrop` is the borrowed case and frees the
             // block alone.
-            if !vt.owned.is_empty() {
-                let func_id = self.get_or_create_owned_release(&vt.concrete_type, &vt.owned)?;
+            let owned = vt.concrete_mir.as_ref().and_then(|ty| {
+                crate::elem_offsets::box_owned_offsets(ty, crate::elem_offsets::Shapes {
+                    layouts: &self.struct_layouts,
+                    enums: &self.enum_layouts,
+                    fields: &self.field_types,
+                })
+            });
+            if let Some(owned) = owned {
+                let func_id = self.get_or_create_owned_release(&vt.concrete_type, &owned)?;
                 let func_ref = self.module.declare_func_in_data(func_id, &mut desc);
                 desc.write_function_addr(crate::vtable::VTABLE_OWNED_RELEASE_OFFSET, func_ref);
             }
@@ -1739,20 +1930,28 @@ impl CodeGenerator {
     }
 
     /// Build (or reuse) the release for a concrete type behind a box that owns
-    /// it: `fn(data_ptr: i64)` that frees each container and each string the
-    /// value holds, at the offsets `owned_fields` found.
+    /// it: `fn(data_ptr: i64)` that walks what the value owns, described the
+    /// way a container element of that type is, `Heap` fields included
+    /// (`box_owned_offsets`).
     ///
-    /// One per concrete type, shared across every vtable that boxes it behind a
-    /// different interface, because the answer depends on the value and not on the
-    /// interface.
+    /// One walk for both: a box inside the value, an optional or an enum field
+    /// and a `Heap` block are released the same way an element's are. A flat
+    /// list of strings and containers of its own left those out, so a box
+    /// holding another box leaked the inner one.
+    ///
+    /// One per concrete type, shared across every vtable that boxes it behind
+    /// a different interface, because the answer depends on the value and not
+    /// on the interface.
     fn get_or_create_owned_release(
         &mut self,
         concrete_type: &str,
-        fields: &[crate::drop_fields::DropField],
+        owned: &[i32],
     ) -> CodegenResult<cranelift_module::FuncId> {
         if let Some(&func_id) = self.owned_release_fns.get(concrete_type) {
             return Ok(func_id);
         }
+        self.register_element_offsets(owned)?;
+        let entries_id = self.element_offset_data[owned];
 
         let mut sig = self.module.make_signature();
         sig.params.push(AbiParam::new(types::I64));
@@ -1766,21 +1965,12 @@ impl CodeGenerator {
         self.ctx.clear();
         self.ctx.func.signature = sig;
 
-        // One reference per distinct free, declared up front — a container and
-        // a string field don't share one.
-        let mut free_refs: std::collections::HashMap<&'static str, cranelift_codegen::ir::FuncRef> =
-            std::collections::HashMap::new();
-        for f in fields {
-            if free_refs.contains_key(f.free_fn) {
-                continue;
-            }
-            let id = *self
-                .func_ids
-                .get(f.free_fn)
-                .ok_or_else(|| CodegenError::FunctionNotFound(f.free_fn.to_string()))?;
-            let r = self.module.declare_func_in_func(id, &mut self.ctx.func);
-            free_refs.insert(f.free_fn, r);
-        }
+        let release_id = *self
+            .func_ids
+            .get("rask_owned_release_all")
+            .ok_or_else(|| CodegenError::FunctionNotFound("rask_owned_release_all".to_string()))?;
+        let release = self.module.declare_func_in_func(release_id, &mut self.ctx.func);
+        let entries_gv = self.module.declare_data_in_func(entries_id, &mut self.ctx.func);
 
         let mut fn_builder_ctx = cranelift::prelude::FunctionBuilderContext::new();
         let mut fb =
@@ -1792,30 +1982,9 @@ impl CodeGenerator {
         fb.seal_block(entry);
 
         let data_ptr = fb.block_params(entry)[0];
-        for f in fields {
-            let free_ref = free_refs[f.free_fn];
-            match f.shape {
-                // The slot is the header: pass its address.
-                crate::drop_fields::ReleaseShape::ByAddress => {
-                    let field_ptr = if f.offset == 0 {
-                        data_ptr
-                    } else {
-                        fb.ins().iadd_imm(data_ptr, f.offset as i64)
-                    };
-                    fb.ins().call(free_ref, &[field_ptr]);
-                }
-                // The slot holds a handle: load it and pass the pointer.
-                crate::drop_fields::ReleaseShape::ByHandle => {
-                    let handle = fb.ins().load(
-                        types::I64,
-                        cranelift::prelude::MemFlags::new(),
-                        data_ptr,
-                        f.offset as i32,
-                    );
-                    fb.ins().call(free_ref, &[handle]);
-                }
-            }
-        }
+        let entries = fb.ins().global_value(types::I64, entries_gv);
+        let count = fb.ins().iconst(types::I64, owned.len() as i64);
+        fb.ins().call(release, &[data_ptr, entries, count]);
         fb.ins().return_(&[]);
         fb.finalize();
 
@@ -1833,11 +2002,6 @@ impl CodeGenerator {
         // so the stdlib dispatch table handles them at the call site.
         if !self.internal_fns.contains(&mir_fn.name) {
             return Ok(());
-        }
-
-        // Pre-register source file string for runtime panic locations
-        if let Some(ref src_file) = mir_fn.source_file {
-            self.register_string(src_file)?;
         }
 
         // Every offset list this function's container frees will ask for. Has
@@ -1880,7 +2044,7 @@ impl CodeGenerator {
         }
 
         // Import only the string data globals that this function actually uses
-        let (needed_strings, needed_buffers) = collect_used_strings(mir_fn);
+        let (needed_strings, needed_buffers) = collect_used_strings(mir_fn, &self.sources);
         let mut element_offset_globals: HashMap<Vec<i32>, GlobalValue> = HashMap::new();
         for (offsets, data_id) in &self.element_offset_data {
             let gv = self.module.declare_data_in_func(*data_id, &mut self.ctx.func);
@@ -1915,17 +2079,6 @@ impl CodeGenerator {
                 }
             }
         }
-        // For main: import source file name global for rask_set_origin_file (ER15)
-        if mir_fn.name == "main" {
-            if let Some(file_name) = &self.source_file_name {
-                if let Some(data_id) = self.string_data.get(file_name) {
-                    if !string_globals.contains_key(file_name) {
-                        let gv = self.module.declare_data_in_func(*data_id, &mut self.ctx.func);
-                        string_globals.insert(file_name.clone(), gv);
-                    }
-                }
-            }
-        }
 
         // Import only the comptime data globals that this function actually uses
         let mut comptime_globals: HashMap<String, GlobalValue> = HashMap::new();
@@ -1948,6 +2101,9 @@ impl CodeGenerator {
         let preempt_flag = self
             .preempt_flag_data
             .map(|d| self.module.declare_data_in_func(d, &mut self.ctx.func));
+        let stack_limit = self
+            .stack_limit_data
+            .map(|d| self.module.declare_data_in_func(d, &mut self.ctx.func));
 
         // Build the function
         let mut builder = FunctionBuilder::new(
@@ -1957,6 +2113,7 @@ impl CodeGenerator {
             &self.struct_layouts,
             &self.enum_layouts,
             &self.type_names,
+            &self.handle_releases,
             &string_globals,
             &string_header_globals,
             &element_offset_globals,
@@ -1967,14 +2124,15 @@ impl CodeGenerator {
             &self.fn_param_types,
             &self.fn_ret_types,
         )?;
-        if let Some(lm) = &self.line_map {
-            builder.set_line_map(lm);
-        }
+        builder.set_sources(&self.sources);
         builder.set_c_abi_plans(&self.c_abi_plans);
         builder.set_debug_checks(self.build_mode == BuildMode::Debug);
         builder.set_field_types(&self.field_types);
         if let Some(gv) = preempt_flag {
             builder.set_preempt_flag(gv);
+        }
+        if let Some(gv) = stack_limit {
+            builder.set_stack_limit(gv);
         }
         builder.build()?;
 
@@ -1983,9 +2141,26 @@ impl CodeGenerator {
             eprintln!("=== CLIF IR for {} ===\n{}", mir_fn.name, self.ctx.func.display());
         }
 
+        // A frame too big for the room under the stack limit would run its
+        // probes into the guard before its entry check could run. Its body
+        // goes under a name of its own, and the function itself becomes a
+        // trampoline that checks for the whole frame first.
+        let frame: i64 = self.ctx.func.sized_stack_slots.values()
+            .map(|s| s.size as i64 + (1i64 << s.align_shift))
+            .sum();
+        let trampoline = self.stack_limit_data.is_some() && frame > rask_mir::FRAME_CHECKED_IN_PLACE as i64;
+        let body_id = if trampoline {
+            let sig = self.ctx.func.signature.clone();
+            self.module
+                .declare_function(&format!("{}$frame", mir_fn.name), Linkage::Local, &sig)
+                .map_err(|e| CodegenError::CraneliftError(e.to_string()))?
+        } else {
+            func_id
+        };
+
         // Define the function in the module
         self.module
-            .define_function(func_id, &mut self.ctx)
+            .define_function(body_id, &mut self.ctx)
             .map_err(|e| CodegenError::CraneliftError(format!("{:?}", e)))?;
 
         // Collect debug info (srclocs, variables, inline regions)
@@ -1994,17 +2169,81 @@ impl CodeGenerator {
                 let inline_regions = self.inline_regions.get(&mir_fn.name)
                     .map(|v| v.as_slice()).unwrap_or(&[]);
                 if let Some(info) = crate::debug_info::collect_function_debug(
-                    compiled, func_id, mir_fn, inline_regions,
-                    &self.struct_layouts, &self.enum_layouts, self.line_map.as_ref(),
+                    compiled, body_id, mir_fn, inline_regions,
+                    &self.struct_layouts, &self.enum_layouts, self.target(),
                 ) {
                     self.debug_srclocs.push(info);
                 }
             }
         }
 
+        if trampoline {
+            self.define_frame_trampoline(mir_fn, func_id, body_id, frame)?;
+        }
+
         Ok(())
     }
 
+    /// `func_id` as a call to `body_id`, its body, after checking that the
+    /// stack has room for `frame` bytes more than its own.
+    fn define_frame_trampoline(
+        &mut self,
+        mir_fn: &MirFunction,
+        func_id: cranelift_module::FuncId,
+        body_id: cranelift_module::FuncId,
+        frame: i64,
+    ) -> CodegenResult<()> {
+        let (Some(limit_data), Some(&overflow_id)) =
+            (self.stack_limit_data, self.func_ids.get("rask_stack_overflow_at"))
+        else {
+            return Ok(());
+        };
+        let sig = self.ctx.func.signature.clone();
+        self.ctx.clear();
+        self.ctx.func.signature = sig;
+        let limit = self.module.declare_data_in_func(limit_data, &mut self.ctx.func);
+        let overflow = self.module.declare_func_in_func(overflow_id, &mut self.ctx.func);
+        self.ctx.func.stencil.dfg.ext_funcs[overflow].colocated = true;
+        let body = self.module.declare_func_in_func(body_id, &mut self.ctx.func);
+        let location = if mir_fn.span.end == 0 {
+            None
+        } else {
+            self.sources.locate(mir_fn.span).and_then(|(file, line, col)| {
+                let data = *self.string_data.get(file)?;
+                Some((self.module.declare_data_in_func(data, &mut self.ctx.func), line, col))
+            })
+        };
+
+        let mut fb_ctx = cranelift_frontend::FunctionBuilderContext::new();
+        let mut b = cranelift_frontend::FunctionBuilder::new(&mut self.ctx.func, &mut fb_ctx);
+        let entry = b.create_block();
+        b.append_block_params_for_function_params(entry);
+        b.switch_to_block(entry);
+        b.seal_block(entry);
+        let args = b.block_params(entry).to_vec();
+        FunctionBuilder::emit_stack_check(&mut b, limit, overflow, frame, location);
+        let call = b.ins().call(body, &args);
+        let results = b.inst_results(call).to_vec();
+        b.ins().return_(&results);
+        b.finalize();
+
+        self.module
+            .define_function(func_id, &mut self.ctx)
+            .map_err(|e| CodegenError::CraneliftError(format!("{:?}", e)))?;
+        Ok(())
+    }
+
+}
+
+
+/// The `tls_model` setting a target reaches the runtime's stack limit with,
+/// or None where its runtime keeps no stack bounds (stack_guard.c).
+fn stack_check_tls_model(linux: bool, darwin: bool, arch_ok: bool) -> Option<&'static str> {
+    match (linux, darwin, arch_ok) {
+        (true, _, true) => Some("elf_gd"),
+        (_, true, true) => Some("macho"),
+        _ => None,
+    }
 }
 
 /// A MIR function is an empty stub if it has a single block with no
@@ -2022,7 +2261,7 @@ fn is_empty_stub(mir_fn: &MirFunction) -> bool {
 
 /// The string constants a single MIR function names, and the contents of
 /// every string or bytes literal in it (whose static headers it needs).
-fn collect_used_strings(mir_fn: &MirFunction) -> (HashSet<String>, HashSet<Vec<u8>>) {
+fn collect_used_strings(mir_fn: &MirFunction, sources: &SourceMap) -> (HashSet<String>, HashSet<Vec<u8>>) {
     let mut used = UsedConstants::default();
     for block in &mir_fn.blocks {
         for stmt in &block.statements {
@@ -2030,9 +2269,14 @@ fn collect_used_strings(mir_fn: &MirFunction) -> (HashSet<String>, HashSet<Vec<u
         }
         rask_mir::analysis::uses::visit_terminator_operands(&block.terminator, &mut |op| used.add(op));
     }
-    // Source file is used for panic locations
-    if let Some(ref src) = mir_fn.source_file {
-        used.strings.insert(src.clone());
+    // Panic locations name the file each statement came from.
+    for block in &mir_fn.blocks {
+        let spans = block.statements.iter().map(|s| s.span).chain([block.terminator.span]);
+        for span in spans {
+            if let Some(file) = sources.get(span.file_id) {
+                used.strings.insert(file.name.clone());
+            }
+        }
     }
     (used.strings, used.buffers)
 }
@@ -2371,7 +2615,8 @@ impl CodeGenerator {
     }
 
     /// Emit the final object file. Consumes self because finish() takes ownership.
-    pub fn emit_object(self, path: &str) -> CodegenResult<()> {
+    pub fn emit_object(mut self, path: &str) -> CodegenResult<()> {
+        self.define_origin_files()?;
         let mut product = self.module.finish();
 
         // Mach-O objects say which platform they were built for, in an
@@ -2398,7 +2643,11 @@ impl CodeGenerator {
 
         // Emit DWARF debug info in debug builds
         if self.build_mode == BuildMode::Debug {
-            if let (Some(line_map), Some(source_file)) = (&self.line_map, &self.source_file_name) {
+            // One file only: a srcloc keeps a byte offset and not which file
+            // it is in, so a package's line table would mix files up (#2076).
+            let mut files = self.sources.files();
+            if let (Some((_, file)), None) = (files.next(), files.next()) {
+                let (line_map, source_file) = (&file.line_map, file.name.as_str());
                 let resolved = crate::debug_info::resolve_debug_info(
                     &self.debug_srclocs, &product,
                 );
@@ -2537,7 +2786,7 @@ fn collect_element_offsets(
         for stmt in &block.statements {
             // A retained aggregate walks the list its type would describe a
             // container element by.
-            if let rask_mir::MirStmtKind::RcIncContents { local } = &stmt.kind {
+            if let rask_mir::MirStmtKind::RcIncContents { local, .. } = &stmt.kind {
                 let ty = mir_fn
                     .locals
                     .iter()
@@ -2549,17 +2798,18 @@ fn collect_element_offsets(
                 }
                 continue;
             }
-            let rask_mir::MirStmtKind::Call { func, args, .. } = &stmt.kind else { continue };
-            let Some((leading, tags)) = rask_mir::elem_strs::ctor_shape(&func.name) else {
+            if let rask_mir::MirStmtKind::ClosureCreate { captures, .. } = &stmt.kind {
+                if let Some(offs) = crate::elem_offsets::env_owned_offsets(captures, shapes) {
+                    lists.push(offs);
+                }
                 continue;
-            };
-            for i in 0..tags {
-                let Some(rask_mir::MirOperand::Constant(rask_mir::MirConst::Elem(ty))) =
-                    args.get(leading + i)
-                else {
+            }
+            let rask_mir::MirStmtKind::Call { args, .. } = &stmt.kind else { continue };
+            for arg in args {
+                let rask_mir::MirOperand::Constant(rask_mir::MirConst::Elem(ty)) = arg else {
                     continue;
                 };
-                if let Some(offs) = crate::elem_offsets::owned_offsets(ty, shapes) {
+                if let Some(offs) = crate::elem_offsets::container_elem_offsets(ty, shapes) {
                     lists.push(offs);
                 }
             }

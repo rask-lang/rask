@@ -147,7 +147,7 @@ check it, and I'd do all three in order.
 2. **Measured on the corpus.** A MIR pass that, at every call site codegen knows can
    park, lists each live local of pointer type and says which of SG2's five kinds it
    is, or that it can't tell. Run over `tests/suite/` and `examples/` under an
-   environment variable, the way `RASK_LIST_WIDENED_CALLS` works today. The output is
+   environment variable. The output is
    either "every pointer at every park is classified" or the list of ones that aren't,
    each a design question with a file and line. No tool prints this yet; it's the
    first thing to build.

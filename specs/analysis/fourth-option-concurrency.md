@@ -62,6 +62,10 @@ join, single-threaded or internally parallelized by the runtime (disjoint
 fixup sets can go wide). Determinism falls out if buffers apply in task order —
 which matters for `sim` mode (`determinism/D13`).
 
+*Built differently:* task order makes the answer depend on how the work was
+split, so the buffer applies in the order of a key the program gives each
+change, deletes last (`mem.racks/RK18`, RK19).
+
 **3. Sharded worlds (scale-out).** One giant world doesn't parallelize by
 locking harder; it shards. N worlds run on N tasks, fully independent, and
 cross-shard references are `Key<T>` — checked at redemption, because a

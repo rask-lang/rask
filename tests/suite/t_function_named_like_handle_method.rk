@@ -1,0 +1,34 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A program's free function named like a stdlib method doesn't type that
+// method's calls.
+//
+//     func join(n: i64) -> i64 { return n + 1 }
+//     let h = spawn { … }
+//     h.join()!
+//
+// segfaulted natively. `Handle.join`'s declared return names `T`, so lowering
+// fell back to asking for any function called `join` — found the program's,
+// typed the result an `i64`, and the `!` read a tag out of a bare integer.
+
+func join(n: i64) -> i64 {
+    return n + 1
+}
+
+func cancel(s: string) -> string {
+    return "[{s}]"
+}
+
+test "a free join doesn't answer for Handle.join" {
+    using Multitasking {
+        let h = spawn { return join(41) }
+        assert h.join()! == 42
+    }
+}
+
+test "a free cancel doesn't answer for Handle.cancel" {
+    using Multitasking {
+        let h = spawn { return 7 }
+        assert h.cancel()! == 7
+        assert cancel("x") == "[x]"
+    }
+}

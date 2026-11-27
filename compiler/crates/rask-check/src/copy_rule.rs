@@ -44,7 +44,6 @@ impl TypeTable {
     pub fn generic_field_subst(type_params: &[String], args: &[crate::GenericArg]) -> std::collections::HashMap<String, Type> {
         type_params.iter().zip(args.iter()).filter_map(|(name, arg)| match arg {
             crate::GenericArg::Type(t) => Some((name.clone(), (**t).clone())),
-            crate::GenericArg::ConstUsize(_) => None,
         }).collect()
     }
 
@@ -55,7 +54,7 @@ impl TypeTable {
             Type::UnresolvedNamed(name) => subst.get(name).cloned().unwrap_or_else(|| ty.clone()),
             Type::Array { elem, len } => Type::Array {
                 elem: Box::new(Self::substitute_generic_field(elem, subst)),
-                len: *len,
+                len: len.map(|t| Self::substitute_generic_field(t, subst)),
             },
             Type::Tuple(elems) => Type::Tuple(elems.iter().map(|e| Self::substitute_generic_field(e, subst)).collect()),
             ty if ty.is_option() => Type::option(Self::substitute_generic_field(ty.as_option().unwrap(), subst)),
@@ -63,7 +62,6 @@ impl TypeTable {
                 base: *base,
                 args: args.iter().map(|a| match a {
                     crate::GenericArg::Type(t) => crate::GenericArg::Type(Box::new(Self::substitute_generic_field(t, subst))),
-                    other => other.clone(),
                 }).collect(),
             },
             _ => ty.clone(),
@@ -72,7 +70,13 @@ impl TypeTable {
 
     /// Is a value of this type copied rather than moved (mem.value/VS1)?
     pub fn is_copy(&self, ty: &Type) -> bool {
-        self.is_copy_with(ty, &|_| false)
+        self.is_copy_with(ty, &rask_layout::no_params, &|_| false)
+    }
+
+    /// `is_copy` while checking, where the scope says which names are type
+    /// parameters.
+    pub fn is_copy_in_scope(&self, ty: &Type) -> bool {
+        self.is_copy_with(ty, &|n| self.is_type_param_in_scope(n), &|_| false)
     }
 
     /// `is_copy`, with a say for type parameters: inside a generic body the
@@ -80,14 +84,49 @@ impl TypeTable {
     ///
     /// A type the rule can't place counts as a move: the safe direction for
     /// a move analysis.
-    pub fn is_copy_with(&self, ty: &Type, param_is_copy: &dyn Fn(&str) -> bool) -> bool {
-        self.copy_verdict_with(ty, param_is_copy) == CopyVerdict::Copy
+    pub fn is_copy_with(
+        &self,
+        ty: &Type,
+        is_param: rask_layout::IsParam,
+        param_is_copy: &dyn Fn(&str) -> bool,
+    ) -> bool {
+        self.copy_verdict_with(ty, is_param, param_is_copy) == CopyVerdict::Copy
     }
 
     /// The Copy rule, with "couldn't tell" kept apart from "moves". A check
     /// that rejects a program asks for `Move`: rejecting on an inference
     /// variable or a name nothing resolved would reject on a guess.
-    pub fn copy_verdict_with(&self, ty: &Type, param_is_copy: &dyn Fn(&str) -> bool) -> CopyVerdict {
+    pub fn copy_verdict_with(
+        &self,
+        ty: &Type,
+        is_param: rask_layout::IsParam,
+        param_is_copy: &dyn Fn(&str) -> bool,
+    ) -> CopyVerdict {
+        self.copy_verdict_for(ty, is_param, param_is_copy, false)
+    }
+
+    /// `copy_verdict_with` for a check that holds a generic body to what
+    /// `type.generics/G1a` says: a type parameter without a `Copy` bound is
+    /// assumed to move, because the body is written for every `T` and one of
+    /// them is a `Vec`. Plain `copy_verdict_with` leaves such a `T` unknown,
+    /// which is right where the checker asks again per instantiation and
+    /// wrong where nothing does (`let old = v[0]` on a `Vec<T>`, #1865).
+    pub fn copy_verdict_params_move(
+        &self,
+        ty: &Type,
+        is_param: rask_layout::IsParam,
+        param_is_copy: &dyn Fn(&str) -> bool,
+    ) -> CopyVerdict {
+        self.copy_verdict_for(ty, is_param, param_is_copy, true)
+    }
+
+    fn copy_verdict_for(
+        &self,
+        ty: &Type,
+        is_param: rask_layout::IsParam,
+        param_is_copy: &dyn Fn(&str) -> bool,
+        params_move: bool,
+    ) -> CopyVerdict {
         use CopyVerdict::{Copy, Move, Unknown};
         // L1: a linear value is never Copy, whatever its size or its fields.
         // `@resource struct Conn { id: i64 }` is eight bytes of Copy field, so
@@ -97,14 +136,37 @@ impl TypeTable {
         if self.is_linear_value(ty) {
             return Move;
         }
-        let verdict = |t: &Type| self.copy_verdict_with(t, param_is_copy);
-        let size = || self.copy_size(ty);
+        // A sequence is the closure that drives it (type.sequence/SEQ36), and
+        // a closure moves (mem.closures/CV1). Read as an empty struct it was a
+        // zero-byte Copy, so a `map` over a `walk()` held a copy of the walk
+        // that owned nothing and kept nothing the walk pointed at alive.
+        if self.is_lang(ty, rask_types::LangItem::Sequence) || self.is_lang(ty, rask_types::LangItem::SequenceMut) {
+            return Move;
+        }
+        // A `Shared` is a counted reference to its box: a second copy is a
+        // reference the count never took, so `[sh; 2]` released one box
+        // twice. Its declaration has no fields for the rule below to read.
+        if self.shared_args(ty).is_some() {
+            return Move;
+        }
+        // A type that contains itself was rejected for having no size, so
+        // its fields hold a name that never settles; there is nothing to
+        // measure (#1973).
+        if let Type::Named(id) | Type::Generic { base: id, .. } = ty {
+            if self.sizeless.contains(id) {
+                return Move;
+            }
+        }
+        let verdict = |t: &Type| self.copy_verdict_for(t, is_param, param_is_copy, params_move);
+        let size = || self.copy_size(ty, is_param);
         match ty {
             Type::Unit | Type::None | Type::Bool | Type::Char => Copy,
             Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128 | Type::Isize => Copy,
             Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128 | Type::Usize => Copy,
             Type::F32 | Type::F64 => Copy,
             Type::Never => Copy,
+            // A length, standing as a type argument; never a value.
+            Type::Len(_) => Copy,
 
             // String is Copy (immutable, refcounted, 16 bytes — std.strings/S1)
             Type::String => Copy,
@@ -112,7 +174,10 @@ impl TypeTable {
             Type::Bytes => Copy,
 
             // Arrays, tuples and `T?`: Copy when every part is, up to 16 bytes.
-            Type::Array { elem, len: _ } => verdict(elem).within(size()),
+            // A `[T; N]` the body has no number for moves: the body has to be
+            // right at every `N`, and most of them are over 16 bytes.
+            Type::Array { len: rask_types::ArrayLen::Of(_), .. } => Move,
+            Type::Array { elem, .. } => verdict(elem).within(size()),
             Type::Tuple(elems) => CopyVerdict::all(elems.iter().map(verdict)).within(size()),
             ty if ty.is_option() => verdict(ty.as_option().unwrap()).within(size()),
 
@@ -125,7 +190,7 @@ impl TypeTable {
             // A non-generic runtime handle (`Random`, `File`, ...) declares no
             // fields, so the field rule below would call it a zero-byte Copy
             // and two names would free one block.
-            Type::Named(type_id) if rask_stdlib::is_runtime_handle(&self.type_name(*type_id)) => Move,
+            Type::Named(type_id) if self.is_handle(*type_id) => Move,
 
             // User-defined types: need to check size and fields
             Type::Named(type_id) => match self.get(*type_id) {
@@ -166,9 +231,8 @@ impl TypeTable {
             // up being at this instantiation — same rule as a non-generic
             // struct, just substituted first (W4).
             Type::Generic { base, args } => {
-                let base_name = self.type_name(*base);
-                if rask_stdlib::is_runtime_handle(&base_name) {
-                    return if base_name.as_str() == "Link" { Copy } else { Move };
+                if self.is_handle(*base) {
+                    return if self.type_name(*base) == "Link" { Copy } else { Move };
                 }
                 match self.get(*base) {
                     None => Unknown,
@@ -200,7 +264,7 @@ impl TypeTable {
             }
 
             // Function types are Copy (just a pointer)
-            Type::Fn { .. } => Copy,
+            Type::Fn { .. } => Move,
 
             // An inference variable that never settled.
             Type::Var(_) => Unknown,
@@ -216,13 +280,31 @@ impl TypeTable {
             Type::SimdVector { .. } => Move,
 
             // An unresolved `Link` is still a `Link`, however it was spelled.
+            // The channel ends stay unresolved by name (`Sender<T>`), and each
+            // copy of one would be a reference the count never took.
             Type::UnresolvedGeneric { name, .. } => {
-                if name.as_str() == "Link" { Copy } else { Unknown }
+                if name.as_str() == "Link" {
+                    Copy
+                } else if self.resolve_name(name).is_some_and(|id| self.is_handle(id)) {
+                    Move
+                } else {
+                    Unknown
+                }
             }
             // A type parameter is Copy where its bound says so (`T: Copy`);
             // the caller knows which names those are. Without the bound it
-            // may still be Copy at some instantiation.
-            Type::UnresolvedNamed(name) => if param_is_copy(name) { Copy } else { Unknown },
+            // may still be Copy at some instantiation, unless the caller
+            // asked for G1a's reading, where it moves. A name nobody says is
+            // a parameter nothing resolved, and that stays unknown.
+            Type::UnresolvedNamed(name) => {
+                if param_is_copy(name) {
+                    Copy
+                } else if params_move && is_param(name) {
+                    Move
+                } else {
+                    Unknown
+                }
+            }
 
             // Interface objects: never Copy (TR11 — owns heap data)
             Type::InterfaceObject { .. } => Move,

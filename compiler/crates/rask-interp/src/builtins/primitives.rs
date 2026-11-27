@@ -120,10 +120,10 @@ impl Interpreter {
         // HA1: FNV-1a over the value's little-endian bytes at its own width, which
         // is what native's `rask_int_hash` computes and what an int-keyed Map
         // buckets with. The width is part of the answer, so a value that never got
-        // a slot type takes `i32`, the unsuffixed-literal default (L1) and the
+        // a slot type takes `i64`, the unsuffixed-literal default (L1) and the
         // width native gives it.
         if method == "hash" && args.is_empty() {
-            let width = (kind.bits().unwrap_or(32) / 8) as usize;
+            let width = (kind.bits().unwrap_or(64) / 8) as usize;
             let bytes = (a as u64).to_le_bytes();
             let h = crate::builtins::fnv1a(&bytes[..width]);
             return Ok(Value::Int(h as i64, crate::value::IntKind::U64));
@@ -172,7 +172,11 @@ impl Interpreter {
             // width too. A narrow unsigned value has to be cut back to it:
             // `~200u8` is 55, not 18446744073709551415.
             "bit_not" => Ok(Value::Int(kind.wrap(!a), kind)),
-            "abs" => Ok(Value::Int(a.wrapping_abs(), kind)),
+            // A negative value's magnitude is its negation, checked like
+            // `-a`: `i8.MIN` has no positive i8 (OV1). An unsigned value is
+            // its own.
+            "abs" if !kind.is_unsigned() && a < 0 => checked_neg(kind, a).map(|v| Value::Int(v, kind)),
+            "abs" => Ok(Value::Int(a, kind)),
             // AR3: the floored answer, always non-negative — `(-1).mod(10)` is
             // 9, where `-1 % 10` is -1. This is the expression people write by
             // hand as `((a % n) + n) % n`, with a name and one evaluation of
@@ -550,19 +554,21 @@ impl Interpreter {
                 let bits = if a.is_nan() { 0x7ff8_0000_0000_0000 } else { a.to_bits() };
                 Ok(Value::Int(bits as i64, crate::value::IntKind::U64))
             }
-            "pow" | "powf" => { let b = self.expect_float(args, 0)?; Ok(Value::Float(k.round(a.powf(b)), k)) }
-            "powi" => { let b = self.expect_int(args, 0)?; Ok(Value::Float(k.round(a.powi(b as i32)), k)) }
-            "rem" => { let b = self.expect_float(args, 0)?; Ok(Value::Float(k.round(a.rem_euclid(b)), k)) }
-            "sin" => Ok(Value::Float(k.round(a.sin()), k)),
-            "cos" => Ok(Value::Float(k.round(a.cos()), k)),
-            "tan" => Ok(Value::Float(k.round(a.tan()), k)),
-            "asin" => Ok(Value::Float(k.round(a.asin()), k)),
-            "acos" => Ok(Value::Float(k.round(a.acos()), k)),
-            "atan" => Ok(Value::Float(k.round(a.atan()), k)),
-            "ln" => Ok(Value::Float(k.round(a.ln()), k)),
-            "log10" => Ok(Value::Float(k.round(a.log10()), k)),
-            "log2" => Ok(Value::Float(k.round(a.log2()), k)),
-            "exp" => Ok(Value::Float(k.round(a.exp()), k)),
+            "pow" | "powf" => { let b = self.expect_float(args, 0)?; Ok(Value::Float(k.round(crate::float_math::pow(a, b)), k)) }
+            "powi" => { let b = self.expect_int(args, 0)?; Ok(Value::Float(k.round(crate::float_math::powi(a, b as i32)), k)) }
+            // AR2: the remainder takes the dividend's sign, which is C's `fmod`
+            // and native's answer. `rem_euclid` gave -7.25 % 2.0 as 0.75.
+            "rem" => { let b = self.expect_float(args, 0)?; Ok(Value::Float(k.round(a % b), k)) }
+            "sin" => Ok(Value::Float(k.round(crate::float_math::sin(a)), k)),
+            "cos" => Ok(Value::Float(k.round(crate::float_math::cos(a)), k)),
+            "tan" => Ok(Value::Float(k.round(crate::float_math::tan(a)), k)),
+            "asin" => Ok(Value::Float(k.round(crate::float_math::asin(a)), k)),
+            "acos" => Ok(Value::Float(k.round(crate::float_math::acos(a)), k)),
+            "atan" => Ok(Value::Float(k.round(crate::float_math::atan(a)), k)),
+            "ln" => Ok(Value::Float(k.round(crate::float_math::ln(a)), k)),
+            "log10" => Ok(Value::Float(k.round(crate::float_math::log10(a)), k)),
+            "log2" => Ok(Value::Float(k.round(crate::float_math::log2(a)), k)),
+            "exp" => Ok(Value::Float(k.round(crate::float_math::exp(a)), k)),
             "trunc" => Ok(Value::Float(k.round(a.trunc()), k)),
             "fract" => Ok(Value::Float(k.round(a.fract()), k)),
             _ => Err(RuntimeError::NoSuchMethod {

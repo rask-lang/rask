@@ -16,8 +16,8 @@ func main() {
         let count = Shared.local(5)
         let job = make_job(count)
         println("before")
-        let run = job.run
+        let run = job.run.clone()
         let h = spawn { run() }
-        println("{h.join()!}")
+        h.detach()
     }
 }

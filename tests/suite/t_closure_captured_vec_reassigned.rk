@@ -1,0 +1,42 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A Vec that a closure captured, then reassigned. The capture turns the
+// variable into a stack cell the closure reads through. Overwriting it freed
+// nothing (the old Vec leaked), and when the function returned the cell the
+// caller only freed a cell written once, so the second Vec leaked too (#2034).
+// The leak gate runs this file.
+
+func rebuilt(flag: bool) -> Vec<string> {
+    mut v: Vec<string> = Vec.new()
+    v.push("first heap string long enough to allocate somewhere")
+    let f = || v.len()
+    assert f() == 1
+    if flag {
+        v = Vec.new()
+        v.push("second heap string long enough to allocate somewhere")
+        v.push("third")
+    }
+    return v
+}
+
+func kept(flag: bool) -> usize {
+    mut v: Vec<string> = Vec.new()
+    v.push("first heap string long enough to allocate somewhere")
+    let f = || v.len()
+    mut n = f()
+    if flag {
+        v = Vec.new()
+        v.push("second heap string long enough to allocate somewhere")
+        n += v.len()
+    }
+    return n
+}
+
+test "a returned cell hands back whichever Vec it holds" {
+    assert rebuilt(true).len() == 2
+    assert rebuilt(false).len() == 1
+}
+
+test "an overwritten cell frees the Vec it held" {
+    assert kept(true) == 2
+    assert kept(false) == 1
+}

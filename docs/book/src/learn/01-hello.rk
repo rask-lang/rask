@@ -1,0 +1,16 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// 1. Hello
+//
+// A program starts at the function called `main`, and `println` prints a line.
+// Run this one:
+//
+//     rask run 01-hello.rk
+//
+// Then make it greet you instead, and run it again.
+
+func main() {
+    println("Hello, Rask!")
+}
+
+// new: hello

@@ -111,10 +111,10 @@ pub struct AbiField {
     pub is_float: bool,
 }
 
-/// Classify a parameter of declared type `ty`, given the program's struct
-/// layouts. Anything that names no struct is a scalar.
-pub fn classify(conv: CallConv, ty: &rask_ast::ty::TypeExpr, layouts: &[StructLayout]) -> CArg {
-    match ty.name().and_then(|n| struct_named(&n, layouts)) {
+/// Classify a parameter of checked type `ty`, given the program's struct
+/// layouts. A type with no struct layout is a scalar.
+pub fn classify(conv: CallConv, ty: &rask_types::Type, layouts: &[StructLayout]) -> CArg {
+    match rask_layout::struct_for(ty, layouts) {
         Some(layout) => classify_struct(conv, layout, layouts),
         None => CArg::Scalar,
     }
@@ -149,14 +149,15 @@ fn flatten_struct(layout: &StructLayout, base: u32, layouts: &[StructLayout], ou
 fn flatten_field(ty: &rask_types::Type, offset: u32, size: u32, layouts: &[StructLayout], out: &mut Vec<AbiField>) {
     use rask_types::Type as T;
     match ty {
-        T::Array { len: 0, .. } => {}
+        T::Array { len: rask_types::ArrayLen::Known(0), .. } => {}
         T::Array { elem, len } => {
-            let stride = size / *len as u32;
-            for i in 0..*len as u32 {
+            let len = len.known().expect("a C struct field has a numbered length") as u32;
+            let stride = size / len;
+            for i in 0..len {
                 flatten_field(elem, offset + i * stride, stride, layouts, out);
             }
         }
-        T::UnresolvedNamed(name) => match struct_named(name, layouts) {
+        T::Named(_) | T::UnresolvedNamed(_) => match rask_layout::struct_for(ty, layouts) {
             Some(inner) => flatten_struct(inner, offset, layouts, out),
             None => out.push(AbiField { offset, size, is_float: is_float(ty) }),
         },
@@ -164,7 +165,7 @@ fn flatten_field(ty: &rask_types::Type, offset: u32, size: u32, layouts: &[Struc
     }
 }
 
-/// Classify a result of declared type `ty`.
+/// Classify a result of checked type `ty`.
 ///
 /// What fits in registers comes back in the same registers it would go out in
 /// as an argument: System V's eight-byte pieces by class, AAPCS64's
@@ -172,8 +173,8 @@ fn flatten_field(ty: &rask_types::Type, offset: u32, size: u32, layouts: &[Struc
 /// bytes. What doesn't comes back through memory the caller lends, whose
 /// address travels in the convention's own place (`rdi` on System V, `rcx` on
 /// Win64, `x8` on AAPCS64) — the backend's struct-return argument.
-pub fn classify_return(conv: CallConv, ty: &rask_ast::ty::TypeExpr, layouts: &[StructLayout]) -> CRet {
-    match ty.name().and_then(|n| struct_named(&n, layouts)) {
+pub fn classify_return(conv: CallConv, ty: &rask_types::Type, layouts: &[StructLayout]) -> CRet {
+    match rask_layout::struct_for(ty, layouts) {
         Some(layout) => classify_struct_return(conv, layout, layouts),
         None => CRet::Scalar,
     }
@@ -187,10 +188,6 @@ pub fn classify_aggregate_return(conv: CallConv, size: u32, fields: &[AbiField])
         CArg::Scalar => CRet::Scalar,
         CArg::Unsupported => CRet::Unsupported,
     }
-}
-
-fn struct_named<'a>(name: &str, layouts: &'a [StructLayout]) -> Option<&'a StructLayout> {
-    layouts.iter().find(|l| l.name == name)
 }
 
 /// Classify a struct of `size` bytes with these fields.
@@ -271,8 +268,7 @@ fn is_float(ty: &rask_types::Type) -> bool {
     match ty {
         T::F32 | T::F64 => true,
         T::UnresolvedNamed(n) => {
-            let n = rask_ast::primitives::c_type_spelling(n).unwrap_or(n.as_str());
-            matches!(n, "f32" | "f64")
+            matches!(n.as_str(), "f32" | "f64")
         }
         _ => false,
     }
@@ -385,9 +381,23 @@ mod tests {
         assert_eq!(classify_aggregate(CallConv::Win64, 12, &[f(0, 4, false), f(4, 4, false), f(8, 4, false)]), CArg::ByAddress(12));
     }
 
+    /// The declaration a fixture's struct name stands for. Layouts are found
+    /// by identity, so each name gets an id.
+    fn id_of(name: &str) -> rask_types::TypeId {
+        rask_types::TypeId(match name {
+            "Vec2" => 1,
+            "Seg" => 2,
+            "Tri" => 3,
+            "Rect" => 4,
+            "Box" => 5,
+            other => panic!("no id for fixture struct {other}"),
+        })
+    }
+
     fn layout(name: &str, size: u32, fields: &[(&str, rask_types::Type, u32, u32)]) -> StructLayout {
         use rask_layout::FieldLayout;
         StructLayout {
+            key: Some(rask_layout::LayoutKey::of(id_of(name))),
             name: name.to_string(),
             size,
             align: 4,
@@ -413,7 +423,7 @@ mod tests {
     }
 
     fn named(n: &str) -> rask_types::Type {
-        rask_types::Type::UnresolvedNamed(n.to_string())
+        rask_types::Type::Named(id_of(n))
     }
 
     #[test]
@@ -423,7 +433,7 @@ mod tests {
             layout("Vec2", 8, &[("x", T::F32, 0, 4), ("y", T::F32, 4, 4)]),
             layout("Seg", 16, &[("a", named("Vec2"), 0, 8), ("b", named("Vec2"), 8, 8)]),
         ];
-        let seg = rask_ast::ty::TypeExpr::named("Seg");
+        let seg = named("Seg");
         assert_eq!(classify(CallConv::SysV64, &seg, &layouts), regs(&[(0, Vector), (8, Vector)]));
         assert_eq!(
             classify(CallConv::Aapcs64, &seg, &layouts),
@@ -434,9 +444,9 @@ mod tests {
     #[test]
     fn floats_behind_an_array_are_still_floats() {
         use rask_types::Type as T;
-        let arr = T::Array { elem: Box::new(T::F32), len: 2 };
+        let arr = T::Array { elem: Box::new(T::F32), len: 2.into() };
         let layouts = [layout("Tri", 12, &[("v", arr, 0, 8), ("w", T::F32, 8, 4)])];
-        let tri = rask_ast::ty::TypeExpr::named("Tri");
+        let tri = named("Tri");
         assert_eq!(classify(CallConv::SysV64, &tri, &layouts), regs(&[(0, Vector), (8, Vector)]));
         assert_eq!(classify(CallConv::Aapcs64, &tri, &layouts), regs(&[(0, F32), (4, F32), (8, F32)]));
     }
@@ -449,19 +459,19 @@ mod tests {
             layout("Box", 16, &[("origin", named("Vec2"), 0, 8), ("extent", named("Rect"), 8, 8)]),
             layout("Vec2", 8, &[("x", T::F32, 0, 4), ("y", T::F32, 4, 4)]),
         ];
-        let b = rask_ast::ty::TypeExpr::named("Box");
+        let b = named("Box");
         assert_eq!(classify(CallConv::SysV64, &b, &layouts), regs(&[(0, Vector), (8, Int)]));
         assert_eq!(classify(CallConv::Aapcs64, &b, &layouts), regs(&[(0, Int), (8, Int)]));
     }
 
     #[test]
     fn a_scalar_parameter_is_left_alone() {
-        assert_eq!(classify(CallConv::SysV64, &rask_ast::ty::TypeExpr::named("i32"), &[]), CArg::Scalar);
+        assert_eq!(classify(CallConv::SysV64, &rask_types::Type::I32, &[]), CArg::Scalar);
     }
 
     #[test]
     fn a_pointer_to_a_struct_is_still_a_pointer() {
-        let ptr = rask_ast::ty::TypeExpr::RawPtr(Box::new(rask_ast::ty::TypeExpr::named("Rect")));
+        let ptr = rask_types::Type::RawPtr(Box::new(named("Rect")));
         assert_eq!(classify(CallConv::Aapcs64, &ptr, &[]), CArg::Scalar);
     }
 

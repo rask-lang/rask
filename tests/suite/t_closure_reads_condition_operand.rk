@@ -1,0 +1,54 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A closure in an `if` body reading a value the condition compared. `p > 0` is
+// `p.gt(0)`, which reads `p`; it was taken for a write, so the closure's read
+// of `p` (or its `x + 1`, which is `x.add(1)`) was rejected as a conflict.
+
+enum Shape {
+    Circle(i64)
+    Empty
+}
+
+func from_a_parameter(p: i64) -> i64 {
+    mut h: func() -> i64 = || 0
+    if p > 0 {
+        h = || p
+    }
+    return h()
+}
+
+func from_an_arm(o: Shape) -> i64 {
+    mut t = 0
+    match o {
+        Shape.Circle(x) => {
+            mut h: func() -> i64 = || 0
+            if x > 0 {
+                h = || x
+            }
+            t = h()
+        }
+        Shape.Empty => {}
+    }
+    return t
+}
+
+test "a closure reads the parameter its if compared" {
+    assert from_a_parameter(4) == 4
+    assert from_a_parameter(-1) == 0
+}
+
+test "a closure reads an arm binding its if compared" {
+    assert from_an_arm(Shape.Circle(5)) == 5
+    assert from_an_arm(Shape.Empty) == 0
+}
+
+test "a closure adds to a closure parameter its if compared" {
+    let f = |x: i64| -> i64 {
+        mut h: func() -> i64 = || 0
+        if x > 0 {
+            h = || x + 1
+        }
+        return h()
+    }
+    assert f(3) == 4
+}

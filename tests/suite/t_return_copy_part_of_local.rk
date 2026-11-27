@@ -1,0 +1,87 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+// Returning a Copy part of a local (an array element, a field, a tuple slot)
+// hands back a copy, and the local is released whole. Natively the return was
+// read as handing on the whole local, so the parts left behind were never
+// released: `return v[0]` leaked `v[1]`'s string (#2067). Each function
+// calls itself on a branch never taken, which keeps it from being inlined into
+// the test, where the bug didn't show.
+
+struct One {
+    s: string
+}
+
+struct Two {
+    a: One
+    b: One
+}
+
+struct Rows {
+    tag: i64
+    cells: [One; 2]
+}
+
+func long(label: string, n: i64) -> string {
+    return "{label}, long enough to live on the heap {n}"
+}
+
+func from_array(n: i64, second: bool) -> One {
+    if n < 0 {
+        return from_array(n + 1, second)
+    }
+    let v = [One(s: long("first", n)), One(s: long("second", n))]
+    if second {
+        return v[1]
+    }
+    return v[0]
+}
+
+func from_field(n: i64) -> One {
+    if n < 0 {
+        return from_field(n + 1)
+    }
+    let t = Two(a: One(s: long("a", n)), b: One(s: long("b", n)))
+    return t.b
+}
+
+func from_slot(n: i64) -> One {
+    if n < 0 {
+        return from_slot(n + 1)
+    }
+    let t = (One(s: long("left", n)), One(s: long("right", n)))
+    return t.0
+}
+
+func from_nested(n: i64) -> One {
+    if n < 0 {
+        return from_nested(n + 1)
+    }
+    let r = Rows(tag: n, cells: [One(s: long("x", n)), One(s: long("y", n))])
+    return r.cells[1]
+}
+
+func from_param(v: [One; 2]) -> One {
+    return v[1]
+}
+
+test "an array element" {
+    assert from_array(1, false).s == long("first", 1)
+    assert from_array(2, true).s == long("second", 2)
+}
+
+test "a field and a tuple slot" {
+    assert from_field(3).s == long("b", 3)
+    assert from_slot(4).s == long("left", 4)
+}
+
+test "an element of an array field" {
+    assert from_nested(5).s == long("y", 5)
+}
+
+test "an element of a borrowed array, which stays the caller's" {
+    let v = [One(s: long("p", 6)), One(s: long("q", 6))]
+    let got = from_param(v)
+    assert got.s == long("q", 6)
+    assert v[1].s == long("q", 6)
+    assert from_param(v).s == long("q", 6)
+}

@@ -1,0 +1,48 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+import async.JoinError
+import thread.Thread
+
+// A stack overflow is a panic wherever the stack runs out (ctrl.panics/S5).
+// The overflow used to be caught by a fault in the stack's guard, which can
+// land in the middle of C code: an overflow inside `malloc` resumed into a
+// panic that called `malloc` again and waited forever on the lock the
+// interrupted call held. Now every function checks the stack limit when it
+// is entered, so the overflow is always noticed by Rask code. An overflow in
+// an ensure while a panic unwinds is in rask-cli's compile_run.rs: the two
+// backends word its secondary-panic report differently.
+
+func down(n: i64) -> i64 {
+    if n == 0 {
+        return 0
+    }
+    return down(n - 1) + 1
+}
+
+// Every level allocates, so most of the time is spent inside `malloc`.
+func alloc_down(n: i64) -> i64 {
+    mut v: Vec<i64> = Vec.with_capacity(300 + n % 7)
+    v.push(n)
+    return alloc_down(n + 1) + v[0]
+}
+
+func panicked(r: i64 or JoinError) -> bool {
+    match r {
+        i64 as _ => { return false },
+        JoinError.Panicked(_) => { return true },
+        JoinError as _ => { return false },
+    }
+}
+
+test "a thread that overflows while allocating panics" {
+    assert panicked(Thread.spawn { return alloc_down(0) }.join())
+    assert !panicked(Thread.spawn { return down(10) }.join())
+}
+
+test "a task that overflows while allocating panics" {
+    using Multitasking {
+        for _ in 0..3 {
+            assert panicked(spawn { return alloc_down(0) }.join())
+        }
+        assert !panicked(spawn { return down(10) }.join())
+    }
+}

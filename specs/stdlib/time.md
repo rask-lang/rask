@@ -82,7 +82,7 @@ let start = time.Instant.now()
 expensive_operation()
 let elapsed = start.elapsed()
 
-time.sleep(time.Duration.millis(16))
+time.sleep(time.Duration.millis(16))!
 ```
 
 ## Error Messages
@@ -203,7 +203,7 @@ SystemTime implements Sub<SystemTime> {
 import time
 
 let start = time.Instant.now()
-time.sleep(time.Duration.millis(10))
+time.sleep(time.Duration.millis(10))!
 let end = time.Instant.now()
 
 let elapsed = end - start           // Duration

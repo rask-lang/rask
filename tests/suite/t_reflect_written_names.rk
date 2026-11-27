@@ -1,0 +1,40 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Reflection names a type the way the program wrote it. A program type that
+// shares a stdlib name is filed as `ParseError#179` inside the compiler, and
+// `name_of` and `type_name` handed that symbol out; a `T or E` field read as
+// `Result<i64, Shape>`, a spelling the language doesn't have.
+import std.reflect
+
+struct ParseError {
+    at: i64
+}
+
+enum Shape {
+    Dot
+}
+
+struct Report {
+    error: ParseError
+    errors: Vec<ParseError>
+    outcome: i64 or Shape
+}
+
+test "name_of uses the declared name" {
+    assert reflect.name_of<ParseError>() == "ParseError"
+    assert reflect.name_of<Map<string, Vec<ParseError>>>() == "Map<string, Vec<ParseError>>"
+    assert reflect.name_of<i64 or Shape>() == "i64 or Shape"
+}
+
+test "field type names use the declared name and the language's spelling" {
+    mut out = ""
+    comptime for f in reflect.fields<Report>() {
+        out = "{out}{f.type_name};"
+    }
+    assert out == "ParseError;Vec<ParseError>;i64 or Shape;"
+}
+
+test "parameter type names too" {
+    let ps = reflect.params<func(ParseError, i64 or Shape)>()
+    assert ps[0].type_name == "ParseError"
+    assert ps[1].type_name == "i64 or Shape"
+}

@@ -552,11 +552,11 @@ uint64_t rask_sim_random_seed(void) {
 // Where every task's fiber starts. Whoever switched here left the lock
 // released and may have finished, so its stack comes back first.
 static void sim_fiber_main(void *arg) {
-    rask_fiber_started();
+    SimTask *t = (SimTask *)arg;
+    rask_fiber_started(&t->fiber);
     // A fresh fiber stack reads as zeros, which hides a slot codegen forgot to
     // write the way a fresh thread stack does.
     rask_poison_stack();
-    SimTask *t = (SimTask *)arg;
     pthread_mutex_lock(&g.lock);
     reap_locked();
     pthread_mutex_unlock(&g.lock);

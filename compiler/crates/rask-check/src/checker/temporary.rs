@@ -75,7 +75,6 @@ impl TypeChecker {
 
     /// Which of a generic type's parameters its values store.
     fn held_params(&self, base: TypeId) -> Vec<usize> {
-        let name = self.types.type_name(base);
         let (params, fields): (&[String], Vec<&Type>) = match self.types.get(base) {
             Some(TypeDef::Struct { type_params, fields, .. }) => {
                 (type_params, fields.iter().map(|(_, t)| t).collect())
@@ -85,7 +84,7 @@ impl TypeChecker {
             }
             _ => return Vec::new(),
         };
-        if rask_stdlib::is_runtime_handle(&name) {
+        if self.types.is_handle(base) {
             return (0..params.len()).collect();
         }
         params

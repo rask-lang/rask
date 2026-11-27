@@ -1,0 +1,70 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A `for` over a sequence whose body returns one of the function's own structs.
+//
+// The body is a closure that reaches the variable through a borrowed capture.
+// Read through one, the struct counted as lent, so the answer was a copy with
+// references of its own, while the function, told `return bg` moved it,
+// released nothing: the original's strings and vectors leaked. The strings are
+// long enough to live on the heap.
+
+import sequence.Sequence
+
+func nums() -> Sequence<i64> {
+    return |yield| {
+        for i in 0..4 {
+            if !yield(i) { return }
+        }
+    }
+}
+
+func long(n: i64) -> string {
+    return "long-heap-string-number-{n}-padded-past-inline"
+}
+
+struct Pair { a: string, b: string }
+struct Big { a: string, v: Vec<string>, n: i64 }
+
+func ret_pair(k: i64) -> Pair {
+    let p = Pair(a: long(1), b: long(2))
+    for a in nums() {
+        if a == k { return p }
+    }
+    return Pair(a: long(3), b: long(4))
+}
+
+func ret_big(k: i64) -> Big {
+    let bg = Big(a: long(5), v: [long(6)], n: 5)
+    for a in nums() {
+        if a == k { return bg }
+    }
+    return Big(a: long(7), v: [], n: 0)
+}
+
+func ret_big_nested(k: i64) -> Big {
+    let bg = Big(a: long(8), v: [long(9)], n: 8)
+    for a in nums() {
+        for b in nums() {
+            if a == k && b == 3 { return bg }
+        }
+    }
+    return Big(a: long(10), v: [], n: 0)
+}
+
+test "a struct of strings returned from the loop" {
+    assert ret_pair(2).b == long(2)
+    assert ret_pair(9).b == long(4)
+}
+
+test "a struct holding a vector returned from the loop" {
+    let hit = ret_big(1)
+    assert hit.v[0] == long(6)
+    assert ret_big(9).v.len() == 0
+}
+
+test "a struct returned from a nested loop" {
+    let hit = ret_big_nested(2)
+    assert hit.a == long(8)
+    assert hit.v[0] == long(9)
+    assert ret_big_nested(9).n == 0
+}

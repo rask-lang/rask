@@ -254,7 +254,7 @@ impl IntervalAnalysis {
                     MirStmtKind::Call { dst: Some(dst), func: fref, args } => {
                         let _ = dst;
                         // Vec_index(collection, index) — the indexing operation
-                        if fref.name == "Vec_index" {
+                        if fref.name == crate::runtime_ops::VEC_GET {
                             if args.len() >= 2 {
                                 if let (Some(MirOperand::Local(collection)), Some(idx_op)) =
                                     (args.first(), args.get(1))
@@ -687,10 +687,9 @@ fn length_is_stable(func: &MirFunction, collection: LocalId) -> bool {
                 | MirStmtKind::UnwindArm { .. } => {}
                 // Reading the length or an element, or the free at the end.
                 MirStmtKind::Call { func: fref, .. }
-                    if matches!(
-                        fref.name.as_str(),
-                        "Vec_len" | "Array_len" | "Vec_index" | "Vec_get_unchecked" | "Vec_free"
-                    ) => {}
+                    if matches!(fref.name.as_str(), "Vec_len" | "Array_len" | "rask_vec_free")
+                        || fref.name == crate::runtime_ops::VEC_GET
+                        || fref.name == crate::runtime_ops::VEC_GET_UNCHECKED => {}
                 _ => {
                     if stmt_uses(stmt).iter().any(|l| aliases.contains(l)) {
                         return false;
@@ -790,7 +789,7 @@ mod tests {
         MirStmt {
             kind: MirStmtKind::Call {
                 dst: Some(local(dst)),
-                func: FunctionRef::internal("Vec_index".into()),
+                func: crate::runtime_ops::vec_index(),
                 args: vec![
                     MirOperand::Local(local(vec_local)),
                     MirOperand::Local(local(idx_local)),
@@ -886,8 +885,10 @@ mod tests {
             ],
             entry_block: block(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
-            source_file: None,
+            param_modes: Vec::new(),
+            item_mode_from_body: false,
         };
 
         let Some((analysis, ops, results)) = analyze(&func) else {
@@ -948,7 +949,7 @@ mod tests {
                 MirBlock {
                     id: block(2),
                     statements: vec![
-                        call_vec_get(4, 0, 2),     // result = Vec_index(vec, i)
+                        call_vec_get(4, 0, 2),     // result = vec[i]
                         assign_add(5, 2, 1),       // i_next = i + 1
                         MirStmt {                   // i = i_next (copy)
                             kind: MirStmtKind::Assign {
@@ -969,8 +970,10 @@ mod tests {
             ],
             entry_block: block(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
-            source_file: None,
+            param_modes: Vec::new(),
+            item_mode_from_body: false,
         };
 
         let Some((analysis, ops, results)) = analyze(&func) else {
@@ -1055,8 +1058,10 @@ mod tests {
             ],
             entry_block: block(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
-            source_file: None,
+            param_modes: Vec::new(),
+            item_mode_from_body: false,
         }
     }
 
@@ -1100,8 +1105,10 @@ mod tests {
             ],
             entry_block: block(0),
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
-            source_file: None,
+            param_modes: Vec::new(),
+            item_mode_from_body: false,
         };
         assert!(analyze(&func).is_none(), "IV1: no analysis without indexing");
     }
@@ -1126,8 +1133,10 @@ mod tests {
                 }],
                 entry_block: block(0),
                 is_extern_c: false,
+                span: rask_ast::Span::new(0, 0),
                 inline_hint: false,
-                source_file: None,
+                param_modes: Vec::new(),
+                item_mode_from_body: false,
             };
             func
         }).unwrap();

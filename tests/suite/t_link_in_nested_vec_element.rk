@@ -1,0 +1,88 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+// A link written into a field of a vector element is recorded against the
+// vector, which moves the element when it regrows and frees it when it dies.
+// The record used to name the field's address, so `delete` afterwards read
+// and wrote freed memory, and after a regrow the moved element's link was
+// never cleared (#2069). A `with` binding to the element is the same store.
+
+import memory.Link
+import memory.Rack
+
+struct Leaf {
+    id: i32
+}
+
+struct Tree {
+    at: Link<Leaf>?
+    kids: Vec<Tree>
+}
+
+func make(a: Link<Leaf>, d: i64) -> Tree {
+    mut t = Tree(at: a, kids: Vec.new())
+    for _i in 0..d {
+        mut v: Vec<Tree> = Vec.new()
+        v.push(t)
+        t = Tree(at: a, kids: v)
+    }
+    return t
+}
+
+func poke(a: Link<Leaf>, b: Link<Leaf>) {
+    mut c2 = make(a, 2)
+    c2.kids[0].kids[0].at = b
+}
+
+test "the vector holding the element is gone before the delete" {
+    mut rack: Rack<Leaf> = Rack.new()
+    let a = rack.insert(Leaf(id: 1))
+    let b = rack.insert(Leaf(id: 2))
+    poke(a, b)
+    rack.delete(b)
+    assert rack.len() == 1
+}
+
+test "the vector regrows after the store" {
+    mut rack: Rack<Leaf> = Rack.new()
+    let a = rack.insert(Leaf(id: 1))
+    let b = rack.insert(Leaf(id: 2))
+    mut t = make(a, 1)
+    t.kids[0].at = b
+    for _i in 0..40 {
+        t.kids.push(Tree(at: a, kids: Vec.new()))
+    }
+    rack.delete(b)
+    assert t.kids[0].at is none
+    assert t.kids[1].at?
+}
+
+test "a map value's field" {
+    mut rack: Rack<Leaf> = Rack.new()
+    let a = rack.insert(Leaf(id: 1))
+    let b = rack.insert(Leaf(id: 2))
+    mut m: Map<i64, Tree> = Map.new()
+    m.insert(1, Tree(at: a, kids: Vec.new()))
+    m[1].at = b
+    for i in 2..60 {
+        m.insert(i, Tree(at: a, kids: Vec.new()))
+    }
+    rack.delete(b)
+    assert m[1].at is none
+    assert m[2].at?
+}
+
+test "through a with binding to the element" {
+    mut rack: Rack<Leaf> = Rack.new()
+    let a = rack.insert(Leaf(id: 1))
+    let b = rack.insert(Leaf(id: 2))
+    mut t = make(a, 1)
+    with t.kids[0] as k {
+        k.at = b
+    }
+    for _i in 0..40 {
+        t.kids.push(Tree(at: a, kids: Vec.new()))
+    }
+    rack.delete(b)
+    assert t.kids[0].at is none
+    assert t.kids[1].at?
+}

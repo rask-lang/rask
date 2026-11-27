@@ -5,6 +5,16 @@
 // width, and the checker types each call from that declaration. The answers
 // have to come back at the receiver's own width on both backends.
 
+import async.JoinError
+
+func panicked<T>(r: T or JoinError) -> bool {
+    match r {
+        T as _ => { return false },
+        JoinError.Panicked(_) => { return true },
+        JoinError as _ => { return false },
+    }
+}
+
 test "integer methods keep the receiver's width" {
     let a: i32 = -7
     let b: i32 = a.abs()
@@ -48,6 +58,24 @@ test "128-bit integers" {
     let u: u128 = 1
     let top: u128 = u.rotate_right(1)
     assert(top.leading_zeros() == 0)
+}
+
+// A width's minimum has no positive counterpart, so its `abs` overflows and
+// panics like `-x` (type.overflow/OV1). Natively `i8` and `i64` wrapped back
+// to the negative value; the interpreter printed 128 for an `i8`.
+test "abs of a width's minimum panics" {
+    using Multitasking {
+        let small: i8 = -128
+        assert panicked(spawn { return small.abs() }.join())
+        let mid: i32 = -2147483648
+        assert panicked(spawn { return mid.abs() }.join())
+        let word: i64 = -9223372036854775807 - 1
+        assert panicked(spawn { return word.abs() }.join())
+        let wide: i128 = -170141183460469231731687303715884105727 - 1
+        assert panicked(spawn { return wide.abs() }.join())
+        let ok: i8 = -127
+        assert(ok.abs() == 127)
+    }
 }
 
 test "float methods" {

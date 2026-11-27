@@ -264,11 +264,11 @@ public func apply_to_shape(shape: Ty, c: Change, first: bool) -> Ty or SchemaErr
 
 public func change_path(c: Change) -> Vec<Step> {
     return match c {
-        Change.Add(at, ..) => at,
-        Change.Remove(at, ..) => at,
-        Change.Rename(at, ..) => at,
-        Change.Retype(at, ..) => at,
-        Change.Default(at, ..) => at,
+        Change.Add(at, ..) => at.clone(),
+        Change.Remove(at, ..) => at.clone(),
+        Change.Rename(at, ..) => at.clone(),
+        Change.Retype(at, ..) => at.clone(),
+        Change.Default(at, ..) => at.clone(),
     }
 }
 
@@ -409,7 +409,7 @@ func edit_fields(fields: Vec<Field>, c: Change, first: bool) -> Vec<Field> or Sc
             }
             mut out = fields.clone()
             let old = out[i.wrap<i64>()].clone()
-            out.set(i.wrap<i64>(), Field(name: to, ..old))
+            out[i.wrap<i64>()] = Field(name: to, ..old)
             return out
         }
         Change.Retype(name, from, to, ..) => {
@@ -419,7 +419,7 @@ func edit_fields(fields: Vec<Field>, c: Change, first: bool) -> Vec<Field> or Sc
             }
             mut out = fields.clone()
             let old = out[i.wrap<i64>()].clone()
-            out.set(i.wrap<i64>(), Field(ty: to.clone(), ..old))
+            out[i.wrap<i64>()] = Field(ty: to.clone(), ..old)
             return out
         }
         Change.Default(name, from, to, ..) => {
@@ -430,7 +430,7 @@ func edit_fields(fields: Vec<Field>, c: Change, first: bool) -> Vec<Field> or Sc
                 return SchemaError(what: "{where_}: Default `{name}` from {render_value(from)}, but it is {render_value(current)}")
             }
             mut out = fields.clone()
-            out.set(i.wrap<i64>(), Field(default: to.clone(), ..old))
+            out[i.wrap<i64>()] = Field(default: to.clone(), ..old)
             return out
         }
     }

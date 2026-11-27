@@ -31,7 +31,7 @@ struct Ratchet {
 const RATCHETS: &[Ratchet] = &[
     Ratchet {
         name: "name sniffs in the back half",
-        today: 29,
+        today: 0,
         target: 0,
         why: "MIR or codegen asked a callee's or type's spelling what it is. The \
               checker resolved that call; carry its identity on the call \
@@ -40,7 +40,7 @@ const RATCHETS: &[Ratchet] = &[
     },
     Ratchet {
         name: "method names the checker answers by hand",
-        today: 26,
+        today: 0,
         target: 0,
         why: "a method answered by matching its name as a string literal in the \
               checker instead of reading its declaration in stdlib/*.rk, or the \
@@ -49,7 +49,7 @@ const RATCHETS: &[Ratchet] = &[
     },
     Ratchet {
         name: "`_Any` wildcards in the checker",
-        today: 4,
+        today: 0,
         target: 0,
         why: "a module function typed through a wildcard that skips argument \
               checks (rask-lang/rask#1561)",
@@ -57,25 +57,17 @@ const RATCHETS: &[Ratchet] = &[
     },
     Ratchet {
         name: "MIR metadata rows keyed by spelling",
-        today: 89,
+        today: 0,
         target: 0,
-        why: "a row in INTERNAL_SPELLINGS, TRANSFERS_OUT or BORROWS_ITS_CALLBACK: a \
-              fact about a call stated by its name instead of on its \
-              declaration (rask-lang/rask#1564, #1565)",
+        why: "a row in INTERNAL_SPELLINGS or BORROWS_ITS_CALLBACK: a \
+              fact about a call stated by its name instead of on the call \
+              (`FunctionRef::shape`) or its declaration (rask-lang/rask#1564, #1565)",
         count: mir_metadata_rows,
     },
     Ratchet {
-        name: "hand-written codegen dispatch entries",
-        today: 238,
-        target: 0,
-        why: "an `internal_entries` row in rask-codegen/src/dispatch.rs: a runtime \
-              call whose shape lowering didn't state (rask-lang/rask#1555, #1565)",
-        count: codegen_internal_entries,
-    },
-    Ratchet {
         name: "pass entry point variants",
-        today: 13,
-        target: 7,
+        today: 4,
+        target: 4,
         why: "a second public entry to a pass (`_with_stdlib`, `_package`, …). \
               One entry per pass, taking an input struct, called only by the \
               driver (rask-lang/rask#1568)",
@@ -83,7 +75,7 @@ const RATCHETS: &[Ratchet] = &[
     },
     Ratchet {
         name: "interpreters run without the driver's setup",
-        today: 3,
+        today: 0,
         target: 0,
         why: "a tool built its own interpreter instead of asking the driver for \
               one; the copies skip steps the driver does (rask-lang/rask#1568)",
@@ -91,19 +83,12 @@ const RATCHETS: &[Ratchet] = &[
     },
     Ratchet {
         name: "size or alignment computed outside the layout model",
-        today: 5,
+        today: 0,
         target: 0,
-        why: "a second answer to how wide a value is; one layout crate answers \
-              everyone (rask-lang/rask#1567)",
+        why: "a second answer to how wide a value is, or where a part sits; \
+              `rask_layout` answers everyone, with the target handed down \
+              (rask-lang/rask#1567)",
         count: size_models,
-    },
-    Ratchet {
-        name: "readers of the pointer-width global",
-        today: 12,
-        target: 0,
-        why: "the target's pointer width read from a process global instead of \
-              the config the driver hands down (rask-lang/rask#1568)",
-        count: pointer_bits_readers,
     },
 ];
 
@@ -171,7 +156,6 @@ fn checker_method_arms(crates: &Path) -> Vec<String> {
     const NOT_METHOD_TABLES: &[(&str, &str)] = &[
         ("removed_string_method", "names methods `string` doesn't have, to say why"),
         ("closest_type_name", "other languages' type names, to suggest Rask's"),
-        ("simd_elem_type", "SIMD type names, not methods"),
         ("check_call", "builtin free functions (`panic`, `todo`), not methods"),
     ];
     let mut out = Vec::new();
@@ -214,7 +198,7 @@ fn any_wildcards(crates: &Path) -> Vec<String> {
 }
 
 fn mir_metadata_rows(crates: &Path) -> Vec<String> {
-    let tables = ["INTERNAL_SPELLINGS", "TRANSFERS_OUT", "BORROWS_ITS_CALLBACK"];
+    let tables = ["INTERNAL_SPELLINGS", "BORROWS_ITS_CALLBACK"];
     let mut rows = Vec::new();
     let mut inside: Option<&str> = None;
     for (rel, line, code) in source_lines(crates, &["rask-stdlib/src/mir_metadata.rs"], &[]) {
@@ -226,24 +210,6 @@ fn mir_metadata_rows(crates: &Path) -> Vec<String> {
             }
         } else if let Some(table) = tables.iter().find(|t| code.starts_with(&format!("const {t}:"))) {
             inside = Some(table);
-        }
-    }
-    rows
-}
-
-fn codegen_internal_entries(crates: &Path) -> Vec<String> {
-    let mut rows = Vec::new();
-    let mut inside = false;
-    for (rel, line, code) in source_lines(crates, &["rask-codegen/src/dispatch.rs"], &[]) {
-        if inside {
-            if code.starts_with('}') {
-                break;
-            }
-            if code.contains("StdlibEntry {") || code.contains("StdlibEntry::simple(") {
-                rows.push(site(&rel, line, &code));
-            }
-        } else if code.contains("fn internal_entries(") {
-            inside = true;
         }
     }
     rows
@@ -304,24 +270,19 @@ fn interpreter_setups(crates: &Path) -> Vec<String> {
 }
 
 fn size_models(crates: &Path) -> Vec<String> {
-    let dirs = ["rask-mir/src/types.rs", "rask-codegen/src/builder.rs", "rask-mono/src", "rask-check/src/copy_rule.rs"];
-    let names = ["fn size(", "fn align(", "fn slot_size(", "fn named_layout_size(", "fn struct_elem_size(", "fn value_size("];
-    source_lines(crates, &dirs, &[])
+    let dirs = [
+        "rask-mir/src", "rask-codegen/src", "rask-mono/src", "rask-check/src", "rask-compiler/src",
+        "rask-interp/src", "rask-miri/src",
+    ];
+    // `FieldAccess::size` says how a field is read, not how wide a type is.
+    let skip = ["rask-mir/src/operand.rs"];
+    let names = [
+        "fn size(", "fn align(", "fn slot_size(", "fn word(", "fn payload_offset(", "fn wrapper_layout(",
+        "fn tuple_offsets(", "fn named_layout_size(", "fn value_size(", "fn struct_elem_size(",
+    ];
+    source_lines(crates, &dirs, &skip)
         .into_iter()
         .filter(|(_, _, code)| names.iter().any(|n| code.contains(n)))
-        .map(|(rel, line, code)| site(&rel, line, &code))
-        .collect()
-}
-
-fn pointer_bits_readers(crates: &Path) -> Vec<String> {
-    let mut files = Vec::new();
-    for entry in fs::read_dir(crates).unwrap().flatten() {
-        files.push(format!("{}/src", entry.file_name().to_string_lossy()));
-    }
-    let dirs: Vec<&str> = files.iter().map(String::as_str).collect();
-    source_lines(crates, &dirs, &["rask-ast/src/primitives.rs"])
-        .into_iter()
-        .filter(|(_, _, code)| code.contains("pointer_bits()"))
         .map(|(rel, line, code)| site(&rel, line, &code))
         .collect()
 }

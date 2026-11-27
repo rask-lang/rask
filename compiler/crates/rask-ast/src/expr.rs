@@ -234,6 +234,9 @@ pub enum ExprKind {
         /// `Thread` / `ThreadPool` as written, so the name resolves like any
         /// other use of the type. `None` for a green task.
         receiver: Option<Box<Expr>>,
+        /// Written between the name and the block:
+        /// `ThreadPool.spawn(requires_pool: false) { … }`.
+        args: Vec<CallArg>,
         body: Box<Expr>,
     },
     /// Type cast (x as i32) — lossless widening only (type.primitives CV1).
@@ -358,6 +361,10 @@ impl CatchClause {
         self.binder == "_"
     }
 }
+
+/// What a `with` panics with when two of its bindings name the same element
+/// (`with v[i] as a, v[j] as b` with `i == j`). Both backends use it.
+pub const WITH_ALIAS_PANIC: &str = "with...as: duplicate key in same collection (aliasing)";
 
 /// A `with...as` binding: source expression and binding name.
 /// Bindings are mutable — `with` exists for multi-statement mutation; reads
@@ -598,9 +605,28 @@ pub struct MatchArm {
     pub body: Box<Expr>,
 }
 
-/// A pattern for matching.
+/// A pattern for matching. The id is what the checker files its answer
+/// under: which variant a `Name(…)` pattern names, whether a bare name is a
+/// variant or a binding, which side of a `T or E` a pattern takes.
 #[derive(Debug, Clone)]
-pub enum Pattern {
+pub struct Pattern {
+    pub id: NodeId,
+    pub kind: PatternKind,
+    /// The source the pattern was written in. A pattern a pass builds has
+    /// the span of what it stands in for, or `Span::new(0, 0)` when nothing
+    /// was written.
+    pub span: Span,
+}
+
+impl Pattern {
+    pub fn new(id: NodeId, kind: PatternKind, span: Span) -> Self {
+        Self { id, kind, span }
+    }
+}
+
+/// What a pattern matches.
+#[derive(Debug, Clone)]
+pub enum PatternKind {
     /// Wildcard `_`
     Wildcard,
     /// Binding `name`
@@ -648,29 +674,29 @@ impl Pattern {
     }
 
     fn collect_bound_names<'a>(&'a self, out: &mut Vec<&'a str>) {
-        match self {
-            Pattern::Ident(name) => out.push(name.as_str()),
-            Pattern::Constructor { fields, .. } => {
+        match &self.kind {
+            PatternKind::Ident(name) => out.push(name.as_str()),
+            PatternKind::Constructor { fields, .. } => {
                 for f in fields {
                     f.collect_bound_names(out);
                 }
             }
-            Pattern::Struct { fields, .. } => {
+            PatternKind::Struct { fields, .. } => {
                 for (_, pat) in fields {
                     pat.collect_bound_names(out);
                 }
             }
-            Pattern::Tuple(pats) | Pattern::Or(pats) => {
+            PatternKind::Tuple(pats) | PatternKind::Or(pats) => {
                 for p in pats {
                     p.collect_bound_names(out);
                 }
             }
-            Pattern::TypePat { binding, .. } => {
+            PatternKind::TypePat { binding, .. } => {
                 if let Some(name) = binding {
                     out.push(name.as_str());
                 }
             }
-            Pattern::Wildcard | Pattern::Literal(_) | Pattern::Range { .. } => {}
+            PatternKind::Wildcard | PatternKind::Literal(_) | PatternKind::Range { .. } => {}
         }
     }
 }

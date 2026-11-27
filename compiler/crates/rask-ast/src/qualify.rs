@@ -12,7 +12,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::decl::{Decl, DeclKind};
-use crate::expr::{Expr, ExprKind, Pattern};
+use crate::expr::{Expr, ExprKind, Pattern, PatternKind};
 use crate::rewrite::{self, Rewrite};
 
 /// Rename every declaration in `map` and every reference to it in `decls`.
@@ -91,16 +91,16 @@ impl Rewrite for Qualifier<'_> {
         // the enum is a declaration. A bare `Red` is a variant of whatever the
         // scrutinee is, and there is nothing here to rename. A fieldless
         // `Colour.Red` parses as an identifier pattern, dot included.
-        let name = match p {
-            Pattern::Constructor { name, .. } | Pattern::Struct { name, .. } => name,
-            Pattern::Ident(name) if name.contains('.') => name,
-            Pattern::Wildcard
-            | Pattern::Ident(_)
-            | Pattern::Literal(_)
-            | Pattern::Tuple(_)
-            | Pattern::Or(_)
-            | Pattern::Range { .. }
-            | Pattern::TypePat { .. } => return,
+        let name = match &mut p.kind {
+            PatternKind::Constructor { name, .. } | PatternKind::Struct { name, .. } => name,
+            PatternKind::Ident(name) if name.contains('.') => name,
+            PatternKind::Wildcard
+            | PatternKind::Ident(_)
+            | PatternKind::Literal(_)
+            | PatternKind::Tuple(_)
+            | PatternKind::Or(_)
+            | PatternKind::Range { .. }
+            | PatternKind::TypePat { .. } => return,
         };
         rename_path_head(name, |n| self.map.get(n).cloned());
     }

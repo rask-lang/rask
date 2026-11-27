@@ -2,6 +2,7 @@
 //! Rask CLI - REPL and file runner.
 
 mod commands;
+mod flags;
 mod help;
 mod output;
 
@@ -28,8 +29,8 @@ pub(crate) enum Format {
 /// program. Without it a diagnostic raised inside one carried a stdlib byte
 /// offset and got resolved against the user's file — `examples/19_unsafe.rk:152`
 /// on a 151-line program, quoting a blank line.
-fn sources_for(files: &[(String, &str)]) -> rask_diagnostics::source_map::SourceMap {
-    let mut map = rask_diagnostics::source_map::SourceMap::new();
+fn sources_for(files: &[(String, &str)]) -> rask_ast::SourceMap {
+    let mut map = rask_ast::SourceMap::new();
     for (i, (name, text)) in files.iter().enumerate() {
         map.insert_at(i as u16, name.clone(), *text);
     }
@@ -81,6 +82,28 @@ pub(crate) fn show_diagnostic_multi(
     }
 }
 
+/// Show an error the program hit while running, placed by its span's file id:
+/// in a package, a panic may come from any of its files.
+pub(crate) fn show_runtime_diagnostic(
+    diagnostic: &Diagnostic,
+    source_files: &[(std::path::PathBuf, String)],
+    format: Format,
+) {
+    match format {
+        Format::Human => show_diagnostic_multi(diagnostic, source_files),
+        Format::Json => {
+            let named: Vec<(String, &str)> = source_files
+                .iter()
+                .map(|(path, text)| (path.to_string_lossy().into_owned(), text.as_str()))
+                .collect();
+            let sources = sources_for(&named);
+            let head = named.first().map(|(name, _)| name.as_str()).unwrap_or("");
+            let report = json::to_json_report(std::slice::from_ref(diagnostic), &sources, head, "runtime");
+            println!("{}", json::to_json_string(&report));
+        }
+    }
+}
+
 /// Show multiple diagnostics. In JSON mode, emit a single structured report.
 pub(crate) fn show_diagnostics(
     diagnostics: &[Diagnostic],
@@ -96,7 +119,8 @@ pub(crate) fn show_diagnostics(
             }
         }
         Format::Json => {
-            let report = json::to_json_report(diagnostics, source, file, phase);
+            let sources = sources_for(&[(file.to_string(), source)]);
+            let report = json::to_json_report(diagnostics, &sources, file, phase);
             println!("{}", json::to_json_string(&report));
         }
     }
@@ -112,6 +136,14 @@ pub(crate) fn display_pipeline_output<T>(
     source_files: &[(std::path::PathBuf, String)],
     format: Format,
 ) {
+    // Built once, and only when there's a JSON report to place spans in.
+    let sources = (matches!(format, Format::Json) && !output.diagnostics.is_empty()).then(|| {
+        let named: Vec<(String, &str)> = source_files
+            .iter()
+            .map(|(p, text)| (p.to_string_lossy().into_owned(), text.as_str()))
+            .collect();
+        sources_for(&named)
+    });
     for d in &output.diagnostics {
         match format {
             Format::Human => {
@@ -125,10 +157,10 @@ pub(crate) fn display_pipeline_output<T>(
             }
             Format::Json => {
                 // For JSON, emit each diagnostic individually for now
-                if let Some((path, source)) = source_files.first() {
+                if let (Some((path, _)), Some(sources)) = (source_files.first(), &sources) {
                     let report = json::to_json_report(
                         std::slice::from_ref(d),
-                        source,
+                        sources,
                         &path.to_string_lossy(),
                         "check",
                     );
@@ -234,6 +266,13 @@ pub(crate) fn run_check(
 }
 
 fn main() {
+    // Rust ignores SIGPIPE, so `rask check x | head` turned the closed pipe
+    // into a panic from `println!` (exit 101). A command-line tool should end
+    // quietly when its reader goes away, like every other one in the pipe.
+    #[cfg(unix)]
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+    }
     output::init();
     rask_manifest::install();
     let args: Vec<String> = env::args().collect();
@@ -296,6 +335,8 @@ fn main() {
         return;
     }
 
+    flags::refuse_unknown_flags(&cmd_args);
+
     match cmd_args[1] {
         "lex" => {
             if cmd_args.contains(&"--help") || cmd_args.contains(&"-h") {
@@ -338,17 +379,10 @@ fn main() {
                 help::print_typecheck_help();
                 return;
             }
-            if cmd_args.len() < 3 {
-                eprintln!("{}: missing file or directory argument", output::error_label());
-                eprintln!("{}: {} {} {}", "Usage".yellow(), output::command("rask"), output::command("typecheck"), output::arg("<file.rk | dir>"));
-                process::exit(1);
-            }
             let verbose = cmd_args.contains(&"--verbose") || cmd_args.contains(&"-v");
             let claims = cmd_args.contains(&"--claims") || claims_opts.strict || claims_opts.extra_seeds > 0;
-            let Some(target) = find_positional_arg(&cmd_args, 2, &[]) else {
-                eprintln!("{}: missing file or directory argument", output::error_label());
-                process::exit(1);
-            };
+            // Like `run` and `build`: no path means the package you're in.
+            let target = find_positional_arg(&cmd_args, 2, &[]).unwrap_or(".");
             commands::analysis::cmd_typecheck(target, format, verbose);
             // `rask check` doesn't generate code, so it only type-checks the
             // claims; `--claims` builds and runs them (type.claims/R1).
@@ -417,6 +451,10 @@ fn main() {
             // a file, so `--interp` decides first. Checking for a directory
             // first sent `rask run <dir> --interp` native without a word.
             let interp = cmd_args.contains(&"--interp");
+            if interp && cmd_args.contains(&"--native") {
+                eprintln!("{}: `--interp` and `--native` choose different backends; pass one", output::error_label());
+                process::exit(1);
+            }
             if interp {
                 let mut program_args: Vec<String> = vec![file.to_string()];
                 program_args.extend(prog_args.iter().map(|s| s.to_string()));
@@ -481,11 +519,6 @@ fn main() {
                 help::print_test_help();
                 return;
             }
-            if cmd_args.len() < 3 {
-                eprintln!("{}: missing file or directory argument", output::error_label());
-                eprintln!("{}: {} {} {} {}", "Usage".yellow(), output::command("rask"), output::command("test"), output::arg("<file.rk | dir>"), output::arg("[-f pattern]"));
-                process::exit(1);
-            }
             let filter = extract_filter(&cmd_args);
             let sim = cmd_args.contains(&"--sim");
             // These three were accepted and did nothing — `--verbose` had
@@ -534,14 +567,8 @@ fn main() {
                     }
                 }
             }
-            let file_arg = find_positional_arg(&cmd_args, 2, &["-f", "--seed", "--seeds", "--max-steps", "--trace", "--target"]);
-            let file = match file_arg {
-                Some(f) => f,
-                None => {
-                    eprintln!("{}: missing file or directory argument", output::error_label());
-                    process::exit(1);
-                }
-            };
+            let file = find_positional_arg(&cmd_args, 2, &["-f", "--seed", "--seeds", "--max-steps", "--trace", "--target"])
+                .unwrap_or(".");
             let interp = cmd_args.contains(&"--interp");
             let target = extract_flag_value(&cmd_args, "--target");
             if cmd_args.contains(&"--dump-mir") {
@@ -931,8 +958,20 @@ fn main() {
             }
             let check_only = cmd_args.iter().any(|a| *a == "--check");
             let write_in_place = cmd_args.iter().any(|a| *a == "-w" || *a == "--write");
-            let paths: Vec<&str> = cmd_args.iter().skip(2).copied().filter(|a| !a.starts_with('-')).collect();
+            let mut paths: Vec<&str> = cmd_args.iter().skip(2).copied().filter(|a| !a.starts_with('-')).collect();
+            // `-w` and `--check` act on files, so with none named they act on
+            // the package you're in. Plain `rask fmt` filters stdin, and at a
+            // terminal that would sit waiting for input nobody means to type.
+            if paths.is_empty() && (check_only || write_in_place) {
+                paths.push(".");
+            }
             if paths.is_empty() {
+                use std::io::IsTerminal;
+                if std::io::stdin().is_terminal() {
+                    eprintln!("{}: `rask fmt` with no file formats stdin", output::error_label());
+                    eprintln!("{}: {} to format this package in place", "Usage".yellow(), output::command("rask fmt -w"));
+                    process::exit(1);
+                }
                 commands::tools::cmd_fmt_stdin();
             } else {
                 commands::tools::cmd_fmt(&paths, check_only, write_in_place);
@@ -968,20 +1007,8 @@ fn main() {
                 help::print_api_help();
                 return;
             }
-            if cmd_args.len() < 3 {
-                eprintln!("{}: missing file or directory argument", output::error_label());
-                eprintln!("{}: {} {} {}", "Usage".yellow(), output::command("rask"), output::command("api"), output::arg("<file.rk | dir>"));
-                process::exit(1);
-            }
             let show_all = cmd_args.iter().any(|a| *a == "--all");
-            let file_arg = find_positional_arg(&cmd_args, 2, &[]);
-            let file = match file_arg {
-                Some(f) => f,
-                None => {
-                    eprintln!("{}: missing file or directory argument", output::error_label());
-                    process::exit(1);
-                }
-            };
+            let file = find_positional_arg(&cmd_args, 2, &[]).unwrap_or(".");
             commands::tools::cmd_api(file, format, show_all);
         }
         "lint" => {
@@ -989,21 +1016,9 @@ fn main() {
                 help::print_lint_help();
                 return;
             }
-            if cmd_args.len() < 3 {
-                eprintln!("{}: missing file or directory argument", output::error_label());
-                eprintln!("{}: {} {} {}", "Usage".yellow(), output::command("rask"), output::command("lint"), output::arg("<file.rk | dir>"));
-                process::exit(1);
-            }
             let rules = extract_repeated_flag(&cmd_args, "--rule");
             let excludes = extract_repeated_flag(&cmd_args, "--exclude");
-            let file_arg = find_positional_arg(&cmd_args, 2, &["--rule", "--exclude"]);
-            let file = match file_arg {
-                Some(f) => f,
-                None => {
-                    eprintln!("{}: missing file or directory argument", output::error_label());
-                    process::exit(1);
-                }
-            };
+            let file = find_positional_arg(&cmd_args, 2, &["--rule", "--exclude"]).unwrap_or(".");
             commands::tools::cmd_lint(file, format, rules, excludes);
         }
         "explain" => {

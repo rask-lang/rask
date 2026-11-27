@@ -1,0 +1,41 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A pattern binding that reuses a name has its own type, not the type of the
+// binding it shadows.
+//
+// Lowering asked the outer binding's recorded type before the checker's type
+// at the use, so `xs` inside `for xs in ranges` still read as the outer
+// `Vec<i64>`. The iterator chain then walked a Range with `Vec_len` and
+// element loads, and native segfaulted.
+
+test "a for binding shadowing a Vec is iterated as what it holds" {
+    let xs = Vec.from([10, 20, 30])
+    assert xs.len() == 3
+    mut total = 0
+    for xs in Vec.from([0..3]) {
+        total += xs.map(|x| x * 2).count()
+    }
+    assert total == 3
+}
+
+test "an if-present binding shadowing a Vec is iterated as a Map" {
+    let xs = Vec.from([10, 20, 30])
+    assert xs.len() == 3
+    mut m = Map<string, i64>.new()
+    m.insert("a", 5)
+    m.insert("b", 6)
+    let maybe: Map<string, i64>? = m
+    if maybe? as xs {
+        assert xs.filter(|kv| kv.1 > 5).count() == 1
+    } else {
+        assert false
+    }
+}
+
+test "sorting an element of a Vec of Vecs sorts by the inner element type" {
+    mut nested = Vec<Vec<f32>>.new()
+    nested.push(Vec.from([1.25f32, 0.5f32]))
+    nested[0].sort()
+    assert nested[0][0] == 0.5f32
+    assert nested[0][1] == 1.25f32
+}

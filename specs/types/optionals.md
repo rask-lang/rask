@@ -54,7 +54,7 @@ cache = get_current_user()               // User widens at assignment
 | **OPT10: Optional chain** | `x?.field` | accesses `field` when present, else `none`; short-circuits. The result is one layer: a field whose own type is `T?` comes through as `T?`, not `T??` — both absences mean the same thing to the caller, so there's nothing to keep apart |
 | **OPT11: Other branch** | `x ?? <expr>` | unwraps `x` if present, else evaluates the right side — lazily, only on the miss. The right side is a **value** (a `T` collapses to `T`, another `T?` stays wrapped and keeps chaining, `type.errors/ER14a`) **or any divergence** — `return`, `break`, `continue`, `panic(…)`. `x ?? return Token.Eof`, `x ?? break` are ordinary |
 | — | `try x` | unwraps if present, else `none` **leaves to the caller** — so the enclosing function must return a `T?` (`type.errors/ER16`, ER47). The shape rule is the whole constraint; there is no clause |
-| **OPT13: Force** | `x!` | extracts if present; panics with `"none"` or `x! "msg"` custom message |
+| **OPT13: Force** | `x!` | extracts if present; panics with `"none"` or `x! "msg"` custom message. What it extracts is read out, as with OPT19, so `x!.f = v` is a compile error (E0985) unless a link sits between the `!` and the field: `node!.health = 0` on a `Link<T>?` writes the node |
 | **OPT15: Absent check** | `x is none` | tests the absent branch — a plain bool, like every other `is` test. Presence is `x?`; there is no `is not none`. `x == none` still typechecks as ordinary equality on a zero-field type, but lints to `is none` (`tool.lint/I5`) |
 | **OPT16: `!x?` forbidden** | `!x?` is a parse error suggesting `x is none` |
 
@@ -116,7 +116,7 @@ The `?`-tests don't narrow — they're plain booleans. Getting at the payload is
 
 | Rule | Description |
 |------|-------------|
-| **OPT19: `if x? as v` binds** | Binds a let `v: T` in the block. Works on any scrutinee — `let`, `mut`, field paths, call results — with no restrictions to remember. `v` is the payload read out of the scrutinee, so a write to it is rejected (E0372): the write would land on the copy. Get at the value inside the block, assemble a whole one, assign it back outside — or give the type a `mutate self` method and call it on the original. This is not the `with` rule: a `with` binding *is* mutable (mem.borrowing/W5) because the block writes back at exit, and `as` names a payload in one case and what a `Shared` holds in the other |
+| **OPT19: `if x? as v` binds** | Binds a let `v: T` in the block. Works on any scrutinee — `let`, `mut`, field paths, call results — with no restrictions to remember. `v` is the payload read out of the scrutinee, so a write to it is rejected (E0372): the write would land on the copy. Get at the value inside the block, assemble a whole one, assign it back outside — or give the type a `mutate self` method and call it on the original. This is not the `with` rule: a `with` binding *is* mutable (mem.borrowing/W5) because it is the element itself, and `as` names a payload in one case and what a `Shared` holds in the other |
 | **OPT18/OPT20/OPT23 deleted** | `if x?` used to narrow `x` in place on let scrutinees (with an else-narrow, and a rule excluding `mut`-rooted paths). Cut: it was a second spelling of test-and-use next to `as v`, and its restrictions were the seam. `x?` is now side-effect-free |
 | **OPT21 deleted (with ER21/ER24)** | Early-exit narrowing after a diverging `is none` arm is gone along with all scrutinee narrowing (`type.errors`, Conditions and Binding). `is none` is a plain bool; the guard is `?? <exit>`, and it binds |
 | **OPT22: Compounds are just bools** | `x? && y?` is a legal bool expression; to use the payloads, bind — nested `if x? as a`, or restructure |
@@ -295,6 +295,7 @@ No optional-specific equality rule.
 | `try x` in a `U?`-returning function | ER16/ER47 | Legal — propagates `none`; the ordinary spelling |
 | `try x` in a `T or E`-returning function | ER47 | Compile error — `none` doesn't fit an error branch. Use `x ?? return <error>` |
 | `use(x)` inside `if x? { … }` | OPT19 | Compile error — `x` is still `T?`; the test doesn't narrow. FIX writes `if x? as v` |
+| `x.field` on `T?`, inside `if x?` or not | OPT19 | Compile error — the optional has no fields; `x?.field` reads it when present, `if x? as v` binds it |
 | `if compute()? as v` | OPT19 | Legal — binds the call result at the check site, no intermediate binding |
 | `!x?` syntax | OPT16 | Parse error suggesting `x is none` |
 | Linear `?.field` | OPT25 | Compile error — cannot partially move |

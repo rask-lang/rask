@@ -1,6 +1,7 @@
 ---
 paths:
   - "**/*.md"
+  - "docs/**"
 ---
 
 # Writing docs
@@ -41,3 +42,17 @@ mostly didn't apply. Lead with the half they already understand. Same reason a
 page says what you get before what it costs.
 
 **Natural language OK:** contractions, slight grammar quirks, Scandinavian English flow.
+
+## Check what the page claims
+
+**A sentence about Rask is a claim. Check it like code.** An unchecked one ships
+sounding exactly as sure as a checked one. Three got onto the website in an
+afternoon: "pre-0.1" with v0.2.0 released, "Rask doesn't offer pointer-level
+control" when `unsafe` gives raw pointers, and a headline that described Go.
+Version and status against `git tag` and the releases; what the language has
+against `specs/`; a claim that Rask *differs* names what the other language
+actually does. If the sentence is equally true of Go, it isn't about Rask.
+
+**Verify the path, not only the artifact.** The front page's code came out
+unstyled while the deployed file was byte-perfect: the URL was stale. Ask how
+the thing reaches a reader, and check that.

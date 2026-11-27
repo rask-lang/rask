@@ -24,6 +24,7 @@ public func cancelled() -> bool {}
 /// compile error.
 @resource
 @handle
+@lang(task_handle)
 public struct Handle<T> {
 }
 
@@ -130,16 +131,33 @@ extend Handles<T> {
 
 extend Channel<T> {
     /// Create a buffered channel with the given capacity.
+    ///
+    /// The channel knows what an element owns, so a value nobody received is
+    /// dropped with the channel.
     @native("rask_channel_new_ptr")
+    @runtime_args(size(T), capacity, desc(T))
     public func buffered(capacity: u64) -> (Sender<T>, Receiver<T>) {}
 
     /// Create an unbuffered (synchronous) channel.
-    @native("rask_channel_new_ptr")
+    @native("rask_channel_new_unbuffered")
+    @runtime_args(size(T), desc(T))
     public func unbuffered() -> (Sender<T>, Receiver<T>) {}
 }
 
-@handle
+// Dropping an end closes it; the channel goes with the second one. A sender
+// is counted, so a copy of one takes a reference of its own (`Sender.clone`).
+@handle(release: "rask_sender_drop_i64")
 public struct Sender<T> { }
+
+// A closure carries only what it can clone (mem.closures/CV4), so a sender
+// has to say it is Cloneable for a callback to carry one.
+Sender<T> implements Cloneable {
+    /// Another sender on the same channel. The channel stays open until every
+    /// sender has been dropped or closed. Declared here because a handle that
+    /// frees itself can be cloned only by saying how.
+    @native("rask_sender_clone_i64")
+    public func clone(self) -> Sender<T> {}
+}
 
 extend Sender<T> {
     /// Send a value. Pauses/blocks if buffer full.
@@ -147,9 +165,11 @@ extend Sender<T> {
     @blocks
     public func send(self, take value: T) -> void or SendError {}
 
-    /// Non-blocking send. Returns error if full or closed.
-    @native("rask_channel_try_send_ptr", returns: negative)
-    public func try_send(self, value: T) -> void or TrySendError {}
+    /// Non-blocking send. A channel that is full or closed doesn't take the
+    /// value; it comes back inside the error, so the caller can retry it, spill
+    /// it or drop it.
+    @native("rask_channel_try_send_ptr")
+    public func try_send(self, take value: T) -> void or TrySendError<T> {}
 
     /// Explicitly close this end. Consumes the sender: closing *is* dropping
     /// it, and the channel closes when the last sender goes. Declaring it
@@ -159,17 +179,22 @@ extend Sender<T> {
     public func close(take self) -> void or CloseError {}
 }
 
-@handle
+@handle(release: "rask_recver_drop_i64")
 public struct Receiver<T> { }
 
 extend Receiver<T> {
-    /// Receive a value. Pauses/blocks if buffer empty.
+    /// Receive a value. Pauses/blocks if buffer empty. The value leaves the
+    /// channel: the caller owns it, it is no view into the receiver.
     @native("rask_channel_recv_into")
+    @moves_out
+    @runtime_args(size(T))
     @blocks
     public func receive(self) -> T or ReceiveError {}
 
     /// Non-blocking receive. Returns error if empty or closed.
     @native("rask_channel_try_recv_into")
+    @moves_out
+    @runtime_args(size(T))
     public func try_receive(self) -> T or TryReceiveError {}
 
     /// Explicitly close this end. Consumes the receiver, for the same reason
@@ -214,7 +239,7 @@ extend CloseError {
     }
 }
 
-public enum TrySendError {
+public enum TrySendError<T> {
     Full(T)
     Closed(T)
 }

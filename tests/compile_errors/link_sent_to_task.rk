@@ -42,7 +42,9 @@ func main() {
             let _ = tx.send(a)
             return t
         }
-        let v = h.join() catch e => { return }
+        // Handed on, so the task carries what it names; joined here it would
+        // borrow the frame, links and all (conc.async/B1).
+        h.detach()
 
         // A closure named first is checked the same as one written in place.
         let bump = || {
@@ -50,8 +52,9 @@ func main() {
             a.id += 1
             return a.id
         }
+        // Handed on, so the task carries what it names.
         let hb = spawn { bump() }
-        let vb = hb.join() catch e => { return }
+        hb.detach()
 
         // Still fine: a copy of a field, and the whole rack.
         let id = a.id
@@ -62,6 +65,6 @@ func main() {
         }
         let w = h2.join() catch e => { return }
         let _ = rx
-        println("{v} {vb} {w}")
+        println("{w}")
     }
 }

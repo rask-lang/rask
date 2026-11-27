@@ -8,7 +8,7 @@ fn mono(src: &str) -> rask_mono::MonoProgram {
     let config = CompilerConfig::new(CfgConfig::from_host("debug", vec![]));
     let out = check_source("layouts.rk", src, &config);
     let checked = out.result.unwrap_or_else(|| panic!("didn't check: {:?}", out.diagnostics));
-    rask_mono::monomorphize(&checked.typed, &checked.decls).expect("monomorphizes")
+    rask_mono::monomorphize(&checked.typed, &checked.decls, Default::default(), rask_mono::Roots::Main).expect("monomorphizes")
 }
 
 fn declared_enums(m: &rask_mono::MonoProgram) -> Vec<&str> {

@@ -157,6 +157,9 @@ pub enum TypeDef {
         is_unsafe: bool,
         /// G1: `duck interface` — satisfied by shape, no declaration needed.
         is_duck: bool,
+        /// `@by_shape`: a stdlib interface a type has by having its methods,
+        /// with no `implements` block (`Error`, `Displayable`).
+        by_shape: bool,
     },
     Union {
         name: String,
@@ -215,6 +218,15 @@ pub fn conformance_symbol(base: &str, package: &str) -> String {
 }
 
 impl TypeDef {
+    /// The attributes written on the declaration. Interfaces, primitives and
+    /// newtypes carry none here.
+    pub fn attrs(&self) -> &[Attr] {
+        match self {
+            TypeDef::Struct { attrs, .. } | TypeDef::Enum { attrs, .. } => attrs,
+            _ => &[],
+        }
+    }
+
     pub fn name(&self) -> &str {
         match self {
             TypeDef::Struct { name, .. }
@@ -279,9 +291,20 @@ impl TypeDef {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ErrorWrap {
     /// The boundary enum the enclosing function returns as its error.
+    pub enum_ty: Type,
+    /// Its name, which the interpreter files enum values under.
     pub enum_name: String,
     /// The variant that carries the source error as its only payload.
     pub variant: String,
+}
+
+/// A checked function's signature: each parameter's name and type, `self`
+/// included, and what it returns. A generic function's mention its type
+/// parameters; an instantiation substitutes its arguments in.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FnSignature {
+    pub params: Vec<(String, Type)>,
+    pub ret: Type,
 }
 
 /// Method signature.
@@ -322,6 +345,10 @@ pub struct MethodSig {
     pub owner_bounds: Vec<(String, Vec<rask_ast::ty::TypeExpr>)>,
     /// Who wrote it, and whether it has a body.
     pub origin: MethodOrigin,
+    /// The declaration a call to it runs. `None` for an interface's
+    /// requirement and for a signature the checker supplied, which have no
+    /// declaration of their own.
+    pub decl: Option<rask_ast::NodeId>,
     /// What it does to its receiver's size, as declared (`@grows`, `@shrinks`).
     pub effect: rask_ast::decl::DeclaredEffects,
     /// Declared `public`. A checker-supplied signature has no declaration and
@@ -379,4 +406,25 @@ impl TypeBinding {
     pub fn new(param: impl Into<String>, ty: Type) -> Self {
         Self { param: param.into(), ty }
     }
+}
+
+/// What the checker resolved a pattern to, filed under the pattern's id.
+/// Later passes read this instead of resolving the pattern's spelling again.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PatternTarget {
+    /// A variant of the enum `enum_id`, by its declared name. The scrutinee is
+    /// that enum, or a `T or E` with that enum as one branch.
+    Variant { enum_id: crate::TypeId, variant: String },
+    /// A bare name that binds the value it matches.
+    Binding,
+    /// A type test on a `T or E`: whether the type it names is the error
+    /// side (`true`) or the success side, and, when the error side is a
+    /// union, which member it names. `member` indexes the union's members in
+    /// their canonical order, the order the union type itself keeps.
+    ///
+    /// A success side that is itself a `T or E` (`f64 or Bad` coming back
+    /// from a join as `(f64 or Bad) or JoinError`) holds the leaves of that
+    /// result too. `inside` is the test one result down, and then `err` is
+    /// `false`: the value has to be on the success side to be in there.
+    Side { err: bool, member: Option<usize>, inside: Option<Box<PatternTarget>> },
 }

@@ -46,6 +46,7 @@ impl Layer {
 /// test checks.
 const LAYERS: &[(&str, Layer)] = &[
     ("ops.rk", Layer::Core),
+    ("cmp.rk", Layer::Core),
     ("option.rk", Layer::Core),
     ("result.rk", Layer::Core),
     ("int.rk", Layer::Core),
@@ -91,6 +92,8 @@ const LAYERS: &[(&str, Layer)] = &[
     ("async.rk", Layer::Std),
     ("sim.rk", Layer::Std),
     ("claims.rk", Layer::Std),
+    // A build script's API: only the interpreter runs build scripts.
+    ("build.rk", Layer::Std),
     ("std.rk", Layer::Std),
 ];
 
@@ -182,11 +185,6 @@ fn stub_file_id(index: usize) -> u16 {
 /// resolver's symbol for `cancelled` and the checker's declaration of it agree on
 /// which node they mean. They used to be six separate parses, each numbering
 /// from its own base.
-/// Every stdlib declaration as parsed, in source order.
-pub(crate) fn parsed_decls() -> impl Iterator<Item = &'static Decl> {
-    parsed_stdlib().iter().flatten().flatten()
-}
-
 fn parsed_stdlib() -> &'static [Option<Vec<Decl>>] {
     static PARSED: OnceLock<Vec<Option<Vec<Decl>>>> = OnceLock::new();
     PARSED.get_or_init(|| {
@@ -195,6 +193,11 @@ fn parsed_stdlib() -> &'static [Option<Vec<Decl>>] {
             .map(|i| parse_stub(i, &mut next_id))
             .collect()
     })
+}
+
+/// Every stub file's parsed declarations, in file order.
+pub(crate) fn parsed_decls() -> impl Iterator<Item = &'static Decl> {
+    parsed_stdlib().iter().flatten().flatten()
 }
 
 /// One stub file's parsed declarations by its name (`"ops.rk"`), or `None` if
@@ -326,6 +329,10 @@ impl rask_ast::rewrite::Rewrite for AsMember<'_> {
         }
     }
 
+    fn func(&mut self, f: &mut rask_ast::decl::FnDecl) {
+        f.id = self.fresh();
+    }
+
     fn ty(&mut self, t: &mut TypeExpr) {
         let (member, bytes) = (self.member, self.bytes);
         *t = t.substitute(&|n| match n {
@@ -407,6 +414,7 @@ const STUB_SOURCES: &[(&str, &str)] = &[
     ("http.rk", include_str!("../../../../stdlib/http.rk")),
     ("sim.rk", include_str!("../../../../stdlib/sim.rk")),
     ("claims.rk", include_str!("../../../../stdlib/claims.rk")),
+    ("build.rk", include_str!("../../../../stdlib/build.rk")),
     ("async.rk", include_str!("../../../../stdlib/async.rk")),
     ("thread.rk", include_str!("../../../../stdlib/thread.rk")),
     ("sync.rk", include_str!("../../../../stdlib/sync.rk")),
@@ -422,6 +430,7 @@ const STUB_SOURCES: &[(&str, &str)] = &[
     // OR2: the operator interfaces. After num.rk so the numeric roster is in
     // place; nothing here has a body, so load order is otherwise free.
     ("ops.rk", include_str!("../../../../stdlib/ops.rk")),
+    ("cmp.rk", include_str!("../../../../stdlib/cmp.rk")),
     ("reflect.rk", include_str!("../../../../stdlib/reflect.rk")),
     ("fmt.rk", include_str!("../../../../stdlib/fmt.rk")),
     ("encoding.rk", include_str!("../../../../stdlib/encoding.rk")),
@@ -438,6 +447,8 @@ pub struct CompilableStdlib {
 #[derive(Debug, Clone)]
 pub struct MethodStub {
     pub name: String,
+    /// The declaration's id, the same one the compiled stdlib carries.
+    pub decl: rask_ast::NodeId,
     /// Visible to a program: declared `public`, or part of a conformance,
     /// whose methods carry the conformance's visibility (TV1). A stdlib module
     /// is its own package, so a member without it is the module's own and a
@@ -496,10 +507,19 @@ pub struct MethodStub {
     /// its call from this declaration (`rask_codegen::dispatch`). An empty
     /// symbol means `@native` alone, for the ones lowered by another route.
     pub native: Option<NativeDecl>,
+    /// Declared `@runtime_args(…)`: the C call's arguments, when it takes
+    /// more than the program wrote (`RuntimeArg`).
+    pub runtime_args: Option<Vec<RuntimeArg>>,
     /// The type parameters in scope: the extended type's (`T` of `extend
-    /// Vec<T>`) and the method's own. A parameter or return of one of these
+    /// Vec<T>`) and the method's own, explicit or a single letter (PC1). A
+    /// parameter or return of one of these
     /// is a value of a width only the call site knows.
     pub type_params: Vec<String>,
+    /// How many of `type_params`, from the front, are the extended type's
+    /// rather than the method's own. `Vec.get -> T?` answers with one of the
+    /// receiver's elements; `Vec.fold -> U` answers with whatever the callback
+    /// built, which points into nothing.
+    pub extended_type_params: usize,
     /// The stub has a Rask body — the implementation is right here, and both
     /// backends run it. The registry couldn't answer this before, which meant
     /// nothing could distinguish "written in Rask" from "declared only".
@@ -597,6 +617,138 @@ impl NativeDecl {
     }
 }
 
+/// One argument of the C call behind a stdlib declaration, in the order the
+/// runtime takes them: `@runtime_args(size(T), n, desc(T))` on
+/// `Vec.with_capacity(n: usize)`.
+///
+/// Most arguments are the ones the program wrote. The others are facts about
+/// a type parameter that only the call site knows, and the C side can't ask
+/// for: how wide one element is, what it owns. The receiver is not listed; it
+/// is always the first argument.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuntimeArg {
+    /// The declared parameter at `index` (receiver not counted). `holds` is
+    /// the extended type's parameter it is declared as, when it is a bare one
+    /// (`value: T` on `Shared<T>.new`): the value goes in as that type, an
+    /// `i64` into a `Shared<i64?>` wrapped.
+    Param { index: usize, holds: Option<usize> },
+    /// A fact about one of the extended type's parameters, or a pair of them.
+    Of(TypeFact, FactOf),
+}
+
+/// What a fact is about: the extended type's parameter at this index (`T` of
+/// `extend Vec<T>` is 0), or the tuple of two of them, `(K, V)`, which is how
+/// a map hands out its entries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FactOf {
+    Param(usize),
+    Pair(usize, usize),
+}
+
+/// What a call site tells the runtime about one type parameter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TypeFact {
+    /// `size(T)`: bytes per value.
+    Size,
+    /// `align(T)`: the value's alignment.
+    Align,
+    /// `desc(T)`: what one value owns, which codegen expands into the offsets
+    /// the runtime frees through.
+    Desc,
+    /// `atomic_kind(T)`: how an atomic cell does arithmetic on its payload.
+    AtomicKind,
+    /// `hash_eq(K)`: the addresses of a key's own `hash` and `eq`, or nothing
+    /// when the key has none.
+    HashEq,
+    /// `value_offset((K, V))`: where the second field of the pair starts.
+    ValueOffset,
+}
+
+impl RuntimeArg {
+    /// Read `@runtime_args(…)`. Every declared parameter appears once, and
+    /// every fact names one of the extended type's parameters; the stdlib is
+    /// the only writer, so anything else is a typo in `stdlib/*.rk`.
+    fn list_from_attr(
+        a: &rask_ast::attr::Attr,
+        owner: &str,
+        params: &[(String, TypeExpr)],
+        type_params: &[String],
+        extended: usize,
+    ) -> Vec<RuntimeArg> {
+        use rask_ast::expr::ExprKind;
+        let bad = |what: String| -> ! { panic!("`@{a}` on `{owner}`: {what}") };
+        let mut out = Vec::new();
+        for arg in a.args.iter().flatten() {
+            if arg.label.is_some() {
+                bad("takes no labels".into());
+            }
+            let Some(e) = arg.value.expr() else { bad("takes expressions".into()) };
+            match &e.kind {
+                ExprKind::Ident(name) => match params.iter().position(|(p, _)| p == name) {
+                    Some(index) => {
+                        let holds = match &params[index].1 {
+                            TypeExpr::Named { path, args } if path.len() == 1 && args.is_empty() => {
+                                type_params[..extended].iter().position(|t| *t == path[0])
+                            }
+                            _ => None,
+                        };
+                        out.push(RuntimeArg::Param { index, holds });
+                    }
+                    None => bad(format!("`{name}` is not one of its parameters")),
+                },
+                ExprKind::Call { func, args } => {
+                    let fact = match &func.kind {
+                        ExprKind::Ident(f) => match f.as_str() {
+                            "size" => TypeFact::Size,
+                            "align" => TypeFact::Align,
+                            "desc" => TypeFact::Desc,
+                            "atomic_kind" => TypeFact::AtomicKind,
+                            "hash_eq" => TypeFact::HashEq,
+                            "value_offset" => TypeFact::ValueOffset,
+                            other => bad(format!("`{other}` is not a type fact")),
+                        },
+                        _ => bad("a fact is `name(T)`".into()),
+                    };
+                    let param = |e: &rask_ast::expr::Expr| -> usize {
+                        let ExprKind::Ident(tp) = &e.kind else {
+                            bad("a fact names a type parameter or a pair of them".into())
+                        };
+                        type_params[..extended].iter().position(|p| p == tp).unwrap_or_else(|| {
+                            bad(format!("`{tp}` is not a parameter of the extended type"))
+                        })
+                    };
+                    let of = match args.as_slice() {
+                        [one] => match &one.expr.kind {
+                            ExprKind::Tuple(pair) if pair.len() == 2 => {
+                                FactOf::Pair(param(&pair[0]), param(&pair[1]))
+                            }
+                            _ => FactOf::Param(param(&one.expr)),
+                        },
+                        _ => bad("a fact takes one type parameter or one pair".into()),
+                    };
+                    match (fact, of) {
+                        (TypeFact::ValueOffset, FactOf::Param(_)) => {
+                            bad("`value_offset` is about a pair, `(K, V)`".into())
+                        }
+                        (TypeFact::AtomicKind | TypeFact::HashEq, FactOf::Pair(..)) => {
+                            bad("this fact is about one type parameter".into())
+                        }
+                        _ => out.push(RuntimeArg::Of(fact, of)),
+                    }
+                }
+                _ => bad("takes parameter names and `fact(T)`".into()),
+            }
+        }
+        for i in 0..params.len() {
+            let n = out.iter().filter(|r| matches!(r, RuntimeArg::Param { index, .. } if *index == i)).count();
+            if n != 1 {
+                bad(format!("parameter `{}` is listed {n} times, not once", params[i].0));
+            }
+        }
+        out
+    }
+}
+
 /// A stub parameter's declared mode.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct StubParamMode {
@@ -611,6 +763,8 @@ pub struct FunctionStub {
     pub name: String,
     /// The declaration this came from, as every other stdlib accessor numbers it.
     pub decl_id: rask_ast::NodeId,
+    /// The function's own id (`FnDecl::id`), the one its body is compiled under.
+    pub fn_id: rask_ast::NodeId,
     /// Parameters with no written type are left out of a stub's signature:
     /// every stdlib parameter is annotated.
     pub params: Vec<(String, TypeExpr)>,
@@ -630,6 +784,10 @@ pub struct FunctionStub {
     pub span: Span,
     /// `@io`, `@waits` and the rest, as on a method.
     pub effects: rask_ast::decl::DeclaredEffects,
+    /// The function's type parameters, explicit or a single letter (PC1).
+    pub type_params: Vec<String>,
+    /// `@native("sym")`: the C function a call runs, as on a method.
+    pub native: Option<NativeDecl>,
 }
 
 /// Registry of all stub data, lazily loaded.
@@ -796,7 +954,7 @@ impl StubRegistry {
             }
         }
 
-        let desugared = rask_desugar::desugar_stdlib(&mut decls);
+        let desugared = rask_desugar::desugar(&mut decls, rask_desugar::Desugaring::Stdlib);
         lift_inline_methods(&mut decls);
         CompilableStdlib { decls, operator_calls: desugared.operator_calls }
     }
@@ -884,7 +1042,7 @@ impl StubRegistry {
                 });
                 entry.is_private |= !s.is_pub;
                 for m in &s.methods {
-                    entry.methods.push(fn_to_method_stub(m, filename, source, decl_span, false, &declared_type(&s.name, &s.type_params)));
+                    entry.methods.push(fn_to_method_stub(m, filename, source, decl_span, false, &declared_type(&s.name, rask_ast::type_params::struct_type_param_names(s))));
                 }
             }
             DeclKind::Enum(e) => {
@@ -900,7 +1058,7 @@ impl StubRegistry {
                 });
                 entry.is_private |= !e.is_pub;
                 for m in &e.methods {
-                    entry.methods.push(fn_to_method_stub(m, filename, source, decl_span, false, &declared_type(&e.name, &e.type_params)));
+                    entry.methods.push(fn_to_method_stub(m, filename, source, decl_span, false, &declared_type(&e.name, rask_ast::type_params::enum_type_param_names(e))));
                 }
             }
             DeclKind::Impl(i) => {
@@ -940,6 +1098,7 @@ impl StubRegistry {
                 self.functions.push(FunctionStub {
                     name: f.name.clone(),
                     decl_id: decl.id,
+                    fn_id: f.id,
                     params: f.params.iter()
                         .filter(|p| p.name != "self")
                         .filter_map(|p| Some((p.name.clone(), p.ty.clone()?)))
@@ -957,6 +1116,9 @@ impl StubRegistry {
                     source_file: format!("stdlib/{}", filename),
                     span: name_span,
                     effects: f.declared_effects(),
+                    type_params: rask_ast::type_params::signature_type_param_names(f),
+                    native: rask_ast::attr::find(&f.attrs, "native")
+                        .map(|a| NativeDecl::from_attr(a, &f.name)),
                 });
             }
             _ => {}
@@ -1026,10 +1188,10 @@ fn lift_inline_methods(decls: &mut Vec<Decl>) {
     for decl in decls.iter_mut() {
         let (target_ty, methods) = match &mut decl.kind {
             DeclKind::Enum(e) if !e.methods.is_empty() => {
-                (declared_type(&e.name, &e.type_params), std::mem::take(&mut e.methods))
+                (declared_type(&e.name, rask_ast::type_params::enum_type_param_names(e)), std::mem::take(&mut e.methods))
             }
             DeclKind::Struct(s) if !s.methods.is_empty() => {
-                (declared_type(&s.name, &s.type_params), std::mem::take(&mut s.methods))
+                (declared_type(&s.name, rask_ast::type_params::struct_type_param_names(s)), std::mem::take(&mut s.methods))
             }
             _ => continue,
         };
@@ -1052,12 +1214,10 @@ fn lift_inline_methods(decls: &mut Vec<Decl>) {
 }
 
 /// The type a declaration declares, written the way an `extend` header would
-/// name it: `Vec<T>` for `struct Vec<T>`.
-fn declared_type(name: &str, type_params: &[rask_ast::decl::TypeParam]) -> TypeExpr {
-    TypeExpr::generic(
-        name.to_string(),
-        type_params.iter().map(|p| TypeExpr::named(p.name.clone())).collect(),
-    )
+/// name it: `Vec<T>` for `struct Vec<T>`, and for `struct Pair { first: T }`
+/// too, whose `T` is a parameter by PC1.
+fn declared_type(name: &str, type_params: Vec<String>) -> TypeExpr {
+    TypeExpr::generic(name.to_string(), type_params.into_iter().map(TypeExpr::named).collect())
 }
 
 /// `in_conformance`: the method is part of an `implements` block, so its
@@ -1091,21 +1251,33 @@ fn fn_to_method_stub(
     // The block's parameters are the bare names its header passes the type
     // (`extend Vec<T>`), the way the resolver puts them in scope; a concrete
     // argument (`extend Sequence<string>`) isn't one.
-    let type_params: Vec<String> = own_ty
+    let mut type_params: Vec<String> = own_ty
         .args()
         .iter()
         .filter_map(TypeExpr::bare_name)
         .filter(|n| !rask_ast::primitives::is_builtin_value_type(n))
         .map(str::to_string)
-        .chain(f.type_params.iter().map(|p| p.name.clone()))
         .collect();
+    let extended_type_params = type_params.len();
+    // The method's own: the explicit `<U>` list plus every single letter its
+    // signature writes (PC1), so `fold(self, init: U, …) -> U` has one.
+    for name in rask_ast::type_params::signature_type_param_names(f) {
+        if !type_params.contains(&name) {
+            type_params.push(name);
+        }
+    }
 
     // Parser appends `<T: Bound>` to generic function names; strip for lookup.
     let bare_name = f.name.clone();
     let span = find_func_name_span(source, &bare_name, parent_span);
 
+    let runtime_args = rask_ast::attr::find(&f.attrs, "runtime_args").map(|a| {
+        RuntimeArg::list_from_attr(a, &f.name, &params, &type_params, extended_type_params)
+    });
+
     MethodStub {
         name: bare_name,
+        decl: f.id,
         is_pub: f.is_pub || in_conformance,
         takes_self,
         mutate_self,
@@ -1124,7 +1296,9 @@ fn fn_to_method_stub(
         is_unsafe: f.is_unsafe,
         native: rask_ast::attr::find(&f.attrs, "native")
             .map(|a| NativeDecl::from_attr(a, &f.name)),
+        runtime_args,
         type_params,
+        extended_type_params,
         type_param_bounds: f.type_params.iter()
             .flat_map(|tp| tp.bounds.iter().map(move |b| (tp.name.clone(), b.ty.clone())))
             .collect(),

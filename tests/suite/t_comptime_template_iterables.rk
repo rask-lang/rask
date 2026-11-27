@@ -1,0 +1,91 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Every iterable `comptime for` takes (ctrl.comptime/CT51) is written out
+// before the backends see it (CT50): variants with their payloads, an array
+// literal, a type parameter written without `<T>`, and a plain method beside
+// a generic one. Each reached an internal error once the backends stopped
+// unrolling loops themselves.
+import std.reflect
+
+enum Shade {
+    Light
+    Grey(i64)
+    Mixed(a: i64, b: string)
+}
+
+struct Reading {
+    id: i64
+    temp: f64
+}
+
+struct Holder {
+    tag: string
+}
+
+extend Holder {
+    func units<T>(self) -> string {
+        mut out = ""
+        comptime for f in reflect.fields<T>() {
+            out = "{out}{f.name};"
+        }
+        return out
+    }
+
+    func plain(self) -> string {
+        mut out = ""
+        comptime for f in reflect.fields<Reading>() {
+            out = "{out}{f.name},"
+        }
+        return out
+    }
+}
+
+func shades<T>() -> string {
+    mut out = ""
+    comptime for v in reflect.variants<T>() {
+        out = "{out}{v.name}:{v.field_count}["
+        comptime for p in v.fields {
+            out = "{out}{p.name}={p.type_name},"
+        }
+        out = "{out}]"
+    }
+    return out
+}
+
+// `T` is a type parameter without `<T>` (type.gradual/PC1).
+func field_names(value: T) -> string {
+    mut out = ""
+    comptime for f in reflect.fields<T>() {
+        out = "{out}{f.name} "
+    }
+    return out
+}
+
+test "variants and their payloads, in a template" {
+    assert shades<Shade>() == "Light:0[]Grey:1[_0=i64,]Mixed:2[a=i64,b=string,]"
+}
+
+test "variants named directly, the program's own enum" {
+    mut names = ""
+    comptime for v in reflect.variants<Shade>() {
+        names = "{names}{v.name} "
+    }
+    assert names == "Light Grey Mixed "
+}
+
+test "an array literal" {
+    mut total = 0
+    comptime for x in [1, 2, 3] {
+        total += x * 10
+    }
+    assert total == 60
+}
+
+test "a type parameter written without <T>" {
+    assert field_names(Reading(id: 1, temp: 2.0)) == "id temp "
+}
+
+test "a plain method beside a generic one" {
+    let h = Holder(tag: "h")
+    assert h.units<Reading>() == "id;temp;"
+    assert h.plain() == "id,temp,"
+}

@@ -109,9 +109,16 @@ impl TypeChecker {
                 Type::UnresolvedGeneric { .. } => crate::interfaces::Collection::of(&self.types, &ty),
                 _ => None,
             };
+            // A compiler-provided generic (`Shared<T, S>`, `Sender<T>`) also
+            // stays in its written spelling, which has no methods to read but
+            // does answer `Copy`: the copy rule knows each of them. Skipped,
+            // `fill<T: Copy>(sh)` copied one counted box into two slots.
+            let copy_only = matches!(ty, Type::UnresolvedGeneric { .. })
+                && written_collection.is_none()
+                && self.types.copy_verdict_with(&ty, &rask_layout::no_params, &|_| false) == crate::CopyVerdict::Move;
             match &ty {
                 Type::Var(_) | Type::Error => continue,
-                Type::UnresolvedGeneric { .. } if written_collection.is_some() => {}
+                Type::UnresolvedGeneric { .. } if written_collection.is_some() || copy_only => {}
                 Type::UnresolvedNamed(_) | Type::UnresolvedGeneric { .. } => continue,
                 _ => {}
             }
@@ -147,6 +154,7 @@ impl TypeChecker {
                 interfaces
                     .into_iter()
                     .filter(|t| checker.names_an_interface(t))
+                    .filter(|t| !copy_only || self.types.interface_name(t) == "Copy")
                     .filter(|t| match &written_collection {
                         Some(c) => c.contract(&self.types.interface_name(t)).is_some(),
                         None => true,
@@ -602,12 +610,7 @@ impl TypeChecker {
                 rask_types::TypeDef::Interface { name, .. } => Some(name.clone()),
                 _ => None,
             })
-            .chain(
-                crate::COMPILER_PROVIDED_TRAITS
-                    .iter()
-                    .chain(["Numeric", "Integer", "Float", "Encode", "Decode", "ClaimInput"].iter())
-                    .map(|s| s.to_string()),
-            )
+            .chain(std::iter::once("ClaimInput".to_string()))
             .collect()
     }
 
@@ -651,12 +654,18 @@ impl TypeChecker {
             };
             let namesake = self.types.conformance_target(ty)
                 .is_some_and(|id| self.types.conforms_to_namesake(id, &interface_name));
+            let undeclared = crate::interfaces::InterfaceChecker::new(&self.types)
+                .undeclared_conformance(ty, &rask_ast::ty::TypeExpr::named(&interface_name));
             return TypeError::InterfaceNotSatisfied {
-                ty: ty_name, interface_name, context, missing: None, namesake, span,
+                ty: ty_name, interface_name, context, missing: None, namesake, undeclared, span,
             };
         }
         let verb = if interface_name == "Encode" { "encoded" } else { "decoded" };
-        let checker = crate::interfaces::InterfaceChecker::new(&self.types);
+        let checker = match interface_name.as_str() {
+            "Decode" => crate::interfaces::InterfaceChecker::for_decode(&self.types),
+            "Encode" => crate::interfaces::InterfaceChecker::for_encode(&self.types),
+            _ => crate::interfaces::InterfaceChecker::new(&self.types),
+        };
         // E16: the declaration refused. Reported before the field hunt, because
         // the fields are usually fine — `@no_encode` goes on a credential whose
         // `string` would serialize perfectly well, and that's the problem. The
@@ -679,6 +688,19 @@ impl TypeChecker {
                 return TypeError::ExcludedFieldNeedsDefault {
                     ty: ty_name,
                     field,
+                    span,
+                };
+            }
+        }
+        // E12e: the fields are fine; the type reads itself through its own
+        // `decode` and has no `encode` to write it back.
+        if interface_name == "Encode" && checker.first_unencodable_field(ty).is_none() {
+            if let Some(unpaired) = checker.encode_skips_decode(ty) {
+                return TypeError::EncodeSkipsDecode {
+                    ty: ty_name,
+                    through: checker.named_type_id(ty) != Some(unpaired.id),
+                    owner: unpaired.ty,
+                    wire: unpaired.wire,
                     span,
                 };
             }

@@ -1,0 +1,58 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// An array literal is a temporary that owns what was put in it, so a chain
+// over one can keep its items without a clone (type.sequence/SEQ47, SEQ50).
+// Native used to walk a copy of the array and release the original's contents
+// afterwards, so every kept item was freed twice.
+
+struct Row { public name: string, public tags: Vec<i64> }
+
+func row(name: string, n: i64) -> Row {
+    mut tags: Vec<i64> = Vec.new()
+    for i in 0..n {
+        tags.push(i)
+    }
+    return Row(name: name, tags: tags)
+}
+
+func three() -> [Row; 3] {
+    return [row("x", 1), row("y", 2), row("z", 3)]
+}
+
+test "type.sequence/SEQ47 — to_vec keeps what an array literal owns" {
+    let a = [1, 2].to_vec()
+    let b = [3, 4, 5].to_vec()
+    let both = [a, b].to_vec()
+    assert both.len() == 2
+    assert both[1].len() == 3
+}
+
+test "type.sequence/SEQ47 — a filter keeps some items and the array frees the rest" {
+    let kept = [row("a", 1), row("b", 4), row("c", 2), row("d", 5)].filter(|r| r.tags.len() > 3).to_vec()
+    assert kept.len() == 2
+    assert kept[0].name == "b"
+    assert kept[1].tags.len() == 5
+}
+
+test "type.sequence/SEQ50 — a pick over an array literal answers with an owned item" {
+    let longest = [[1].to_vec(), [1, 2, 3].to_vec(), [4, 5].to_vec()].max_by_key(|v| v.len())!
+    assert longest.len() == 3
+    let found = [row("a", 1), row("b", 2)].find(|r| r.name == "b")!
+    assert found.tags.len() == 2
+    let missing = [row("a", 1)].find(|r| r.name == "q")
+    assert missing == none
+}
+
+test "type.sequence/SEQ47 — an array of arrays hands each inner array over whole" {
+    let v = [[1, 2], [3, 4], [5, 6]].filter(|p| p[0] > 2).to_vec()
+    assert v.len() == 2
+    assert v[0][0] == 3
+    assert v[1][1] == 6
+    let top = [[1, 2], [5, 6], [3, 4]].max_by_key(|p| p[1])!
+    assert top[0] == 5
+}
+
+test "type.sequence/SEQ47 — take and skip over an array a call returned" {
+    let middle = three().skip(1).take(1).to_vec()
+    assert middle.len() == 1
+    assert middle[0].name == "y"
+}

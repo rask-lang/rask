@@ -34,16 +34,15 @@ static __thread int rask_test_expects_fail = 0;
 
 void rask_test_skip(const char *reason) {
     // Kept past the unwind, which may free a reason the test built.
-    static __thread char reason_copy[RASK_PANIC_MSG_MAX];
-    snprintf(reason_copy, sizeof(reason_copy), "%s", reason ? reason : "skipped");
+    static __thread char *reason_copy;
+    free(reason_copy);
+    reason_copy = rask_msg_format("%s", reason ? reason : "skipped");
     rask_test_skipped = 1;
     rask_test_skip_reason = reason_copy;
-    reason = reason_copy;
     // The reason is the program's own text. A location left by an earlier
     // call in this frame would otherwise prefix it with `file:line:` (#1519).
     rask_set_panic_location(NULL, 0, 0);
-    extern void rask_panic(const char *msg);
-    rask_panic(reason);
+    rask_panic(reason_copy);
 }
 
 // Just set the skip flag — caller handles unwinding via panic
@@ -62,7 +61,9 @@ void rask_test_expect_fail(void) {
 // a test with three failing checks read the same as a test with one. The
 // interpreter has always joined them with "; "; this matches it.
 static __thread int rask_check_failures = 0;
-static __thread char rask_check_last_msg[2048] = {0};
+static __thread char *rask_check_last_msg;
+static __thread size_t rask_check_last_len;
+static __thread size_t rask_check_last_cap;
 // Inside a test the runner reports the failed checks with the result, so the
 // message isn't printed as well. Outside one there is no runner to report it.
 static __thread int rask_in_test = 0;
@@ -74,20 +75,35 @@ static __thread int rask_in_test = 0;
 // passes only the message, and `rask_check_fail_msg_at` below is what gives it
 // the same `file:line:` an `assert` with a message gets — without it a failing
 // check read like an ordinary `print`.
+static void check_msg_append(const char *text, size_t n, int separate) {
+    size_t sep = separate ? 2 : 0;
+    size_t need = rask_check_last_len + sep + n + 1;
+    if (need > rask_check_last_cap) {
+        size_t cap = rask_check_last_cap ? rask_check_last_cap : 256;
+        while (cap < need) cap *= 2;
+        char *grown = (char *)realloc(rask_check_last_msg, cap);
+        if (!grown) {
+            fputs("panic: out of memory recording a failed check\n", stderr);
+            abort();
+        }
+        rask_check_last_msg = grown;
+        rask_check_last_cap = cap;
+    }
+    if (separate) {
+        memcpy(rask_check_last_msg + rask_check_last_len, "; ", 2);
+    }
+    memcpy(rask_check_last_msg + rask_check_last_len + sep, text, n);
+    rask_check_last_len += sep + n;
+    rask_check_last_msg[rask_check_last_len] = '\0';
+}
+
 void rask_check_fail(const char *msg) {
     rask_check_failures++;
     const char *text = msg ? msg : "check failed";
 
-    size_t used = strlen(rask_check_last_msg);
-    if (used == 0) {
-        snprintf(rask_check_last_msg, sizeof(rask_check_last_msg), "%s", text);
-    } else if (used + 2 < sizeof(rask_check_last_msg)) {
-        // Truncation is silent by design past this point: the buffer is
-        // thread-local and fixed, and a test with enough failing checks to fill
-        // 2KB has already told the reader what they needed from the first few.
-        snprintf(rask_check_last_msg + used, sizeof(rask_check_last_msg) - used,
-                 "; %s", text);
-    }
+    // Every failed check is kept whole and joined, however many and however
+    // long: the reader reached for `check` to see them all.
+    check_msg_append(text, strlen(text), rask_check_last_len > 0);
     if (!rask_in_test) {
         fprintf(stderr, "%s\n", text);
     }
@@ -95,15 +111,16 @@ void rask_check_fail(const char *msg) {
 
 void rask_check_fail_msg_at(const char *msg, const char *file,
                             int32_t line, int32_t col) {
-    char buf[RASK_PANIC_MSG_MAX];
+    char *buf;
     if (file) {
         (void)col;
-        snprintf(buf, sizeof(buf), "%s:%d: %s", file, (int)line,
-                 msg ? msg : "check failed");
+        buf = rask_msg_format("%s:%d: %s", file, (int)line,
+                              msg ? msg : "check failed");
     } else {
-        snprintf(buf, sizeof(buf), "%s", msg ? msg : "check failed");
+        buf = rask_msg_format("%s", msg ? msg : "check failed");
     }
     rask_check_fail(buf);
+    free(buf);
 }
 
 // A test name is a string literal, so it can hold a quote, a backslash or a
@@ -232,7 +249,8 @@ int rask_test_call(test_fn fn, char **error_msg, int *expects_fail) {
     rask_test_skip_reason = NULL;
     rask_test_expects_fail = 0;
     rask_check_failures = 0;
-    rask_check_last_msg[0] = '\0';
+    rask_check_last_len = 0;
+    if (rask_check_last_msg) rask_check_last_msg[0] = '\0';
     rask_in_test = 1;
 
     rask_panic_install();
@@ -248,6 +266,8 @@ int rask_test_call(test_fn fn, char **error_msg, int *expects_fail) {
         // Returned via longjmp from rask_panic
         failed = 1;
         msg = rask_panic_take_message();
+        rask_scope_close_if_open();
+        rask_threadpool_close_if_open();
     }
 
     rask_panic_remove();
@@ -259,7 +279,7 @@ int rask_test_call(test_fn fn, char **error_msg, int *expects_fail) {
     // test passed".
     if (!failed && rask_check_failures > 0) {
         failed = 1;
-        msg = strdup(rask_check_last_msg);
+        msg = strdup(rask_check_last_msg ? rask_check_last_msg : "check failed");
     }
 
     *expects_fail = rask_test_expects_fail;

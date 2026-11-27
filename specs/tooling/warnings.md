@@ -25,12 +25,13 @@ On by default. Suppress with `@allow(warning_name)`.
 | Rule | Code | ID | Check |
 |------|------|----|-------|
 | **W1: unused_import** | W0201 | `unused_import` | Import never referenced in this file |
-| **W2: unused_result** | W0301 | `unused_result` | `T or E` return value not checked |
+| **W2: moved** | | | Ignoring a `T or E` result is no longer a warning: it is a compile error, `type.errors/ER50` |
 | **W3: unused_variable** | W0901 | `unused_variable` | Binding never read after assignment |
 | **W4: unreachable_code** | W0902 | `unreachable_code` | Code after `return` or `break` |
 | **W5: deprecated** | W0903 | `deprecated` | Calling an item marked `@deprecated` |
 | **W9: torn_lock_update** | W0907 | `torn_lock_update` | `with` block over a `Shared` assigns 2+ fields of the locked value without `.staged()` (`conc.sync/ST1–ST4`) |
 | **W11: mod_for_index** | W0909 | `mod_for_index` | `%` whose result is used as an index and whose left operand can be negative — `%` takes the dividend's sign (`type.operators/AR2`), so `(i - 1) % n` indexes out of range instead of wrapping. `.mod(n)` is the floored answer (AR3) |
+| **W13: blocking_loop** | `comp.effects/CW2` | `blocking_loop` | A call that blocks, in a loop, in a program that spawns (`comp.effects/CW2`). Suppressed on the function, for a loop whose waits can't overlap anyway: a terminal reading one line at a time |
 
 <!-- test: skip -->
 ```rask
@@ -41,7 +42,7 @@ func process(data: Vec<u8>) -> i32 {
 }
 ```
 
-**W2 (unused_result) exceptions:** Not triggered by plain return types (no error to miss), `T?` values (intentional absence), or results assigned to a binding (that's W3's job).
+**W3 (unused_variable) scope:** `let` and `mut` locals. A plain `x = v` doesn't count as reading `x`; `x += v` does, since it reads the old value. Parameters and names bound by patterns aren't checked yet.
 
 **W11 (mod_for_index) scope:** Only where the remainder *is* the index of a `[…]` access — a `%` whose result is a value is usually exactly what was meant. Silent when the left operand can't be negative: a non-negative literal, a `.len()`/`.count()` call, or a sum/product of those. A suggestion, so the fix is printed as code: `ring[(i - 1).mod(n)]`.
 
@@ -95,7 +96,7 @@ func scratch() {
     let x = expensive_setup()
 }
 
-@deny(unused_result)
+@deny(unused_variable)
 extend Server {
     func start(take self) -> void or Error {
         try self.listener.bind(self.addr)
@@ -108,7 +109,7 @@ Package-level configuration in `rask.toml`:
 
 ```toml
 [warnings]
-deny = ["unused_result"]
+deny = ["unused_variable"]
 allow = ["shadowing"]
 warn = ["implicit_copy"]
 ```
@@ -132,7 +133,7 @@ warn = ["implicit_copy"]
 
 | Rule | Description |
 |------|-------------|
-| **WC1: Dual ID** | Both code (`W0301`) and name (`unused_result`) work in attributes |
+| **WC1: Dual ID** | Both code (`W0901`) and name (`unused_variable`) work in attributes |
 | **WC2: Code ranges** | W02xx = resolver, W03xx = type checking, W09xx = general |
 
 ## Error Messages
@@ -144,15 +145,6 @@ WARNING [tool.warnings/W3]: unused variable `count`
    |           ^^^^^ this value is never read
 
 FIX: prefix with `_` if intentional: `let _count = data.len()`
-```
-
-```
-WARNING [tool.warnings/W2]: unused result of type `void or IoError`
-   |
-2  |     file.write(data)
-   |     ^^^^^^^^^^^^^^^^ this `T or E` result is discarded
-
-FIX: use `try` to propagate, or handle the error explicitly
 ```
 
 ```
@@ -195,8 +187,6 @@ NOTE: use connect_with_options instead
 | Case | Rule | Handling |
 |------|------|----------|
 | `_` prefix on variable | W3 | Suppresses `unused_variable` |
-| `T?` return discarded | W2 | Not flagged (intentional absence, less dangerous) |
-| Result assigned to binding | W2 | Not flagged (W3 handles unused bindings) |
 | `@deny` on item + `@allow` on nested | P1 | Nested `@allow` wins |
 | `--deny-warnings` + `@allow` on item | P1 | `@allow` wins |
 | Code after diverging `match` | W4 | Flagged if all arms diverge |
@@ -208,8 +198,6 @@ NOTE: use connect_with_options instead
 ### Rationale
 
 **SB1-SB3 (three categories):** A hard line between errors, warnings, and lints. Errors are non-negotiable — running broken code is worse than not running code. Warnings flag code that probably isn't what you meant. Lints enforce how code should look.
-
-**W2 (unused_result):** The most important warning in the language. Rask's error model depends on callers handling results. I considered making this an error, but there are rare legitimate cases — fire-and-forget logging, best-effort cleanup. A warning you can `@deny` project-wide is the right level.
 
 **W6 (implicit_copy) off by default:** Implicit copy is a core ergonomic feature. Most code shouldn't care. But game loops and embedded code sometimes need to audit every copy. See `mem.value-semantics` for the 16-byte threshold design.
 
@@ -225,8 +213,8 @@ NOTE: use connect_with_options instead
 |-|-------------------|------------|
 | **Tool** | `rask check` | `rask lint` |
 | **What it checks** | Correctness hints | Convention enforcement |
-| **ID format** | `unused_result` / `W0301` | `naming/is` / `idiom/force-unwrap-production` |
-| **Suppression** | `@allow(unused_result)` | `@allow(naming/is)` |
+| **ID format** | `unused_variable` / `W0901` | `naming/is` / `idiom/force-unwrap-production` |
+| **Suppression** | `@allow(unused_variable)` | `@allow(naming/is)` |
 | **When it runs** | Every build | Pre-commit, CI |
 
 Both share the `@allow` attribute and diagnostic output format. Different ID namespaces prevent collision.

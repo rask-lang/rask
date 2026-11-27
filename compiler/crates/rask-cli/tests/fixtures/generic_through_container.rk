@@ -21,7 +21,7 @@ func lenof<T>(items: Vec<T>) -> u64 {
 
 func firstof<T>(items: Vec<T>) -> T? {
     for it in items {
-        return it
+        return it.clone()
     }
     return none
 }

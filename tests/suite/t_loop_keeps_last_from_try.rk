@@ -1,0 +1,90 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+// A loop that unwraps a fresh value with `try`, reads the one it kept from
+// the turn before, then keeps the new one:
+//
+//     let l = try direct(i)
+//     println(last.text())
+//     last = l
+//
+// The value came out of the `T or E` that `direct` returned, and the wrapper
+// was its owner. `last` still read the old value when the next wrapper
+// arrived, so the old wrapper couldn't be released there, and nothing
+// released it later either: every value but the last leaked (#2060). The
+// read out of the wrapper now owns what it read, for a `Vec` and for a box.
+
+interface Label {
+    func text(self) -> string
+}
+
+struct Tag {
+    name: string
+}
+
+Tag implements Label {
+    public func text(self) -> string {
+        return self.name
+    }
+}
+
+struct Refused {
+    code: i64
+}
+
+extend Refused {
+    public func message(self) -> string {
+        return "refused"
+    }
+}
+
+func label(i: i64) -> any Label or Refused {
+    if i < 0 {
+        return Refused(code: i)
+    }
+    return Tag(name: "label-number-{i}-padded-long-enough-to-be-heap")
+}
+
+func numbers(i: i64) -> Vec<i64> or Refused {
+    if i < 0 {
+        return Refused(code: i)
+    }
+    mut v: Vec<i64> = Vec.new()
+    v.push(i)
+    return v
+}
+
+func last_label(n: i64) -> any Label or Refused {
+    mut last: any Label = Tag(name: "initial-label-padded-long-enough-heap")
+    for i in 0..n {
+        let l = try label(i)
+        assert last.text().len() > 0
+        last = l
+    }
+    return last
+}
+
+func last_numbers(n: i64) -> Vec<i64> or Refused {
+    mut last: Vec<i64> = Vec.new()
+    last.push(99)
+    for i in 0..n {
+        let l = try numbers(i)
+        assert last.len() == 1
+        last = l
+    }
+    return last
+}
+
+test "a box kept across turns" {
+    let r = last_label(3) catch _ => Tag(name: "none")
+    assert r.text() == "label-number-2-padded-long-enough-to-be-heap"
+}
+
+test "a vector kept across turns" {
+    let r = last_numbers(3) catch _ => Vec.new()
+    assert r[0] == 2
+}
+
+test "no turns keeps the first value" {
+    let failed = last_label(0) catch _ => Tag(name: "none")
+    assert failed.text() == "initial-label-padded-long-enough-heap"
+}

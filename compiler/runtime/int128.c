@@ -105,6 +105,17 @@ static char *u128_digits(rask_u128 v, char *end) {
     return p;
 }
 
+// Signed digits into the same kind of buffer. Negate in the unsigned domain:
+// `-i128::MIN` has no signed value.
+static char *i128_digits(rask_i128 v, char *end) {
+    rask_u128 magnitude = v < 0 ? (rask_u128)0 - (rask_u128)v : (rask_u128)v;
+    char *p = u128_digits(magnitude, end);
+    if (v < 0) {
+        *--p = '-';
+    }
+    return p;
+}
+
 void rask_u128_to_string(RaskStr *out, rask_u128 val) {
     char buf[RASK_I128_DIGITS];
     rask_string_from(out, u128_digits(val, buf + RASK_I128_DIGITS));
@@ -112,23 +123,12 @@ void rask_u128_to_string(RaskStr *out, rask_u128 val) {
 
 void rask_i128_to_string(RaskStr *out, rask_i128 val) {
     char buf[RASK_I128_DIGITS];
-    // Negate in the unsigned domain: `-i128::MIN` has no signed value.
-    rask_u128 magnitude = val < 0 ? (rask_u128)0 - (rask_u128)val : (rask_u128)val;
-    char *p = u128_digits(magnitude, buf + RASK_I128_DIGITS);
-    if (val < 0) {
-        *--p = '-';
-    }
-    rask_string_from(out, p);
+    rask_string_from(out, i128_digits(val, buf + RASK_I128_DIGITS));
 }
 
 void rask_print_i128(rask_i128 val) {
     char buf[RASK_I128_DIGITS];
-    rask_u128 magnitude = val < 0 ? (rask_u128)0 - (rask_u128)val : (rask_u128)val;
-    char *p = u128_digits(magnitude, buf + RASK_I128_DIGITS);
-    if (val < 0) {
-        *--p = '-';
-    }
-    fputs(p, stdout);
+    fputs(i128_digits(val, buf + RASK_I128_DIGITS), stdout);
 }
 
 void rask_print_u128(rask_u128 val) {
@@ -144,11 +144,9 @@ void rask_print_u128(rask_u128 val) {
 
 static void fmt_cmp_i128(char *buf, size_t n, const char *what,
                         rask_i128 left, rask_i128 right, const char *op) {
-    RaskStr ls, rs;
-    rask_i128_to_string(&ls, left);
-    rask_i128_to_string(&rs, right);
-    const char *lbuf = rask_string_ptr(&ls);
-    const char *rbuf = rask_string_ptr(&rs);
+    char lb[RASK_I128_DIGITS], rb[RASK_I128_DIGITS];
+    const char *lbuf = i128_digits(left, lb + RASK_I128_DIGITS);
+    const char *rbuf = i128_digits(right, rb + RASK_I128_DIGITS);
     snprintf(buf, n, "%s: %s %s %s (left: %s, right: %s)",
              what, lbuf, op ? op : "?", rbuf, lbuf, rbuf);
 }
@@ -177,38 +175,34 @@ _Noreturn void rask_panic_overflow_binary_i128(const char *file, int32_t line, i
                                               const char *op, const char *tail,
                                               rask_i128 lhs, rask_i128 rhs,
                                               int32_t is_unsigned) {
-    RaskStr ls, rs;
-    if (is_unsigned) {
-        rask_u128_to_string(&ls, (rask_u128)lhs);
-        rask_u128_to_string(&rs, (rask_u128)rhs);
-    } else {
-        rask_i128_to_string(&ls, lhs);
-        rask_i128_to_string(&rs, rhs);
-    }
+    // Digits on the stack: a heap string here would never be released, since
+    // rask_panic_at doesn't return.
+    char lb[RASK_I128_DIGITS], rb[RASK_I128_DIGITS];
+    const char *ls = is_unsigned ? u128_digits((rask_u128)lhs, lb + RASK_I128_DIGITS)
+                                 : i128_digits(lhs, lb + RASK_I128_DIGITS);
+    const char *rs = is_unsigned ? u128_digits((rask_u128)rhs, rb + RASK_I128_DIGITS)
+                                 : i128_digits(rhs, rb + RASK_I128_DIGITS);
     char buf[RASK_PANIC_MSG_MAX];
     snprintf(buf, sizeof(buf), "integer overflow: %s %s %s exceeds %s",
-             rask_string_ptr(&ls), op ? op : "?", rask_string_ptr(&rs),
+             ls, op ? op : "?", rs,
              tail ? tail : "range");
     rask_panic_at(file, line, col, buf);
 }
 
 _Noreturn void rask_panic_overflow_neg_i128(const char *file, int32_t line, int32_t col,
                                             const char *tail, rask_i128 operand) {
-    RaskStr os;
-    rask_i128_to_string(&os, operand);
+    char ob[RASK_I128_DIGITS];
     char buf[RASK_PANIC_MSG_MAX];
     snprintf(buf, sizeof(buf), "integer overflow: negating %s exceeds %s",
-             rask_string_ptr(&os), tail ? tail : "range");
+             i128_digits(operand, ob + RASK_I128_DIGITS), tail ? tail : "range");
     rask_panic_at(file, line, col, buf);
 }
 
 static void fmt_cmp_u128(char *buf, size_t n, const char *what,
                         rask_u128 left, rask_u128 right, const char *op) {
-    RaskStr ls, rs;
-    rask_u128_to_string(&ls, left);
-    rask_u128_to_string(&rs, right);
-    const char *lbuf = rask_string_ptr(&ls);
-    const char *rbuf = rask_string_ptr(&rs);
+    char lb[RASK_I128_DIGITS], rb[RASK_I128_DIGITS];
+    const char *lbuf = u128_digits(left, lb + RASK_I128_DIGITS);
+    const char *rbuf = u128_digits(right, rb + RASK_I128_DIGITS);
     snprintf(buf, n, "%s: %s %s %s (left: %s, right: %s)",
              what, lbuf, op ? op : "?", rbuf, lbuf, rbuf);
 }
@@ -228,19 +222,6 @@ void rask_check_fail_cmp_u128(rask_u128 left, rask_u128 right,
     fmt_cmp_u128(buf, sizeof(buf), "check failed", left, right, op);
     (void)file; (void)line; (void)col;
     rask_check_fail(buf);
-}
-
-// `abs` at 128 bits. `llabs` can't stand in: it takes a `long long`, so the
-// value would be truncated before it ever got negated (#762).
-//
-// `i128::MIN` has no positive counterpart, same as every other width — the
-// checked path panics there rather than handing back the negative value C's
-// `abs` family returns.
-rask_i128 rask_i128_abs(rask_i128 v) {
-    if (v == (rask_i128)1 << 127) {
-        rask_panic("integer overflow in abs");
-    }
-    return v < 0 ? -v : v;
 }
 
 void rask_eprint_i128(rask_i128 val) {

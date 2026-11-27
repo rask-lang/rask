@@ -8,13 +8,9 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 fn rask_binary() -> PathBuf {
-    let mut path = std::env::current_exe().unwrap();
-    path.pop();
-    if path.ends_with("deps") {
-        path.pop();
-    }
-    path.push("rask");
-    path
+    // Cargo says where it built the binary; the test's own location doesn't,
+    // since cargo's build directory layout moves between versions.
+    PathBuf::from(env!("CARGO_BIN_EXE_rask"))
 }
 
 fn fixture(name: &str) -> PathBuf {
@@ -70,6 +66,9 @@ fn every_verdict_and_the_shrunk_counterexamples() {
     assert_eq!(run.stdout, expected, "stderr:\n{}", run.stderr);
 
     // Shrinking finds the smallest input that still fails, not the first.
+    // The notes wrap at the terminal width, so whitespace runs are compared
+    // as one space.
+    let stderr = run.stderr.split_whitespace().collect::<Vec<_>>().join(" ");
     for want in [
         "claim `never_overdrawn` is false",
         "counterexample: ops = [Op.Withdraw(1)]",
@@ -79,7 +78,7 @@ fn every_verdict_and_the_shrunk_counterexamples() {
         "index out of bounds",
         "E0950",
     ] {
-        assert!(run.stderr.contains(want), "missing `{want}` in:\n{}", run.stderr);
+        assert!(stderr.contains(want), "missing `{want}` in:\n{}", run.stderr);
     }
 }
 
@@ -158,12 +157,60 @@ fn results_wide_integers_and_maps_keyed_by_numbers_are_built_and_shrunk() {
     assert_eq!(run.code, 1, "{}{}", run.stdout, run.stderr);
     assert!(run.stdout.contains("small_result             checked all 259 inputs"), "{}", run.stdout);
     for want in [
-        "counterexample: r = Result.Ok(200)",
+        "counterexample: r = 200",
         "counterexample: m = Map { -1: \"\", 0: \"\" }",
         "counterexample: big = 1000",
     ] {
         assert!(run.stderr.contains(want), "missing `{want}` in:\n{}", run.stderr);
     }
+}
+
+// std.encoding/E12b: a claim's inputs go through a type's own `decode`. The
+// claims say a `Port` is never 0 wherever it sits, which only holds if an input
+// the type refuses is thrown away (discarded) instead of handed to the claim.
+#[test]
+fn a_type_with_its_own_decode_is_built_through_it() {
+    let dir = copy_of("decoded");
+    let run = rask(&dir, &["check", "--claims", "."]);
+    assert_eq!(run.code, 1, "{}{}", run.stdout, run.stderr);
+    for claim in ["a_port_passed_its_check", "every_listed_port_passed", "a_bound_port_passed"] {
+        let line = run.stdout.lines().find(|l| l.contains(claim)).unwrap_or_else(|| panic!("no line for {claim}:\n{}", run.stdout));
+        assert!(line.contains("held for") && line.contains("refused by `decode`"), "{line}");
+    }
+    assert!(run.stderr.contains("claim `ports_are_small` is false"), "{}", run.stderr);
+    assert!(run.stderr.contains("counterexample: p = Port(value: 10)"), "{}", run.stderr);
+    assert_eq!(run.stderr.matches("is false").count(), 1, "only the false claim fails:\n{}", run.stderr);
+}
+
+// type.claims/IN4: a type whose `decode` accepts almost nothing a claim draws (a
+// date read from a string) would have the claim "hold" for the few inputs that
+// got through, which says nothing. It fails instead, and points at the
+// generator. The same decode on a type that also builds itself is never run:
+// the generator wins (IN2), and the claim holds for every input it tries.
+#[test]
+fn a_claim_whose_inputs_a_decode_refuses_does_not_pass_vacuously() {
+    let dir = copy_of("dated");
+    let run = rask(&dir, &["check", "--claims", "."]);
+    assert_eq!(run.code, 1, "{}{}", run.stdout, run.stderr);
+    assert!(run.stderr.contains("claim `a_date_is_in_a_month` holds for almost no inputs"), "{}", run.stderr);
+    assert!(run.stderr.contains("E0975") && run.stderr.contains("claims.Generate"), "{}", run.stderr);
+    assert!(run.stderr.contains("refused 1000 of the 1000 tried"), "{}", run.stderr);
+    assert_eq!(run.stderr.matches("E0975").count(), 1, "only the claim over the decoded type fails:\n{}", run.stderr);
+    let line = run.stdout.lines().find(|l| l.contains("a_stamp_is_in_a_month")).expect("a line for the generated type");
+    assert!(line.contains("held for 1,000 inputs") && !line.contains("refused"), "{line}");
+}
+
+// IN4 counts only what `decode` turned away. A claim that skips most of its
+// inputs with its own `return` (CL5) did get them past `decode`, so a `decode`
+// that refuses 2 in 100 doesn't fail it, however few the claim keeps.
+#[test]
+fn a_claim_that_skips_its_own_inputs_is_not_blamed_on_decode() {
+    let dir = copy_of("portish");
+    let run = rask(&dir, &["check", "--claims", "."]);
+    assert_eq!(run.code, 0, "{}{}", run.stdout, run.stderr);
+    assert!(!run.stderr.contains("E0975"), "{}", run.stderr);
+    let line = run.stdout.lines().find(|l| l.contains("small_ports_are_nonzero")).expect("a line for the claim");
+    assert!(line.contains("held for") && line.contains("discarded") && line.contains("refused by `decode`"), "{line}");
 }
 
 #[test]

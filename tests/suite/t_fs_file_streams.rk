@@ -4,8 +4,6 @@
 // `remove_dir` and `remove_dir_all`. Each test works in a fresh `mktemp -d`.
 //
 // Functions are imported by name so `rask stdlib-coverage` sees them (#1600).
-// Every handle is closed by its `ensure` alone, at the end of a helper: an explicit close under an
-// ensure closes twice natively on an imported name (#1601).
 
 import os
 import fs.{open, create_file, open_with, read_dir, remove_dir, remove_dir_all, remove_file, create_dir, create_dir_all, write_text, read_text, exists, OpenOptions, DirEntry}

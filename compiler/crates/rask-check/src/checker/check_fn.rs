@@ -99,6 +99,8 @@ impl TypeChecker {
     }
 
     fn check_fn_scoped(&mut self, f: &FnDecl) {
+        let written = f.params.iter().filter_map(|p| p.ty.as_ref()).chain(f.ret_ty.as_ref());
+        self.check_length_params(&f.type_params, written, f.span);
         // GC5: public functions must have full type annotations
         let unannotated_params: Vec<String> = f.params.iter()
             .filter(|p| p.name != "self" && p.ty.is_none())
@@ -168,6 +170,10 @@ impl TypeChecker {
         // own bounds, if any — a bound declared there covers every method in
         // the block, not just one with its own `where` clause (#838).
         self.current_type_param_bounds = self.current_impl_type_param_bounds.clone();
+        let saved_comptime_params = std::mem::replace(
+            &mut self.current_comptime_params,
+            f.type_params.iter().filter(|tp| tp.is_comptime).map(|tp| tp.name.clone()).collect(),
+        );
         for tp in &f.type_params {
             if !tp.bounds.is_empty() {
                 self.current_type_param_bounds
@@ -220,20 +226,7 @@ impl TypeChecker {
         // passed as that field's address for these, and MIR has no other way to
         // know the mode was inferred rather than written (#702).
         if inferred_self_mutate {
-            // The key has to identify one method. Real source always gives a
-            // non-empty span, and two methods can't occupy the same bytes;
-            // generic instantiations deliberately share theirs, since the self
-            // mode doesn't depend on the type argument. A zero-width span would
-            // mean a synthesized declaration reached here, and several of those
-            // would collide — which is the one way this could answer "mutates"
-            // for a method that doesn't.
-            debug_assert!(
-                f.span.end > f.span.start,
-                "zero-width span for `{}` — span keys must identify one method",
-                f.name
-            );
-            self.mutate_self_fns
-                .insert((f.span.start, f.span.end, f.span.file_id));
+            self.mutate_self_fns.insert(f.id);
         }
 
         // GC10: Public methods must declare self mode explicitly
@@ -248,9 +241,11 @@ impl TypeChecker {
         }
 
         self.push_scope();
+        let mut sig_params: Vec<(String, Type)> = Vec::with_capacity(f.params.len());
         for param in &f.params {
             if param.name == "self" {
                 if let Some(self_ty) = self.current_self_type.clone() {
+                    sig_params.push(("self".to_string(), self_ty.clone()));
                     if inferred_self_mutate || param.is_mutate || param.is_take {
                         self.define_local("self".to_string(), self_ty.clone());
                     } else {
@@ -279,8 +274,12 @@ impl TypeChecker {
             };
             // ER3/ER4: validate nested `T or E` in parameter types.
             self.validate_result_types_in(&ty, param.name_span);
-            // PM6c: `take` on a Copy type takes nothing.
-            if param.is_take && param.name != "self" {
+            // PM6c: `take` on a Copy type takes nothing. Not for the adapter
+            // desugar writes beside a `decode` (std.encoding/E12b): it can't
+            // know whether the wire type is Copy, and `take` is what makes the
+            // function drop whatever the decoder built, a wire struct holding a
+            // `Vec` of custom types included. For a Copy wire there's nothing to drop.
+            if param.is_take && param.name != "self" && f.name != rask_ast::decl::field_attrs::DECODE_ADAPTER {
                 if let Some(spelled) = Self::always_copy_spelling(&param.ty) {
                     self.errors.push(TypeError::TakeOnCopyType {
                         param: param.name.clone(),
@@ -295,15 +294,53 @@ impl TypeChecker {
                 self.define_local_param(param.name.clone(), ty.clone());
             }
             self.span_types.insert((param.name_span.start, param.name_span.end, param.name_span.file_id), ty.clone());
+            sig_params.push((param.name.clone(), ty.clone()));
             // RC1/RC3: a `Vec`/`Map` parameter can't hold linear elements.
             self.note_linear_container_site(param.name_span, ty);
         }
+        // A written `Self` is still the bare name here; the signature says
+        // which type it is.
+        let mut ret = self.current_return_type.clone().expect("set above");
+        if let Some(self_ty) = self.current_self_type.clone() {
+            // A method declared inside a generic type's own block has the bare
+            // type as its receiver while checking; its signature names the
+            // parameters, so an instance's arguments have somewhere to go.
+            let self_ty = match self_ty {
+                Type::Named(id) => match self.types.get(id).map(|def| def.type_params()) {
+                    Some(params) if !params.is_empty() => Type::Generic {
+                        base: id,
+                        args: params
+                            .iter()
+                            .map(|p| rask_types::GenericArg::Type(Box::new(Type::UnresolvedNamed(p.clone()))))
+                            .collect(),
+                    },
+                    _ => Type::Named(id),
+                },
+                other => other,
+            };
+            if let Some((_, ty)) = sig_params.iter_mut().find(|(n, _)| n == "self") {
+                *ty = self_ty.clone();
+            }
+            let map = std::collections::HashMap::from([("Self".to_string(), self_ty)]);
+            for (_, ty) in &mut sig_params {
+                *ty = crate::substitute_type(ty, &map);
+            }
+            ret = crate::substitute_type(&ret, &map);
+        }
+        self.fn_sigs.insert(f.id, rask_types::FnSignature { params: sig_params, ret });
 
-        for stmt in &f.body {
-            self.check_stmt(stmt);
-            // Solve as we go so a later statement sees method-call return
-            // types that are already pinned, instead of a bare var.
-            self.solve_constraints();
+        // A generic body that asks what a type's own codec is isn't checked as
+        // written: `T.decode(wire)` and `reflect.DecodeWire<T>` mean something
+        // only once `T` is a type. It is written out for each instance the
+        // program reaches and checked there (`rask-template`).
+        let instance_checked = rask_ast::comptime_if::is_instance_checked(f);
+        if !instance_checked {
+            for stmt in &f.body {
+                self.check_stmt(stmt);
+                // Solve as we go so a later statement sees method-call return
+                // types that are already pinned, instead of a bare var.
+                self.solve_constraints();
+            }
         }
 
         // ER20: Finalize error union from accumulated error types
@@ -342,6 +379,7 @@ impl TypeChecker {
         // Stdlib stubs are never passed through check_fn.
 
         match &resolved_ret_ty {
+            _ if instance_checked => {}
             Type::Unit => {
                 // No return needed
             }
@@ -390,6 +428,7 @@ impl TypeChecker {
         self.current_return_type = None;
         self.allowed_warnings = old_allowed;
         self.current_type_param_bounds = saved_type_param_bounds;
+        self.current_comptime_params = saved_comptime_params;
         self.in_unsafe = was_unsafe;
 
         // ER20: Restore outer accumulation state
@@ -399,6 +438,38 @@ impl TypeChecker {
         // @no_alloc enforcement: scan body for heap allocations
         if f.attrs.iter().any(|a| a.is("no_alloc")) {
             self.check_no_alloc(&f.name, &f.body);
+        }
+    }
+
+    /// A declaration's parameters each stay on their side: a `comptime N:
+    /// usize` is a length and a plain `T` is a type. `func f<T>(a: [i64; T])`
+    /// otherwise type-checked and bound `T` to whatever length a call passed.
+    pub(super) fn check_length_params<'t>(
+        &mut self,
+        params: &[rask_ast::decl::TypeParam],
+        written: impl IntoIterator<Item = &'t TypeExpr>,
+        span: Span,
+    ) {
+        if params.is_empty() {
+            return;
+        }
+        for ty in written {
+            let mut wrong: Vec<String> = Vec::new();
+            ty.walk_array_lengths(&mut |len| {
+                if params.iter().any(|p| p.name == len && !p.is_comptime) {
+                    wrong.push(format!(
+                        "`{len}` is a type parameter, so it can't be an array length; declare it `comptime {len}: usize`"
+                    ));
+                }
+            });
+            ty.walk_names(&mut |name| {
+                if params.iter().any(|p| p.name == name && p.is_comptime) {
+                    wrong.push(format!("`{name}` is a `comptime` length, not a type"));
+                }
+            });
+            for msg in wrong {
+                self.errors.push(TypeError::GenericError(msg, span));
+            }
         }
     }
 
@@ -509,7 +580,9 @@ impl TypeChecker {
             .chain(rask_stdlib::mir_metadata::stdlib_type_names().iter())
             // A module isn't a type, so it's never the fix for a type position.
             // `str` used to suggest `std`, and `st` still would.
-            .filter(|cand| !self.types.builtin_modules.is_module(cand))
+            .filter(|cand| {
+                !rask_stdlib::modules::is_module(cand) || rask_ast::primitives::is_builtin_value_type(cand)
+            })
             // A candidate the written name is a prefix of ranks ahead of a
             // closer one that isn't. Pure edit distance answered `str` with
             // `std` — one character away, and a module, so not a type you could
@@ -709,12 +782,7 @@ impl TypeChecker {
                 self.symbol_types.get(sym),
                 Some(Type::Fn { ret, .. }) if never(ret)
             ),
-            Some(callee @ super::Callee::Method { recv, method, .. }) => {
-                if let Type::UnresolvedNamed(module) = recv {
-                    if let Some(sig) = self.types.builtin_modules.get_method(module, method) {
-                        return never(&sig.ret);
-                    }
-                }
+            Some(callee @ super::Callee::Method { method, .. }) => {
                 callee
                     .recv_type_id()
                     .and_then(|id| self.types.get(id))
@@ -870,7 +938,6 @@ impl TypeChecker {
                     };
                     match args.get(pick)? {
                         rask_types::GenericArg::Type(t) => (**t).clone(),
-                        _ => return None,
                     }
                 }
                 _ => return None,
@@ -970,7 +1037,7 @@ impl TypeChecker {
 }
 
 fn is_runtime_context(ty: &str) -> bool {
-    matches!(ty, "Multitasking" | "MultiTasking" | "multitasking" | "ThreadPool" | "threadpool")
+    matches!(ty, "Multitasking" | "ThreadPool")
 }
 
 /// Levenshtein distance, for type-name suggestions.

@@ -12,6 +12,7 @@ members = [
     "crates/rask-comptime",
     "crates/rask-ownership",
     "crates/rask-mono",
+    "crates/rask-template",
     "crates/rask-mir",
     "crates/rask-miri",
     "crates/rask-codegen",
@@ -33,7 +34,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.6.0"
+version = "0.6.1"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/rask-lang/rask"

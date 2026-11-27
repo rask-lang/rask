@@ -18,67 +18,78 @@ pub fn print_usage() {
         output::arg("<command>"),
         output::arg("[args]")
     );
-    println!();
-    println!("{}", output::section_header("Common:"));
-    println!("  {} {}  Build and run, or run a single file", output::command("run"), output::arg("<file | dir>"));
-    println!("  {} {}   Compile to native executable", output::command("compile"), output::arg("<file>"));
-    println!("  {} {}      Build a package", output::command("build"), output::arg("[dir]"));
-    println!("  {} {}     Remove build artifacts", output::command("clean"), output::arg("[dir]"));
-    println!("  {}          List available compilation targets", output::command("targets"));
-    println!("  {} {}  Format source files", output::command("fmt"), output::arg("<file | dir>..."));
-    println!("  {} {}   Explain an error code", output::command("explain"), output::arg("<code>"));
-    println!("  {} {}   Write the Rask binding for a C header", output::command("bindc"), output::arg("<file.h>"));
-    println!("  {}             Show this help", output::command("help"));
-    println!("  {}          Show version", output::command("version"));
-
-    println!();
-    println!("{}", output::section_header("Project:"));
-    println!("  {} {}     Create a new Rask project", output::command("init"), output::arg("[name]"));
-    println!("  {} {}     Resolve and validate dependencies", output::command("fetch"), output::arg("[dir]"));
-    println!("  {} {}    Regenerate rask.lock", output::command("update"), output::arg("[dir]"));
-    println!("  {} {} Check rask.toml, or print its JSON Schema", output::command("manifest"), output::arg("check | json-schema"));
-    println!("  {} {}  Rewrite rask.toml for another schema version", output::command("migrate"), output::arg("--to <N>"));
-    println!();
-    println!("{}", output::section_header("Dependencies:"));
-    println!("  {} {}       Add a dependency to rask.toml", output::command("add"), output::arg("<pkg>"));
-    println!("  {} {}    Remove a dependency", output::command("remove"), output::arg("<pkg>"));
-    println!("  {} {}   Copy deps to vendor/ for offline builds", output::command("vendor"), output::arg("[dir]"));
-    println!("  {} {}    Check deps for known vulnerabilities", output::command("audit"), output::arg("[dir]"));
-
-    println!();
-    println!("{}", output::section_header("Publishing:"));
-    println!("  {} {}  Publish a package to the registry", output::command("publish"), output::arg("[dir]"));
-    println!("  {} {} Hide a version from new resolution", output::command("yank"), output::arg("<pkg> <ver>"));
-
-    println!();
-    println!("{}", output::section_header("Development:"));
-    println!("  {} {}   Watch files and re-run on change", output::command("watch"), output::arg("[cmd]"));
-
-    println!();
-    println!("{}", output::section_header("Testing:"));
-    println!("  {} {} Compile and run tests", output::command("test"), output::arg("<file | dir>"));
-    println!("  {} {} Run benchmarks in a file", output::command("benchmark"), output::arg("<file>"));
-    println!("  {} {} Run spec documentation tests", output::command("test-specs"), output::arg("[dir]"));
-    println!("  {} Stdlib specs against what exists and runs", output::command("stdlib-coverage"));
-
-    println!();
-    println!("{}", output::section_header("Debugging and Exploration:"));
-    println!("  {} {}  Lint source files for conventions", output::command("lint"), output::arg("<file|dir>"));
-    println!("  {} {}  Show a module's public API", output::command("api"), output::arg("<file | dir>"));
-    println!("  {} {}  List a package's claims and their verdicts", output::command("claims"), output::arg("[dir]"));
-    println!("  {}         Serve these commands to a coding agent's harness (MCP)", output::command("mcp"));
-    println!("  {} {} Report all unsafe operations by category", output::command("unsafe"), output::arg("<file | dir>"));
-
-    println!();
-    println!("{}", output::section_header("Compilation Phases:"));
-    println!("  {} {}       Tokenize a file and print tokens", output::command("lex"), output::arg("<file>"));
-    println!("  {} {}     Parse a file and print AST", output::command("parse"), output::arg("<file>"));
-    println!("  {} {}   Resolve names and print symbols", output::command("resolve"), output::arg("<file>"));
-    println!("  {} {} Type check files", output::command("typecheck"), output::arg("<file | dir>"));
-    println!("  {} {} Check ownership and borrowing rules", output::command("ownership"), output::arg("<file | dir>"));
-    println!("  {} {}  Evaluate comptime blocks", output::command("comptime"), output::arg("<file | dir>"));
-    println!("  {} {}      Dump monomorphized functions + layouts", output::command("mono"), output::arg("<file>"));
-    println!("  {} {}       Dump MIR (mid-level IR)", output::command("mir"), output::arg("<file>"));
+    // Everyday first: what a newcomer types in their first hour. The phase
+    // dumps are for compiler work and go last.
+    let sections: &[(&str, &[(&str, &str, &str)])] = &[
+        ("Everyday:", &[
+            ("init", "[name]", "Create a new project"),
+            ("run", "[file | dir]", "Build and run; no path means this package"),
+            ("test", "[file | dir]", "Run the `test` blocks"),
+            ("check", "[file | dir]", "Type-check without building"),
+            ("fmt", "-w [file | dir]", "Format in place (no -w: print the result)"),
+            ("lint", "[file | dir]", "Naming, style and idiom issues"),
+            ("explain", "<code>", "Explain an error code, e.g. E0308"),
+        ]),
+        ("Building:", &[
+            ("build", "[dir]", "Build a package"),
+            ("compile", "<file>", "Compile one file to an executable"),
+            ("clean", "[dir]", "Remove build artifacts"),
+            ("targets", "", "List compilation targets"),
+            ("bindc", "<file.h>", "Write the Rask binding for a C header"),
+        ]),
+        ("Packages:", &[
+            ("add", "<pkg>", "Add a dependency to rask.toml"),
+            ("remove", "<pkg>", "Remove a dependency"),
+            ("fetch", "[dir]", "Resolve and validate dependencies"),
+            ("update", "[dir]", "Regenerate rask.lock"),
+            ("vendor", "[dir]", "Copy deps to vendor/ for offline builds"),
+            ("audit", "[dir]", "Check deps for known vulnerabilities"),
+            ("manifest", "check | json-schema", "Check rask.toml, or print its JSON Schema"),
+            ("migrate", "--to <N>", "Rewrite rask.toml for another schema version"),
+            ("publish", "[dir]", "Publish a package to the registry"),
+            ("yank", "<pkg> <ver>", "Hide a version from new resolution"),
+        ]),
+        ("Tools:", &[
+            ("watch", "[cmd]", "Re-run a command when files change"),
+            ("benchmark", "<file>", "Run the benchmarks in a file"),
+            ("api", "[file | dir]", "A module's public API"),
+            ("claims", "[dir]", "A package's claims and their verdicts"),
+            ("unsafe", "<file | dir>", "Report unsafe operations by category"),
+            ("mcp", "", "Serve these commands to a coding agent (MCP)"),
+            ("test-specs", "[dir]", "Run spec documentation tests"),
+            ("stdlib-coverage", "", "Stdlib specs against what exists and runs"),
+            ("help", "[agents]", "This help, or the language card for an agent"),
+            ("version", "", "Show version"),
+        ]),
+        ("Compiler phases:", &[
+            ("lex", "<file>", "Print tokens"),
+            ("parse", "<file>", "Print the AST"),
+            ("resolve", "<file>", "Print resolved symbols"),
+            ("ownership", "<file | dir>", "Check ownership and borrowing"),
+            ("comptime", "<file | dir>", "Evaluate comptime blocks"),
+            ("mono", "<file>", "Dump monomorphized functions and layouts"),
+            ("mir", "<file>", "Dump MIR"),
+        ]),
+    ];
+    let width = sections
+        .iter()
+        .flat_map(|(_, rows)| rows.iter())
+        .map(|(cmd, args, _)| cmd.len() + if args.is_empty() { 0 } else { args.len() + 1 })
+        .max()
+        .unwrap_or(0);
+    for (title, rows) in sections {
+        println!();
+        println!("{}", output::section_header(title));
+        for (cmd, args, desc) in rows.iter() {
+            let plain = cmd.len() + if args.is_empty() { 0 } else { args.len() + 1 };
+            let pad = " ".repeat(width - plain + 2);
+            if args.is_empty() {
+                println!("  {}{pad}{desc}", output::command(cmd));
+            } else {
+                println!("  {} {}{pad}{desc}", output::command(cmd), output::arg(args));
+            }
+        }
+    }
 
     println!();
     println!("{}", output::section_header("Options:"));
@@ -137,10 +148,11 @@ pub fn print_run_help() {
     println!("{}: {} {} {}", "Usage".yellow(),
         output::command("rask"),
         output::command("run"),
-        output::arg("<file.rk | dir> [options] [-- <program args>]"));
+        output::arg("[file.rk | dir] [options] [-- <program args>]"));
     println!();
     println!("{}", output::section_header("Options:"));
     println!("  {}    Use the interpreter instead of compiling", output::arg("--interp"));
+    println!("  {}    Compile and run natively (the default; can't go with --interp)", output::arg("--native"));
     println!("  {}   Build in release mode", output::arg("--release"));
     println!("  {}   Verbose output", output::arg("--verbose"));
     println!("  {}        Output diagnostics as structured JSON", output::arg("--json"));
@@ -217,7 +229,7 @@ pub fn print_build_help() {
     println!();
     println!("{}", output::section_header("Options:"));
     println!("  {}          Build with release profile", output::arg("--release"));
-    println!("  {} {}  Build with custom profile", output::arg("--profile"), output::arg("<name>"));
+    println!("  {} {}  Custom profile (not implemented: only picks the output directory)", output::arg("--profile"), output::arg("<name>"));
     println!("  {} {} Cross-compile for target", output::arg("--target"), output::arg("<triple>"));
     println!("  {}           Bypass all caching (build script + compilation)", output::arg("--force"));
     println!("  {} Leave out features marked `default: true`", output::arg("--no-default-features"));
@@ -343,7 +355,7 @@ pub fn print_test_help() {
     println!("{}: {} {} {}", "Usage".yellow(),
         output::command("rask"),
         output::command("test"),
-        output::arg("<file.rk | dir> [-f <pattern>]"));
+        output::arg("[file.rk | dir] [-f <pattern>]"));
     println!();
     println!("{}", output::section_header("Options:"));
     println!("  {}     Run on the interpreter instead of compiling (single file only)", output::arg("--interp"));
@@ -455,7 +467,8 @@ pub fn print_fmt_help() {
     println!("{}", output::section_header("Format"));
     println!();
     println!("Format Rask source files according to standard style.");
-    println!("Reads from stdin when no file argument is given. Writes to stdout by default.");
+    println!("Prints the formatted source unless -w writes it back. With -w or --check and");
+    println!("no path, works on the package in the current directory; with neither, reads stdin.");
     println!();
     println!("{}: {} {} {}", "Usage".yellow(),
         output::command("rask"),
@@ -544,7 +557,7 @@ pub fn print_api_help() {
     println!("{}: {} {} {}", "Usage".yellow(),
         output::command("rask"),
         output::command("api"),
-        output::arg("<file.rk | dir> [--all]"));
+        output::arg("[file.rk | dir] [--all]"));
     println!();
     println!("{}", output::section_header("Options:"));
     println!("  {}     Show all items including private ones", output::arg("--all"));
@@ -574,7 +587,7 @@ pub fn print_lint_help() {
     println!("{}: {} {} {}", "Usage".yellow(),
         output::command("rask"),
         output::command("lint"),
-        output::arg("<file.rk | directory>"));
+        output::arg("[file.rk | directory]"));
     println!();
     println!("{}", output::section_header("Options:"));
     println!("  {}           Output as structured JSON", output::arg("--json"));
@@ -661,21 +674,19 @@ pub fn print_resolve_help() {
 }
 
 pub fn print_typecheck_help() {
-    println!("{}", output::section_header("Typecheck"));
+    println!("{}", output::section_header("Check"));
     println!();
-    println!("Type check Rask source files and validate type correctness.");
-    println!("Accepts a single file or a directory.");
-    println!("Fourth phase of compilation - ensures type safety.");
+    println!("Type-check a file or a package without building it.");
+    println!("With no path, checks the package in the current directory.");
     println!();
     println!("{}: {} {} {}", "Usage".yellow(),
         output::command("rask"),
-        output::command("typecheck"),
-        output::arg("<file.rk | dir>"));
-    println!();
-    println!("Alias: {} {} {}",
-        output::command("rask"),
         output::command("check"),
-        output::arg("<file.rk | dir>"));
+        output::arg("[file.rk | dir]"));
+    println!();
+    println!("Alias: {} {}",
+        output::command("rask"),
+        output::command("typecheck"));
     println!();
     println!("{}", output::section_header("Options:"));
     println!("  {}  Output type information as structured JSON", output::arg("--json"));

@@ -90,6 +90,16 @@ struct RaskTask {
     // A thread blocked in poll can't be woken through a condvar, so it polls
     // this pipe too. Made the first time one is needed.
     int               wake_pipe[2];
+
+    // A pooled job that hasn't started yet, and what it would run. Whoever
+    // claims it first runs it: the worker that dequeues it, or a joiner that
+    // finds it still waiting (`rask_task_pool_claim`).
+    atomic_int        pool_queued;
+    RaskTaskFn        pool_func;
+    void             *pool_env;
+    // Its body runs on a pool worker, so a join it makes from there may run
+    // a job itself rather than hold the worker idle.
+    int               on_pool;
 };
 
 // A thread blocking in the runtime says so, for the green scheduler's deadlock
@@ -142,10 +152,36 @@ void rask_closure_refuse_crossing(void *closure_base) {
     }
 }
 
+// Set while `rask_task_spawn_borrowed` starts a task: its closure lives in
+// the spawning frame, which outlives the task, so the task doesn't own it.
+static __thread int tl_spawn_borrowed;
+
 void rask_task_adopt_closure(RaskTask *t, void *closure_base, int64_t result_owned) {
+    t->result_owned = result_owned;
+    if (tl_spawn_borrowed) return;
     rask_closure_refuse_crossing(closure_base);
     t->closure_base = closure_base;
-    t->result_owned = result_owned;
+}
+
+// A task that borrows its frame (conc.async/S5). Its closure points into the
+// frame and lives there, so the task neither owns nor frees it. The frame
+// can't unwind while the task may still be using it: a panic drains the
+// held-access list before any frame goes, so the join is registered there,
+// and the handle's own join takes it back off.
+static void join_and_discard(int64_t h);
+
+RaskTask *rask_task_spawn_borrowed(int64_t target, void *closure_ptr, int64_t result_owned,
+                                   int8_t requires_pool) {
+    tl_spawn_borrowed = 1;
+    RaskTask *t;
+    switch (target) {
+        case 0:  t = rask_green_closure_spawn(closure_ptr, result_owned); break;
+        case 1:  t = rask_thread_spawn(closure_ptr, result_owned); break;
+        default: t = rask_threadpool_spawn(closure_ptr, result_owned, requires_pool); break;
+    }
+    tl_spawn_borrowed = 0;
+    rask_access_push(join_and_discard, (int64_t)(intptr_t)t);
+    return t;
 }
 
 int64_t rask_task_id(RaskTask *t) {
@@ -212,6 +248,7 @@ typedef struct {
     RaskTaskFn  func;
     void       *env;
     RaskTask   *task;
+    void      (*done)(void);   // after the body, however it ended; may be NULL
 } TaskEntry;
 
 // ─── Task slots ────────────────────────────────────────────
@@ -307,6 +344,37 @@ void rask_task_slots_install(int64_t n) {
     slot_granted = slot_next + (uint64_t)n;
     slot_flag_update_locked();
     pthread_mutex_unlock(&slot_lock);
+}
+
+// ─── The one active `using Multitasking` (conc.async/C1) ───
+//
+// A second block entered while one is open is a panic, from wherever it is
+// entered: a task that calls a function opening its own block lands here. Both
+// scheduler builds start and stop through these two, so the answer is the same
+// on either. Without it the inner block's shutdown waited for every task to
+// finish, itself included, and the program hung.
+static atomic_int scope_active;
+
+void rask_scope_enter(void) {
+    if (atomic_exchange(&scope_active, 1)) {
+        rask_panic("nested `using Multitasking` blocks are not allowed\n"
+                   "only one block may be active per process at a time");
+    }
+}
+
+void rask_scope_leave(void) {
+    atomic_store(&scope_active, 0);
+}
+
+// A panic in the body of a block skips the block's end: the cleanup that closes
+// it runs on the way out of `return` and `try`, not on an unwind. A program's
+// main task then ends the process, but the test runner survives it and starts
+// the next test, which has to find the scheduler closed and not take its own
+// first block for a nested one.
+void rask_scope_close_if_open(void) {
+    if (atomic_load(&scope_active)) {
+        rask_runtime_shutdown();
+    }
 }
 
 void rask_task_slots_clear(void) {
@@ -435,15 +503,20 @@ static void task_entry_run(TaskEntry *entry) {
     RaskTask *t = entry->task;
     RaskTaskFn func = entry->func;
     void *env = entry->env;
+    void (*done)(void) = entry->done;
     rask_free(entry);
     rask_task_run_body(t, func, env);
     rask_task_release(t);
+    if (done) done();
 }
 
 static void *task_thread_entry(void *arg) {
+    rask_fp_reset();
+    rask_stack_guard_thread_init();
     rask_outside_thread_start();
     task_entry_run((TaskEntry *)arg);
     rask_outside_thread_exit();
+    rask_thread_end();
     return NULL;
 }
 
@@ -457,13 +530,13 @@ static void task_fiber_entry(void *arg) {
 // ─── Threads ───────────────────────────────────────────────
 
 static RaskTask *task_spawn_thread(RaskTaskFn func, void *env, void *closure_base,
-                                   int64_t result_owned) {
+                                   int64_t result_owned, void (*done)(void)) {
     RaskTask *t = rask_task_new();
     rask_task_adopt_closure(t, closure_base, result_owned);
     t->own_thread = 1;
 
     TaskEntry *entry = (TaskEntry *)rask_alloc(sizeof(TaskEntry));
-    *entry = (TaskEntry){ .func = func, .env = env, .task = t };
+    *entry = (TaskEntry){ .func = func, .env = env, .task = t, .done = done };
 
 #ifdef RASK_SIM
     if (rask_sim_active()) {
@@ -492,9 +565,21 @@ static RaskTask *handle_task(void *h, const char *op) {
     return (RaskTask *)h;
 }
 
+static void run_inline(RaskTask *t, RaskTaskFn func, void *env);
+
 // Wait for the body to finish. A green joiner parks rather than holding its
 // worker; `rask_task_cond_wait` knows which it is.
 static void wait_done(RaskTask *t) {
+    // A pool worker joining a pooled job nobody has started runs it here
+    // rather than wait: a worker then only ever waits for a job another
+    // thread is already running, which is what keeps a task that spawns and
+    // joins inside a small pool from waiting on a job queued behind it. Any
+    // other thread waits, so the pool never runs more jobs than it has
+    // workers (conc.async/B6).
+    if (current_task && current_task->on_pool && rask_task_pool_claim(t)) {
+        t->on_pool = 1;
+        run_inline(t, t->pool_func, t->pool_env);
+    }
     // Read by the deadlock report while this waits, so it names the task.
     char what[48];
     snprintf(what, sizeof(what), "join(task %lld)", (long long)t->task_id);
@@ -515,11 +600,70 @@ static void wait_done(RaskTask *t) {
     }
 }
 
+// ─── Running a task in place ───────────────────────────────
+
+typedef struct {
+    RaskTaskFn func;
+    void      *env;
+    int64_t    result;
+} InlineRun;
+
+static void inline_body(void *a, void *b) {
+    (void)b;
+    InlineRun *run = (InlineRun *)a;
+    run->result = run->func(run->env);
+}
+
+// Run a task's body on this thread, now, inside whatever this thread is
+// already doing: a joiner that took its job back off the queue, or a
+// `requires_pool: false` spawn with no pool. The task's panic is caught here
+// and becomes its result, the same as on a worker; the task this thread was
+// running stays current around it.
+static void run_inline(RaskTask *t, RaskTaskFn func, void *env) {
+    RaskTask *outer = current_task;
+    int64_t outer_id = rask_panic_task_id();
+    current_task = t;
+    rask_panic_set_task_id(t->task_id);
+    InlineRun run = { .func = func, .env = env, .result = 0 };
+    RaskCaughtPanic *caught = rask_panic_catch(inline_body, &run, NULL);
+    rask_panic_set_task_id(outer_id);
+    current_task = outer;
+    char *msg = NULL;
+    if (caught) {
+        msg = strdup(caught->message ? caught->message : "(unknown panic)");
+        rask_panic_discard(caught);
+    }
+    rask_task_finish(t, run.result, msg);
+}
+
+void rask_task_mark_on_pool(RaskTask *t) {
+    t->on_pool = 1;
+}
+
+void rask_task_pool_queue(RaskTask *t, RaskTaskFn func, void *env) {
+    t->pool_func = func;
+    t->pool_env = env;
+    atomic_store_explicit(&t->pool_queued, 1, memory_order_release);
+}
+
+int rask_task_pool_claim(RaskTask *t) {
+    int expected = 1;
+    return atomic_compare_exchange_strong_explicit(
+        &t->pool_queued, &expected, 0, memory_order_acq_rel, memory_order_acquire);
+}
+
+void rask_task_run_inline(RaskTask *t, RaskTaskFn func, void *env) {
+    run_inline(t, func, env);
+}
+
 // Join, splitting "how it ended" from "what it produced". Folding both into one
 // int64_t read a task returning -1 back as a panic. `*msg_out` is always left a
 // valid string. Consumes the handle.
 int64_t rask_handle_join(void *h, int64_t *value_out, RaskStr *msg_out) {
     RaskTask *t = handle_task(h, "join");
+    // A task borrowing this frame registered its join for the panic path
+    // (`rask_task_spawn_borrowed`); this is that join.
+    rask_access_pop((int64_t)(intptr_t)h);
     wait_done(t);
     RASK_SIM_TRACE_TASK(rask_panic_task_id(), "join", t->task_id, NULL);
 
@@ -562,6 +706,13 @@ int64_t rask_handle_cancel(void *h, int64_t *value_out, RaskStr *msg_out) {
         pthread_mutex_unlock(&t->wait_lock);
     }
     return rask_handle_join(h, value_out, msg_out);
+}
+
+// The panic path's join of a borrowing task: wait, and let the result go.
+static void join_and_discard(int64_t h) {
+    RaskTask *t = (RaskTask *)(intptr_t)h;
+    wait_done(t);
+    rask_task_release(t);
 }
 
 void rask_handle_detach(void *h) {
@@ -790,12 +941,17 @@ static int64_t closure_spawn_entry(void *arg) {
 // `result_owned`: the closure hands back a heap box rather than a plain value.
 // See `RaskTask::result_owned`.
 RaskTask *rask_closure_spawn(void *closure_ptr, int64_t result_owned) {
+    return rask_closure_spawn_then(closure_ptr, result_owned, NULL);
+}
+
+// `done` runs on the task's thread once the body has ended, panic included.
+RaskTask *rask_closure_spawn_then(void *closure_ptr, int64_t result_owned, void (*done)(void)) {
     RaskTaskFn func = *(RaskTaskFn *)(closure_ptr);
     void *env = (char *)closure_ptr + 8;
 
     RaskSpawnCtx *ctx = (RaskSpawnCtx *)rask_alloc(sizeof(RaskSpawnCtx));
     *ctx = (RaskSpawnCtx){ .func = func, .env = env };
-    return task_spawn_thread(closure_spawn_entry, ctx, closure_ptr, result_owned);
+    return task_spawn_thread(closure_spawn_entry, ctx, closure_ptr, result_owned, done);
 }
 
 // `Thread.spawn` — a raw OS thread, which sim can't schedule (sim/B1). Task

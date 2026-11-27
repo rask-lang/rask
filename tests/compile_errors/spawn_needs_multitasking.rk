@@ -18,6 +18,10 @@
 // entry point, a `test` block, a `@test` function) is blamed at the `spawn`
 // itself. Everything else is reported at its call sites.
 
+import http
+import http.Request
+import http.Response
+
 // A library function that spawns: no error here. Its callers are the ones who
 // have to open a scope.
 func launch_worker() {
@@ -36,6 +40,34 @@ func main() {
 test "calls a function that spawns" {
     // ERROR: calling `launch_worker` needs a `using Multitasking { }` scope [E0353]
     launch_worker()
+}
+
+// --- CC2 follows methods as well: a method that spawns, and the stdlib's own
+// `http.serve`, need the scope at the call ---
+struct Pool {
+    n: i64
+}
+
+extend Pool {
+    func start(self) {
+        let h = spawn { return 1 }
+        h.detach()
+    }
+}
+
+func echo(req: Request) -> Response {
+    return Response.ok(req.path())
+}
+
+test "calls a method that spawns" {
+    let p = Pool(n: 1)
+    // ERROR: calling `Pool.start` needs a `using Multitasking { }` scope [E0353]
+    p.start()
+}
+
+test "calls http.serve" {
+    // ERROR: calling `http.serve` needs a `using Multitasking { }` scope [E0353]
+    http.serve("127.0.0.1:0", echo) catch _ => {}
 }
 
 // --- CC1 inside a test body: T17, the same rule with no caller to blame ---

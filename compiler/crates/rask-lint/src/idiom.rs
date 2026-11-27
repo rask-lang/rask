@@ -437,7 +437,7 @@ fn binop_text(op: &BinOp) -> Option<&'static str> {
 /// `none`), so this is a lint rather than a warning: `tool.warnings/SB3`,
 /// "lints enforce how code should look".
 ///
-/// Syntactic, and sound that way: `Pattern::TypePat` with the name `none`
+/// Syntactic, and sound that way: `PatternKind::TypePat` with the name `none`
 /// parses only from the `none` keyword, so an arm spelled that way means the
 /// scrutinee has a `none` branch.
 pub fn check_match_on_optional(decls: &[Decl], source: &str) -> Vec<LintDiagnostic> {
@@ -452,8 +452,8 @@ pub fn check_match_on_optional(decls: &[Decl], source: &str) -> Vec<LintDiagnost
 
 fn is_none_pattern(p: &rask_ast::expr::Pattern) -> bool {
     matches!(
-        p,
-        rask_ast::expr::Pattern::TypePat { ty: rask_ast::ty::TypeExpr::NoneType, binding: None }
+        &p.kind,
+        rask_ast::expr::PatternKind::TypePat { ty: rask_ast::ty::TypeExpr::NoneType, binding: None }
     )
 }
 

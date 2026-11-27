@@ -143,9 +143,11 @@ mod tests {
             ],
             entry_block: block(0),
             ret_ty: MirType::Void,
-            source_file: None,
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
+            param_modes: Vec::new(),
+            item_mode_from_body: false,
         };
 
         let removed = eliminate_dead_code(&mut func);
@@ -181,9 +183,11 @@ mod tests {
             ],
             entry_block: block(0),
             ret_ty: MirType::I64,
-            source_file: None,
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
+            param_modes: Vec::new(),
+            item_mode_from_body: false,
         };
 
         let removed = eliminate_dead_code(&mut func);
@@ -221,9 +225,11 @@ mod tests {
             ],
             entry_block: block(0),
             ret_ty: MirType::I64,
-            source_file: None,
             is_extern_c: false,
+            span: rask_ast::Span::new(0, 0),
             inline_hint: false,
+            param_modes: Vec::new(),
+            item_mode_from_body: false,
         };
 
         let removed = eliminate_dead_code(&mut func);

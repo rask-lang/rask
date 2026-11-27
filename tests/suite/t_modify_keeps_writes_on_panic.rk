@@ -1,0 +1,45 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// `v.modify(i, |mutate x| ..)` works on the element in place, so what the
+// closure wrote before it panicked stays (mem.borrowing/W5, #1926). The
+// interpreter worked on a copy and only wrote it back when the closure
+// returned, so a panic threw the writes away.
+import async.JoinError
+import sync.Shared
+import thread.Thread
+
+func risky(n: i64) -> i64 {
+    if n > 0 {
+        panic("boom")
+    }
+    return n
+}
+
+func change(v: Shared<Vec<i64>>) {
+    with v.write() as xs {
+        xs.modify(0, |mutate x: i64| {
+            x = 99
+            let k = risky(1)
+            x = k
+        })
+    }
+}
+
+func main() {}
+
+test "a panic inside modify keeps the closure's earlier writes" {
+    let v = Shared.new(Vec.new())
+    with v.write() as xs {
+        xs.push(1)
+    }
+    let other = v.clone()
+    mut panicked = false
+    using Multitasking {
+        let h = spawn { change(other) }
+        panicked = h.join() is JoinError
+    }
+    assert panicked
+    with v.read() as xs {
+        assert xs[0] == 99
+    }
+}

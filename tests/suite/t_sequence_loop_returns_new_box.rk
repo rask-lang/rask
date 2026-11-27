@@ -1,0 +1,93 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A `for` over a sequence whose body returns a box it builds.
+//
+// The body is a closure, so `return Circle(…)` writes the answer into a
+// variable of the function's through a borrowed capture, and the function
+// returns that variable after the loop. The box was made inside the closure,
+// so the function didn't count as handing a box back, and the caller freed
+// nothing: one box leaked per hit. A box the function built before the loop
+// and returns from inside it is still the function's, and is freed once. The
+// strings are long enough to live on the heap.
+
+import sequence.Sequence
+
+interface Shape {
+    func name(self) -> string
+}
+
+struct Circle { tag: string }
+Circle implements Shape {
+    func name(self) -> string { return self.tag }
+}
+
+func nums() -> Sequence<i64> {
+    return |yield| {
+        for i in 0..4 {
+            if !yield(i) { return }
+        }
+    }
+}
+
+func long(n: i64) -> string {
+    return "long-heap-string-number-{n}-padded-past-inline"
+}
+
+func single(k: i64) -> any Shape? {
+    for a in nums() {
+        if a == k { return Circle(tag: long(a)) }
+    }
+    return none
+}
+
+func nested(k: i64) -> any Shape? {
+    for a in nums() {
+        for b in nums() {
+            if b == 2 && a == k { return Circle(tag: long(a * 10 + b)) }
+        }
+    }
+    return none
+}
+
+func bare(k: i64) -> any Shape {
+    for a in nums() {
+        if a == k { return Circle(tag: long(a)) }
+    }
+    return Circle(tag: long(99))
+}
+
+func built_before(k: i64) -> any Shape {
+    let s: any Shape = Circle(tag: long(50))
+    for a in nums() {
+        if a == k { return s }
+    }
+    return Circle(tag: long(51))
+}
+
+test "an optional box returned from the loop" {
+    if single(2)? as q {
+        assert q.name() == long(2)
+    } else {
+        assert false
+    }
+    assert single(9) is none
+}
+
+test "an optional box returned from a nested loop" {
+    if nested(1)? as q {
+        assert q.name() == long(12)
+    } else {
+        assert false
+    }
+    assert nested(9) is none
+}
+
+test "a box returned from the loop" {
+    assert bare(3).name() == long(3)
+    assert bare(9).name() == long(99)
+}
+
+test "a box built before the loop" {
+    assert built_before(1).name() == long(50)
+    assert built_before(9).name() == long(51)
+}

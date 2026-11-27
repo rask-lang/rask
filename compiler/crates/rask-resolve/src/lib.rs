@@ -31,12 +31,12 @@ pub use scope::{Scope, ScopeId, ScopeKind};
 pub use symbol::{Symbol, SymbolId, SymbolKind, SymbolTable, BuiltinFunctionKind};
 pub use symbol::{is_builtin_type, is_reserved_builtin_fn, is_always_in_scope};
 pub use resolver::Resolver;
-pub use package::{Package, PackageId, PackageRegistry, PackageError, SourceFile};
+pub use package::{ImportIndex, Package, PackageId, PackageRegistry, PackageError, SourceFile};
 #[cfg(not(target_arch = "wasm32"))]
 pub use lockfile::LockFile;
 
 use rask_ast::decl::Decl;
-use rask_ast::NodeId;
+use rask_ast::{NodeId, Span};
 use std::collections::{HashMap, HashSet};
 
 /// True when `name` names a builtin stdlib module.
@@ -75,42 +75,53 @@ pub struct ResolvedProgram {
     /// using its own `Labeled` for `Doc` even when the program linking it also
     /// pulls in `libb`'s. Empty outside a package build.
     pub package_deps: HashMap<String, HashSet<String>>,
+    /// Names a `field: Type` pattern declared tentatively, by symbol.
+    ///
+    /// In `Cash(amount: i32)` the colon could mean a rename or a type test,
+    /// and the resolver can't tell which: that depends on `amount`'s type.
+    /// It declares `amount` so an arm body that uses it still resolves, and
+    /// the checker, which does know, either binds `amount` itself or reports
+    /// a use of a name nothing bound.
+    pub field_type_pattern_names: HashMap<SymbolId, FieldTypePattern>,
+    /// The program's `let`/`mut` bindings nothing reads, in source order
+    /// (tool.warnings/W3). Warnings, so they ride on a successful resolve.
+    pub unused_locals: Vec<UnusedLocal>,
 }
 
-/// Resolve all names in a list of declarations (single-file mode).
-pub fn resolve(decls: &[Decl]) -> Result<ResolvedProgram, Vec<ResolveError>> {
-    Resolver::resolve(decls)
+/// A `let`/`mut` binding nothing reads.
+#[derive(Debug, Clone)]
+pub struct UnusedLocal {
+    pub name: String,
+    /// The name where it's bound.
+    pub span: Span,
 }
 
-/// Resolve stdlib definition files — skips E0209 builtin shadowing checks.
-pub fn resolve_stdlib(decls: &[Decl]) -> Result<ResolvedProgram, Vec<ResolveError>> {
-    Resolver::resolve_stdlib(decls)
+/// `field: ty` in the pattern `pattern(…)`, where `ty` names a type.
+#[derive(Debug, Clone)]
+pub struct FieldTypePattern {
+    pub pattern: String,
+    pub field: String,
+    pub ty: String,
 }
 
-/// Resolve the program with the stdlib's own bodies alongside it.
-pub fn resolve_with_stdlib(
-    decls: &[Decl],
-    stdlib_decls: &[Decl],
-) -> Result<ResolvedProgram, Vec<ResolveError>> {
-    Resolver::resolve_with_stdlib(decls, stdlib_decls)
+/// What [`resolve`] works on.
+#[derive(Clone, Copy)]
+pub struct ResolveInput<'a> {
+    /// The program: one file, or every file of a package merged.
+    pub decls: &'a [Decl],
+    /// The stdlib's own bodies, resolved alongside the program. They're
+    /// compiled into every program, so their names have to bind for anything
+    /// downstream to know what a call inside them refers to (#425). Empty
+    /// when only the program's own names matter. To resolve a stdlib file by
+    /// itself, put it here and leave `decls` empty.
+    pub stdlib: &'a [Decl],
+    /// For a package build: the registry of every package in it, and which
+    /// one `decls` is. Other packages' exports and types come from here.
+    pub package: Option<(&'a PackageRegistry, PackageId)>,
 }
 
-pub fn resolve_package(
-    decls: &[Decl],
-    registry: &PackageRegistry,
-    current_package: PackageId,
-) -> Result<ResolvedProgram, Vec<ResolveError>> {
-    Resolver::resolve_package(decls, registry, current_package)
-}
-
-/// Resolve a package with separate stdlib declarations. Stdlib decls are
-/// processed in stdlib_mode (bypasses builtin-shadowing checks).
-pub fn resolve_package_with_stdlib(
-    decls: &[Decl],
-    registry: &PackageRegistry,
-    current_package: PackageId,
-    stdlib_decls: &[Decl],
-) -> Result<ResolvedProgram, Vec<ResolveError>> {
-    Resolver::resolve_package_with_stdlib(decls, registry, current_package, stdlib_decls)
+/// Resolve every name in a program.
+pub fn resolve(input: ResolveInput) -> Result<ResolvedProgram, Vec<ResolveError>> {
+    Resolver::resolve(input)
 }
 

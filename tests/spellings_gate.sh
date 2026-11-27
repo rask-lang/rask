@@ -1,17 +1,20 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: (MIT OR Apache-2.0)
 #
-# Internal-spelling gate.
+# Unshaped-call gate.
 #
-# MIR mints names for operations the stdlib declares under another spelling —
-# `v[i]` is `Vec_index`, a `with` block on a `Shared` is one of several
-# `acquire`s. `INTERNAL_SPELLINGS` in rask-stdlib/src/mir_metadata.rs says what
-# each one stands for, and that answers who owns what crosses the call.
+# MIR mints names for operations the stdlib declares under another spelling,
+# or not at all — `v[i]` is `Vec_index`, a `with` block on a `Shared` is one
+# of several `acquire`s, a free is `Vec_free`. What such a call does with its
+# arguments and its result (who owns what crosses it) is stated where lowering
+# emits the call: `FunctionRef::like`, `borrowing`, `releasing`, `reading`.
+# A stdlib method's is read from its declaration in stdlib/*.rk.
 #
-# A name with no line there is treated as owning everything it touches, which
-# leaks rather than double-frees — the safe direction, but still wrong. This
-# gate is what stops it staying that way: every reported name has to get a
-# line.
+# A call lowering emits without a shape gets guessed at, and the passes don't
+# guess alike: string_rc_insert assumes it keeps every argument, container_drop
+# that it keeps none. `json_decode_zero(dst, n)` writes into `dst`; guessed as
+# keeping it, `dst`'s not-yet-written contents were retained and valgrind
+# caught the read. Every reported name gets a shape where it is emitted.
 #
 # Why a gate and not a unit test: the set of names isn't statically
 # enumerable. Lowering builds most of them from the receiver's type at the call
@@ -45,12 +48,12 @@ export -f slot
 # they cover both lowering paths.
 spell_test() {
   timeout 60 "$RASK" test "$1" 2>&1 >/dev/null |
-    grep '^\[unmapped-spelling\]' > "$WORK/$(slot "$1").found"
+    grep '^\[unshaped-call\]' > "$WORK/$(slot "$1").found"
   return 0
 }
 spell_compile() {
   timeout 60 "$RASK" compile "$1" 2>&1 >/dev/null |
-    grep '^\[unmapped-spelling\]' > "$WORK/$(slot "$1").found"
+    grep '^\[unshaped-call\]' > "$WORK/$(slot "$1").found"
   return 0
 }
 
@@ -58,22 +61,22 @@ fan_out spell_test "$ROOT"/tests/suite/*.rk
 fan_out spell_compile "$ROOT"/examples/*.rk "$ROOT"/specs/analysis/prototype/*.rk
 
 names="$(cat "$WORK"/*.found 2>/dev/null |
-  sed -E 's/^\[unmapped-spelling\] ([A-Za-z_0-9]+).*/\1/' | sort -u)"
+  sed -E 's/^\[unshaped-call\] ([A-Za-z_0-9]+).*/\1/' | sort -u)"
 
 echo "──────────────────────────────────────────────────"
 if [ -z "$names" ]; then
-  echo "spellings gate: every internal name is accounted for"
+  echo "unshaped-call gate: every call lowering emits says what it does"
   exit 0
 fi
 
-echo "These names reach MIR with nothing saying what they stand for, so they are"
-echo "being treated as owning everything they touch — which leaks:"
+echo "These calls reach MIR without saying what they do with their arguments and"
+echo "result, so the ownership passes have to guess, and they guess differently:"
 echo
 echo "$names" | sed 's/^/  /'
 echo
-echo "Give each one a line in INTERNAL_SPELLINGS (rask-stdlib/src/mir_metadata.rs):"
-echo "  SameAs(\"<Type>_<method>\")  the same operation as that declared method"
-echo "  FreshFromReceiver          borrows its receiver, keeps nothing, returns something new"
-echo "  ConsumesReceiver           takes the receiver and it is gone"
-echo "  NoReceiver                 a static: nothing to borrow"
+echo "State each one where lowering emits it (rask-mir/src/operand.rs):"
+echo "  FunctionRef::like(name, \"Type_method\")  the same operation as that declared method"
+echo "  FunctionRef::borrowing(name)               borrows its receiver, keeps nothing, returns something new"
+echo "  FunctionRef::releasing(name)               takes the receiver and it is gone"
+echo "  FunctionRef::reading(name)                 no receiver, only reads its arguments"
 exit 1

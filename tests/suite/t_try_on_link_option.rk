@@ -1,0 +1,101 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// `try` on a `Link<T>?` (#1800).
+//
+// A `Link<T>?` is one word: the node's address, or null for `none`, with no
+// tag. Native `try` read a tag off it anyway, which read through the pointer.
+// A present link took the `none` path, and an absent one crashed reading an
+// error out of address zero. `if x? as y` and `??` asked the right question
+// all along; `try` didn't ask at all.
+import memory.Link
+import memory.Rack
+
+struct Item {
+    id: i32
+    peer: Link<Item>?
+}
+
+func peer_id(h: Link<Item>) -> i32? {
+    let p = try h.peer
+    return p.id
+}
+
+func two_hops(h: Link<Item>) -> i32? {
+    let p = try h.peer
+    let q = try p.peer
+    return q.id
+}
+
+func main() {}
+
+test "try on a present link unwraps it" {
+    mut rack: Rack<Item> = Rack.new()
+    let a = rack.insert(Item(id: 1, peer: none))
+    let h = rack.insert(Item(id: 2, peer: a))
+    assert (peer_id(h) ?? -1) == 1
+}
+
+test "try on an absent link propagates none" {
+    mut rack: Rack<Item> = Rack.new()
+    let a = rack.insert(Item(id: 1, peer: none))
+    assert (peer_id(a) ?? -1) == -1
+}
+
+test "try chains through links" {
+    mut rack: Rack<Item> = Rack.new()
+    let a = rack.insert(Item(id: 1, peer: none))
+    let b = rack.insert(Item(id: 2, peer: a))
+    let c = rack.insert(Item(id: 3, peer: b))
+    assert (two_hops(c) ?? -1) == 1
+    assert (two_hops(b) ?? -1) == -1
+}
+
+test "try on a deleted edge propagates none" {
+    mut rack: Rack<Item> = Rack.new()
+    let a = rack.insert(Item(id: 1, peer: none))
+    let h = rack.insert(Item(id: 2, peer: a))
+    rack.delete(a)
+    assert (peer_id(h) ?? -1) == -1
+}
+
+test "try in a test body unwraps a present link" {
+    mut rack: Rack<Item> = Rack.new()
+    let a = rack.insert(Item(id: 1, peer: none))
+    let snap = rack.snapshot()
+    let a2 = try snap.corresponding(a)
+    assert a2.id == 1
+}
+
+// The other side of the same thing: a function that *returns* a `Link<T>?`
+// hands back `none` as the null word. The none path wrote a tag byte into its
+// return value instead, which is a store through a null pointer.
+func peer_link(h: Link<Item>) -> Link<Item>? {
+    let p = try h.peer
+    return p
+}
+
+func pick(h: Link<Item>, n: i32?) -> Link<Item>? {
+    let k = try n
+    if k > 0 {
+        return h
+    }
+    return none
+}
+
+test "try returns none out of a function returning a link" {
+    mut rack: Rack<Item> = Rack.new()
+    let a = rack.insert(Item(id: 1, peer: none))
+    let h = rack.insert(Item(id: 2, peer: a))
+    assert peer_link(a) is none
+    if peer_link(h)? as p {
+        assert p.id == 1
+    } else {
+        assert false
+    }
+    assert pick(a, none) is none
+    if pick(a, 3)? as p {
+        assert p.id == 1
+    } else {
+        assert false
+    }
+}

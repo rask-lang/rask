@@ -7,25 +7,29 @@
 //! natively and padding is zero.
 
 use indexmap::IndexMap;
-use rask_types::Type;
+use rask_types::{ArrayLen, Type};
 
 use super::{Interpreter, RuntimeError};
 use crate::value::{FloatKind, IntKind, Value};
 
-fn unsupported(ty: &Type) -> RuntimeError {
-    RuntimeError::TypeError(format!(
-        "transmute of `{ty}` isn't supported by the interpreter: it reinterprets \
-         scalars, fixed arrays, tuples and structs of those"
-    ))
-}
 
-fn align_up(n: u32, align: u32) -> u32 {
-    (n + align - 1) & !(align - 1)
+/// Does `ty` hold a name the checker left spelled?
+fn names_something_spelled(ty: &Type) -> bool {
+    use rask_types::GenericArg;
+    match ty {
+        Type::UnresolvedNamed(_) | Type::UnresolvedGeneric { .. } => true,
+        Type::Generic { args, .. } => {
+            args.iter().any(|a| matches!(a, GenericArg::Type(t) if names_something_spelled(t)))
+        }
+        Type::Array { elem, .. } => names_something_spelled(elem),
+        Type::Tuple(elems) => elems.iter().any(names_something_spelled),
+        _ => false,
+    }
 }
 
 /// Width in bytes of an integer type, and whether it's signed.
-fn int_shape(ty: &Type) -> Option<(usize, bool)> {
-    Some(match ty.at_target_width() {
+fn int_shape(ty: &Type, target: rask_ast::Target) -> Option<(usize, bool)> {
+    Some(match ty.at_target(target) {
         Type::I8 => (1, true),
         Type::I16 => (2, true),
         Type::I32 => (4, true),
@@ -39,15 +43,33 @@ fn int_shape(ty: &Type) -> Option<(usize, bool)> {
 }
 
 impl Interpreter {
+    fn unsupported(&self, ty: &Type) -> RuntimeError {
+        RuntimeError::TypeError(format!(
+            "transmute of `{}` isn't supported by the interpreter: it reinterprets \
+             scalars, fixed arrays, tuples and structs of those",
+            self.types.resolve_type_names(ty)
+        ))
+    }
+
     /// `transmute(value)` from `from` to `to`, both the checker's types.
     pub(crate) fn transmute(&self, value: &Value, from: &Type, to: &Type) -> Result<Value, RuntimeError> {
-        let spell = |ty: &Type| rask_check::layout_spelling(ty, &self.types).ok_or_else(|| unsupported(ty));
-        let (from, to) = (spell(from)?, spell(to)?);
+        // What transmute reinterprets is scalars, arrays, tuples and structs of
+        // those, all resolved to ids. A name still spelled is something else:
+        // inside a generic body it's the body's own parameter, which the
+        // interpreter isn't handed the argument for (#1813).
+        let settle = |ty: &Type| {
+            rask_layout::settle(ty, rask_layout::Unsolved::Refuse, &rask_layout::no_params)
+                .filter(|t| !names_something_spelled(t))
+                .ok_or_else(|| self.unsupported(ty))
+        };
+        let (from, to) = (settle(from)?, settle(to)?);
         let (from_size, _) = self.byte_layout(&from)?;
         let (to_size, _) = self.byte_layout(&to)?;
         if from_size != to_size {
             return Err(RuntimeError::TypeError(format!(
-                "transmute from `{from}` ({from_size} bytes) to `{to}` ({to_size} bytes): the sizes differ"
+                "transmute from `{}` ({from_size} bytes) to `{}` ({to_size} bytes): the sizes differ",
+                self.types.resolve_type_names(&from),
+                self.types.resolve_type_names(&to)
             )));
         }
         let mut bytes = vec![0u8; from_size as usize];
@@ -59,7 +81,7 @@ impl Interpreter {
     fn byte_layout(&self, ty: &Type) -> Result<(u32, u32), RuntimeError> {
         match ty {
             Type::Bool | Type::Char | Type::F32 | Type::F64 | Type::I128 | Type::U128 => {}
-            _ if int_shape(ty).is_some() => {}
+            _ if int_shape(ty, self.types.target()).is_some() => {}
             Type::Array { elem, .. } => {
                 self.byte_layout(elem)?;
             }
@@ -68,34 +90,43 @@ impl Interpreter {
                     self.byte_layout(e)?;
                 }
             }
-            Type::UnresolvedNamed(_) | Type::UnresolvedGeneric { .. } => {
-                self.struct_layout(ty).ok_or_else(|| unsupported(ty))?;
+            Type::Named(_) | Type::Generic { .. } => {
+                self.struct_layout(ty).ok_or_else(|| self.unsupported(ty))?;
             }
-            _ => return Err(unsupported(ty)),
+            _ => return Err(self.unsupported(ty)),
         }
-        Ok(self.types.size_align_spelled(ty))
+        Ok(self.types.size_align_settled(ty))
     }
 
-    /// The struct a layout-spelled type names, its name, and its layout.
+    /// Size and alignment of each element of a tuple.
+    fn tuple_parts(&self, elems: &[Type]) -> Result<Vec<(u32, u32)>, RuntimeError> {
+        elems.iter().map(|e| self.byte_layout(e)).collect()
+    }
+
+    /// The struct a type names, its name, and its layout.
     fn struct_layout(&self, ty: &Type) -> Option<(String, rask_layout::StructLayout)> {
-        let (name, args) = match ty {
-            Type::UnresolvedNamed(name) => (name, Vec::new()),
-            Type::UnresolvedGeneric { name, args } => (
-                name,
+        let (id, args) = match ty {
+            Type::Named(id) => (*id, Vec::new()),
+            Type::Generic { base, args } => (
+                *base,
                 args.iter()
                     .filter_map(|a| match a {
                         rask_types::GenericArg::Type(t) => Some((**t).clone()),
-                        _ => None,
                     })
                     .collect(),
             ),
             _ => return None,
         };
-        Some((name.clone(), self.types.struct_layout_named(name, &args)?))
+        Some((self.types.type_name(id), self.types.struct_layout(id, &args)?))
     }
 
     fn write_bytes(&self, value: &Value, ty: &Type, out: &mut [u8], at: usize) -> Result<(), RuntimeError> {
-        let mismatch = || RuntimeError::TypeError(format!("transmute: `{ty}` value doesn't match its type"));
+        let mismatch = || {
+            RuntimeError::TypeError(format!(
+                "transmute: `{}` value doesn't match its type",
+                self.types.resolve_type_names(ty)
+            ))
+        };
         let mut put = |bytes: &[u8]| out[at..at + bytes.len()].copy_from_slice(bytes);
         match (ty, value) {
             (Type::Bool, Value::Bool(b)) => put(&[*b as u8]),
@@ -104,8 +135,8 @@ impl Interpreter {
             (Type::F64, Value::Float(f, _)) => put(&f.to_bits().to_le_bytes()),
             (Type::I128, Value::Int128(v)) => put(&v.to_le_bytes()),
             (Type::U128, Value::Uint128(v)) => put(&v.to_le_bytes()),
-            (_, Value::Int(v, _)) if int_shape(ty).is_some() => {
-                let (width, _) = int_shape(ty).unwrap();
+            (_, Value::Int(v, _)) if int_shape(ty, self.types.target()).is_some() => {
+                let (width, _) = int_shape(ty, self.types.target()).unwrap();
                 put(&v.to_le_bytes()[..width]);
             }
             (Type::Array { elem, .. }, Value::Vec(items)) => {
@@ -115,16 +146,13 @@ impl Interpreter {
                 }
             }
             (Type::Tuple(elems), Value::Tuple(items)) => {
-                let mut offset = 0u32;
-                for (elem, item) in elems.iter().zip(items.iter()) {
-                    let (size, align) = self.byte_layout(elem)?;
-                    offset = align_up(offset, align);
+                let (offsets, _, _) = rask_layout::tuple_layout(self.tuple_parts(elems)?);
+                for ((elem, item), offset) in elems.iter().zip(items.iter()).zip(offsets) {
                     self.write_bytes(item, elem, out, at + offset as usize)?;
-                    offset += size;
                 }
             }
-            (Type::UnresolvedNamed(_) | Type::UnresolvedGeneric { .. }, Value::Struct(data)) => {
-                let (_, layout) = self.struct_layout(ty).ok_or_else(|| unsupported(ty))?;
+            (Type::Named(_) | Type::Generic { .. }, Value::Struct(data)) => {
+                let (_, layout) = self.struct_layout(ty).ok_or_else(|| self.unsupported(ty))?;
                 let data = data.lock().unwrap();
                 for field in &layout.fields {
                     let v = data.fields.get(&field.name).ok_or_else(mismatch)?;
@@ -157,33 +185,30 @@ impl Interpreter {
             Type::F64 => Value::Float(f64::from_bits(u64::from_le_bytes(take(8)[..8].try_into().unwrap())), FloatKind::F64),
             Type::I128 => Value::Int128(i128::from_le_bytes(take(16))),
             Type::U128 => Value::Uint128(u128::from_le_bytes(take(16))),
-            _ if int_shape(ty).is_some() => {
-                let (width, signed) = int_shape(ty).unwrap();
+            _ if int_shape(ty, self.types.target()).is_some() => {
+                let (width, signed) = int_shape(ty, self.types.target()).unwrap();
                 let raw = u64::from_le_bytes(take(width)[..8].try_into().unwrap());
                 let shift = 64 - 8 * width as u32;
                 let v = if signed { ((raw << shift) as i64) >> shift } else { raw as i64 };
-                Value::Int(v, IntKind::from_type(ty))
+                Value::Int(v, IntKind::from_type(ty, self.types.target()))
             }
-            Type::Array { elem, len } => {
+            Type::Array { elem, len: ArrayLen::Known(len) } => {
                 let (elem_size, _) = self.byte_layout(elem)?;
                 let items = (0..*len)
                     .map(|i| self.read_bytes(elem, bytes, at + i * elem_size as usize))
                     .collect::<Result<Vec<_>, _>>()?;
-                Value::vec(items)
+                Value::array(items)
             }
             Type::Tuple(elems) => {
-                let mut offset = 0u32;
+                let (offsets, _, _) = rask_layout::tuple_layout(self.tuple_parts(elems)?);
                 let mut items = Vec::with_capacity(elems.len());
-                for elem in elems {
-                    let (size, align) = self.byte_layout(elem)?;
-                    offset = align_up(offset, align);
+                for (elem, offset) in elems.iter().zip(offsets) {
                     items.push(self.read_bytes(elem, bytes, at + offset as usize)?);
-                    offset += size;
                 }
                 Value::tuple(items)
             }
-            Type::UnresolvedNamed(_) | Type::UnresolvedGeneric { .. } => {
-                let (name, mut layout) = self.struct_layout(ty).ok_or_else(|| unsupported(ty))?;
+            Type::Named(_) | Type::Generic { .. } => {
+                let (name, mut layout) = self.struct_layout(ty).ok_or_else(|| self.unsupported(ty))?;
                 layout.fields.sort_by_key(|f| f.decl_index);
                 let mut fields = IndexMap::new();
                 for field in &layout.fields {
@@ -191,7 +216,7 @@ impl Interpreter {
                 }
                 Value::new_struct(name, fields, None)
             }
-            _ => return Err(unsupported(ty)),
+            _ => return Err(self.unsupported(ty)),
         })
     }
 }

@@ -3,39 +3,52 @@
 
 use rask_diagnostics::{Diagnostic, ToDiagnostic};
 
-/// Using a `Link<T>` after its node was deleted.
+/// Using a `Link<T>` after its node was, or may have been, deleted.
 ///
 /// The move checker is what proves this, but nothing moved: `delete` freed the
 /// node, so every name for it is dead. Saying "moved" here would be wrong, and
 /// the generic advice — "add `.clone()`" — would hand back a second dead pointer.
+///
+/// `revoked` is a link that died without being what the delete named: a
+/// `clear`, a `deleting` call, or a possible alias of the node a delete did
+/// name. Its node may be alive, so "was deleted here" would be a claim about
+/// a node the code never deleted. One error either way, so one code.
 fn link_deleted_diagnostic(
     name: &str,
     deleted_at: rask_ast::Span,
     use_span: rask_ast::Span,
     maybe: bool,
+    revoked: bool,
 ) -> Diagnostic {
-    let headline = if maybe {
+    let headline = if maybe || revoked {
         format!("`{}` may name a deleted node — possible use after free", name)
     } else {
         format!("`{}` names a deleted node — this is a use after free", name)
     };
     let primary = if maybe {
         format!("`{}` is dead on at least one path reaching here", name)
+    } else if revoked {
+        format!("`{}` may point at freed memory from here on", name)
     } else {
         format!("`{}` points at freed memory from here on", name)
     };
-    Diagnostic::error(headline)
-        .with_code("E0328")
-        .with_primary(use_span, primary)
-        .with_secondary(deleted_at, format!("the node `{}` names was deleted here", name))
+    let d = Diagnostic::error(headline).with_code("E0328").with_primary(use_span, primary);
+    if revoked {
+        return d
+            .with_secondary(deleted_at, format!("this can delete the node `{}` names, so `{}` dies here", name, name))
+            .with_fix("find the node again after this line, or keep the link in a `Link<T>?` field")
+            .with_why("a delete that can't say which nodes went leaves no local link into that rack trustworthy after it. A field can survive, because the rack nulls it if its node went and the `?` makes you check");
+    }
+    d.with_secondary(deleted_at, format!("the node `{}` names was deleted here", name))
         .with_help("read what you need before the delete, or keep the reference in a field so the rack can null it")
-        .with_fix("move the reads above the delete, or rack the link in a `Link<T>?` field")
+        .with_fix("move the reads above the delete, or keep the link in a `Link<T>?` field")
         .with_why("a `Link<T>` is a pointer to a node, and `delete` frees the node — so every name for it dies at once. A field can survive, because the rack nulls it and the `?` makes you check; a local can't be reached by the rack, so the compiler proves here that you never follow one")
 }
 
 impl ToDiagnostic for crate::OwnershipError {
     fn to_diagnostic(&self) -> Diagnostic {
         use crate::OwnershipErrorKind::*;
+        use crate::EnsureHold;
 
         match &self.kind {
             CCallbackCaptures { captured } => Diagnostic::error(format!(
@@ -46,16 +59,102 @@ impl ToDiagnostic for crate::OwnershipError {
             .with_help("pass the state through the C API's context pointer, or capture nothing and reach it another way")
             .with_why("C calls a function pointer with only its own arguments, so there's nowhere for a capture to come from [struct.c-interop/CB6]"),
 
+            CarriesUncloneable { captured, ty } => Diagnostic::error(format!(
+                "this closure carries `{captured}`, and `{ty}` can't be cloned"
+            ))
+            .with_code("E0976")
+            .with_primary(self.span, format!("carries `{captured}`"))
+            .with_help(format!("put `{captured}` in a `Shared` and capture that; a `Shared` clones as a second reference"))
+            .with_why("every closure can be cloned, and cloning one clones what it carries, so a closure may only carry Cloneable values [mem.closures/CV4]"),
+
+            TaskCapturesBorrow { name, lender } => {
+                use crate::Lender;
+                let (owner, help) = match lender {
+                    Lender::Caller => (
+                        "the caller's, and the task may run after they free it".to_string(),
+                        format!("take it: `take {name}: …` in the signature moves it into the task; or clone what the task needs before the spawn; or join the task in this block so it borrows"),
+                    ),
+                    Lender::Loop(from) => (
+                        format!("an element `{from}` still holds, and the task may run after `{from}` is freed"),
+                        format!("clone it for the task (`let mine = {name}.clone()` before the spawn); or walk `{from}.take_all()` so the loop owns each item; or join the task inside the loop so it borrows"),
+                    ),
+                    Lender::With(from) => (
+                        format!("inside `{from}`, and the task may run after the block lets go of it"),
+                        format!("clone what the task needs before the spawn; or join the task inside the block so it borrows"),
+                    ),
+                };
+                Diagnostic::error(format!("a task that outlives this block reads `{name}`, which is only borrowed"))
+                    .with_code("E0982")
+                    .with_primary(self.span, format!("`{name}` is {owner}"))
+                    .with_help(help)
+                    .with_why("a task whose handle leaves the block that spawned it carries what it names, and a borrow isn't this block's to carry [conc.async/S5]")
+            }
+
+            TaskBorrowInGenericInstance { chain, name, lender, type_arg, read_at } => {
+                use crate::Lender;
+                let func = chain.last().map(String::as_str).unwrap_or("?");
+                let via = if chain.len() > 1 {
+                    format!(" (reached through {})", chain.iter().map(|c| format!("`{}`", c)).collect::<Vec<_>>().join(" → "))
+                } else {
+                    String::new()
+                };
+                let whose = match lender {
+                    Lender::Caller => "the caller's".to_string(),
+                    Lender::Loop(from) => format!("an element `{from}` still holds"),
+                    Lender::With(from) => format!("borrowed inside `{from}`"),
+                };
+                Diagnostic::error(format!(
+                    "a task in `{func}` outlives its block and reads `{name}`, which is only borrowed and here a `{type_arg}`"
+                ))
+                .with_code("E0983")
+                .with_primary(self.span, format!("this call makes `{name}` a `{type_arg}`{via}"))
+                .with_secondary(*read_at, format!("`{name}` is {whose}, and the task may run after it's freed"))
+                .with_help(format!(
+                    "take it in `{func}` (`take {name}: …`) so the task owns it, or join the task in the block that spawns it, or bound the parameter `Copy`"
+                ))
+                .with_why("a task whose handle leaves the block that spawned it carries what it names. A Copy value is copied in; anything else would be freed twice, and a generic body is asked for each type it's called with [conc.async/S5, type.generics/G6]")
+            }
+
+            RepeatNotCopy { ty, reason } => {
+                use crate::MoveReason;
+                let because = match reason {
+                    MoveReason::SizeExceedsThreshold { size, .. } => {
+                        format!("`{ty}` is {size} bytes, over the 16-byte copy threshold")
+                    }
+                    MoveReason::OwnsHeapMemory { .. } => format!("`{ty}` owns heap memory"),
+                    MoveReason::Unique { .. } => format!("`{ty}` is @unique"),
+                    MoveReason::Resource { .. } => format!("`{ty}` is a resource"),
+                    _ => format!("`{ty}` moves rather than copies"),
+                };
+                Diagnostic::error(format!("`[x; n]` repeats a `{ty}`, which isn't Copy"))
+                    .with_code("E0979")
+                    .with_primary(self.span, because)
+                    .with_help("build each element on its own: push them into a `Vec` in a loop")
+                    .with_why("every slot of `[x; n]` gets a copy of the same `x`, and a value that moves would end up with n owners [mem.value/VS11]")
+            }
+
             UseAfterMove { name, moved_at, reason }
                 if matches!(reason, crate::MoveReason::LinkDeleted) =>
             {
-                link_deleted_diagnostic(name, *moved_at, self.span, false)
+                link_deleted_diagnostic(name, *moved_at, self.span, false, false)
             }
 
             UseAfterMaybeMove { name, moved_at, reason }
                 if matches!(reason, crate::MoveReason::LinkDeleted) =>
             {
-                link_deleted_diagnostic(name, *moved_at, self.span, true)
+                link_deleted_diagnostic(name, *moved_at, self.span, true, false)
+            }
+
+            UseAfterMove { name, moved_at, reason }
+                if matches!(reason, crate::MoveReason::LinkRevoked) =>
+            {
+                link_deleted_diagnostic(name, *moved_at, self.span, false, true)
+            }
+
+            UseAfterMaybeMove { name, moved_at, reason }
+                if matches!(reason, crate::MoveReason::LinkRevoked) =>
+            {
+                link_deleted_diagnostic(name, *moved_at, self.span, true, true)
             }
 
             MutableCaptureConflict { name, holder, captured_at, second_closure } => {
@@ -146,6 +245,14 @@ impl ToDiagnostic for crate::OwnershipError {
                     Sink::TakeArg { callee } => (
                         format!("`{}` takes `{}`, which `{}` still holds", callee, path, root),
                         format!("`{}`", callee),
+                    ),
+                    Sink::Closure => (
+                        format!("the closure would carry `{}`, which `{}` still holds", shown, root),
+                        "the closure".to_string(),
+                    ),
+                    Sink::WithValue { binding } => (
+                        format!("the `with` block would hand out `{}`, which ends with `{}`", path, binding),
+                        "the block's result".to_string(),
                     ),
                 };
                 let fix = match bound {
@@ -268,6 +375,8 @@ impl ToDiagnostic for crate::OwnershipError {
                     Sink::Payload { variant } => format!("`{}` holding it would be a second owner", variant),
                     Sink::Heap => "a `Heap` holding it would be a second owner".to_string(),
                     Sink::TakeArg { callee } => format!("`{}` would take it as a second owner", callee),
+                    Sink::Closure => "a closure carrying it would be a second owner".to_string(),
+                    Sink::WithValue { binding } => format!("the `with` block's result would go on reading it after `{}` ends", binding),
                 };
                 let primary = match into {
                     Sink::Return => format!("the signature promises an owned `{}`, and this path doesn't have one", payload_ty),
@@ -316,32 +425,25 @@ impl ToDiagnostic for crate::OwnershipError {
                 ))
             }
 
-            NonCopyElementCopiedOut { binding, elem_ty, collection } => {
-                let from = collection
-                    .as_deref()
-                    .map(|c| format!("`{}`", c))
-                    .unwrap_or_else(|| "the collection".to_string());
+            MutableElementView { binding, elem_ty, call } => {
                 Diagnostic::error(format!(
-                    "`{}` isn't Copy, so `{}` would be a second name for the same element",
-                    elem_ty, binding
+                    "`{}` and `{}` would be the same `{}`, both writable",
+                    binding, call, elem_ty
                 ))
                 .with_code("E0871")
-                .with_primary(
-                    self.span,
-                    format!("this element stays owned by {}", from),
-                )
+                .with_primary(self.span, "this element stays where the collection keeps it")
                 .with_fix(format!(
-                    "scope the access — `with {}[…] as {} {{ … }}` — or ask for a \
-                     separate value with `.clone()`",
-                    collection.as_deref().unwrap_or("collection"),
-                    binding
+                    "write `let {b}` for a read-only view, scope the writes with \
+                     `with {c} as {b} {{ … }}`, or ask for a separate value with `.clone()`",
+                    b = binding,
+                    c = call
                 ))
                 .with_why(
-                    "indexing hands the element back where it lives rather than \
-                     copying it out, so a binding of a non-Copy element is a second \
-                     name for storage the collection still owns — a write through \
-                     either one is a write through both. A Copy element is copied \
-                     and has no such tie [mem.borrowing/E4]"
+                    "a `let` of an element that isn't Copy is a view of it where it sits, and \
+                     a read-only one sits fine beside the collection. `mut` asks for exclusive \
+                     access instead, and a plain binding can't say for how long, so both names \
+                     stay live and a write through either is a write through both \
+                     [mem.borrowing/E4, S5]"
                         .to_string(),
                 )
             }
@@ -478,6 +580,39 @@ impl ToDiagnostic for crate::OwnershipError {
                 .with_why("`@small` asserts one thing: the type stays within the 16-byte copy threshold (mem.value/SM1). It buys the *location* of the error — without it, growing past 16 bytes flips every assignment from copy to move and those errors land wherever the type is used, with only the move note pointing back at a field nobody was looking at [mem.value/SM2, VS1, VS6]")
             }
 
+            TakenFieldRead { path, name, taken_at } => {
+                Diagnostic::error(format!("`{}` read while `{}` has it", path, name))
+                    .with_code("E0959")
+                    .with_primary(self.span, format!("`{}` is empty until it's refilled", path))
+                    .with_secondary(*taken_at, format!("moved into `{}` here", name))
+                    .with_fix(format!("read `{}` instead, or move this after the refill of `{}`", name, path))
+                    .with_why("`let old = p.f` followed by a refill of `p.f` in the same block is a move: from the read to the refill the field holds nothing, and what it held is the new binding's [mem.borrowing/S1, mem.parameters/PM7]".to_string())
+            }
+
+            ViewOutlivedReplace { name, path, viewed_at, element: true } => {
+                Diagnostic::error(format!("`{}` written while `{}` views one of its elements", path, name))
+                    .with_code("E0958")
+                    .with_primary(self.span, format!("this writes an element of `{}`, which may be the one `{}` reads", path, name))
+                    .with_secondary(*viewed_at, format!("`{}` views this element until its block ends", name))
+                    .with_fix(format!(
+                        "read the Copy fields you need straight from the element (`let n = {p}[i].field`) instead of binding all of it, end `{n}`'s block before this write, or bind a separate value with `.clone()`",
+                        p = path, n = name
+                    ))
+                    .with_why("a binding of an element that isn't Copy is a view: it reads the element where the collection keeps it. The checker doesn't tell one index from another, so a write to any element of the collection while the view lives could be a write under it [mem.borrowing/E4, S5]".to_string())
+            }
+
+            ViewOutlivedReplace { name, path, viewed_at, element: false } => {
+                Diagnostic::error(format!("`{}` written over while `{}` views it", path, name))
+                    .with_code("E0958")
+                    .with_primary(self.span, format!("this replaces `{}`, freeing what `{}` reads", path, name))
+                    .with_secondary(*viewed_at, format!("`{}` views `{}` until its block ends", name, path))
+                    .with_fix(format!(
+                        "use `{}.clone()` to keep a copy, or refill straight after `let {} = {}` with no `return`, `break`, `continue` or `try` in between, which makes the read a move",
+                        path, name, path
+                    ))
+                    .with_why("a field read is a view of storage the struct still holds, valid until its block ends, and the source can't be replaced while it's held: that frees what the view reads. `let old = p.f` followed by `p.f = …` is a move only when the refill always runs [mem.borrowing/S1, S5]".to_string())
+            }
+
             MutateParamLeftEmpty { name, consumed_at, declared_at, maybe } => {
                 let label = if *maybe {
                     format!("`{}` is given away on some paths here and not replaced", name)
@@ -511,15 +646,33 @@ impl ToDiagnostic for crate::OwnershipError {
                     )
             }
 
-            ToVecOfLentItems { elem, adapter } => {
-                Diagnostic::error(format!("`to_vec` has nothing it may move — `{}` is lent, not owned", elem))
+            KeepsLentItems { terminal, elem, lender, collection } => {
+                let args = if terminal == "to_vec" || terminal == "to_map" { "()" } else { "(…)" };
+                let (label, why) = if *collection {
+                    (
+                        format!("every item still belongs to `{}`", lender),
+                        format!(
+                            "`{}` keeps the items it's handed, and these are `{}`'s, lent for the walk. It won't deep-clone a `{}` on your behalf: the allocation would be invisible [type.sequence/SEQ47]",
+                            terminal, lender, elem
+                        ),
+                    )
+                } else {
+                    (
+                        format!("`{}` lends each item for one call", lender),
+                        format!(
+                            "a sequence lends each item for one call, and once the walk moves on nothing holds it, so there is nothing left for `{}` to keep. Over a vector a picked item is the element where it sits; here nothing holds it. `{}` won't deep-clone a `{}` on your behalf: the allocation would be invisible [type.sequence/SEQ47, SEQ50]",
+                            terminal, terminal, elem
+                        ),
+                    )
+                };
+                Diagnostic::error(format!("`{}` has nothing it may keep — `{}` is lent, not owned", terminal, elem))
                     .with_code("E0905")
-                    .with_primary(self.span, "needs an owned element")
-                    .with_fix("clone where you mean it — a `map` makes values the chain owns: `.map(|x| x.clone()).to_vec()`")
-                    .with_why(format!(
-                        "`{}` hands on what its source lent it, so every item still belongs to the source. A Vec owns what it holds, and `to_vec` won't deep-clone a `{}` on your behalf — the allocation would be invisible [type.sequence/SEQ47]",
-                        adapter, elem
+                    .with_primary(self.span, label)
+                    .with_fix(format!(
+                        "clone where you mean it, and a `map` makes values the chain owns: `.map(|x| x.clone()).{}{}`",
+                        terminal, args
                     ))
+                    .with_why(why)
             }
 
             ZipOfLentItems { elem } => {
@@ -596,8 +749,8 @@ impl ToDiagnostic for crate::OwnershipError {
                         ),
                         format!("use `{}` before the line that consumes it, or not at all", name),
                     ),
-                    MoveReason::LinkDeleted => (
-                        // Unreachable — the guarded arm above handles it.
+                    MoveReason::LinkDeleted | MoveReason::LinkRevoked => (
+                        // Unreachable — the guarded arms above handle them.
                         format!("`{}` names a deleted node", name),
                         "read the node before deleting it".to_string(),
                     ),
@@ -796,6 +949,102 @@ impl ToDiagnostic for crate::OwnershipError {
                         "`Local` takes no lock at all, so two tasks touching it would \
                          race. It is the opt-out, not the default, and this error is \
                          what makes it safe to reach for [conc.sync/SH7]",
+                    )
+            }
+            ParallelArgsConflict { what, other_span } => {
+                Diagnostic::error("these arguments may run at the same time, and they race".to_string())
+                    .with_code("E0964")
+                    .with_primary(self.span, what.clone())
+                    .with_secondary(*other_span, "may run while this one does")
+                    .with_fix(
+                        "pass closures that touch different variables, or one that only \
+                         reads; a counter both need can be an `Atomic`",
+                    )
+                    .with_why(
+                        "the function runs one of these in a task and the other beside it, \
+                         which may be on different threads. A closure that writes what it \
+                         captured, run beside something that touches the same thing (itself \
+                         included), is a data race [conc.async/B4]",
+                    )
+            }
+            SharedGraphWrite { what } => {
+                Diagnostic::error("a task that shares a rack with the code beside it changes it".to_string())
+                    .with_code("E0962")
+                    .with_primary(self.span, what.clone())
+                    .with_fix(
+                        "record the change instead and make it after the join: \
+                         `let ops = rack.staged()`, `ops.delete(key, n)` or \
+                         `ops.relink(key, n, to, f)` in the task, return `ops`, then \
+                         `rack.apply(ops)`",
+                    )
+                    .with_why(
+                        "the task and the code before its join read this rack at the same \
+                         time. Writing a node changes what the other side is reading, and \
+                         storing a link anywhere records it with the rack, which the other \
+                         side's stores write too [mem.racks/RK16]",
+                    )
+            }
+            StagedFnHoldsLink => {
+                Diagnostic::error("the function a `Staged` buffer keeps can't hold a link".to_string())
+                    .with_code("E0963")
+                    .with_primary(self.span, "this captures a link or a `Local` box")
+                    .with_fix(
+                        "pass the link as `to` and read it from the second parameter: \
+                         `ops.relink(key, n, to, |mutate n: T, to: Link<T>| n.next = to)`",
+                    )
+                    .with_why(
+                        "the buffer runs the function when it applies, after other deletes \
+                         may have run. It checks `n` and `to` are alive first; a link the \
+                         function captured is one nothing checks [mem.racks/RK20]",
+                    )
+            }
+            SideConflict { name, other_writes, other_span } => {
+                let other = if *other_writes { "written here too" } else { "read here, maybe at the same time" };
+                Diagnostic::error(format!("a task and the code before its join both touch `{}`, and one writes it", name))
+                    .with_code("E0960")
+                    .with_primary(self.span, "written here")
+                    .with_secondary(*other_span, other)
+                    .with_fix(
+                        "give the task its own variable and combine the results after the \
+                         join: `let h = ThreadPool.spawn { left(v) }`, `let b = right(v)`, \
+                         `h.join()! + b`. A counter both sides bump can be an `Atomic` instead",
+                    )
+                    .with_why(
+                        "the task may run at the same time as the code before its join, so a \
+                         write on one side and any use on the other is a data race. Reading \
+                         the same thing on both is fine, and so are separate fields of one \
+                         value [conc.async/B2]",
+                    )
+            }
+            SideTaskBound { name, other, other_span, function_value: true } => {
+                Diagnostic::error("a task and the code beside it call function values that may be the same closure".to_string())
+                    .with_code("E0961")
+                    .with_primary(self.span, format!("`{}` is used here", name))
+                    .with_secondary(*other_span, format!("and `{}` here, maybe at the same time", other))
+                    .with_fix(
+                        "call them on one side, or take them as parameters, so each call \
+                         of this function is checked for what it passes",
+                    )
+                    .with_why(
+                        "a function value from a field, a container or a call may be a copy \
+                         of another, and nothing here says whether it writes what it \
+                         captured [conc.async/B3]",
+                    )
+            }
+            SideTaskBound { name, other, other_span, .. } => {
+                Diagnostic::error("a task and the code beside it both name a value that has to stay on one thread".to_string())
+                    .with_code("E0961")
+                    .with_primary(self.span, format!("`{}` is used here", name))
+                    .with_secondary(*other_span, format!("and `{}` here, maybe at the same time", other))
+                    .with_fix(
+                        "use the `Local` box, or the function value, on one side only; a \
+                         box both sides need can be `Shared.new(…)`, which locks",
+                    )
+                    .with_why(
+                        "a `Local` box takes no lock, and a function value the checker \
+                         can't see into may touch the same graph or box the other block \
+                         uses. On one side that's one thread at a time; across both it's a \
+                         race [conc.async/B3]",
                     )
             }
             LinkSent { name, ty, bare_link } => {
@@ -1128,7 +1377,54 @@ impl ToDiagnostic for crate::OwnershipError {
                 ))
             }
 
-            ConsumeLoopItem { name, from, loop_at, sink } => {
+            GiveAwayHeldPart { name, from, bound_at, sink } => {
+                let label = match sink {
+                    Some(s) => format!("`{}` takes ownership, and `{}` is still in `{}`", s, name, from),
+                    None => format!("this takes ownership, and `{}` is still in `{}`", name, from),
+                };
+                Diagnostic::error(format!(
+                    "cannot give away `{}` — `{}` still holds it",
+                    name, from
+                ))
+                .with_code("E0956")
+                .with_primary(self.span, label)
+                .with_secondary(*bound_at, format!("`{}` reads the box where `{}` keeps it", name, from))
+                .with_fix(format!(
+                    "use `{}` where it is and let its owner free it; to move it out, \
+                     empty the slot first: `take {}`",
+                    name, from
+                ))
+                .with_why(
+                    "a box stored in a field belongs to what holds the field, and its \
+                     release frees the box. Reading it back out with `? as` or a \
+                     pattern is a borrow, so giving it away here would free it a \
+                     second time [mem.heap/HP3, mem.linear/L5]"
+                        .to_string(),
+                )
+            }
+
+            PartOwnerChanged { owner, operation, part, from, part_at } => {
+                Diagnostic::error(format!(
+                    "cannot {} `{}` while `{}` reads a box inside it",
+                    operation, owner, part
+                ))
+                .with_code("E0957")
+                .with_primary(self.span, format!("`{}` goes with this, and `{}` still reads it", from, part))
+                .with_secondary(*part_at, format!("`{}` reads `{}` from here to the end of its block", part, from))
+                .with_fix(format!(
+                    "finish with `{}` first: do this after the block that bound it",
+                    part
+                ))
+                .with_why(
+                    "a box read back out of its holder is a borrow, and the holder \
+                     frees it. Giving the holder away or replacing the box while \
+                     the borrow is live would leave it reading freed memory \
+                     [mem.heap/HP3, mem.borrowing/S1]"
+                        .to_string(),
+                )
+            }
+
+            ConsumeLoopItem { name, from, by_sequence: false, loop_at, sink } => {
                 let label = match sink {
                     Some(s) => format!("`{}` takes ownership, and `{}` is still in `{}`", s, name, from),
                     None => format!("this takes ownership, and `{}` is still in `{}`", name, from),
@@ -1145,6 +1441,27 @@ impl ToDiagnostic for crate::OwnershipError {
                     "a `for` loop lends each element and `{}` keeps it, so giving `{}` away would leave two owners of one value. [ctrl.loops/LP6]",
                     from, name
                 ))
+            }
+
+            ConsumeLoopItem { name, from, by_sequence: true, loop_at, sink } => {
+                let label = match sink {
+                    Some(s) => format!("`{}` takes ownership of `{}`, which is only lent for this call", s, name),
+                    None => format!("this takes ownership of `{}`, which is only lent for this call", name),
+                };
+                Diagnostic::error(format!(
+                    "cannot give away `{}` — `{}` only lends each item to the loop body",
+                    name, from
+                ))
+                .with_code("E0902")
+                .with_primary(self.span, label)
+                .with_secondary(*loop_at, format!("each `{}` is lent by `{}` for one pass of the body", name, from))
+                .with_fix(format!("{}.clone()", name))
+                .with_why(
+                    "a sequence lends each item to the body and takes it back when the body ends, \
+                     whether it walks a collection or made the item itself. Keeping one is a copy, \
+                     and the copy is yours to write. [type.sequence/SEQ34]"
+                        .to_string(),
+                )
             }
 
             ConsumeWithBinding { name, from, with_at, sink } => {
@@ -1212,6 +1529,37 @@ impl ToDiagnostic for crate::OwnershipError {
                 )
             }
 
+            EnsureReadsMoved { name, why, ensure_at } => {
+                let (title, label, help) = match why {
+                    EnsureHold::Reads => (
+                        format!("`{}` is given away while an `ensure` still reads it", name),
+                        format!("this cleanup still runs at scope exit and reads `{}`", name),
+                        format!(
+                            "give the cleanup what it reads before it runs: move the `ensure` below its last use, \
+                             or pass `{}.clone()` here",
+                            name
+                        ),
+                    ),
+                    EnsureHold::PartOf(whole) => (
+                        format!("`{}` is given away while an `ensure` still cleans up `{}`", name, whole),
+                        format!("this cleanup consumes `{}` at scope exit, `{}` included", whole, name),
+                        format!("give away all of `{}`, which cancels the cleanup, or ensure the parts one by one", whole),
+                    ),
+                    EnsureHold::AlsoCleans(other) => (
+                        format!("`{}` is given away while an `ensure` also cleans up `{}`", name, other),
+                        format!("cancelling this cleanup would leave `{}` with nothing to clean it up", other),
+                        format!("give `{}` and `{}` their own `ensure`", name, other),
+                    ),
+                };
+                Diagnostic::error(title)
+                    .with_code("E0977")
+                    .with_primary(self.span, format!("`{}` is given away here", name))
+                    .with_secondary(*ensure_at, label)
+                    .with_help(help)
+                    .with_why("an `ensure` is cancelled by giving away what it cleans up (ctrl.ensure/C6); \
+                               anything else it needs has to still be there when it runs")
+            }
+
             EnsureMaybeConsumed { name, ensure_at, consumed_at } => {
                 Diagnostic::error(format!(
                     "consumption of `{}` depends on which path ran",
@@ -1233,8 +1581,8 @@ impl ToDiagnostic for crate::OwnershipError {
             WithBlockStructuralMutation { collection, operation, via, binding_span } => {
                 let (headline, primary) = match via {
                     Some(callee) => (
-                        format!("`{}` can resize `{}`, and a `with` block is holding an element of it", callee, collection),
-                        format!("`{}` can grow or shrink `{}` through this argument", callee, collection),
+                        format!("`{}` can resize or reorder `{}`, and a `with` block is holding an element of it", callee, collection),
+                        format!("`{}` can grow, shrink or reorder `{}` through this argument", callee, collection),
                     ),
                     None => (
                         format!("cannot {} `{}` inside `with` block", operation, collection),
@@ -1248,7 +1596,9 @@ impl ToDiagnostic for crate::OwnershipError {
                 .with_help("move the structural mutation outside the with block")
                 .with_fix("move the structural mutation outside the with block")
                 .with_why(format!(
-                    "{} can reallocate, invalidating the borrowed element. If the elements \
+                    "{} can reallocate or move its elements (`push` and `remove` change the buffer, \
+                     `sort`, `swap` and `reverse` change which element sits where), \
+                     so the borrowed element would be gone or name a different one. If the elements \
                      reference each other and get deleted individually, that is what a `Rack` \
                      is for — a node never moves, so nothing invalidates [mem.borrowing/W2]",
                     collection
@@ -1276,7 +1626,16 @@ impl ToDiagnostic for crate::OwnershipError {
                 .with_why("resource types must be consumed properly — `discard` would silently leak the resource")
             }
 
-            ScopeLimitedClosureEscapes { name } => {
+            ScopeLimitedClosureEscapes { name, points_at: Some(local) } => {
+                let shown = if name == "<closure>" { "this closure".to_string() } else { format!("the closure in `{name}`") };
+                Diagnostic::error(format!("{shown} outlives `{local}`, which it points at"))
+                    .with_code("E0862")
+                    .with_primary(self.span, format!("`{local}` ends with its block; the closure is still held after"))
+                    .with_fix(format!("declare `{local}` in the block that holds the closure, or keep the closure only inside `{local}`'s block"))
+                    .with_why("a closure that stays in its frame reads its captures where they live rather than copying them, so it can't outlive any of them (MC3). A Copy value is no exception")
+            }
+
+            ScopeLimitedClosureEscapes { name, points_at: None } => {
                 Diagnostic::error(format!(
                     "closure `{}` captures scoped borrow and cannot escape",
                     name
@@ -1410,8 +1769,8 @@ impl ToDiagnostic for crate::OwnershipError {
             ForMutateStructuralMutation { collection, operation, via, loop_span, loop_form } => {
                 let (headline, primary) = match via {
                     Some(callee) => (
-                        format!("`{}` can resize `{}`, which a `{}` is iterating", callee, collection, loop_form),
-                        format!("`{}` can grow or shrink `{}` through this argument", callee, collection),
+                        format!("`{}` can resize or reorder `{}`, which a `{}` is iterating", callee, collection, loop_form),
+                        format!("`{}` can grow, shrink or reorder `{}` through this argument", callee, collection),
                     ),
                     None => (
                         format!("cannot {} `{}` during `{}` — invalidates iteration", operation, collection, loop_form),
@@ -1423,7 +1782,7 @@ impl ToDiagnostic for crate::OwnershipError {
                 .with_primary(self.span, primary)
                 .with_secondary(*loop_span, format!("`{}` is being iterated here", collection))
                 .with_help("collect changes and apply them after the loop")
-                .with_why("structural mutations (insert, remove, push, clear) invalidate the iterator — elements may shift or be reallocated")
+                .with_why("structural mutations (insert, remove, push, clear, and reordering with sort, swap or reverse) invalidate the iterator — elements may shift, be reallocated or change places")
             }
 
             ForMutateTakeItem { item, collection, loop_span } => {

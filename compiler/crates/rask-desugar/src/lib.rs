@@ -15,6 +15,7 @@
 mod annotation_defaults;
 mod binary_methods;
 mod construct;
+mod decode_adapters;
 mod defaults;
 mod generalize;
 mod interface_defaults;
@@ -23,7 +24,7 @@ pub use defaults::is_valid_default_expr;
 
 use rask_ast::ty::TypeExpr;
 use rask_ast::decl::{Decl, DeclKind, FnDecl, Param, StructDecl, EnumDecl, InterfaceDecl, ImplDecl};
-use rask_ast::expr::{ArgMode, BinOp, CallArg, ConvertKind, Expr, ExprKind, MatchArm, Pattern, UnaryOp};
+use rask_ast::expr::{ArgMode, BinOp, CallArg, ConvertKind, Expr, ExprKind, MatchArm, Pattern, PatternKind, UnaryOp};
 use rask_ast::stmt::{Stmt, StmtKind};
 use rask_ast::{NodeId, Span};
 
@@ -63,44 +64,34 @@ pub const STDLIB_DEFAULT_ARGS_ID_BASE: u32 = 50_000_000;
 /// runner's generated source declares it.
 pub const CLAIM_END_MARKER: &str = "__claim_reached_end";
 
+/// Whose declarations a [`desugar`] call is rewriting.
+pub enum Desugaring<'a> {
+    /// A program, single file or package. `stdlib` is the stdlib's types
+    /// (`StubRegistry::desugar_declarations`): constructions, struct field
+    /// defaults, error messages and annotation defaults need a type's
+    /// declaration, and the stdlib's aren't in the program. This crate can't
+    /// read the registry itself: `rask-stdlib` already depends on it.
+    Program { stdlib: &'a [Decl] },
+    /// The stdlib's own declarations, in their own NodeId bands. See
+    /// [`STDLIB_DESUGAR_ID_BASE`].
+    Stdlib,
+}
+
 /// Run the whole desugar phase over a list of declarations.
 ///
-/// Both sub-passes always run together. Splitting them was a trap: every
-/// pipeline that called only the operator pass silently lost default
-/// arguments and struct field defaults, so `Config {}` type-checked as a
-/// missing-fields error under `rask test` while `rask build` accepted it
-/// (#549).
-pub fn desugar(decls: &mut Vec<Decl>) -> DesugarOutput {
-    desugar_with_diagnostics(decls)
-}
-
-/// Desugar a single file that can call the stdlib.
-///
-/// `stdlib` is the stdlib's types (`StubRegistry::desugar_declarations`):
-/// constructions, struct field defaults and error messages need the type's
-/// declaration, and the stdlib's aren't in `decls`. This crate can't read the
-/// registry itself: `rask-stdlib` already depends on it.
-pub fn desugar_with_stdlib(decls: &mut Vec<Decl>, stdlib: &[Decl]) -> DesugarOutput {
-    desugar_inner_from(decls, stdlib, DESUGAR_ID_BASE, DEFAULT_ARGS_ID_BASE)
-}
-
-/// Desugar the stdlib's own declarations, in their own NodeId bands.
-///
-/// See [`STDLIB_DESUGAR_ID_BASE`].
-pub fn desugar_stdlib(decls: &mut Vec<Decl>) -> DesugarOutput {
-    desugar_inner_from(decls, &[], STDLIB_DESUGAR_ID_BASE, STDLIB_DEFAULT_ARGS_ID_BASE)
-}
-
-/// Desugar a package whose dependencies are known.
-///
-/// Only annotation defaults need this: they're filled into attachment text
-/// here, before name resolution, so a dependency's declarations can't be looked
-/// up later — they have to be handed in (type.annotations/AN3).
-pub fn desugar_package(
-    decls: &mut Vec<Decl>,
-    stdlib: &[Decl],
-) -> DesugarOutput {
-    desugar_inner_from(decls, stdlib, DESUGAR_ID_BASE, DEFAULT_ARGS_ID_BASE)
+/// Every sub-pass always runs. Splitting them was a trap: every pipeline that
+/// called only the operator pass silently lost default arguments and struct
+/// field defaults, so `Config {}` type-checked as a missing-fields error under
+/// `rask test` while `rask build` accepted it (#549).
+pub fn desugar(decls: &mut Vec<Decl>, what: Desugaring) -> DesugarOutput {
+    match what {
+        Desugaring::Program { stdlib } => {
+            desugar_inner_from(decls, stdlib, DESUGAR_ID_BASE, DEFAULT_ARGS_ID_BASE)
+        }
+        Desugaring::Stdlib => {
+            desugar_inner_from(decls, &[], STDLIB_DESUGAR_ID_BASE, STDLIB_DEFAULT_ARGS_ID_BASE)
+        }
+    }
 }
 
 /// Something desugaring found wrong with the program.
@@ -132,15 +123,6 @@ pub struct DesugarOutput {
     pub format_calls: Vec<rask_ast::Span>,
 }
 
-/// Desugar phase, returning any ER26 coverage errors.
-pub fn desugar_with_diagnostics(decls: &mut Vec<Decl>) -> DesugarOutput {
-    desugar_inner(decls)
-}
-
-fn desugar_inner(decls: &mut Vec<Decl>) -> DesugarOutput {
-    desugar_inner_from(decls, &[], DESUGAR_ID_BASE, DEFAULT_ARGS_ID_BASE)
-}
-
 fn desugar_inner_from(
     decls: &mut Vec<Decl>,
     stdlib: &[Decl],
@@ -164,6 +146,7 @@ fn desugar_inner_from(
         injected.entry(index).or_default().extend(positions);
     }
     ordering_operators::inject(decls, &mut injected);
+    decode_adapters::inject(decls, &mut injected);
 
 
     // Before anything rewrites an operator: this reads the body's operators as
@@ -401,6 +384,11 @@ impl Desugarer {
     }
 
     fn desugar_fn(&mut self, f: &mut FnDecl) {
+        // An injected method is a copy (an interface default) or a parse of
+        // its own (a template): either way its id isn't its own yet.
+        if self.renumber {
+            f.id = self.fresh_id();
+        }
         // A default is copied into each call that leaves it out, after this
         // pass. Left as written, `n: i64 = 2 * 3` reached every call with a
         // raw `*` in it, which nothing past desugar has to understand.
@@ -479,6 +467,7 @@ impl Desugarer {
         };
         let body = vec![Stmt { id: self.fresh_id(), kind: StmtKind::Return(Some(folded)), span: sp }];
         FnDecl {
+            id: self.fresh_id(),
             name,
             type_params: vec![],
             params: vec![],
@@ -522,17 +511,17 @@ impl Desugarer {
                 vec![]
             } else {
                 variant.fields.iter().map(|f| {
-                    Pattern::Ident(f.name.clone())
+                    Pattern::new(self.fresh_id(), PatternKind::Ident(f.name.clone()), sp)
                 }).collect()
             };
 
             let pattern = if variant.fields.is_empty() {
-                Pattern::Ident(variant.name.clone())
+                Pattern::new(self.fresh_id(), PatternKind::Ident(variant.name.clone()), sp)
             } else {
-                Pattern::Constructor {
+                Pattern::new(self.fresh_id(), PatternKind::Constructor {
                     name: variant.name.clone(),
                     fields: field_patterns,
-                }
+                }, sp)
             };
 
             let body_expr = match template {
@@ -583,6 +572,7 @@ impl Desugarer {
         };
 
         Some(FnDecl {
+            id: self.fresh_id(),
             name: "message".to_string(),
             type_params: vec![],
             params: vec![Param {
@@ -984,7 +974,10 @@ impl Desugarer {
             ExprKind::Closure { body, .. } => {
                 self.desugar_expr(body);
             }
-            ExprKind::Spawn { body, .. } => {
+            ExprKind::Spawn { args, body, .. } => {
+                for a in args {
+                    self.desugar_expr(&mut a.expr);
+                }
                 self.desugar_expr(body);
             }
             ExprKind::Cast { expr: inner, .. } | ExprKind::Convert { expr: inner, .. } => {

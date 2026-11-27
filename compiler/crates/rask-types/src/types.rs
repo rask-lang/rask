@@ -19,8 +19,77 @@ pub struct TypeVarId(pub u32);
 pub enum GenericArg {
     /// A type argument (regular generic)
     Type(Box<Type>),
-    /// A const usize argument (const generic)
-    ConstUsize(usize),
+}
+
+/// How long an array type is. A literal or a module `const` gives a number.
+/// A `comptime N` parameter gives `N` itself, which a call binds the way it
+/// binds a type parameter: by unifying `[T; N]` with the argument's array, or
+/// from `f<3>()`. Monomorphization substitutes it, so past mono every length is
+/// `Known`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum ArrayLen {
+    Known(usize),
+    /// The length as a type: the parameter (`UnresolvedNamed("N")`), an
+    /// inference variable standing for it at a call, or what substitution put
+    /// there. Never `Len`; [`ArrayLen::of`] folds that to `Known`.
+    Of(Box<Type>),
+}
+
+impl ArrayLen {
+    /// `ty` as a length, folding a settled one to a number.
+    pub fn of(ty: Type) -> Self {
+        match ty {
+            Type::Len(n) => ArrayLen::Known(n),
+            other => ArrayLen::Of(Box::new(other)),
+        }
+    }
+
+    /// The number, once there is one.
+    pub fn known(&self) -> Option<usize> {
+        match self {
+            ArrayLen::Known(n) => Some(*n),
+            ArrayLen::Of(_) => None,
+        }
+    }
+
+    /// The length with `f` applied to the type it stands for, when it is one.
+    pub fn map(&self, f: impl FnOnce(&Type) -> Type) -> Self {
+        match self {
+            ArrayLen::Known(n) => ArrayLen::Known(*n),
+            ArrayLen::Of(t) => ArrayLen::of(f(t)),
+        }
+    }
+
+    /// The same, for a fallible `f`.
+    pub fn try_map<E>(&self, f: impl FnOnce(&Type) -> Result<Type, E>) -> Result<Self, E> {
+        Ok(match self {
+            ArrayLen::Known(n) => ArrayLen::Known(*n),
+            ArrayLen::Of(t) => ArrayLen::of(f(t)?),
+        })
+    }
+
+    /// The same, for an `f` that may have no answer.
+    pub fn map_opt(&self, f: impl FnOnce(&Type) -> Option<Type>) -> Option<Self> {
+        Some(match self {
+            ArrayLen::Known(n) => ArrayLen::Known(*n),
+            ArrayLen::Of(t) => ArrayLen::of(f(t)?),
+        })
+    }
+}
+
+impl From<usize> for ArrayLen {
+    fn from(n: usize) -> Self {
+        ArrayLen::Known(n)
+    }
+}
+
+impl fmt::Display for ArrayLen {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ArrayLen::Known(n) => write!(f, "{n}"),
+            ArrayLen::Of(t) => write!(f, "{t}"),
+        }
+    }
 }
 
 /// One parameter of a function type.
@@ -65,7 +134,7 @@ pub enum Type {
     I128,
     /// P2: pointer-sized. Its own type, not an alias for `i64` or `i32`: a
     /// program means the same thing on every target, and only layout and the
-    /// backends learn the width (`at_pointer_width`).
+    /// backends learn the width (`at_target`).
     Isize,
     /// Unsigned integers
     U8,
@@ -109,7 +178,7 @@ pub enum Type {
     /// Array type with fixed size
     Array {
         elem: Box<Type>,
-        len: usize,
+        len: ArrayLen,
     },
     /// Result type — also represents `T?` when err = Type::None.
     Result {
@@ -129,6 +198,10 @@ pub enum Type {
     Var(TypeVarId),
     /// Raw pointer type (*T)
     RawPtr(Box<Type>),
+    /// A length standing where a type argument goes: what `comptime N: usize`
+    /// is bound to at a call. `total([1, 2, 3])` binds `N` to `Len(3)`, and
+    /// `[i64; N]` read at that binding is `[i64; 3]`.
+    Len(usize),
     /// SIMD vector type: Vec[T, N] with shorthand aliases (f32x8, i32x4, etc.)
     SimdVector {
         elem: Box<Type>,
@@ -189,7 +262,6 @@ impl Type {
         }
         match args.first()? {
             GenericArg::Type(inner) => Some(inner),
-            _ => None,
         }
     }
 
@@ -222,7 +294,9 @@ impl Type {
         match self {
             Type::Result { ok, err } => ok.contains(pred) || err.contains(pred),
             Type::RawPtr(inner) => inner.contains(pred),
-            Type::Array { elem, .. } => elem.contains(pred),
+            Type::Array { elem, len } => {
+                elem.contains(pred) || matches!(len, ArrayLen::Of(t) if t.contains(pred))
+            }
             Type::Tuple(elems) | Type::Union(elems) => elems.iter().any(|t| t.contains(pred)),
             Type::Fn { params, ret } => params.iter().any(|p| p.ty.contains(pred)) || ret.contains(pred),
             Type::SimdVector { elem, .. } => elem.contains(pred),
@@ -257,18 +331,8 @@ impl Type {
     /// The fixed-width integer `usize` or `isize` is with `bits`-wide pointers.
     /// Anything else is itself. For layout and the backends; the checker never
     /// asks, so a program type-checks the same for every target.
-    pub fn at_pointer_width(&self, bits: u32) -> Type {
-        self.at_width(bits)
-    }
-
-    /// `at_pointer_width` for the target this compilation is for. Reads the
-    /// process-wide width, until a `Target` value is passed down instead.
-    pub fn at_target_width(&self) -> Type {
-        self.at_width(rask_ast::primitives::pointer_bits())
-    }
-
-    fn at_width(&self, bits: u32) -> Type {
-        match (self, bits) {
+    pub fn at_target(&self, target: rask_ast::Target) -> Type {
+        match (self, target.pointer_bits()) {
             (Type::Usize, 32) => Type::U32,
             (Type::Usize, _) => Type::U64,
             (Type::Isize, 32) => Type::I32,
@@ -352,7 +416,10 @@ impl Type {
             Type::Tuple(elems) | Type::Union(elems) => {
                 elems.iter().any(|t| t.mentions_type_param(is_param))
             }
-            Type::Array { elem, .. } => elem.mentions_type_param(is_param),
+            Type::Array { elem, len } => {
+                elem.mentions_type_param(is_param)
+                    || matches!(len, ArrayLen::Of(t) if t.mentions_type_param(is_param))
+            }
             Type::Result { ok, err } => {
                 ok.mentions_type_param(is_param) || err.mentions_type_param(is_param)
             }
@@ -386,7 +453,6 @@ impl fmt::Display for GenericArg {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             GenericArg::Type(ty) => write!(f, "{}", ty),
-            GenericArg::ConstUsize(n) => write!(f, "{}", n),
         }
     }
 }
@@ -399,7 +465,6 @@ impl Type {
     pub fn to_type_expr(&self) -> TypeExpr {
         let arg = |a: &GenericArg| match a {
             GenericArg::Type(t) => t.to_type_expr(),
-            GenericArg::ConstUsize(n) => TypeExpr::Int(n.to_string()),
         };
         match self {
             Type::Unit => TypeExpr::Unit,
@@ -424,6 +489,7 @@ impl Type {
                 elem: Box::new(elem.to_type_expr()),
                 len: len.to_string(),
             },
+            Type::Len(n) => TypeExpr::Int(n.to_string()),
             Type::Result { ok, err } if **err == Type::None => {
                 TypeExpr::Optional(Box::new(ok.to_type_expr()))
             }
@@ -500,6 +566,7 @@ impl fmt::Display for Type {
                 write!(f, ")")
             }
             Type::Array { elem, len } => write!(f, "[{}; {}]", elem, len),
+            Type::Len(n) => write!(f, "{n}"),
             Type::Result { ok, err } if **err == Type::None => write!(f, "{}?", ok),
             // An error side that can't happen: the call can't fail, and is a `T`.
             Type::Result { ok, err } if **err == Type::Never => write!(f, "{}", ok),

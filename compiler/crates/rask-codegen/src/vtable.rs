@@ -13,7 +13,7 @@ pub use rask_mir::vtable_layout::{
 /// Metadata for a single vtable: one (concrete type, interface) pair.
 #[derive(Debug, Clone)]
 pub struct VTableInfo {
-    /// Data section name: ".vtable.Button__Widget"
+    /// Data section name, from monomorphization's vtable table.
     pub data_name: String,
     /// Concrete type name: "Button"
     pub concrete_type: String,
@@ -25,10 +25,11 @@ pub struct VTableInfo {
     pub concrete_align: u32,
     /// Compatible methods in vtable order (interface declaration order, minus incompatible)
     pub methods: Vec<VTableMethod>,
-    /// What the concrete value owns, for a box that owns the value — a moved-in
-    /// one. Empty leaves `owned_release` null. A box built for a call borrows
-    /// instead, and `InterfaceDrop` never reads this slot.
-    pub owned: Vec<crate::drop_fields::DropField>,
+    /// The concrete value's type, for the release of a box that owns the
+    /// value (a moved-in one). What it owns is described the way a container
+    /// element's is; owning nothing leaves `owned_release` null. A box built
+    /// for a call borrows instead, and `InterfaceDrop` never reads that slot.
+    pub concrete_mir: Option<rask_mir::MirType>,
 }
 
 /// A single method entry in a vtable.
@@ -47,9 +48,4 @@ impl VTableInfo {
     pub fn byte_size(&self) -> u32 {
         VTABLE_METHODS_START + (self.methods.len() as u32) * 8
     }
-}
-
-/// Build the vtable data section name from concrete type and interface name.
-pub fn vtable_data_name(concrete_type: &str, interface_name: &str) -> String {
-    format!(".vtable.{}__{}", concrete_type, interface_name)
 }

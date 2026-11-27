@@ -12,6 +12,7 @@ mod resource;
 mod interp;
 mod builtins;
 mod stdlib;
+mod float_math;
 pub mod build_context;
 
 /// Spawn a thread to run interpreted Rask code.
@@ -441,9 +442,16 @@ const MAX_STACK_SEGMENTS: usize = {
 #[cfg(target_family = "wasm")]
 const MAX_STACK_SEGMENTS: usize = 1;
 
-/// Has the chain of stacks reached its cap?
-pub(crate) fn stack_segments_exhausted() -> bool {
-    STACK_SEGMENTS.get() + 1 >= MAX_STACK_SEGMENTS
+/// The segments past the cap that the ensures of an unwinding stack overflow
+/// may use (ctrl.panics: the overflow panics, and its ensures still run).
+#[cfg(not(target_family = "wasm"))]
+pub(crate) const OVERFLOW_ENSURE_SEGMENTS: usize = 1;
+#[cfg(target_family = "wasm")]
+pub(crate) const OVERFLOW_ENSURE_SEGMENTS: usize = 0;
+
+/// Has the chain of stacks reached its cap, plus `extra` segments?
+pub(crate) fn stack_segments_exhausted(extra: usize) -> bool {
+    STACK_SEGMENTS.get() + 1 >= MAX_STACK_SEGMENTS + extra
 }
 
 /// Continue evaluating on a fresh stack.
@@ -488,6 +496,22 @@ where
             // than turning it into a different one.
             .unwrap_or_else(|p| std::panic::resume_unwind(p))
     })
+}
+
+/// Run `f` here, or on a fresh stack segment when this one is nearly spent.
+///
+/// For the interpreter's own walks over a value: clone, `==`, hashing, drop,
+/// printing and the rack's link records. Each recurses once per level of
+/// nesting, and a value built by a loop can nest far deeper than one stack
+/// holds, so these walks used to abort the interpreter where native runs
+/// (#2084). Unlike a Rask call they don't count against the segment cap: the
+/// depth is the value's, and the value is already in memory.
+pub(crate) fn with_stack_room<T, F>(f: F) -> T
+where
+    F: FnOnce() -> T + Send,
+    T: Send,
+{
+    if stack_nearly_exhausted() { grow_interp_stack(f) } else { f() }
 }
 
 /// Run `f` on a thread with the interpreter's stack size, borrowing freely.
@@ -578,7 +602,7 @@ pub fn join_detached_reapers() {
 }
 
 pub use build_context::BuildState;
-pub use interp::{BenchmarkResult, Interpreter, RuntimeDiagnostic, RuntimeError, SourceInfo, TestResult};
+pub use interp::{BenchmarkResult, Interpreter, RuntimeDiagnostic, RuntimeError, TestResult};
 
 #[cfg(test)]
 mod drift;

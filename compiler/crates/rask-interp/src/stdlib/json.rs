@@ -12,7 +12,7 @@ use indexmap::IndexMap;
 use std::sync::{Arc, Mutex};
 
 use rask_ast::decl::{field_attrs, StructDecl};
-use rask_ast::ty::TypeExpr;
+use rask_types::{GenericArg, LangItem, Type, TypeDef};
 
 use crate::interp::{Interpreter, RuntimeError};
 use crate::value::{FloatKind, MapData, MapKey, Value};
@@ -58,6 +58,7 @@ impl Interpreter {
                     .into_iter()
                     .next()
                     .ok_or(RuntimeError::ArityMismatch { expected: 1, got: 0 })?;
+                let value = self.written_as(&value)?;
                 let json_val = value_to_json(&value, &self.struct_decls, &self.enums)?;
                 let s = stringify_value(&json_val, false, 0);
                 Ok(Value::String(Arc::new(Mutex::new(s))))
@@ -67,6 +68,7 @@ impl Interpreter {
                     .into_iter()
                     .next()
                     .ok_or(RuntimeError::ArityMismatch { expected: 1, got: 0 })?;
+                let value = self.written_as(&value)?;
                 let json_val = value_to_json(&value, &self.struct_decls, &self.enums)?;
                 let s = stringify_value(&json_val, true, 0);
                 Ok(Value::String(Arc::new(Mutex::new(s))))
@@ -76,6 +78,7 @@ impl Interpreter {
                     .into_iter()
                     .next()
                     .ok_or(RuntimeError::ArityMismatch { expected: 1, got: 0 })?;
+                let value = self.written_as(&value)?;
                 value_to_json(&value, &self.struct_decls, &self.enums)
             }
             "decode" => Err(RuntimeError::TypeError(
@@ -88,15 +91,86 @@ impl Interpreter {
         }
     }
 
+    /// std.encoding/E12b: `value` with every value of a type that has its own
+    /// `encode` replaced by what that answers, down to the leaves. The encoder
+    /// below then writes the result the normal way, so a type's wire form is
+    /// whatever its `encode` returns, however deeply the type sits in a `Vec`,
+    /// a `Map`, an optional or another struct. Read off the checker's table.
+    pub(crate) fn written_as(&mut self, value: &Value) -> Result<Value, RuntimeError> {
+        if !self.types.has_custom_encodes() {
+            return Ok(value.clone());
+        }
+        match value {
+            Value::Struct(s) => {
+                let name = s.lock().unwrap().name.clone();
+                // A struct-shaped variant is a struct named `Enum.Variant`; the
+                // `encode` belongs to the enum.
+                let owner = name.split_once('.').map_or(name.as_str(), |(e, _)| e).to_string();
+                if self.writes_itself(&owner) {
+                    let wire = self.call_rask_method(&owner, "encode", value.clone(), vec![], None)?;
+                    return self.written_as(&wire);
+                }
+                let fields: Vec<(String, Value)> =
+                    s.lock().unwrap().fields.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+                let mut out = IndexMap::new();
+                for (k, v) in fields {
+                    out.insert(k, self.written_as(&v)?);
+                }
+                Ok(Value::new_struct(name, out, None))
+            }
+            Value::Enum { name, variant, fields, variant_index, origin } => {
+                if self.writes_itself(name) {
+                    let wire = self.call_rask_method(name, "encode", value.clone(), vec![], None)?;
+                    return self.written_as(&wire);
+                }
+                let mut mapped = Vec::with_capacity(fields.len());
+                for f in fields {
+                    mapped.push(self.written_as(f)?);
+                }
+                Ok(Value::Enum {
+                    name: name.clone(),
+                    variant: variant.clone(),
+                    fields: mapped,
+                    variant_index: *variant_index,
+                    origin: origin.clone(),
+                })
+            }
+            Value::Vec(v) => {
+                let items: Vec<Value> = v.lock().unwrap().iter().cloned().collect();
+                let mut out = Vec::with_capacity(items.len());
+                for item in &items {
+                    out.push(self.written_as(item)?);
+                }
+                Ok(Value::vec(out))
+            }
+            Value::Map(m) => {
+                let entries: Vec<(MapKey, Value)> =
+                    m.lock().unwrap().iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+                let mut out = MapData::with_capacity(entries.len());
+                for (k, v) in entries {
+                    out.insert(k, self.written_as(&v)?);
+                }
+                Ok(Value::Map(Arc::new(Mutex::new(out))))
+            }
+            other => Ok(other.clone()),
+        }
+    }
+
+    /// Does the type named this have its own `encode`?
+    fn writes_itself(&self, name: &str) -> bool {
+        let types = &self.types;
+        types.get_type_id(name).is_some_and(|id| types.custom_encode(id).is_some())
+    }
+
     /// `json.decode<T>(text)`.
-    pub(crate) fn json_decode(&mut self, ty: &TypeExpr, args: Vec<Value>) -> Result<Value, RuntimeError> {
+    pub(crate) fn json_decode(&mut self, ty: &Type, args: Vec<Value>) -> Result<Value, RuntimeError> {
         let input = self.expect_string(&args, 0)?;
         // The untyped path is a Rask function — `json.parse` in stdlib/json.rk,
         // which is also what native calls. Its JsonParser is the grammar; the
         // Rust one below is only still here for the typed path, where the
         // target's fields come from struct declarations rather than from the
         // text.
-        if ty.is_name("JsonValue") {
+        if self.types.is_lang(ty, LangItem::JsonValue) {
             let text = Value::String(Arc::new(Mutex::new(input)));
             return self.call_rask_static("json", "parse", vec![text]);
         }
@@ -411,6 +485,10 @@ fn parse_json(input: &str) -> Result<Value, String> {
 
 /// Stringify a JsonValue (or any Value) into JSON.
 fn stringify_value(value: &Value, pretty: bool, indent: usize) -> String {
+    // A value can nest deeper than one stack holds (#2084).
+    if crate::stack_nearly_exhausted() {
+        return crate::grow_interp_stack(|| stringify_value(value, pretty, indent));
+    }
     match value {
         Value::Enum { name, variant, fields, .. } if name == "JsonValue" => {
             stringify_json_variant(variant, fields, pretty, indent)
@@ -501,6 +579,8 @@ fn stringify_value(value: &Value, pretty: bool, indent: usize) -> String {
                 format!("{{{}}}", pairs.join(","))
             }
         }
+        // A JSON object built by `value_to_json`, already in the order it
+        // is written: a struct's declaration, a Map's seeded order.
         Value::Map(m) => {
             let map = m.lock().unwrap();
             if map.is_empty() {
@@ -624,8 +704,12 @@ fn escape_json_string(s: &str) -> String {
 fn value_to_json(
     value: &Value,
     struct_decls: &HashMap<String, StructDecl>,
-    enums: &HashMap<String, rask_ast::decl::EnumDecl>,
+    enums: &HashMap<String, Arc<rask_ast::decl::EnumDecl>>,
 ) -> Result<Value, RuntimeError> {
+    // A value can nest deeper than one stack holds (#2084).
+    if crate::stack_nearly_exhausted() {
+        return crate::grow_interp_stack(|| value_to_json(value, struct_decls, enums));
+    }
     match value {
         Value::Unit => Ok(make_json_null()),
         Value::Bool(b) => Ok(make_json_bool(*b)),
@@ -699,10 +783,11 @@ fn value_to_json(
             Ok(make_json_object(entries))
         }
         Value::Map(m) => {
-            let map = m.lock().unwrap();
-            let mut entries = Vec::with_capacity(map.len());
-            for (k, v) in map.iter() {
-                let key = match &k.value {
+            // In the order `for` visits it, as native writes it (#1938).
+            let seeded = crate::value::map_entries_seeded(&m.lock().unwrap());
+            let mut entries = Vec::with_capacity(seeded.len());
+            for (k, v) in seeded.iter() {
+                let key = match k {
                     Value::String(s) => s.lock().unwrap().clone(),
                     other => format!("{}", other),
                 };
@@ -865,19 +950,23 @@ fn make_json_object(entries: Vec<(String, Value)>) -> Value {
 // ─── JSON Decode (typed deserialization) ───
 
 /// Which JsonError variant a failure maps to.
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub(crate) enum JsonErrKind {
     Parse,
     Type,
     Missing,
+    /// A type's own `decode` refused; the error holds where, and the message
+    /// is why.
+    Refused { path: String },
 }
 
 impl JsonErrKind {
-    fn variant(self) -> &'static str {
+    fn variant(&self) -> &'static str {
         match self {
             JsonErrKind::Parse => "ParseError",
             JsonErrKind::Type => "TypeError",
             JsonErrKind::Missing => "MissingField",
+            JsonErrKind::Refused { .. } => "Refused",
         }
     }
 }
@@ -927,7 +1016,96 @@ struct Decode<'a> {
     failed: &'a mut Option<RuntimeError>,
 }
 
+/// A declared type the decode walks into: its declaration, and what each of
+/// its parameters is bound to here.
+struct Declared<'t> {
+    def: &'t TypeDef,
+    subst: HashMap<String, Type>,
+}
+
+impl Declared<'_> {
+    /// A member's type as this instance reads it: `Either<i64>`'s `Left(T)`
+    /// holds an `i64`.
+    fn member(&self, ty: &Type) -> Type {
+        if self.subst.is_empty() {
+            ty.clone()
+        } else {
+            rask_check::substitute_type(ty, &self.subst)
+        }
+    }
+}
+
 impl Decode<'_> {
+    /// `ty` with any name the checker left unresolved looked up, so the rest of
+    /// the decode sees one spelling of each type.
+    fn resolved(&self, ty: &Type) -> Type {
+        let types = &self.interp.types;
+        match ty {
+            Type::UnresolvedNamed(name) => types.get_type_id(name).map(Type::Named).unwrap_or_else(|| ty.clone()),
+            Type::UnresolvedGeneric { name, args } => match types.get_type_id(name) {
+                Some(base) => Type::Generic { base, args: args.clone() },
+                None => ty.clone(),
+            },
+            _ => ty.clone(),
+        }
+    }
+
+    /// The declaration behind a struct or enum type, with its parameters bound.
+    fn declared(&self, ty: &Type) -> Option<Declared<'_>> {
+        let (id, args): (_, &[GenericArg]) = match ty {
+            Type::Named(id) => (*id, &[]),
+            Type::Generic { base, args } => (*base, args),
+            _ => return None,
+        };
+        let def = self.interp.types.get(id)?;
+        let params: &[String] = match def {
+            TypeDef::Struct { type_params, .. } | TypeDef::Enum { type_params, .. } => type_params,
+            _ => return None,
+        };
+        let subst = params
+            .iter()
+            .zip(args)
+            .map(|(p, GenericArg::Type(t))| (p.clone(), (**t).clone()))
+            .collect();
+        Some(Declared { def, subst })
+    }
+
+    /// The `Vec`/`Map` arguments of a collection type.
+    fn collection<'t>(&self, ty: &'t Type, wanted: &str) -> Option<Vec<&'t Type>> {
+        let Type::Generic { base, args } = ty else { return None };
+        if self.interp.types.type_name(*base) != wanted {
+            return None;
+        }
+        Some(args.iter().map(|GenericArg::Type(t)| t.as_ref()).collect())
+    }
+
+    /// How a type decodes through its own `decode` (std.encoding/E12b): its
+    /// name, and the wire type `decode` reads. `None` for any other type.
+    /// Read off the checker's table, which says so once.
+    fn custom_decode(&self, ty: &Type) -> Option<(String, Type)> {
+        let types = &self.interp.types;
+        let id = types.conformance_target(ty)?;
+        let custom = types.custom_decode(id)?;
+        let wire = match self.declared(ty) {
+            Some(d) => d.member(&custom.wire),
+            None => custom.wire.clone(),
+        };
+        Some((types.type_name(id), wire))
+    }
+
+    /// Does a member left out of the input still decode? A `T?` takes `none`,
+    /// and so does a custom decode whose wire type is one.
+    fn takes_absent(&self, ty: &Type) -> bool {
+        match self.custom_decode(ty) {
+            Some((_, wire)) => self.takes_absent(&wire),
+            None => ty.is_option(),
+        }
+    }
+
+    fn label(&self, ty: &Type) -> String {
+        self.interp.types.display_type(ty)
+    }
+
     /// The value of a field the input doesn't supply: its default, run by
     /// calling the method desugar wrote for it (E20, type.structs/FD6).
     fn default_of(&mut self, ty: &str, field: &rask_ast::decl::Field) -> Result<Value, JsonErr> {
@@ -943,15 +1121,18 @@ impl Decode<'_> {
 }
 
 /// Convert a parsed JsonValue into a typed Rask value. `ty` is the target as
-/// written — the same types struct declarations carry.
+/// the checker resolved it, so a generic's parameters and an array's length
+/// are already settled.
 fn json_to_typed(
     json: &Value,
-    ty: &TypeExpr,
+    ty: &Type,
     path: &str,
     cx: &mut Decode<'_>,
 ) -> Result<Value, JsonErr> {
+    let ty = &cx.resolved(ty);
+
     // `T?` — null or absent becomes none, anything else Some(T).
-    if let TypeExpr::Optional(inner) = ty {
+    if let Some(inner) = ty.as_option() {
         if is_json_null(json) {
             return Ok(Value::none());
         }
@@ -959,103 +1140,289 @@ fn json_to_typed(
     }
 
     // The untyped tree, handed back as-is.
-    if ty.is_name("JsonValue") {
+    if cx.interp.types.is_lang(ty, LangItem::JsonValue) {
         return Ok(json.clone());
+    }
+
+    // A type that writes its own `decode`: read the input as what it takes,
+    // the normal way, and hand that over. What it refuses with comes back as
+    // the message of its error, behind where in the input the value was.
+    if let Some((name, wire_ty)) = cx.custom_decode(ty) {
+        let wire = json_to_typed(json, &wire_ty, path, cx)?;
+        let answer = cx.interp.call_rask_static(&name, rask_ast::decl::field_attrs::DECODE_ADAPTER, vec![wire]);
+        let answer = match answer {
+            Ok(v) => v,
+            Err(e) => {
+                *cx.failed = Some(e);
+                return Err(JsonErr {
+                    kind: JsonErrKind::Type,
+                    message: format!("`{}`'s decode failed", name),
+                });
+            }
+        };
+        let mut answer = answer;
+        return match &mut answer {
+            Value::Enum { variant, fields, .. } if variant == "Ok" && fields.len() == 1 => Ok(fields.remove(0)),
+            Value::Enum { variant, fields, .. } if variant == "Err" && fields.len() == 1 => {
+                let why = match fields.remove(0) {
+                    Value::String(ref s) => s.lock().unwrap().clone(),
+                    other => format!("{:?}", other),
+                };
+                let where_ = if path.is_empty() { "the value" } else { path };
+                Err(JsonErr { kind: JsonErrKind::Refused { path: where_.to_string() }, message: why })
+            }
+            other => {
+                *cx.failed = Some(RuntimeError::TypeError(format!(
+                    "`{}`'s decode answered {:?}, not a `T or string`", name, other
+                )));
+                Err(JsonErr { kind: JsonErrKind::Type, message: format!("`{}`'s decode failed", name) })
+            }
+        };
     }
 
     let raw = unwrap_json_value(json);
 
-    match (ty.name().as_deref(), ty.args()) {
-        (Some("Vec"), [elem]) => {
-            let Value::Vec(items) = raw else {
-                return Err(type_err(path, "a list", json));
-            };
-            let items = items.lock().unwrap().clone();
-            let mut out = Vec::with_capacity(items.len());
-            for (i, item) in items.iter().enumerate() {
-                let base = if path.is_empty() { "the list" } else { path };
-                out.push(json_to_typed(item, elem, &format!("{}[{}]", base, i), cx)?);
-            }
-            return Ok(Value::vec(out));
+    if let Some([elem]) = cx.collection(ty, "Vec").as_deref() {
+        let Value::Vec(items) = raw else {
+            return Err(type_err(path, "a list", json));
+        };
+        let items = items.lock().unwrap().clone();
+        let mut out = Vec::with_capacity(items.len());
+        for (i, item) in items.iter().enumerate() {
+            let base = if path.is_empty() { "the list" } else { path };
+            out.push(json_to_typed(item, elem, &format!("{}[{}]", base, i), cx)?);
         }
-        (Some("Map"), [key, value_ty]) => {
-            if !key.is_name("string") {
-                return Err(JsonErr {
-                    kind: JsonErrKind::Type,
-                    message: format!(
-                        "a Map decoded from JSON needs string keys, not `{}` — JSON object keys are always strings",
-                        key.source()
-                    ),
-                });
-            }
-            let entries = object_entries(raw).ok_or_else(|| type_err(path, "an object", json))?;
-            let mut pairs = MapData::with_capacity(entries.len());
-            for (k, v) in entries {
-                let value = json_to_typed(&v, value_ty, &child_path(path, &k), cx)?;
-                pairs.insert(MapKey::string(k), value);
-            }
-            return Ok(Value::Map(Arc::new(Mutex::new(pairs))));
+        return Ok(Value::vec(out));
+    }
+    if let Some([key, value_ty]) = cx.collection(ty, "Map").as_deref() {
+        if !matches!(key, Type::String) {
+            return Err(JsonErr {
+                kind: JsonErrKind::Type,
+                message: format!(
+                    "a Map decoded from JSON needs string keys, not `{}` — JSON object keys are always strings",
+                    cx.label(key)
+                ),
+            });
+        }
+        let entries = object_entries(raw).ok_or_else(|| type_err(path, "an object", json))?;
+        let mut pairs = MapData::with_capacity(entries.len());
+        for (k, v) in entries {
+            let value = json_to_typed(&v, value_ty, &child_path(path, &k), cx)?;
+            pairs.insert(MapKey::string(k), value);
+        }
+        return Ok(Value::Map(Arc::new(Mutex::new(pairs))));
+    }
+
+    // `[T; N]`: a list of exactly N.
+    if let Type::Array { elem, len } = ty {
+        let Some(count) = len.known() else {
+            return Err(JsonErr {
+                kind: JsonErrKind::Type,
+                message: format!("`{}` has no known length", cx.label(ty)),
+            });
+        };
+        let Value::Vec(items) = raw else {
+            return Err(type_err(path, "a list", json));
+        };
+        let items = items.lock().unwrap().clone();
+        let base = if path.is_empty() { "the list" } else { path };
+        if items.len() != count {
+            return Err(JsonErr {
+                kind: JsonErrKind::Type,
+                message: format!("{} should hold {} items, found {}", base, count, items.len()),
+            });
+        }
+        let mut out = Vec::with_capacity(count);
+        for (i, item) in items.iter().enumerate() {
+            out.push(json_to_typed(item, elem, &format!("{}[{}]", base, i), cx)?);
+        }
+        return Ok(Value::array(out));
+    }
+
+    match ty {
+        Type::String => return extract_string(raw).map_err(|_| type_err(path, "string", json)),
+        Type::Bool => return extract_bool(raw).map_err(|_| type_err(path, "bool", json)),
+        Type::F32 | Type::F64 => {
+            return extract_float(raw).map_err(|_| type_err(path, &cx.label(ty), json));
         }
         _ => {}
     }
+    if let Some(kind) = rask_check::primitive_spelling(ty)
+        .and_then(|name| crate::value::IntKind::from_name(name, cx.interp.types.target()))
+    {
+        return extract_int(raw, kind).map_err(|_| type_err(path, "an integer", json));
+    }
 
-    let name = ty.bare_name().unwrap_or_default();
-    match name {
-        "string" => extract_string(raw).map_err(|_| type_err(path, "string", json)),
-        "bool" => extract_bool(raw).map_err(|_| type_err(path, "bool", json)),
-        "f32" | "f64" => extract_float(raw).map_err(|_| type_err(path, name, json)),
-        _ if rask_ast::primitives::is_machine_integer(name) => {
-            let kind = crate::value::IntKind::from_name(name).expect("every machine integer has a kind");
-            extract_int(raw, kind).map_err(|_| type_err(path, "an integer", json))
+    let unknown = |cx: &Decode<'_>| JsonErr {
+        kind: JsonErrKind::Type,
+        message: format!("`{}` isn't a type json.decode knows how to build", cx.label(ty)),
+    };
+    let Some(declared) = cx.declared(ty) else {
+        return Err(unknown(cx));
+    };
+    let (name, members): (String, Vec<(String, Type)>) = match declared.def {
+        TypeDef::Enum { name, variants, .. } => {
+            let variants: Vec<(String, Vec<Type>)> = variants
+                .iter()
+                .map(|(n, ts)| (n.clone(), ts.iter().map(|t| declared.member(t)).collect()))
+                .collect();
+            let decl = cx.interp.enums.get(name).cloned().ok_or_else(|| unknown(cx))?;
+            return json_to_enum(json, raw, &decl, &variants, path, cx);
         }
-        _ => {
-            let decl = cx.decls.get(name).ok_or_else(|| JsonErr {
+        TypeDef::Struct { name, fields, .. } => {
+            (name.clone(), fields.iter().map(|(n, t)| (n.clone(), declared.member(t))).collect())
+        }
+        _ => return Err(unknown(cx)),
+    };
+    let decl = cx.decls.get(&name).ok_or_else(|| unknown(cx))?;
+    let entries = object_entries(raw).ok_or_else(|| type_err(path, "an object", json))?;
+    let mut fields = IndexMap::new();
+    for field in &decl.fields {
+        // `@no_serialize` fields aren't in the serialized form (E19), so
+        // they always take their default. E13a makes sure there is one.
+        if field_attrs::is_skipped(&field.attrs) {
+            fields.insert(field.name.clone(), cx.default_of(&name, field)?);
+            continue;
+        }
+        let field_ty = members
+            .iter()
+            .find(|(n, _)| *n == field.name)
+            .map(|(_, t)| t)
+            .expect("the checker typed every declared field");
+        let key = field_attrs::serial_name(&field.attrs, &field.name);
+        match entries.iter().find(|(k, _)| *k == key) {
+            Some((_, v)) => {
+                let value = json_to_typed(v, field_ty, &child_path(path, &key), cx)?;
+                fields.insert(field.name.clone(), value);
+            }
+            // `@default` covers a missing key, and so does a declared
+            // default — a field the input leaves out takes it
+            // (E20, type.structs/FD6). Only `@default` counted, so
+            // `tag: string = "fallback"` failed the decode (#853).
+            None if field_attrs::decode_default(field).is_some() => {
+                fields.insert(field.name.clone(), cx.default_of(&name, field)?);
+            }
+            // A `T?` field takes `none`; anything else has to be there (J9).
+            // A custom decode whose wire type is `T?` reads the absence as
+            // that wire value.
+            None if cx.takes_absent(field_ty) => {
+                let value = json_to_typed(&Value::Unit, field_ty, &child_path(path, &key), cx)?;
+                fields.insert(field.name.clone(), value);
+            }
+            None => {
+                return Err(JsonErr {
+                    kind: JsonErrKind::Missing,
+                    message: format!("field \"{}\" not found in the JSON object", key),
+                })
+            }
+        }
+    }
+    // Keys the struct doesn't declare are skipped (J10).
+    Ok(Value::new_struct(name, fields, None))
+}
+
+/// An enum, tagged the way the encoder writes it (std.encoding/E22–E25).
+/// External: a unit variant is its name as a string, any other an object with
+/// the name as its one key, holding a lone unnamed payload itself (E23) or the
+/// fields. Internal (`@tag`): an object whose tag member names the variant,
+/// with the fields beside it.
+fn json_to_enum(
+    json: &Value,
+    raw: &Value,
+    decl: &rask_ast::decl::EnumDecl,
+    typed: &[(String, Vec<Type>)],
+    path: &str,
+    cx: &mut Decode<'_>,
+) -> Result<Value, JsonErr> {
+    let where_ = if path.is_empty() { "the value".to_string() } else { path.to_string() };
+    let find = |wire: &str| {
+        decl.variants
+            .iter()
+            .position(|v| field_attrs::serial_name(&v.attrs, &v.name) == wire)
+            .ok_or_else(|| JsonErr {
                 kind: JsonErrKind::Type,
-                message: format!("`{}` isn't a type json.decode knows how to build", ty.source()),
-            })?;
+                message: format!("{} names no variant: \"{}\"", where_, wire),
+            })
+    };
+    let string_of = |v: &Value| match unwrap_json_value(v) {
+        Value::String(s) => Some(s.lock().unwrap().clone()),
+        _ => None,
+    };
+    let tag_field = field_attrs::tag_field(&decl.attrs);
+    let (index, body) = match &tag_field {
+        Some(tf) => {
             let entries = object_entries(raw).ok_or_else(|| type_err(path, "an object", json))?;
-            let mut fields = IndexMap::new();
-            for field in &decl.fields {
-                // `@no_serialize` fields aren't in the serialized form (E19), so
-                // they always take their default. E13a makes sure there is one.
-                if field_attrs::is_skipped(&field.attrs) {
-                    fields.insert(field.name.clone(), cx.default_of(name, field)?);
-                    continue;
+            let tag = entries.iter().find(|(k, _)| k == tf).ok_or_else(|| JsonErr {
+                kind: JsonErrKind::Missing,
+                message: format!("field \"{}\" not found in the JSON object", tf),
+            })?;
+            let wire = string_of(&tag.1).ok_or_else(|| type_err(&child_path(path, tf), "a string", &tag.1))?;
+            (find(&wire)?, Some(json.clone()))
+        }
+        None => match string_of(json) {
+            Some(wire) => {
+                let index = find(&wire)?;
+                if !decl.variants[index].fields.is_empty() {
+                    return Err(JsonErr {
+                        kind: JsonErrKind::Type,
+                        message: format!("{}: variant \"{}\" has a payload, so it is an object", where_, wire),
+                    });
                 }
-                let key = field_attrs::serial_name(&field.attrs, &field.name);
-                match entries.iter().find(|(k, _)| *k == key) {
-                    Some((_, v)) => {
-                        let value = json_to_typed(
-                            v,
-                            &field.ty,
-                            &child_path(path, &key),
-                            cx,
-                        )?;
-                        fields.insert(field.name.clone(), value);
-                    }
-                    // `@default` covers a missing key, and so does a declared
-                    // default — a field the input leaves out takes it
-                    // (E20, type.structs/FD6). Only `@default` counted, so
-                    // `tag: string = "fallback"` failed the decode (#853).
-                    None if field_attrs::decode_default(field).is_some() => {
-                        fields.insert(field.name.clone(), cx.default_of(name, field)?);
-                    }
-                    // A `T?` field takes `none`; anything else has to be there (J9).
-                    None if matches!(field.ty, TypeExpr::Optional(_)) => {
-                        fields.insert(field.name.clone(), Value::none());
-                    }
+                (index, None)
+            }
+            None => {
+                let entries = object_entries(raw)
+                    .filter(|e| e.len() == 1)
+                    .ok_or_else(|| type_err(path, "a variant name or an object with one key", json))?;
+                let (wire, body) = entries.into_iter().next().expect("one entry");
+                let index = find(&wire)?;
+                if decl.variants[index].fields.is_empty() {
+                    return Err(JsonErr {
+                        kind: JsonErrKind::Type,
+                        message: format!("{}: variant \"{}\" has no payload, so it is a string", where_, wire),
+                    });
+                }
+                (index, Some(body))
+            }
+        },
+    };
+    let variant = &decl.variants[index];
+    let payload = &typed
+        .iter()
+        .find(|(n, _)| *n == variant.name)
+        .expect("the checker typed every declared variant")
+        .1;
+    let wire = field_attrs::serial_name(&variant.attrs, &variant.name);
+    let mut fields = Vec::with_capacity(variant.fields.len());
+    if let Some(body) = body {
+        let inner = if tag_field.is_some() {
+            path.to_string()
+        } else if path.is_empty() {
+            format!("variant {}", wire)
+        } else {
+            format!("{}.{}", path, wire)
+        };
+        let bare = variant.fields.len() == 1 && rask_ast::decl::is_positional_field_name(&variant.fields[0].name);
+        if bare {
+            fields.push(json_to_typed(&body, &payload[0], &inner, cx)?);
+        } else {
+            let entries = object_entries(unwrap_json_value(&body))
+                .ok_or_else(|| type_err(&inner, "an object", &body))?;
+            for (field, field_ty) in variant.fields.iter().zip(payload) {
+                match entries.iter().find(|(k, _)| *k == field.name) {
+                    Some((_, v)) => fields.push(json_to_typed(v, field_ty, &child_path(&inner, &field.name), cx)?),
+                    None if field_ty.is_option() => fields.push(Value::none()),
                     None => {
                         return Err(JsonErr {
                             kind: JsonErrKind::Missing,
-                            message: format!("field \"{}\" not found in the JSON object", key),
+                            message: format!("field \"{}\" not found in the JSON object", field.name),
                         })
                     }
                 }
             }
-            // Keys the struct doesn't declare are skipped (J10).
-            Ok(Value::new_struct(name.to_string(), fields, None))
         }
     }
+    Ok(Value::enum_with_index(decl.name.clone(), variant.name.clone(), fields, index as u32))
 }
 
 /// Unwrap a JsonValue enum to its inner content for easier inspection.
@@ -1147,7 +1514,12 @@ fn make_result_err(kind: JsonErrKind, msg: &str) -> Value {
 /// The `JsonError` a failing decode hands back (J3). A bare string used to go
 /// here, so `e.message()` didn't resolve — the error had no type.
 fn make_json_error(kind: JsonErrKind, msg: &str) -> Value {
-    Value::stdlib_enum("JsonError", kind.variant(), vec![Value::String(Arc::new(Mutex::new(msg.to_string())))])
+    let text = |s: &str| Value::String(Arc::new(Mutex::new(s.to_string())));
+    let payload = match &kind {
+        JsonErrKind::Refused { path } => vec![text(path), text(msg)],
+        _ => vec![text(msg)],
+    };
+    Value::stdlib_enum("JsonError", kind.variant(), payload)
 }
 
 
