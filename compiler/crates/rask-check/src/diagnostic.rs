@@ -3146,7 +3146,10 @@ impl ToDiagnostic for crate::TypeError {
                 let diag = Diagnostic::error(format!("pattern `{}` can't match a `{}`", pattern, scrutinee))
                     .with_code("E0954")
                     .with_why("a pattern is checked against the type of the value it matches; one naming another type's variant, or a variant that doesn't exist, would never match");
-                if variants.is_empty() {
+                if scrutinee.is_option() {
+                    diag.with_primary(*span, format!("`{}` is an optional, not an enum", scrutinee))
+                        .with_fix("bind the payload with `if x? as v { … }`, or test for it with `x?`")
+                } else if variants.is_empty() {
                     diag.with_primary(*span, format!("`{}` isn't an enum, so it has no variants", scrutinee))
                 } else {
                     let list = variants.iter().map(|v| format!("`{}`", v)).collect::<Vec<_>>().join(", ");

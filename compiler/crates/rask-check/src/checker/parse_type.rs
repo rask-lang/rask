@@ -75,7 +75,8 @@ pub fn resolve_type_expr(ty: &TypeExpr, types: &TypeTable) -> Result<Type, TypeE
             if let Some(i) = (1..members.len()).find(|&i| members[..i].contains(&members[i])) {
                 let variant = members[i].clone();
                 return Err(TypeError::DuplicateSumVariant {
-                    ty: Type::union_named(members, |id| Some(types.type_name(id))),
+                    // As written: the canonical form has already merged the repeat.
+                    ty: Type::Union(members),
                     variant,
                     span: Span::new(0, 0),
                 });

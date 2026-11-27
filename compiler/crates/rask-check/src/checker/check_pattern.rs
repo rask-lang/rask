@@ -1301,10 +1301,31 @@ impl TypeChecker {
             }
         }
 
+        // `n is bogus(x)` on an `i64`, `p is some(v)` on an `i64?`: the name
+        // is no variant of anything, and the value's type is known. It used
+        // to bind `x` to a variable nothing solved, and the backends disagreed
+        // on whether the test held.
+        let settled = self.settle_number(&resolved_scrutinee);
+        let payload_ty = if self.enum_id_from_pattern_name(name).is_none()
+            && !settled.contains(&|t| {
+                matches!(t, Type::Var(_) | Type::Error | Type::UnresolvedNamed(_) | Type::UnresolvedGeneric { .. })
+            })
+        {
+            self.errors.push(TypeError::PatternVariantMismatch {
+                pattern: name.to_string(),
+                scrutinee: settled,
+                variants: Vec::new(),
+                span,
+            });
+            Some(Type::Error)
+        } else {
+            None
+        };
+
         let mut bindings = vec![];
         for pat in fields {
-            let fresh = self.ctx.fresh_var();
-            bindings.extend(self.check_pattern(pat, &fresh, span));
+            let ty = payload_ty.clone().unwrap_or_else(|| self.ctx.fresh_var());
+            bindings.extend(self.check_pattern(pat, &ty, span));
         }
         bindings
     }

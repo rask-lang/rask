@@ -3479,6 +3479,14 @@ impl TypeChecker {
                 // conformance now rather than handing the caller `T.Out`.
                 self.resolve_assoc_projections(ret)
             }
+            // `let n = 5; n(3)`: a number literal's type is still open, but it
+            // only ever settles on a number.
+            Type::Var(id) if self.literal_number_default(id).is_some() => {
+                for arg in args { self.infer_expr(&arg.expr); }
+                let ty = self.literal_number_default(id).unwrap_or(Type::Error);
+                self.errors.push(TypeError::NotCallable { ty, span: func.span });
+                Type::Error
+            }
             Type::Var(_) => {
                 // The call's own markers are all there is to say how each
                 // argument goes in: `mutate x` lends it for writing, anything
@@ -3563,6 +3571,19 @@ impl TypeChecker {
                 for arg in args { self.infer_expr(&arg.expr); }
                 self.ctx.fresh_var()
             }
+        }
+    }
+
+    /// The type an unsuffixed number literal's var defaults to, when `id` is
+    /// one (through any chain of vars) and nothing has settled it yet.
+    fn literal_number_default(&self, id: rask_types::TypeVarId) -> Option<Type> {
+        let Type::Var(root) = self.ctx.apply(&Type::Var(id)) else { return None };
+        if self.ctx.is_integer_literal_var(root) {
+            Some(Type::I64)
+        } else if self.ctx.is_float_literal_var(root) {
+            Some(Type::F64)
+        } else {
+            None
         }
     }
 
