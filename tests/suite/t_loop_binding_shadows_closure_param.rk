@@ -1,0 +1,58 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A loop variable named like a closure parameter in the loop's own source.
+// The ownership check kept each name's type in one table, so the closure's
+// `|v|` (a `Vec<i64>`) was still there when the loop bound `v` to an `i64`,
+// and `acc.push(v)` was refused as giving away an owning value (#2093).
+import sequence.Sequence
+
+test "the loop variable has the item's type, not the closure parameter's" {
+    let flat: Vec<Vec<i64>> = [[1, 2], [3]]
+    mut acc: Vec<i64> = Vec.new()
+    for v in flat.as_sequence().map(|v| v.as_sequence()).flatten() {
+        acc.push(v)
+        acc.push(v * 10)
+    }
+    assert acc.len() == 6
+    assert acc[5] == 30
+}
+
+test "a loop variable shadows an outer binding's type for the loop only" {
+    let v: Vec<i64> = [7, 8]
+    mut acc: Vec<i64> = Vec.new()
+    for v in 0..3 {
+        acc.push(v)
+        acc.push(v)
+    }
+    assert acc.len() == 6
+    assert v.len() == 2
+}
+
+func consume(take x: Vec<i64>) -> usize {
+    return x.len()
+}
+
+test "a captured loop item of a Copy type leaves the outer name alone" {
+    let v: i64 = 1
+    mut fs: Vec<func() -> i64> = Vec.new()
+    for v in 0..3 {
+        fs.push(|| v * 2)
+    }
+    assert v == 1
+    assert fs.len() == 3
+    assert fs[2]() == 4
+}
+
+test "giving away an inner binding doesn't move the outer one it shadows" {
+    let v: i64 = 1
+    mut vv: Vec<Vec<i64>> = [[1, 2], [3]]
+    mut n: usize = 0
+    for v in vv.take_all() {
+        n += consume(v)
+    }
+    if v > 0 {
+        let v: Vec<i64> = [1]
+        n += consume(v)
+    }
+    assert n == 4
+    assert v == 1
+}

@@ -566,7 +566,7 @@ impl<'a> MirLowerer<'a> {
             let value = self.builder.alloc_temp(value_ty.clone());
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: Some(value),
-                func: FunctionRef::like("Map_get_unwrap", "Map_get"),
+                func: crate::runtime_ops::map_index(),
                 args: vec![MirOperand::Local(map), MirOperand::Local(key)],
             }));
             ClosureArg::Value(MirOperand::Local(value))
@@ -683,7 +683,7 @@ impl<'a> MirLowerer<'a> {
             let elem = self.builder.alloc_temp(elem_ty.clone());
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: Some(elem),
-                func: FunctionRef::like("Vec_index", "Vec_get"),
+                func: crate::runtime_ops::vec_index(),
                 args: vec![MirOperand::Local(collection), MirOperand::Local(idx)],
             }));
             ClosureArg::Value(MirOperand::Local(elem))
@@ -1183,7 +1183,7 @@ impl<'a> MirLowerer<'a> {
         } else {
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: Some(elem_local),
-                func: FunctionRef::like("Vec_index", "Vec_get"),
+                func: crate::runtime_ops::vec_index(),
                 args: vec![MirOperand::Local(collection), MirOperand::Local(idx)],
             }));
         }
@@ -1588,7 +1588,7 @@ impl<'a> MirLowerer<'a> {
         // nothing takes the value it displaces, so the map releases it.
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: None,
-            func: FunctionRef::like("Map_set", "Map_insert"),
+            func: crate::runtime_ops::map_set(),
             args: vec![MirOperand::Local(result_map), key, val],
         }));
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: setup.inc_block }));
@@ -2200,7 +2200,7 @@ impl<'a> MirLowerer<'a> {
         let Some(MirType::Array { elem, .. }) = self.builder.local_type(setup.collection) else {
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: Some(moved),
-                func: FunctionRef::like("Vec_move_out", "Vec_remove"),
+                func: crate::runtime_ops::vec_move_out(),
                 args: vec![MirOperand::Local(setup.collection), MirOperand::Local(at)],
             }));
             return moved;
@@ -2232,7 +2232,7 @@ impl<'a> MirLowerer<'a> {
         }));
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(moved),
-            func: FunctionRef::like("Field_take", "Vec_remove"),
+            func: crate::runtime_ops::field_take(),
             args: vec![MirOperand::Local(slot), MirOperand::Constant(MirConst::Int(size as i64))],
         }));
         moved
@@ -2515,7 +2515,7 @@ impl<'a> MirLowerer<'a> {
             }
             _ => self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: Some(elem),
-                func: FunctionRef::like("Vec_index", "Vec_get"),
+                func: crate::runtime_ops::vec_index(),
                 args: vec![MirOperand::Local(setup.collection), MirOperand::Local(found)],
             })),
         }
@@ -2549,7 +2549,7 @@ impl<'a> MirLowerer<'a> {
         if matches!(ty, MirType::Buffer) {
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: Some(less),
-                func: FunctionRef::borrowing("string_lt"),
+                func: FunctionRef::borrowing("rask_string_lt"),
                 args: vec![left, right],
             }));
             return less;
@@ -2707,7 +2707,7 @@ impl<'a> MirLowerer<'a> {
         let other_elem = self.builder.alloc_temp(other_elem_ty.clone());
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(other_elem),
-            func: FunctionRef::like("Vec_index", "Vec_get"),
+            func: crate::runtime_ops::vec_index(),
             args: vec![MirOperand::Local(other_vec), MirOperand::Local(pair_idx)],
         }));
 
@@ -2788,7 +2788,7 @@ impl<'a> MirLowerer<'a> {
         if matches!(key_ty, MirType::Buffer) {
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: Some(less),
-                func: FunctionRef::borrowing("string_lt"),
+                func: FunctionRef::borrowing("rask_string_lt"),
                 args: vec![MirOperand::Local(left), MirOperand::Local(right)],
             }));
         } else {
@@ -2942,7 +2942,7 @@ impl<'a> MirLowerer<'a> {
         let elem = self.builder.alloc_temp(elem_ty.clone());
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(elem),
-            func: FunctionRef::like("Vec_index", "Vec_get"),
+            func: crate::runtime_ops::vec_index(),
             args: vec![MirOperand::Local(vec_local), MirOperand::Local(ex_idx)],
         }));
         let (key_op, key_ty) = self.inline_closure_body(closure, MirOperand::Local(elem), elem_ty)?;
@@ -2995,7 +2995,7 @@ impl<'a> MirLowerer<'a> {
         let cmp = self.emit_key_comparator(&key_ty);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: None,
-            func: FunctionRef::like("Vec_sort_by_keys", "Vec_sort_by"),
+            func: FunctionRef::like("rask_vec_sort_by_keys", "Vec_sort_by"),
             args: vec![
                 MirOperand::Local(vec_local),
                 MirOperand::Local(keys),
@@ -3006,7 +3006,7 @@ impl<'a> MirLowerer<'a> {
 
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: None,
-            func: FunctionRef::releasing("Vec_free"),
+            func: FunctionRef::releasing("rask_vec_free"),
             args: vec![MirOperand::Local(keys)],
         }));
 

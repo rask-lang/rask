@@ -786,6 +786,8 @@ pub struct FunctionStub {
     pub effects: rask_ast::decl::DeclaredEffects,
     /// The function's type parameters, explicit or a single letter (PC1).
     pub type_params: Vec<String>,
+    /// `@native("sym")`: the C function a call runs, as on a method.
+    pub native: Option<NativeDecl>,
 }
 
 /// Registry of all stub data, lazily loaded.
@@ -952,7 +954,7 @@ impl StubRegistry {
             }
         }
 
-        let desugared = rask_desugar::desugar_stdlib(&mut decls);
+        let desugared = rask_desugar::desugar(&mut decls, rask_desugar::Desugaring::Stdlib);
         lift_inline_methods(&mut decls);
         CompilableStdlib { decls, operator_calls: desugared.operator_calls }
     }
@@ -1115,6 +1117,8 @@ impl StubRegistry {
                     span: name_span,
                     effects: f.declared_effects(),
                     type_params: rask_ast::type_params::signature_type_param_names(f),
+                    native: rask_ast::attr::find(&f.attrs, "native")
+                        .map(|a| NativeDecl::from_attr(a, &f.name)),
                 });
             }
             _ => {}

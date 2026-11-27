@@ -46,7 +46,7 @@ struct Point { x: f64, y: f64 }
 | **E12e: Read through `decode`, written through `encode`** | A type with its own `decode` is not auto-`Encode`. The fields a derived `Encode` would write aren't what `decode` reads, so a value written out and read back fails at run time, in whoever reads the output. The type, and any `Vec`, `Map`, field or payload that holds it, fails an `Encode` bound with an error that names it (E0426). Two things lift the rule, both written where `T` is declared: its own `encode` (E12d), and `@no_encode`, which says it isn't written at all. An empty `T implements Encode { }` doesn't: it says the fields are the wire form, which is the mismatch (E0426) |
 | **E13: Non-private fields** | Auto-derived encoding covers `public` and package-default fields. `private` fields never auto-serialize, in either direction |
 | **E14: Base types** | `bool`, `i8`–`i64`, `u8`–`u64`, `f32`, `f64`, `string` are `Encode` and `Decode` |
-| **E15: Collection types** | `Vec<T>` where `T: Encode`, `Map<string, T>` where `T: Encode`, `T?` where `T: Encode` — all auto-implement `Encode`. Same for `Decode` |
+| **E15: Collection types** | `Vec<T>`, `[T; N]`, `Map<string, T>` and `T?` where `T: Encode` all auto-implement `Encode`. Same for `Decode`. A fixed array is written as a list, and reading one back needs exactly `N` items |
 | **E16: Opt-out** | `@no_encode` on a struct prevents auto-derive of `Encode`. `@no_decode` prevents `Decode`. For types where automatic serialization is semantically wrong |
 | **E17: Enum auto-derive** | Enums auto-derive `Encode`/`Decode` when all variant payloads are `Encode`/`Decode` types |
 

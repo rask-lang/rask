@@ -177,8 +177,8 @@ runtime_constants! {
     RASK_JSHAPE_MAP = 16;
     RASK_JSHAPE_OPT = 17;
     RASK_JSHAPE_STRUCT = 18;
-    /// An enum: a tag, and per variant a struct of its payload. Claims build
-    /// these; JSON's enum form is still open (std.json).
+    /// An enum: a tag, and per variant its wire name and a struct of its
+    /// payload, tagged as std.encoding/E22–E24 write it.
     RASK_JSHAPE_ENUM = 19;
     /// A `T or E`: the tag, and the `T` or the `E` at the payload. Claims
     /// build these; JSON has no form for a result.
@@ -189,9 +189,8 @@ runtime_constants! {
     /// A type that decodes through its own `decode` (std.encoding/E12b): the
     /// shape of what `decode` reads, and the function that calls it.
     RASK_JSHAPE_CUSTOM = 22;
-    /// A type that writes itself out through its own `encode`: the shape holds
-    /// the function that answers its value as JSON text. Encoding only.
-    RASK_JSHAPE_CUSTOM_ENCODE = 23;
+    /// `[T; N]`: N elements of one shape, back to back in place.
+    RASK_JSHAPE_ARRAY = 23;
 
     /// A decode shape field flag: `@no_serialize`, never read from the input.
     RASK_JFIELD_NOT_SERIALIZED = 1;

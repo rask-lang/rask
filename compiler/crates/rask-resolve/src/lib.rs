@@ -93,40 +93,24 @@ pub struct FieldTypePattern {
     pub ty: String,
 }
 
-/// Resolve all names in a list of declarations (single-file mode).
-pub fn resolve(decls: &[Decl]) -> Result<ResolvedProgram, Vec<ResolveError>> {
-    Resolver::resolve(decls)
+/// What [`resolve`] works on.
+#[derive(Clone, Copy)]
+pub struct ResolveInput<'a> {
+    /// The program: one file, or every file of a package merged.
+    pub decls: &'a [Decl],
+    /// The stdlib's own bodies, resolved alongside the program. They're
+    /// compiled into every program, so their names have to bind for anything
+    /// downstream to know what a call inside them refers to (#425). Empty
+    /// when only the program's own names matter. To resolve a stdlib file by
+    /// itself, put it here and leave `decls` empty.
+    pub stdlib: &'a [Decl],
+    /// For a package build: the registry of every package in it, and which
+    /// one `decls` is. Other packages' exports and types come from here.
+    pub package: Option<(&'a PackageRegistry, PackageId)>,
 }
 
-/// Resolve stdlib definition files — skips E0209 builtin shadowing checks.
-pub fn resolve_stdlib(decls: &[Decl]) -> Result<ResolvedProgram, Vec<ResolveError>> {
-    Resolver::resolve_stdlib(decls)
-}
-
-/// Resolve the program with the stdlib's own bodies alongside it.
-pub fn resolve_with_stdlib(
-    decls: &[Decl],
-    stdlib_decls: &[Decl],
-) -> Result<ResolvedProgram, Vec<ResolveError>> {
-    Resolver::resolve_with_stdlib(decls, stdlib_decls)
-}
-
-pub fn resolve_package(
-    decls: &[Decl],
-    registry: &PackageRegistry,
-    current_package: PackageId,
-) -> Result<ResolvedProgram, Vec<ResolveError>> {
-    Resolver::resolve_package(decls, registry, current_package)
-}
-
-/// Resolve a package with separate stdlib declarations. Stdlib decls are
-/// processed in stdlib_mode (bypasses builtin-shadowing checks).
-pub fn resolve_package_with_stdlib(
-    decls: &[Decl],
-    registry: &PackageRegistry,
-    current_package: PackageId,
-    stdlib_decls: &[Decl],
-) -> Result<ResolvedProgram, Vec<ResolveError>> {
-    Resolver::resolve_package_with_stdlib(decls, registry, current_package, stdlib_decls)
+/// Resolve every name in a program.
+pub fn resolve(input: ResolveInput) -> Result<ResolvedProgram, Vec<ResolveError>> {
+    Resolver::resolve(input)
 }
 

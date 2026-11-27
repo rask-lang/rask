@@ -12,7 +12,7 @@
 //!
 //! - **Lex errors** don't stop parsing (parser handles partial tokens).
 //! - **Desugar errors** don't stop resolution.
-//! - **Type errors** are collected via `typecheck_with_stdlib_lenient`, which
+//! - **Type errors** are collected via `rask_check::typecheck`, which
 //!   returns a partial TypedProgram. Ownership + effect stages still run on
 //!   that partial program so users see type errors, ownership errors, and
 //!   effect warnings in a single pipeline pass.
@@ -584,9 +584,9 @@ fn check_loaded_scoped(
     rask_comptime::apply_cfg(&mut parse_result.decls, &config.cfg);
 
     // --- Desugar (accumulate errors, continue) ---
-    let desugared = rask_desugar::desugar_with_stdlib(
+    let desugared = rask_desugar::desugar(
         &mut parse_result.decls,
-        rask_stdlib::StubRegistry::desugar_declarations(),
+        rask_desugar::Desugaring::Program { stdlib: rask_stdlib::StubRegistry::desugar_declarations() },
     );
     for e in &desugared.errors {
         diags.push(
@@ -614,10 +614,11 @@ fn check_loaded_scoped(
         // template is one of those bodies.
         let mut stdlib_bodies = rask_stdlib::StubRegistry::compilable_decls();
         stdlib_bodies.extend(rounds.library_copies().iter().cloned());
-        let resolved = match rask_resolve::resolve_with_stdlib(
-            &parse_result.decls,
-            &stdlib_bodies,
-        ) {
+        let resolved = match rask_resolve::resolve(rask_resolve::ResolveInput {
+            decls: &parse_result.decls,
+            stdlib: &stdlib_bodies,
+            package: None,
+        }) {
             Ok(r) => r,
             Err(errors) => {
                 for e in &errors {
@@ -631,7 +632,7 @@ fn check_loaded_scoped(
     // --- Typecheck (lenient — always returns TypedProgram + errors, so
     //     ownership/effects can still run and show accumulated diagnostics) ---
     let (typed, type_errors) =
-        rask_check::typecheck_with_stdlib_lenient(
+        rask_check::typecheck(
             resolved,
             &mut parse_result.decls,
             &stdlib_decls,
@@ -644,7 +645,7 @@ fn check_loaded_scoped(
 
     // --- Ownership (non-blocking — accumulate and continue) ---
     let ownership_result =
-        rask_ownership::check_ownership_with_stdlib(&typed, &parse_result.decls, &stdlib_decls);
+        rask_ownership::check_ownership(&typed, &parse_result.decls, &stdlib_decls);
     for e in &ownership_result.errors {
         diags.push(e.to_diagnostic());
     }
@@ -689,18 +690,18 @@ fn check_loaded_scoped(
     typed.field_reuses.extend(ownership_result.mutate_param_moves.iter().copied());
 
     // --- Effects (non-blocking metadata) ---
-    let method_targets = typed.method_targets();
+    let call_targets = typed.call_targets();
     let (effects, effect_warnings) =
-        rask_effects::infer_effects(&parse_result.decls, &stdlib_decls, &method_targets, &typed.c_macro_bodies, &config.warn);
+        rask_effects::infer_effects(&parse_result.decls, &stdlib_decls, &call_targets, &typed.c_macro_bodies, &config.warn);
     for w in &effect_warnings {
         diags.push(effect_warning_to_diagnostic(w));
     }
 
     // --- CT60: a `comptime func` keeps its promise where it is written ---
-    for e in rask_effects::comptime_purity::check(&parse_result.decls, &effects, &method_targets) {
+    for e in rask_effects::comptime_purity::check(&parse_result.decls, &effects, &call_targets) {
         diags.push(comptime_purity_to_diagnostic(&e));
     }
-    for e in rask_effects::comptime_purity::check_compile_time_values(&parse_result.decls, &effects, &method_targets) {
+    for e in rask_effects::comptime_purity::check_compile_time_values(&parse_result.decls, &effects, &call_targets) {
         diags.push(compile_time_value_to_diagnostic(&e));
     }
 
@@ -752,6 +753,30 @@ fn name_template_instances(diags: &mut [Diagnostic], instances: &[(Span, String)
     }
 }
 
+/// What a failed monomorphization tells the programmer.
+fn mono_error_diagnostic(e: &rask_mono::MonomorphizeError) -> Diagnostic {
+    match e {
+        rask_mono::MonomorphizeError::InstantiationTooDeep { .. } => Diagnostic::error(e.to_string())
+            .with_code("E0927")
+            .with_fix(
+                "give the recursion a type that stops changing: recurse at the same \
+                 `T`, or move the varying part into a value (a `Vec<T>` you pass along) \
+                 instead of a type argument",
+            )
+            .with_why(
+                "native code is one copy per set of type arguments, and here every \
+                 copy calls one with a bigger type, so there is no finite set to \
+                 compile [ctrl.comptime/CT68]. The interpreter runs it, because it \
+                 makes no copies",
+            ),
+        rask_mono::MonomorphizeError::ValueTooLarge { ty, bytes, span } => {
+            rask_check::TypeError::ValueTooLarge { ty: ty.clone(), bytes: Some(*bytes), span: *span }
+                .to_diagnostic()
+        }
+        _ => Diagnostic::error(e.to_string()),
+    }
+}
+
 /// One round of template expansion: the instances of a template this checked
 /// program reaches and hasn't written out yet, as plain functions. `None`
 /// when the program declares no template, so it pays nothing.
@@ -769,7 +794,7 @@ fn expand_templates(
     // so all of them are roots.
     let mut layout_decls = runners::with_every_entry(decls);
     layout_decls.extend(stdlib.iter().cloned());
-    let Ok(mono) = rask_mono::monomorphize_for_analysis(typed, &layout_decls) else {
+    let Ok(mono) = rask_mono::monomorphize(typed, &layout_decls, Default::default(), rask_mono::Roots::Analysis) else {
         // Monomorphization reports its own failures where the program is built.
         return Ok(false);
     };
@@ -802,6 +827,18 @@ fn diag_key(d: &Diagnostic) -> (Option<String>, String) {
     (d.code.as_ref().map(|c| c.0.clone()), d.message.clone())
 }
 
+/// Does anything declare a `comptime N` length? Its instances are where a
+/// value can turn out too large, so check has to build them.
+fn has_comptime_length(decls: &[Decl]) -> bool {
+    let fn_has = |f: &rask_ast::decl::FnDecl| f.type_params.iter().any(|p| p.is_comptime);
+    decls.iter().any(|d| match &d.kind {
+        DeclKind::Fn(f) => fn_has(f),
+        DeclKind::Struct(s) => s.type_params.iter().any(|p| p.is_comptime),
+        DeclKind::Impl(i) => i.methods.iter().any(fn_has),
+        _ => false,
+    })
+}
+
 fn comptime_diagnostics_for(
     decls: &[Decl],
     typed: &rask_check::TypedProgram,
@@ -811,11 +848,11 @@ fn comptime_diagnostics_for(
     // interpreter runs them straight off the decls.
     let mut diags = evaluate_comptime_tests(decls, typed, Some(cfg));
 
-    if !comptime_eval::has_comptime(decls, typed) {
+    if !comptime_eval::has_comptime(decls, typed) && !has_comptime_length(decls) {
         return diags;
     }
-    // `monomorphize_for_analysis`, not `monomorphize`: a file of `test` blocks
-    // has no `main`, and the plain one calls that a fatal error — so check said
+    // `Roots::Analysis`, not `Roots::Main`: a file of `test` blocks
+    // has no `main`, and `Main` calls that a fatal error — so check said
     // nothing at all about the comptime consts in every test file we have,
     // including ones that would fail to compile.
     //
@@ -827,10 +864,17 @@ fn comptime_diagnostics_for(
     let mut stdlib = rask_stdlib::StubRegistry::compilable_decls();
     typed.rewrite_checked_nodes(&mut stdlib);
     layout_decls.extend(stdlib);
-    let Ok(mono) = rask_mono::monomorphize_for_analysis(typed, &layout_decls) else {
-        // Monomorphization has its own diagnostics on the compile path; check
+    let mono = match rask_mono::monomorphize(typed, &layout_decls, Default::default(), rask_mono::Roots::Analysis) {
+        Ok(mono) => mono,
+        // A value too large at an instance is a compile error the checker
+        // can't see, so check and the interpreter report it here.
+        Err(e @ rask_mono::MonomorphizeError::ValueTooLarge { .. }) => {
+            diags.push(mono_error_diagnostic(&e));
+            return diags;
+        }
+        // The rest have their own diagnostics on the compile path; check
         // stays quiet about them rather than reporting them twice.
-        return diags;
+        Err(_) => return diags,
     };
     diags.extend(fold_comptime(decls, typed, &mono, Some(cfg)).1);
     diags
@@ -1058,9 +1102,9 @@ fn check_package_scoped(
     // After package scoping, so a dependency's annotations and the
     // attachments naming them already agree on the name (type.annotations/AN3).
     let desugared =
-        rask_desugar::desugar_package(
+        rask_desugar::desugar(
             &mut pkg_ctx.all_decls,
-            rask_stdlib::StubRegistry::desugar_declarations(),
+            rask_desugar::Desugaring::Program { stdlib: rask_stdlib::StubRegistry::desugar_declarations() },
         );
     for e in &desugared.errors {
         diags.push(
@@ -1087,12 +1131,11 @@ fn check_package_scoped(
         // (#203).
         let mut stdlib_bodies = rask_stdlib::StubRegistry::compilable_decls();
         stdlib_bodies.extend(rounds.library_copies().iter().cloned());
-        let resolved = match rask_resolve::resolve_package_with_stdlib(
-            &pkg_ctx.all_decls,
-            &pkg_ctx.registry,
-            pkg_ctx.root_id,
-            &stdlib_bodies,
-        ) {
+        let resolved = match rask_resolve::resolve(rask_resolve::ResolveInput {
+            decls: &pkg_ctx.all_decls,
+            stdlib: &stdlib_bodies,
+            package: Some((&pkg_ctx.registry, pkg_ctx.root_id)),
+        }) {
             Ok(r) => r,
             Err(errors) => {
                 for e in &errors {
@@ -1166,7 +1209,7 @@ fn check_package_scoped(
 
         // --- Typecheck (lenient — always returns TypedProgram + errors) ---
         let (typed, type_errors) =
-            rask_check::typecheck_with_stdlib_lenient(
+            rask_check::typecheck(
                 resolved,
                 &mut pkg_ctx.all_decls,
                 &stdlib_decls,
@@ -1179,7 +1222,7 @@ fn check_package_scoped(
 
         // --- Ownership (non-blocking) ---
         let ownership_result =
-            rask_ownership::check_ownership_with_stdlib(&typed, &pkg_ctx.all_decls, &stdlib_decls);
+            rask_ownership::check_ownership(&typed, &pkg_ctx.all_decls, &stdlib_decls);
         for e in &ownership_result.errors {
             diags.push(e.to_diagnostic());
         }
@@ -1222,18 +1265,18 @@ fn check_package_scoped(
     typed.field_reuses.extend(ownership_result.mutate_param_moves.iter().copied());
 
     // --- Effects ---
-    let method_targets = typed.method_targets();
+    let call_targets = typed.call_targets();
     let (effects, effect_warnings) =
-        rask_effects::infer_effects(&pkg_ctx.all_decls, &stdlib_decls, &method_targets, &typed.c_macro_bodies, &config.warn);
+        rask_effects::infer_effects(&pkg_ctx.all_decls, &stdlib_decls, &call_targets, &typed.c_macro_bodies, &config.warn);
     for w in &effect_warnings {
         diags.push(effect_warning_to_diagnostic(w));
     }
 
     // --- CT60: a `comptime func` keeps its promise where it is written ---
-    for e in rask_effects::comptime_purity::check(&pkg_ctx.all_decls, &effects, &method_targets) {
+    for e in rask_effects::comptime_purity::check(&pkg_ctx.all_decls, &effects, &call_targets) {
         diags.push(comptime_purity_to_diagnostic(&e));
     }
-    for e in rask_effects::comptime_purity::check_compile_time_values(&pkg_ctx.all_decls, &effects, &method_targets) {
+    for e in rask_effects::comptime_purity::check_compile_time_values(&pkg_ctx.all_decls, &effects, &call_targets) {
         diags.push(compile_time_value_to_diagnostic(&e));
     }
 
@@ -1426,33 +1469,11 @@ fn finalize_compile_inner(
     transform(&mut check.decls, &check.typed);
 
     // --- Monomorphize ---
-    let mono = if package_modules.is_empty() {
-        rask_mono::monomorphize(&check.typed, &check.decls)
-    } else {
-        rask_mono::monomorphize_with_packages(&check.typed, &check.decls, package_modules.clone())
-    };
+    let mono = rask_mono::monomorphize(&check.typed, &check.decls, package_modules.clone(), rask_mono::Roots::Main);
     let mono = match mono {
         Ok(m) => m,
         Err(e) => {
-            let d = match &e {
-                rask_mono::MonomorphizeError::InstantiationTooDeep { .. } => {
-                    Diagnostic::error(e.to_string())
-                        .with_code("E0927")
-                        .with_fix(
-                            "give the recursion a type that stops changing: recurse at the same \
-                             `T`, or move the varying part into a value (a `Vec<T>` you pass along) \
-                             instead of a type argument",
-                        )
-                        .with_why(
-                            "native code is one copy per set of type arguments, and here every \
-                             copy calls one with a bigger type, so there is no finite set to \
-                             compile [ctrl.comptime/CT68]. The interpreter runs it, because it \
-                             makes no copies",
-                        )
-                }
-                _ => Diagnostic::error(e.to_string()),
-            };
-            diags.push(d);
+            diags.push(mono_error_diagnostic(&e));
             return PipelineOutput::fail_with_sources(diags, pkg_source_files);
         }
     };

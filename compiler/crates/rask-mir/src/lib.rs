@@ -10,6 +10,8 @@
 pub mod analysis;
 pub mod assign_shapes;
 pub mod c_call;
+pub mod call_abi;
+pub mod runtime_ops;
 mod builder;
 pub mod dispatch_trace;
 pub mod elem_strs;

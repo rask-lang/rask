@@ -187,7 +187,7 @@ __attribute__((noinline)) void rask_poison_stack(void) {
 _Noreturn void rask_main_error_exit(const RaskStr *msg) {
     fflush(stdout);
     if (msg && rask_string_len(msg) > 0) {
-        fprintf(stderr, "error: %.*s\n", (int)rask_string_len(msg), rask_string_ptr(msg));
+        fprintf(stderr, "error: main returned an error: %.*s\n", (int)rask_string_len(msg), rask_string_ptr(msg));
     } else {
         fprintf(stderr, "error: main returned an error\n");
     }
@@ -1856,17 +1856,28 @@ static void json_buf_append_cstr(struct RaskJsonBuf *b, const char *s) {
     json_buf_append(b, s, (int64_t)strlen(s));
 }
 
+// Every byte below 0x20 has to be escaped for the text to be JSON at all
+// (RFC 8259 §7); the interpreter writes them as `\uXXXX`, so this does too.
 static void json_buf_append_escaped(struct RaskJsonBuf *b, const char *s, int64_t len) {
     json_buf_append(b, "\"", 1);
     for (int64_t i = 0; i < len; i++) {
-        char c = s[i];
+        unsigned char c = (unsigned char)s[i];
         switch (c) {
             case '"':  json_buf_append(b, "\\\"", 2); break;
             case '\\': json_buf_append(b, "\\\\", 2); break;
             case '\n': json_buf_append(b, "\\n", 2); break;
             case '\r': json_buf_append(b, "\\r", 2); break;
             case '\t': json_buf_append(b, "\\t", 2); break;
-            default:   json_buf_append(b, &c, 1); break;
+            case '\b': json_buf_append(b, "\\b", 2); break;
+            case '\f': json_buf_append(b, "\\f", 2); break;
+            default:
+                if (c < 0x20) {
+                    char esc[7];
+                    snprintf(esc, sizeof esc, "\\u%04x", c);
+                    json_buf_append(b, esc, 6);
+                } else {
+                    json_buf_append(b, (const char *)&s[i], 1);
+                }
         }
     }
     json_buf_append(b, "\"", 1);

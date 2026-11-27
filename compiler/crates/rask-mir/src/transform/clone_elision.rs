@@ -91,7 +91,7 @@ fn elide_clones_with(func: &mut MirFunction, own: &HashSet<String>) {
 ///   dereference. `r.values.clone()` read the field into a temp that was never
 ///   read again, the clone was dropped, and `y` and `r.values` were one Vec: a
 ///   `push` through either grew both.
-/// - A call that lends: `items[i]` on a `Vec` is `Vec_get_unchecked`, whose
+/// - A call that lends: `items[i]` on a `Vec` is `rask_vec_get_unchecked`, whose
 ///   result points into the vector's buffer. `dst.push(items[i].clone())` left
 ///   `dst` and `items` owning one inner vector — a double free at exit. A `for r
 ///   in rows` binding is the same call one copy removed, and `out.push(r.clone())`
@@ -212,7 +212,7 @@ mod tests {
     fn clone_call(dst: u32, src: u32) -> MirStmt {
         MirStmt::dummy(MirStmtKind::Call {
             dst: Some(local(dst)),
-            func: clone_fn("string_clone"),
+            func: clone_fn(crate::runtime_ops::STRING_SHARE),
             args: vec![MirOperand::Local(local(src))],
         })
     }
@@ -418,7 +418,7 @@ mod tests {
     fn non_clone_call_not_affected() {
         let mut f = single_block_fn(vec![MirStmt::dummy(MirStmtKind::Call {
             dst: Some(local(1)),
-            func: FunctionRef::borrowing("string_concat"),
+            func: FunctionRef::borrowing("rask_string_concat"),
             args: vec![MirOperand::Local(local(0))],
         })]);
         elide_clones_in_function(&mut f);

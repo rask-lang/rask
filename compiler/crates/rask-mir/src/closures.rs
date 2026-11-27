@@ -314,9 +314,9 @@ fn callee_keeps(callee_escapes: &HashMap<String, Vec<bool>>, callee: &crate::Fun
 
 /// A bodiless callee that is done with a closure it's handed before it
 /// returns: one written down as using its callback up, or a runtime call
-/// lowering made for itself, which only reads what it's handed (#1555).
+/// with no shape stated, which only reads what it's handed (#1555).
 fn uses_up_callback(callee: &crate::FunctionRef) -> bool {
-    callee.runtime || callee.shape.is_some_and(|s| s.is_eager_callback())
+    callee.shape.map_or(callee.runtime, |s| s.is_eager_callback())
 }
 
 /// The closures `func` hands to a task: the first argument of each task
@@ -757,29 +757,30 @@ fn insert_drops(
         vec![MirStmt::dummy(MirStmtKind::ClosureDrop { closure: name, made })]
     };
     let guards = crate::analysis::ownership::Guards::new(func, &plan);
-    let (_, unwind_edges) = crate::analysis::ownership::place_unwind(
+    let (shifted, unwind_edges) = crate::analysis::ownership::place_unwind(
         func,
         plan.unwind,
         &guards,
         &mut |_: &mut MirFunction, name: LocalId, made: Option<LocalId>| drops_for(name, made),
     );
-    let mut at_end: Vec<(usize, LocalId, Option<LocalId>, Option<usize>)> = Vec::new();
+    let mut in_block: Vec<(usize, usize, LocalId, Option<LocalId>, Option<usize>)> = Vec::new();
     let mut on_edges: Vec<(crate::BlockId, crate::BlockId, Vec<MirStmt>)> = Vec::new();
     for r in plan.releases {
         match r {
-            crate::analysis::ownership::Release::At { block, name, made, guard, .. } => {
-                at_end.push((block, name, made, guard))
+            crate::analysis::ownership::Release::At { block, at, name, made, guard } => {
+                in_block.push((block, at, name, made, guard))
             }
             crate::analysis::ownership::Release::OnEdge { from, to, name, made, guard } => {
                 on_edges.push((from, to, guards.wrap(guard, drops_for(name, made))))
             }
         }
     }
-    at_end.sort_by_key(|(b, l, _, _)| (*b, l.0));
-    for (block, name, made, guard) in at_end {
-        let drops = guards.wrap(guard, drops_for(name, made));
-        func.blocks[block].statements.extend(drops);
-    }
+    in_block.sort_by_key(|(b, at, l, _, _)| (*b, *at, l.0));
+    let in_block = in_block
+        .into_iter()
+        .map(|(block, at, name, made, guard)| (block, at, guards.wrap(guard, drops_for(name, made))))
+        .collect();
+    shifted.insert_releases(func, in_block);
     let flag_edges = guards.edges(func);
     crate::analysis::ownership::insert_on_edges(
         func,

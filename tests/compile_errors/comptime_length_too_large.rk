@@ -1,0 +1,16 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Rejects: a value over 64 KiB that only an instance makes (E0980).
+//
+// `[0u8; N]` has no size until a call fills `N` in, so the checker passed it
+// and `zeros<70000>()` ran. With `N` at 100000000 the interpreter tried to
+// allocate 19 GB and native failed in codegen.
+
+func zeros<comptime N: usize>() -> [u8; N] {
+    // ERROR: 70000 bytes [E0980]
+    return [0u8; N]
+}
+
+func main() {
+    let z = zeros<70000>()
+    println("{z.len()}")
+}

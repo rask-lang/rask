@@ -186,8 +186,8 @@ pub(super) fn ctor_callee(name: &str, keyed: bool, key: Option<&MirType>) -> Str
         _ => return name.to_string(),
     };
     match (keyed, key) {
-        (true, _) if with_cap => "Map_with_capacity_keyed".to_string(),
-        (true, _) => "Map_new_keyed".to_string(),
+        (true, _) if with_cap => "rask_map_new_keyed_cap".to_string(),
+        (true, _) => "rask_map_new_keyed".to_string(),
         (false, Some(k)) if with_cap => crate::elem_strs::map_ctor_with_capacity(k).to_string(),
         (false, Some(k)) => crate::elem_strs::map_ctor_for(k).to_string(),
         (false, None) => name.to_string(),

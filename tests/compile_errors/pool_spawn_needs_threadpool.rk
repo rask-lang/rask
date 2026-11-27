@@ -1,0 +1,98 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Rejects: `ThreadPool.spawn` with no `using ThreadPool { }` scope
+// (conc.async/S2, CC1 and CC2, E0352/E0353).
+//
+// The checks were written for `spawn` and its `using Multitasking` only, so a
+// `ThreadPool.spawn` with no pool passed `check`. Natively it ran the job on
+// a thread of its own, and only the interpreter stopped it, at run time
+// (#2094). Each runtime is checked against its own block: a `using
+// Multitasking` doesn't install a pool.
+
+import thread.ThreadPool
+
+// A library function that spawns on the pool: no error here. Its callers are
+// the ones who have to open the scope.
+func crunch() -> i64 {
+    return ThreadPool.spawn { return 6 * 7 }.join()!
+}
+
+// --- CC1: the entry point spawns with no pool ---
+func main() {
+    // ERROR: `ThreadPool.spawn` needs a `using ThreadPool { }` scope [E0352]
+    let h = ThreadPool.spawn { return 1 }
+    println("{h.join()!}")
+}
+
+// --- CC2: calling something that reaches ThreadPool.spawn, with no pool ---
+test "calls a function that spawns on the pool" {
+    // ERROR: calling `crunch` needs a `using ThreadPool { }` scope [E0353]
+    assert crunch() == 42
+}
+
+// --- CC2: handing the function on counts as reaching it ---
+// The function might be called anywhere the value goes, so naming it needs
+// the scope, the same as calling it.
+func apply(f: func() -> i64) -> i64 {
+    return f()
+}
+
+test "passes a function that spawns on the pool" {
+    // ERROR: passing `crunch` on needs a `using ThreadPool { }` scope [E0353]
+    assert apply(crunch) == 42
+}
+
+test "stores a function that spawns on the pool" {
+    // ERROR: passing `crunch` on needs a `using ThreadPool { }` scope [E0353]
+    let f = crunch
+    assert f() == 42
+}
+
+// A constant holds no scope at all.
+// ERROR: passing `crunch` on needs a `using ThreadPool { }` scope [E0353]
+const PICK: func() -> i64 = crunch
+
+// --- the green runtime is not a pool ---
+test "a Multitasking block doesn't install a pool" {
+    using Multitasking {
+        // ERROR: `ThreadPool.spawn` needs a `using ThreadPool { }` scope [E0352]
+        let h = ThreadPool.spawn { return 2 }
+        assert h.join()! == 2
+    }
+}
+
+// --- nor is a pool a green runtime ---
+test "a pool job's block has the pool, not a scheduler" {
+    using ThreadPool {
+        let h = ThreadPool.spawn {
+            // ERROR: `spawn` needs a `using Multitasking { }` scope [E0352]
+            return spawn { return 3 }.join()!
+        }
+        assert h.join()! == 3
+    }
+}
+
+// --- a job that doesn't need a pool doesn't bring one ---
+// With no pool open it runs right where it's spawned, so a pool spawn inside
+// it has nothing to submit to.
+test "a no-pool job calls a function that spawns on the pool" {
+    let h = ThreadPool.spawn(requires_pool: false) {
+        // ERROR: calling `crunch` needs a `using ThreadPool { }` scope [E0353]
+        return crunch()
+    }
+    assert h.join()! == 42
+}
+
+// --- none of these need anything more ---
+test "a pool scope, and the jobs inside its jobs" {
+    using ThreadPool {
+        assert crunch() == 42
+        assert apply(crunch) == 42
+        let h = ThreadPool.spawn { return crunch() }
+        assert h.join()! == 42
+    }
+}
+
+test "a job that said it doesn't need a pool" {
+    let h = ThreadPool.spawn(requires_pool: false) { return 4 }
+    assert h.join()! == 4
+}

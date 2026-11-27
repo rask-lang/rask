@@ -1,0 +1,100 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// `try` hands on an error whose type is generic. Wrapping it into the enum
+// variant that holds it was refused, because only plain named payloads were
+// compared, and a union member whose argument was still open (`Gen<Vec<_>>`)
+// didn't meet the member it could only be.
+
+struct Afail {
+    n: i64
+}
+
+extend Afail {
+    func message(self) -> string {
+        return "afail {self.n}"
+    }
+}
+
+struct Gen<T> {
+    v: T
+}
+
+extend Gen<T> {
+    func message(self) -> string {
+        return "gen"
+    }
+}
+
+enum Wrapped {
+    A(Afail)
+    G(Gen<string>)
+}
+
+extend Wrapped {
+    func message(self) -> string {
+        return match self {
+            Wrapped.A(a) => a.message(),
+            Wrapped.G(g) => "wrapped {g.v}",
+        }
+    }
+}
+
+func give<T>(take x: T) -> T or Gen<T> {
+    return Gen<T>(v: x)
+}
+
+func give_s(x: string) -> string or Gen<string> {
+    return Gen<string>(v: x)
+}
+
+func into_enum() -> i64 or Wrapped {
+    try give_s("w")
+    return 0
+}
+
+func into_enum_generic() -> i64 or Wrapped {
+    try give("g")
+    return 0
+}
+
+enum Wi {
+    G(Gen<i64>)
+}
+
+// The argument is a bare literal, so `T` is still open when `try` looks for
+// the variant; the one variant that can hold a `Gen<_>` settles it as `i64`.
+func into_enum_literal() -> i64 or Wi {
+    try give(5)
+    return 0
+}
+
+func into_union_open() -> usize or (Afail | Gen<Vec<i64>>) {
+    mut v = Vec.new()
+    let x = try give(v)
+    return x.len()
+}
+
+test "a generic error wraps into the enum variant that holds it" {
+    message_is(into_enum(), "wrapped w")
+    message_is(into_enum_generic(), "wrapped g")
+    if into_enum_literal() is Wi as e {
+        let v = match e {
+            Wi.G(g) => g.v,
+        }
+        assert v == 5
+    } else {
+        assert false
+    }
+}
+
+test "an error still open meets the one union member it can be" {
+    let r = into_union_open()
+    assert r is Gen<Vec<i64>>
+}
+
+func message_is(r: i64 or Wrapped, want: string) {
+    if r is Wrapped as e {
+        assert e.message() == want
+    } else {
+        assert false
+    }
+}

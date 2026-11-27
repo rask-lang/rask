@@ -65,17 +65,9 @@ const RATCHETS: &[Ratchet] = &[
         count: mir_metadata_rows,
     },
     Ratchet {
-        name: "hand-written codegen dispatch entries",
-        today: 207,
-        target: 0,
-        why: "an `internal_entries` row in rask-codegen/src/dispatch.rs: a runtime \
-              call whose shape lowering didn't state (rask-lang/rask#1555, #1565)",
-        count: codegen_internal_entries,
-    },
-    Ratchet {
         name: "pass entry point variants",
-        today: 13,
-        target: 7,
+        today: 4,
+        target: 4,
         why: "a second public entry to a pass (`_with_stdlib`, `_package`, …). \
               One entry per pass, taking an input struct, called only by the \
               driver (rask-lang/rask#1568)",
@@ -218,24 +210,6 @@ fn mir_metadata_rows(crates: &Path) -> Vec<String> {
             }
         } else if let Some(table) = tables.iter().find(|t| code.starts_with(&format!("const {t}:"))) {
             inside = Some(table);
-        }
-    }
-    rows
-}
-
-fn codegen_internal_entries(crates: &Path) -> Vec<String> {
-    let mut rows = Vec::new();
-    let mut inside = false;
-    for (rel, line, code) in source_lines(crates, &["rask-codegen/src/dispatch.rs"], &[]) {
-        if inside {
-            if code.starts_with('}') {
-                break;
-            }
-            if code.contains("StdlibEntry {") || code.contains("StdlibEntry::simple(") {
-                rows.push(site(&rel, line, &code));
-            }
-        } else if code.contains("fn internal_entries(") {
-            inside = true;
         }
     }
     rows

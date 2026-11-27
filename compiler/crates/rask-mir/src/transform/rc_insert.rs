@@ -278,12 +278,11 @@ fn own_joins_of_kept_values(
 /// Does the call keep its argument at `i`, rather than only read it?
 ///
 /// From the body when this pass can read one (`kept`), from the declaration
-/// when it can't. A runtime call lowering makes for itself
-/// (`FunctionRef::runtime`) reads what it's handed. Unknown is "keeps": the
-/// caller then releases nothing it passed, which leaks rather than
-/// double-frees.
+/// when it can't. A runtime call with no shape stated reads what it's
+/// handed. Unknown is "keeps": the caller then releases nothing it passed,
+/// which leaks rather than double-frees.
 fn call_keeps_arg(fref: &crate::FunctionRef, i: usize, kept: &HashMap<String, Vec<bool>>) -> bool {
-    if fref.runtime {
+    if fref.runtime && fref.shape.is_none() {
         return false;
     }
     match kept.get(fref.name.as_str()) {
@@ -798,7 +797,7 @@ fn filled_in_place(
                     let Some(id) = uses::operand_local(arg) else { continue };
                     let may_write = !own.contains(&fref.name)
                         || writes.get(&fref.name).is_some_and(|set| set.contains(&i));
-                    if !call_keeps_arg(fref, i, kept) && may_write && !fref.runtime {
+                    if !call_keeps_arg(fref, i, kept) && may_write && !(fref.runtime && fref.shape.is_none()) {
                         out.insert(id);
                     }
                 }
@@ -925,6 +924,7 @@ fn holds_rack(ty: &MirType, rack_holders: &HashSet<u32>) -> bool {
         MirType::Tuple(parts) => parts.iter().any(|p| holds_rack(p, rack_holders)),
         MirType::Array { elem, .. } | MirType::Option(elem) => holds_rack(elem, rack_holders),
         MirType::Result { ok, err } => holds_rack(ok, rack_holders) || holds_rack(err, rack_holders),
+        MirType::Union(members) => members.iter().any(|m| holds_rack(m, rack_holders)),
         _ => false,
     }
 }
@@ -1074,7 +1074,7 @@ fn insert_aggregate_release(
         lent
     };
 
-    // Where a `Field_take` reads from: `dst = base + offset`, handed to it as
+    // Where a `rask_field_take` reads from: `dst = base + offset`, handed to it as
     // the field's address. The take happens at the call, so the aggregate the
     // address points into has to stay alive until then, not just until the
     // addition that made the address.
@@ -1083,7 +1083,7 @@ fn insert_aggregate_release(
         .iter()
         .flat_map(|b| b.statements.iter())
         .filter_map(|st| match &st.kind {
-            MirStmtKind::Call { func: fref, args, .. } if fref.name == "Field_take" => {
+            MirStmtKind::Call { func: fref, args, .. } if fref.name == crate::runtime_ops::FIELD_TAKE => {
                 args.first().and_then(uses::operand_local)
             }
             _ => None,
@@ -1153,7 +1153,15 @@ fn insert_aggregate_release(
                             left: MirOperand::Local(b),
                             ..
                         },
-                    } if roots.contains_key(b) => Some((*dst, *b)),
+                    } if roots.contains_key(b) || aggregates.contains(b) => Some((*dst, *b)),
+                    // A name bound where an element sits (`for mutate`,
+                    // `with`) is storage inside the aggregate too. Binding it
+                    // writes nothing: a read-only `for r in arr` binds this
+                    // way, and counting the binding as a write moved the
+                    // array's release onto a copy that a later walk replaced.
+                    MirStmtKind::BindPlace { dst, addr } if roots.contains_key(addr) || aggregates.contains(addr) => {
+                        Some((*dst, *addr))
+                    }
                     _ => None,
                 };
                 let Some((dst, b)) = found else { continue };
@@ -1299,7 +1307,7 @@ fn insert_aggregate_release(
             .flat_map(|b| b.statements.iter())
             .filter_map(|st| match &st.kind {
                 MirStmtKind::Call { func: fref, dst: Some(d), .. }
-                    if fref.name == "Vec_borrow_elem" || fref.name == "Map_borrow_elem" =>
+                    if fref.name == "rask_vec_borrow_elem" || fref.name == crate::runtime_ops::MAP_BORROW_ELEM =>
                 {
                     Some(*d)
                 }
@@ -1545,9 +1553,12 @@ fn insert_aggregate_release(
                     ev.push(ownership::Event::View { dst: *dst, base: *base });
                 }
                 // An element bound where it sits reaches into the collection
-                // it sits in, which has to outlive the binding.
-                MirStmtKind::BindPlace { dst, addr } if is_tracked(dst) => {
-                    ev.push(ownership::Event::View { dst: *dst, base: *addr });
+                // it sits in, which has to outlive the binding. Writes
+                // through the name reach the aggregate by `inline_roots`.
+                MirStmtKind::BindPlace { dst, addr } => {
+                    if is_tracked(dst) {
+                        ev.push(ownership::Event::View { dst: *dst, base: *addr });
+                    }
                 }
                 // `Ref` hands out the address.
                 MirStmtKind::Assign { dst, rvalue: MirRValue::Ref(src) } => {
@@ -1559,7 +1570,7 @@ fn insert_aggregate_release(
                 MirStmtKind::Call { func: fref, args, dst } => {
                     // A take zeroes the field in the aggregate it was read
                     // from, so that copy is the value from here on.
-                    if fref.name == "Field_take" {
+                    if fref.name == crate::runtime_ops::FIELD_TAKE {
                         if let Some(base) = args
                             .first()
                             .and_then(uses::operand_local)
@@ -1571,6 +1582,20 @@ fn insert_aggregate_release(
                     }
                     for (i, arg) in args.iter().enumerate() {
                         let Some(id) = uses::operand_local(arg) else { continue };
+                        // The address of a field or element inside an
+                        // aggregate (`rs[1].relabel()` passes `rs + 24`): a
+                        // callee that writes its parameter writes into the
+                        // aggregate, so that name is the value from here on.
+                        // Unmarked, the release stayed on the literal `rs`
+                        // was copied from, and freed the old string while
+                        // the new one leaked.
+                        if let Some(root) = inline_roots.get(&id).filter(|r| is_tracked(r)) {
+                            let writes_it = !own.contains(&fref.name)
+                                || writes.get(&fref.name).is_some_and(|set| set.contains(&i));
+                            if writes_it {
+                                ev.push(ownership::Event::WriteThrough(*root));
+                            }
+                        }
                         if !is_tracked(&id) {
                             continue;
                         }
@@ -1809,6 +1834,11 @@ fn insert_aggregate_release(
                 MirStmtKind::ClosureCall { dst, closure, args, .. } => {
                     for (i, arg) in args.iter().enumerate() {
                         let Some(id) = uses::operand_local(arg) else { continue };
+                        // A field or element's address, as for a direct call:
+                        // the body behind the value may write through it.
+                        if let Some(root) = inline_roots.get(&id).filter(|r| is_tracked(r)) {
+                            ev.push(ownership::Event::WriteThrough(*root));
+                        }
                         if is_tracked(&id)
                             && !retained_for_this.contains(&id)
                             && closure_keeps(&func_name, *closure, i, args.len())
@@ -1852,9 +1882,9 @@ fn insert_aggregate_release(
             }
 
             // Reads and writes, for liveness. A store through a pointer value
-            // (`Cell_data(c)`, an address into another value's storage) uses
+            // (`rask_cell_get(c)`, an address into another value's storage) uses
             // the pointer and keeps what it points into alive. Taken for a
-            // scratch slot's write, `*(Cell_data(c)) = n` as the last use of
+            // scratch slot's write, `*(rask_cell_get(c)) = n` as the last use of
             // a buffer released the buffer first and wrote into freed memory.
             let through_pointer = |addr: LocalId| matches!(ty_of.get(&addr), Some(MirType::Ptr));
             let store_into = match &stmt.kind {
@@ -2119,6 +2149,25 @@ fn struct_field_parts(
             _ => None,
         })
         .collect();
+    // Struct and tuple parts read out of a struct or tuple, by name: the
+    // aggregate they were read from and their offset in it.
+    let nested: HashMap<LocalId, (LocalId, u32)> = func
+        .blocks
+        .iter()
+        .flat_map(|b| b.statements.iter())
+        .filter_map(|stmt| match &stmt.kind {
+            MirStmtKind::Assign {
+                dst,
+                rvalue: MirRValue::Field { base: MirOperand::Local(outer), byte_offset: Some(at), .. },
+            } if once(dst)
+                && matches!(ty_of.get(dst), Some(MirType::Struct(_) | MirType::Tuple(_)))
+                && matches!(ty_of.get(outer), Some(MirType::Struct(_) | MirType::Tuple(_))) =>
+            {
+                Some((*dst, (*outer, *at)))
+            }
+            _ => None,
+        })
+        .collect();
     let mut out: HashMap<LocalId, (LocalId, u32, u32)> = HashMap::new();
     for stmt in func.blocks.iter().flat_map(|b| b.statements.iter()) {
         let (dst, root, offset) = match &stmt.kind {
@@ -2138,6 +2187,22 @@ fn struct_field_parts(
                 (*dst, *root, *i as u32 * elem_size)
             }
             _ => continue,
+        };
+        // A part of a part (`_79 = _72.0; _80 = _79.0`) sits in the outer
+        // struct: the inner read is a copy, and emptying the copy left the
+        // outer slot full, so the struct released what had been handed on.
+        let (root, offset) = {
+            let (mut root, mut offset) = (root, offset);
+            let mut hops = 0;
+            while let Some(&(outer, at)) = nested.get(&origin(root)) {
+                root = outer;
+                offset += at;
+                hops += 1;
+                if hops > nested.len() {
+                    break;
+                }
+            }
+            (root, offset)
         };
         if !once(&dst) || held.contains(&origin(root)) {
             continue;
@@ -2163,6 +2228,7 @@ fn struct_field_parts(
             | MirType::Array { .. }
             | MirType::Option(_)
             | MirType::Result { .. }
+            | MirType::Union(_)
                 if !copy_layouts.is_copy(dst_ty) && returned_copy_of(func, dst, &returned) =>
             {
                 copy_layouts.size_of(dst_ty)
@@ -2322,7 +2388,7 @@ fn view_of_field(
     }
     matches!(
         ty_of.get(&dst),
-        Some(MirType::Option(_)) | Some(MirType::Result { .. })
+        Some(MirType::Option(_)) | Some(MirType::Result { .. }) | Some(MirType::Union(_))
     )
 }
 
@@ -2366,6 +2432,9 @@ pub(crate) fn aggregate_may_hold_string(ty: &MirType) -> bool {
         MirType::Array { elem, .. } => slot_is_releasable(elem),
         MirType::Option(inner) => slot_is_releasable(inner),
         MirType::Result { ok, err } => slot_is_releasable(ok) || slot_is_releasable(err),
+        // A union is tagged the same way, one member at a time: a
+        // `usize or (Afail | Gen<Vec<i64>>)` dropped never freed the vector.
+        MirType::Union(members) => members.iter().any(slot_is_releasable),
         _ => false,
     }
 }
@@ -2399,6 +2468,11 @@ fn slot_is_releasable(ty: &MirType) -> bool {
         // it stored into an aggregate, so this is the only release it gets
         // (#1253).
         || matches!(ty, MirType::FuncPtr(_))
+        // So is an interface object: `interface_drop` counts a box stored
+        // into an aggregate as handed over, so the aggregate is its last
+        // owner. A struct field was released already (a struct always
+        // counts); a box under a tag (`i64 or any Error`, `(any I)?`) was not.
+        || matches!(ty, MirType::InterfaceObject { .. })
         || aggregate_may_hold_string(ty)
 }
 
@@ -3496,7 +3570,7 @@ mod tests {
                 id: BlockId(0),
                 statements: vec![MirStmt::dummy(MirStmtKind::Call {
                     dst: Some(local(0)),
-                    func: FunctionRef::reading("string_new"),
+                    func: FunctionRef::reading("rask_string_new").writing_string(),
                     args: vec![],
                 })],
                 terminator: MirTerminator::dummy(MirTerminatorKind::Return { value: None }),
@@ -3579,7 +3653,7 @@ mod tests {
             id: BlockId(2),
             statements: vec![MirStmt::dummy(MirStmtKind::Call {
                 dst: Some(local(1)),
-                func: FunctionRef::reading("string_new"),
+                func: FunctionRef::reading("rask_string_new").writing_string(),
                 args: vec![],
             })],
             terminator: MirTerminator::dummy(MirTerminatorKind::Goto { target: BlockId(1) }),
@@ -3677,6 +3751,7 @@ pub(crate) fn held_mutate_params(func: &MirFunction, copy_layouts: &crate::CopyL
                         | MirType::Array { .. }
                         | MirType::Option(_)
                         | MirType::Result { .. }
+                        | MirType::Union(_)
                 )
                 && !copy_layouts.is_copy(&p.ty)
         })

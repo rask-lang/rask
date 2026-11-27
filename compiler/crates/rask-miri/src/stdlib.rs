@@ -58,7 +58,7 @@ impl StdlibProvider for PureStdlib {
                     )),
                 }
             }
-            "string_concat" | "string_add" => {
+            "rask_string_concat" | "string_add" => {
                 if args.len() < 2 {
                     return Err(MiriError::UnsupportedOperation(
                         format!("{name}: expected 2 arguments"),

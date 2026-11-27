@@ -489,15 +489,9 @@ extend json {
     public func encode_pretty<T: Encode>(value: T) -> string {}
 
     /// An enum's shape, for a call site describing a type to the runtime: its
-    /// size, and where its tag sits and how wide it is. Claims build these
-    /// (type.claims); a decode doesn't, while JSON's enum form is open.
+    /// size, and where its tag sits and how wide it is.
     @native("rask_json_shape_enum")
     func shape_enum(size: i64, tag_offset: i64, tag_width: i64) -> i64 {}
-
-    /// One variant of an enum shape: its tag, and its payload as a struct
-    /// shape (0 for a variant with none).
-    @native("rask_json_shape_variant")
-    func shape_variant(shape: i64, tag: i64, payload: i64) {}
 
     /// A `T or E`'s shape: the shapes of both sides, its size, and where the
     /// payload sits. Claims only; JSON has no form for a result.
@@ -514,21 +508,10 @@ extend json {
     @native("rask_json_shape_generated")
     func shape_generated(size: i64, generate: i64) -> i64 {}
 
-    /// The shape of a type with its own `decode` (std.encoding/E12b): its size,
-    /// the shape of what `decode` reads, how many bytes that takes, and the
-    /// function that calls `decode`.
-    @native("rask_json_shape_custom")
-    func shape_custom(size: i64, wire: i64, wire_size: i64, decode: i64) -> i64 {}
-
     /// A custom decode's refusal: the message of the error it returned. The
     /// decoder puts it behind where in the input the value was.
     @native("rask_json_custom_reject")
     func custom_reject(msg: string) {}
-
-    /// The shape of a type with its own `encode` (std.encoding/E12b): its size,
-    /// and the function that gives a value's JSON text. Encoding only.
-    @native("rask_json_shape_custom_encode")
-    func shape_custom_encode(size: i64, encode: i64) -> i64 {}
 
     /// Convert a typed value to a JsonValue tree.
     @unimplemented

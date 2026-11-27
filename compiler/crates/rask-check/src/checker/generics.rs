@@ -178,7 +178,6 @@ impl TypeChecker {
         args.iter()
             .map(|a| match a {
                 GenericArg::Type(t) => GenericArg::Type(Box::new(self.resolve_named(t))),
-                other => other.clone(),
             })
             .collect()
     }
@@ -207,7 +206,7 @@ impl TypeChecker {
             },
             Type::Array { elem, len } => Type::Array {
                 elem: Box::new(Self::substitute_type_params(elem, subst)),
-                len: *len,
+                len: len.map(|t| Self::substitute_type_params(t, subst)),
             },
             // Every other compound type recursed; pointers didn't, so a method
             // returning `*T` — `Vec<T>.as_ptr()` — kept a literal `T` here. The
@@ -246,7 +245,6 @@ impl TypeChecker {
                 base: *base,
                 args: args.iter().map(|a| match a {
                     GenericArg::Type(t) => GenericArg::Type(Box::new(Self::substitute_type_params(t, subst))),
-                    other => other.clone(),
                 }).collect(),
             },
             Type::UnresolvedGeneric { name, args } => {
@@ -258,7 +256,6 @@ impl TypeChecker {
                     name: name.clone(),
                     args: args.iter().map(|a| match a {
                         GenericArg::Type(t) => GenericArg::Type(Box::new(Self::substitute_type_params(t, subst))),
-                        other => other.clone(),
                     }).collect(),
                 }
             }
@@ -270,7 +267,6 @@ impl TypeChecker {
     pub(super) fn map_projections(ty: &Type, f: &mut dyn FnMut(&Type, &str) -> Option<Type>) -> Type {
         let mut arg = |a: &GenericArg, f: &mut dyn FnMut(&Type, &str) -> Option<Type>| match a {
             GenericArg::Type(t) => GenericArg::Type(Box::new(Self::map_projections(t, f))),
-            other => other.clone(),
         };
         match ty {
             Type::Assoc { base, name } => match f(base, name) {
@@ -282,7 +278,7 @@ impl TypeChecker {
                 err: Box::new(Self::map_projections(err, f)),
             },
             Type::RawPtr(inner) => Type::RawPtr(Box::new(Self::map_projections(inner, f))),
-            Type::Array { elem, len } => Type::Array { elem: Box::new(Self::map_projections(elem, f)), len: *len },
+            Type::Array { elem, len } => Type::Array { elem: Box::new(Self::map_projections(elem, f)), len: len.map(|t| Self::map_projections(t, f)), },
             Type::Tuple(elems) => Type::Tuple(elems.iter().map(|e| Self::map_projections(e, f)).collect()),
             Type::Union(elems) => Type::Union(elems.iter().map(|e| Self::map_projections(e, f)).collect()),
             Type::Fn { params, ret } => Type::Fn {
@@ -424,7 +420,6 @@ impl TypeChecker {
                         .zip(args.iter())
                         .filter_map(|((name, _), a)| match a {
                             GenericArg::Type(t) => Some((name.clone(), (**t).clone())),
-                            GenericArg::ConstUsize(_) => None,
                         })
                         .collect();
                     self.note_bounds(&pairs, bounds.iter().map(|(n, b)| (n, b)), true, span);
@@ -538,7 +533,7 @@ impl TypeChecker {
             ),
             Type::Array { elem, len } => Type::Array {
                 elem: Box::new(self.freshen_free_type_params(elem, seen)),
-                len: *len,
+                len: len.map(|t| self.freshen_free_type_params(t, seen)),
             },
             Type::RawPtr(inner) => Type::RawPtr(Box::new(self.freshen_free_type_params(inner, seen))),
             Type::UnresolvedGeneric { name, args } => Type::UnresolvedGeneric {
@@ -562,7 +557,6 @@ impl TypeChecker {
             GenericArg::Type(t) => {
                 GenericArg::Type(Box::new(self.freshen_free_type_params(t, seen)))
             }
-            other => other.clone(),
         }
     }
 
@@ -612,7 +606,6 @@ impl TypeChecker {
     pub(super) fn collect_type_vars_generic_arg(&mut self, arg: &GenericArg, subst: &mut HashMap<TypeVarId, Type>) {
         match arg {
             GenericArg::Type(ty) => self.collect_type_vars(ty, subst),
-            GenericArg::ConstUsize(_) => {}
         }
     }
 
@@ -631,7 +624,7 @@ impl TypeChecker {
             ),
             Type::Array { elem, len } => Type::Array {
                 elem: Box::new(self.apply_type_var_substitution(elem, substitution)),
-                len: *len,
+                len: len.map(|t| self.apply_type_var_substitution(t, substitution)),
             },
             Type::Result { ok, err } if **err == Type::None => {
                 Type::option(self.apply_type_var_substitution(ok, substitution))
@@ -667,7 +660,6 @@ impl TypeChecker {
             GenericArg::Type(ty) => {
                 GenericArg::Type(Box::new(self.apply_type_var_substitution(ty, substitution)))
             }
-            GenericArg::ConstUsize(n) => GenericArg::ConstUsize(*n),
         }
     }
 }
@@ -724,7 +716,6 @@ pub fn bind_header_pattern(
             }
             args.iter().zip(actual_args).all(|(p, a)| match a {
                 GenericArg::Type(t) => bind_header_pattern(types, p, t, out),
-                GenericArg::ConstUsize(_) => false,
             })
         }
         _ => {

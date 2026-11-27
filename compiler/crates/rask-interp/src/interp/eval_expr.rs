@@ -189,11 +189,10 @@ impl Interpreter {
                         // that true — so there is always something to
                         // say beyond "it was an error" (#1009).
                         let payload = fields.first().cloned().unwrap_or(Value::Unit);
-                        let text = self.describe_error_value(&payload);
-                        Err(RuntimeDiagnostic::new(
-                            RuntimeError::ForcedError(text),
-                            bang,
-                        ))
+                        Err(match self.describe_error_value(&payload) {
+                            Ok(text) => RuntimeDiagnostic::new(RuntimeError::ForcedError(text), bang),
+                            Err(e) => RuntimeDiagnostic::new(e, bang),
+                        })
                     }
                 }
                 _ => Err(RuntimeDiagnostic::new(
@@ -464,20 +463,22 @@ impl Interpreter {
     /// a turbofish would have spelled it. `None` when the slot isn't a number
     /// the parse surface has a width for.
     /// What `json.decode<T>` builds, as the checker resolved `T`: the ok side
-    /// of the call's type, named the way struct declarations name types.
+    /// of the call's type, with this call's type parameters bound.
     ///
     /// The written argument is only a spelling. `json.JsonValue` and an
     /// imported `JsonValue` are the same type, and comparing the spelling
-    /// sent the qualified one down the struct-decoding path (#1435).
-    fn json_decode_target(&self, node_id: rask_ast::NodeId) -> Option<TypeExpr> {
+    /// sent the qualified one down the struct-decoding path (#1435). A
+    /// spelling also can't say what `[i64; SIZE]`'s length is or what a
+    /// generic's fields hold.
+    fn json_decode_target(&self, node_id: rask_ast::NodeId) -> Option<rask_types::Type> {
         let rask_types::Type::Result { ok, .. } = self.node_types.get(&node_id)? else {
             return None;
         };
-        if ok.has_unsolved_var() {
-            return None;
-        }
-        let named = rask_mono::Monomorphizer::nameable_type(ok, &self.types)?;
-        Some(self.resolve_type_param(&named.to_type_expr()))
+        let ok = match self.generic_frames.last().and_then(|f| f.as_deref()) {
+            Some(frame) => rask_check::substitute_type(ok, frame),
+            None => (**ok).clone(),
+        };
+        (!ok.has_unsolved_var()).then_some(ok)
     }
 
     fn parse_target_from_node(&self, node_id: rask_ast::NodeId) -> Option<&'static str> {
@@ -1231,6 +1232,16 @@ impl Interpreter {
                         generics: self.call_generics(expr.id),
                     });
                 }
+                // A `comptime N` parameter: the length this call bound it to.
+                // It shadows a module const of the same name, not a local.
+                if let Some(rask_types::Type::Len(n)) =
+                    self.generic_frames.last().and_then(|f| f.as_deref()).and_then(|f| f.get(name))
+                {
+                    if self.env.slot_of(name).is_none() || self.env.is_module_level(name) {
+                        let kind = crate::value::IntKind::from_type(&rask_types::Type::Usize, self.types.target());
+                        return Ok(Value::Int(*n as i64, kind));
+                    }
+                }
                 if let Some(val) = self.env.get(name) {
                     // Handed to a new owner: the old name holds nothing once
                     // the hand-over happens, so only the new owner keeps it
@@ -1703,7 +1714,12 @@ impl Interpreter {
                 {
                     match &receiver {
                         Value::Module(ModuleKind::Json) if method == "decode" => {
-                            let target = self.json_decode_target(expr.id).unwrap_or(first_type);
+                            let target = match self.json_decode_target(expr.id) {
+                                Some(t) => t,
+                                None => rask_check::resolve_type_expr(&first_type, &self.types).map_err(|e| {
+                                    RuntimeDiagnostic::new(RuntimeError::TypeError(e.to_string()), expr.span)
+                                })?,
+                            };
                             return self
                                 .json_decode(&target, arg_vals)
                                 .map_err(|e| RuntimeDiagnostic::new(e, expr.span));
@@ -2744,22 +2760,35 @@ impl Interpreter {
             // underneath, and hand that to the task.
             ExprKind::Spawn { target, args, body, .. } => {
                 let closure = self.eval_expr(body)?;
+                // The runtime comes first, whichever way the task then runs:
+                // a call the checker couldn't follow (an interface object, a
+                // stored closure) reaches here outside its block and panics,
+                // as natively (conc.async/CC3). Checked only on the path a
+                // task that escapes takes, a task that borrows its frame ran
+                // with no runtime at all.
+                match target {
+                    rask_ast::expr::SpawnTarget::Green => {
+                        self.require_multitasking().map_err(|e| RuntimeDiagnostic::new(e, expr.span))?;
+                    }
+                    // `requires_pool: false` with no pool runs here (S2).
+                    rask_ast::expr::SpawnTarget::Pool if !self.in_thread_pool() => {
+                        let requires = match args.first() {
+                            Some(a) => !matches!(self.eval_expr(&a.expr)?, Value::Bool(false)),
+                            None => true,
+                        };
+                        if requires {
+                            return Err(RuntimeDiagnostic::new(Self::no_pool(), expr.span));
+                        }
+                        return self.run_task_in_place(closure).map_err(|e| RuntimeDiagnostic::new(e, expr.span));
+                    }
+                    _ => {}
+                }
                 // A task that borrows its frame (conc.async/S5) runs beside
                 // it, like any other. Run to the end before the frame went on,
                 // a task that waits on the frame never finished: an unbuffered
                 // send blocked for a receive the frame hadn't reached (#2002).
                 if !self.escaping_closures.contains(&body.id) {
                     return self.spawn_borrowing_task(closure).map_err(|e| RuntimeDiagnostic::new(e, expr.span));
-                }
-                // `requires_pool: false` with no pool runs here too (S2).
-                if *target == rask_ast::expr::SpawnTarget::Pool && !self.in_thread_pool() {
-                    let requires = match args.first() {
-                        Some(a) => !matches!(self.eval_expr(&a.expr)?, Value::Bool(false)),
-                        None => true,
-                    };
-                    if !requires {
-                        return self.run_task_in_place(closure).map_err(|e| RuntimeDiagnostic::new(e, expr.span));
-                    }
                 }
                 let started = match target {
                     rask_ast::expr::SpawnTarget::Green => self.spawn_async_task(closure, body),
@@ -2893,7 +2922,7 @@ impl Interpreter {
             }
 
             ExprKind::UsingBlock { name, args, body }
-                if name == "ThreadPool" || name == "threading" =>
+                if name == "ThreadPool" =>
             {
                 let num_threads = if args.is_empty() {
                     std::thread::available_parallelism()
@@ -2931,35 +2960,29 @@ impl Interpreter {
                     sender: Mutex::new(Some(tx)),
                     workers: Mutex::new(Vec::new()),
                     size: num_threads,
+                    pending: Mutex::new(0),
+                    idle: std::sync::Condvar::new(),
                 });
 
+                let outer = self.thread_pool.replace(Arc::clone(&pool));
                 self.env.push_scope();
-                self.env.define("__thread_pool".to_string(), Value::ThreadPool(pool.clone()));
 
                 // `exec_stmts`, not a loop over `exec_stmt`: that one runs the
                 // block's `ensure`s, and a bare loop skipped every one of them.
-                let result = match self.exec_stmts(body) {
-                    Ok(val) => val,
-                    Err(e) => {
-                        *pool.sender.lock().unwrap() = None;
-                        for w in workers {
-                            let _ = w.join();
-                        }
-                        self.env.pop_scope();
-                        return Err(e);
-                    }
-                };
+                let result = self.exec_stmts(body);
 
+                pool.drain();
                 *pool.sender.lock().unwrap() = None;
                 for w in workers {
                     let _ = w.join();
                 }
                 self.env.pop_scope();
-                Ok(result)
+                self.thread_pool = outer;
+                result
             }
 
             ExprKind::UsingBlock { name, args, body }
-                if name == "Multitasking" || name == "multitasking" =>
+                if name == "Multitasking" =>
             {
                 use crate::value::{MultitaskingRuntime, ACTIVE_RUNTIME};
 

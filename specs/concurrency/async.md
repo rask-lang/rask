@@ -252,9 +252,11 @@ The static path works from inference: the compiler figures out which functions t
 
 | Rule | Description |
 |------|-------------|
-| **CC1: Direct spawn check** | A lexical `spawn { }` outside any `using Multitasking` block, in a function nothing calls — the entry point, a `test` block, a `@test` function → compile error at the `spawn` |
-| **CC2: Inferred-requirement check** | A call to any function inferred as requiring the runtime, lexically outside any block → compile error at the call |
-| **CC3: Runtime check** | The check the other two are an optimization of. Where the call target isn't statically known — a closure stored and called across block boundaries, interface-object dispatch, FFI calling in — `spawn` finds the slot empty and panics with a clear message |
+| **CC1: Direct spawn check** | A lexical `spawn { }` outside any `using Multitasking` block, or `ThreadPool.spawn { }` outside any `using ThreadPool` block, in a function nothing calls — the entry point, a `test` block, a `@test` function → compile error at the spawn |
+| **CC2: Inferred-requirement check** | A call to any function inferred as requiring a runtime, lexically outside any block installing that runtime → compile error at the call |
+| **CC3: Runtime check** | The check the other two are an optimization of. Where the call target isn't statically known — a closure stored and called across block boundaries, interface-object dispatch, FFI calling in — the spawn finds the slot empty and panics with a clear message |
+
+The three apply to both runtimes alike, each checked against its own block: a `using Multitasking` doesn't satisfy `ThreadPool.spawn`, nor the reverse. A task's block runs under the runtime that accepted it, so a `spawn` inside `spawn { }` needs nothing more, and a `ThreadPool.spawn(requires_pool: false)` with the literal `false` needs no block (S2).
 
 CC1 and CC2 split by *who has to open the block*, not by how far away the `spawn` is. A function that spawns and leaves the scope to its caller is the normal shape — `http.serve` spawns per connection — so blaming its definition would make it unwritable. The error goes to the call site, which is where the block belongs. CC1 is what's left: a root nothing calls, so there is no call site to point at.
 

@@ -53,6 +53,15 @@ pub struct ResolvedCall {
     pub symbol: String,
 }
 
+/// How an error's `message()` is reached (`Symbols::error_messages`).
+#[derive(Debug, Clone)]
+pub enum MessageCall {
+    /// A body of its own, called by symbol.
+    Direct(ResolvedCall),
+    /// An `any I` error: whatever is in the box, through its vtable.
+    Vtable { interface: String },
+}
+
 impl Symbols {
     /// The symbol a declaration is emitted under. `None` for a native.
     pub fn of_decl(&self, decl: NodeId) -> Option<&str> {
@@ -127,19 +136,27 @@ impl Symbols {
         self.free_call(&rask_check::Callee::Free(sym), type_args, typed)
     }
 
-    /// The `message()` body of each error a `T or E` can carry, in the
+    /// How to get the message of each error a `T or E` can carry, in the
     /// order of the union's members when `E` is one (the member index a
     /// value carries picks the arm). `None` when any of them has no body in
     /// Rask, or `E` is an optional's `none`: a switch missing an arm would
     /// call a function nothing emits.
-    pub fn error_messages(&self, result: &Type, types: &rask_check::TypeTable) -> Option<Vec<ResolvedCall>> {
+    pub fn error_messages(&self, result: &Type, types: &rask_check::TypeTable) -> Option<Vec<MessageCall>> {
         let Type::Result { err, .. } = result else { return None };
         let members: Vec<&Type> = match &**err {
             Type::None => return None,
             Type::Union(members) => members.iter().collect(),
             other => vec![other],
         };
-        members.into_iter().map(|member| self.member_method(member, "message", None, types)).collect()
+        members
+            .into_iter()
+            .map(|member| match member {
+                Type::InterfaceObject { interface_name, .. } => {
+                    Some(MessageCall::Vtable { interface: interface_name.clone() })
+                }
+                _ => self.member_method(member, "message", None, types).map(MessageCall::Direct),
+            })
+            .collect()
     }
 
     /// What `e.method()` on a union runs: each member's own body, in member

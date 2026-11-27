@@ -1909,7 +1909,7 @@ fn error_unimplemented_module_fn() {
     let (failed, out) = compile_error_output("unimplemented_module_fn.rk");
     assert!(failed, "an unimplemented module function must be rejected: {}", out);
     assert!(
-        out.contains("E0353") && out.contains("json.to_value"),
+        out.contains("E0349") && out.contains("json.to_value"),
         "should name the function and the unimplemented code: {}", out,
     );
 }
@@ -2397,6 +2397,103 @@ fn main_error_return_exits_1() {
             stderr.contains("the thing failed"),
             "{mode}: should report the error's message: {stderr}",
         );
+    }
+}
+
+// #2081: an error leaving main past a `using` block or an `ensure` runs the
+// cleanup first, then exits 1 with the message. Native jumped into the shared
+// cleanup without the value and returned 0.
+#[test]
+fn main_error_through_cleanup_exits_1() {
+    for (fixture, says) in [
+        ("main_error_through_using.rk", "boom"),
+        ("main_error_through_ensure.rk", "the thing failed"),
+    ] {
+        for mode in ["--interp", "--native"] {
+            let (stdout, stderr, code) = run_capture(mode, fixture);
+            assert_eq!(code, 1, "{mode} {fixture}: expected exit 1, got {code}\n{stdout}{stderr}");
+            assert!(!stdout.contains("unreachable"), "{mode} {fixture}: {stdout}");
+            assert!(stderr.contains(says), "{mode} {fixture}: should report `{says}`: {stderr}");
+        }
+    }
+    for mode in ["--interp", "--native"] {
+        let (stdout, _, _) = run_capture(mode, "main_error_through_ensure.rk");
+        let order: Vec<&str> = stdout.lines().filter(|l| *l == "cleaned up" || *l == "message asked").collect();
+        assert_eq!(order, ["cleaned up", "message asked"], "{mode}: the ensure runs before the message is asked for: {stdout}");
+    }
+}
+
+/// An error out of main whose type is a union reports the message of the
+/// member it holds. Natively the union had no type name to look `message()`
+/// up by, so the run said only "main returned an error".
+#[test]
+fn main_union_error_reports_its_members_message() {
+    for (fixture, says) in [("main_error_union_first.rk", "afail 1"), ("main_error_union_second.rk", "bfail two")] {
+        for mode in ["--interp", "--native"] {
+            let (stdout, stderr, code) = run_capture(mode, fixture);
+            assert_eq!(code, 1, "{mode} {fixture}: expected exit 1, got {code}\n{stdout}{stderr}");
+            assert!(stderr.contains(says), "{mode} {fixture}: should report `{says}`: {stderr}");
+        }
+    }
+}
+
+/// A generic error type's `message()` is found natively, and an `ensure`
+/// still runs before it. Native looked the message up by the type's name,
+/// which a generic instance doesn't have.
+#[test]
+fn main_generic_error_reports_its_message() {
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "main_error_generic.rk");
+        assert_eq!(code, 1, "{mode}: expected exit 1, got {code}\n{stdout}{stderr}");
+        assert!(stdout.contains("cleaned up"), "{mode}: the ensure runs: {stdout}");
+        assert!(stderr.contains("gen 7"), "{mode}: should report `gen 7`: {stderr}");
+    }
+}
+
+/// `try` on a stdlib call whose error is one member of a union error keeps
+/// which member it is. Natively the value came out as the union's first
+/// member.
+#[test]
+fn stdlib_error_into_union_keeps_its_member() {
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "main_error_union_from_stdlib.rk");
+        assert_eq!(code, 1, "{mode}: expected exit 1, got {code}\n{stdout}{stderr}");
+        assert!(stdout.contains("is IoError"), "{mode}: the error is the IoError member: {stdout}");
+        assert!(!stdout.contains("is Sfail"), "{mode}: {stdout}");
+        assert!(!stderr.contains("sfail"), "{mode}: reported the wrong member's message: {stderr}");
+    }
+}
+
+#[test]
+fn try_generic_error_into_union_finds_its_member() {
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "try_generic_error_into_union.rk");
+        assert_eq!(code, 0, "{mode}: expected exit 0, got {code}\n{stdout}{stderr}");
+        assert!(stdout.contains("is Gen"), "{mode}: the error is the Gen<i64> member: {stdout}");
+        assert!(!stdout.contains("is Afail"), "{mode}: {stdout}");
+        assert!(stdout.contains("uni: gen 5"), "{mode}: {stdout}");
+    }
+}
+
+/// An `any Error` out of main reports the boxed value's message, asked through
+/// its vtable once the `ensure` has run (#2097).
+#[test]
+fn main_any_error_reports_its_message() {
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "main_error_any.rk");
+        assert_eq!(code, 1, "{mode}: expected exit 1, got {code}\n{stdout}{stderr}");
+        assert!(stderr.contains("main returned an error: bfail two"), "{mode}: {stderr}");
+        let order: Vec<&str> = stdout.lines().filter(|l| *l == "cleaned up" || *l == "message asked").collect();
+        assert_eq!(order, ["cleaned up", "message asked"], "{mode}: {stdout}");
+    }
+}
+
+#[test]
+fn main_error_whose_message_panics_exits_101() {
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "main_error_message_panics.rk");
+        assert_eq!(code, 101, "{mode}: a panic in message() is a panic\n{stdout}{stderr}");
+        assert!(stderr.contains("message blew up"), "{mode}: {stderr}");
     }
 }
 
@@ -9557,8 +9654,9 @@ fn error_spawn_needs_multitasking_scope() {
     );
     assert_eq!(
         out.matches("E0353").count(),
-        1,
-        "CC2 fires once, at the call to the function that spawns:\n{out}"
+        3,
+        "CC2 fires at each call that reaches a spawn: a function, a method, \
+         a stdlib function:\n{out}"
     );
     assert!(
         out.contains("`launch_worker` reaches `spawn`"),
@@ -10794,4 +10892,64 @@ fn the_value_cap_counts_the_same_on_a_32_bit_target() {
         .expect("failed to run rask compile");
     let text = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
     assert!(text.contains("E0980"), "wasm32 accepted a value over 64 KiB:\n{text}");
+}
+
+/// A test that panics inside `using ThreadPool` leaves the next test with the
+/// pool closed, on every backend.
+#[test]
+fn pool_block_is_closed_after_a_test_panics_in_it() {
+    let file = fixture("pool_block_closed_after_test_panic.rk");
+    for args in [vec!["test"], vec!["test", "--interp"], vec!["test", "--sim", "--seed", "1"]] {
+        let out = Command::new(rask_binary())
+            .args(&args)
+            .arg(&file)
+            .env("RASK_RUNTIME_DIR", runtime_dir())
+            .output()
+            .expect("failed to run rask test");
+        let combined = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr),
+        );
+        assert!(
+            combined.contains("3 tests, 1 passed, 2 failed"),
+            "{args:?}: only the fresh block should pass:\n{combined}"
+        );
+        assert!(
+            combined.contains("ThreadPool.spawn requires `using ThreadPool` context"),
+            "{args:?}: the stored call should panic:\n{combined}"
+        );
+        assert!(!combined.contains("without a pool"), "{args:?}: ran on a leftover pool:\n{combined}");
+    }
+}
+
+/// A spawn reached through an `any` call panics with no block open
+/// (conc.async/CC3), on every backend. The interpreter ran a task that borrows
+/// its frame without asking for a runtime, so both spawns here printed their
+/// answers there.
+#[test]
+fn spawn_through_any_panics_without_its_block() {
+    let file = fixture("spawn_through_any_needs_runtime.rk");
+    for args in [vec!["test"], vec!["test", "--interp"]] {
+        let out = Command::new(rask_binary())
+            .args(&args)
+            .arg(&file)
+            .env("RASK_RUNTIME_DIR", runtime_dir())
+            .output()
+            .expect("failed to run rask test");
+        let combined = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr),
+        );
+        assert!(
+            combined.contains("3 tests, 1 passed, 2 failed"),
+            "{args:?}: only the test with its blocks open should pass:\n{combined}"
+        );
+        assert!(
+            combined.contains("ThreadPool.spawn requires `using ThreadPool` context"),
+            "{args:?}: the pool spawn should panic:\n{combined}"
+        );
+        assert!(combined.contains("using Multitasking"), "{args:?}: the green spawn should panic:\n{combined}");
+    }
 }

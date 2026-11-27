@@ -31,8 +31,7 @@ cargo test --release --workspace      52 binaries, 0 failures
 you're willing to merge that file by hand.
 
 **Every lane touches `tests/known_divergences.txt` and `tests/COVERAGE.md`** — one line added or
-deleted per fix. Conflicts there are trivial: take both sides. Tell lanes not to edit `../../PLAN.md`;
-fold that in when you merge.
+deleted per fix. Conflicts there are trivial: take both sides.
 
 ---
 

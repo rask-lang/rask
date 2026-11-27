@@ -885,6 +885,32 @@ pub struct ThreadPoolInner {
     pub sender: Mutex<Option<mpsc::Sender<PoolTask>>>,
     pub workers: Mutex<Vec<std::thread::JoinHandle<()>>>,
     pub size: usize,
+    /// Jobs spawned and not yet finished, detached ones included.
+    pub pending: Mutex<usize>,
+    pub idle: std::sync::Condvar,
+}
+
+impl ThreadPoolInner {
+    pub fn job_started(&self) {
+        *self.pending.lock().unwrap() += 1;
+    }
+
+    pub fn job_done(&self) {
+        let mut n = self.pending.lock().unwrap();
+        *n -= 1;
+        if *n == 0 {
+            self.idle.notify_all();
+        }
+    }
+
+    /// Wait for every job to finish. A job still running may spawn onto the
+    /// pool, so the block is open until this returns.
+    pub fn drain(&self) {
+        let mut n = self.pending.lock().unwrap();
+        while *n > 0 {
+            n = self.idle.wait(n).unwrap();
+        }
+    }
 }
 
 impl fmt::Debug for ThreadPoolInner {
@@ -1041,11 +1067,9 @@ impl std::hash::Hash for MapKey {
 /// be insertion order per determinism/D7 — those call sites go through
 /// `map_entries_seeded` instead of iterating this directly.
 ///
-/// json.rs is the one exception, and it's narrower than it was: a JsonValue now
-/// goes to the Rask encoder in stdlib/json.rk, which iterates the Map as user
-/// code does and so gets seeded order. What's left on the Rust path is a struct
-/// encoded by reflection, where the fields must come out in declaration order —
-/// that's what #540 was about, and it isn't a Rask `Map` being iterated.
+/// json.rs's `value_to_json` reads a Rask Map through `map_entries_seeded`
+/// too, so `json.encode` writes entries in the order `for` visits them
+/// (#1938). The JSON object it builds keeps that order in a `MapData`.
 pub type MapData = IndexMap<MapKey, Value>;
 
 /// Per-process random value mixed into a key's hash to order a Map's
@@ -1332,8 +1356,6 @@ pub enum Value {
     Sender(Arc<crate::chan::SenderEnd>),
     /// Channel receiver
     Receiver(Arc<crate::chan::ReceiverEnd>),
-    /// Thread pool (from `using ThreadPool(workers: n) { }`)
-    ThreadPool(Arc<ThreadPoolInner>),
     /// Multitasking runtime (from `using Multitasking { }`)
     MultitaskingRuntime(Arc<MultitaskingRuntime>),
     /// Map (key-value storage with Value keys)
@@ -1621,7 +1643,6 @@ impl Value {
             Value::MultitaskingRuntime(_) => "MultitaskingRuntime",
             Value::Sender(_) => "Sender",
             Value::Receiver(_) => "Receiver",
-            Value::ThreadPool(_) => "ThreadPool",
             Value::Map(_) => "Map",
             Value::Atomic(_) => "Atomic",
             Value::Shared(_) => "Shared",
@@ -1978,7 +1999,6 @@ impl fmt::Display for Value {
             Value::MultitaskingRuntime(r) => write!(f, "<Multitasking runtime workers={}>", r.workers),
             Value::Sender(_) => write!(f, "<Sender>"),
             Value::Receiver(_) => write!(f, "<Receiver>"),
-            Value::ThreadPool(p) => write!(f, "<ThreadPool size={}>", p.size),
             Value::Map(m) => {
                 let entries = map_entries_seeded(&m.lock().unwrap());
                 write!(f, "Map {{ ")?;

@@ -316,21 +316,11 @@ enum HandAdapt {
     LinkRegisterStruct,
     LinkGuarded,
     RackInsert,
-    /// A `Shared` strategy's `take`.
-    BoxTake,
-    /// A `Shared` strategy's `set` or `replace`. `replace` (true) also gives
-    /// the old value back.
-    BoxWrite { replace: bool },
-    /// A `Shared` strategy's constructor.
-    BoxNew,
-    Atomic,
     Send,
     TrySend,
     Receive,
     Parse,
     JoinOutcome,
-    ShareString,
-    Unbuffered,
 }
 
 /// Which calls are adapted by hand, by MIR name. One list: it decides both
@@ -343,22 +333,11 @@ fn hand_adaptation(name: &str) -> Option<HandAdapt> {
         "Vec_contains" => HandAdapt::VecContains,
         "rask_link_register_struct" | "rask_link_forget_struct" => HandAdapt::LinkRegisterStruct,
         "rask_link_guarded" => HandAdapt::LinkGuarded,
-        "Cell_take" | "Shared_take" | "Mutex_take" => HandAdapt::BoxTake,
-        "Cell_set" | "Shared_set" | "Mutex_set" => HandAdapt::BoxWrite { replace: false },
-        "Cell_replace" | "Shared_replace" | "Mutex_replace" => HandAdapt::BoxWrite { replace: true },
-        "Shared_new" | "Mutex_new" | "Cell_new" => HandAdapt::BoxNew,
-        n if rask_stdlib::mir_metadata::lookup(n).is_some_and(|m| m.owner.as_deref() == Some("Atomic")) => {
-            HandAdapt::Atomic
-        }
-        "Sender_send" | "send" => HandAdapt::Send,
+        "Sender_send" => HandAdapt::Send,
         "Sender_try_send" => HandAdapt::TrySend,
         "Receiver_receive" | "Receiver_try_receive" => HandAdapt::Receive,
         n if rask_mir::parse_runtime::writes(n).is_some() => HandAdapt::Parse,
-        "join" | "cancel" | "Handle_join" | "Handle_cancel" => HandAdapt::JoinOutcome,
-        "string_clone" | "string_to_owned" => {
-            HandAdapt::ShareString
-        }
-        "Channel_unbuffered" => HandAdapt::Unbuffered,
+        "Handle_join" | "Handle_cancel" => HandAdapt::JoinOutcome,
         _ => return None,
     })
 }
@@ -1165,7 +1144,7 @@ impl<'a> FunctionBuilder<'a> {
             MirStmtKind::Store { addr, offset, value, store_size, .. } => Self::lower_store(builder, addr, offset, value, *store_size, ctx)?,
 
             // Array element store: base_ptr[index * elem_size] = value
-            MirStmtKind::ArrayStore { base, index, elem_size, value } => {
+            MirStmtKind::ArrayStore { base, index, elem_size, inline, value } => {
                 let base_val = builder.use_var(*ctx.var_map.get(base)
                     .ok_or_else(|| CodegenError::UnsupportedFeature("ArrayStore: base not found".to_string()))?);
                 let idx_val = Self::lower_operand_typed(builder, index, Some(types::I64), ctx)?;
@@ -1176,13 +1155,8 @@ impl<'a> FunctionBuilder<'a> {
                 // An element that lives *in* its slot is a value, and the operand
                 // is its address — copy the bytes. Storing the pointer put the
                 // constructing slot's address where the element belongs, so
-                // `a[1] = 5` on a `[i64?; 3]` read back as an address (#783). Same
-                // `stored_inline_in_array` rule the read and the literal's store
-                // use; the three only work as a set.
-                let elem_is_inline = ctx.locals.iter().find(|l| l.id == *base)
-                    .is_some_and(|l| matches!(&l.ty,
-                        MirType::Array { elem, .. } if elem.stored_inline_in_array()));
-                if elem_is_inline {
+                // `a[1] = 5` on a `[i64?; 3]` read back as an address (#783).
+                if *inline {
                     Self::copy_bytes(builder, val, 0, addr, 0, *elem_size);
                 } else if let 1 | 2 | 4 = *elem_size {
                     // The address above already accounts for `elem_size`; the
@@ -2512,58 +2486,17 @@ impl<'a> FunctionBuilder<'a> {
         // an optional is built around a plain value (`WrapSome`, #1555), so
         // every other assignment into an optional copies one.
 
-        // Aggregate assignment: when the destination has a stack slot and
-        // the rvalue produces a pointer to aggregate data, copy the data
-        // into the destination's stack slot rather than aliasing pointers.
-        // This covers String (always 16 bytes) and Field extractions from
-        // Struct/Tuple/Result/Option that return aggregate sub-fields.
+        // A destination that lives in memory takes a copy of the source's
+        // bytes; one that's a word takes the word. MIR says when an optional
+        // is built around a plain value (`WrapSome`), and `assign_shapes`
+        // rejects any other assignment whose two sides differ in shape, so
+        // the destination's type alone decides.
         //
-        // Whole-aggregate assignment (`p = q` where both are Struct/Tuple/etc.)
-        // also needs a memcpy: aliasing the pointers means a subsequent
-        // `mutate p` write would land in `q`'s storage. mem.borrowing/M-rules
-        // require `mutate` writes to flow back to the caller, which only
-        // works if `p = ...` copies bytes into `*p`'s slot.
-        let needs_copy = match (&dst_local.ty, rvalue) {
-            (MirType::Buffer, _) => true,
-            // Field on aggregate base returns pointer for aggregate elements.
-            // InterfaceObject belongs here: it's a 16-byte fat pointer, so reading one
-            // out of a `T?` payload as a scalar took the data half and left the
-            // vtable behind. The call through it then read the concrete value's
-            // first word as a vtable — for `Circle { r: 2.0 }` that meant
-            // jumping through 2.0 (#552).
-            (MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_) |
-             MirType::Result { .. } | MirType::Option(_) |
-             MirType::InterfaceObject { .. }, MirRValue::Field { .. }) => true,
-            // Whole-aggregate copy: rvalue produces a pointer to the source
-            // aggregate, dst has its own storage (either a stack slot or an
-            // external pointer for mutate-params).
-            //
-            // A box's fat pointer too. `c = mkn(i)` in a loop made `c` the
-            // address of the temporary's slot, the next iteration wrote the
-            // new box there, and the drop of `c`'s old box freed the new one:
-            // a use after free, and the old box leaked.
-            (MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_) | MirType::InterfaceObject { .. },
-             MirRValue::Use(MirOperand::Local(_))) => true,
-            // A whole wrapper from another of the same shape: a wrapper built
-            // around a plain value is `WrapSome`, and a result from anything
-            // else is rejected before codegen (`assign_shapes`).
-            (MirType::Result { .. } | MirType::Option(_), MirRValue::Use(MirOperand::Local(_))) => true,
-            // An array element that lives in its slot comes back as an address,
-            // and for a wrapper element that address *is* a whole wrapper. Copy
-            // it. Without this arm the wrap-as-Some path below claimed the
-            // assignment and built `Some(<element address>)`, so `a[0] ?? d` on a
-            // `[i64?; 3]` handed back the address (#783).
-            (MirType::Option(_) | MirType::Result { .. },
-             MirRValue::ArrayIndex { base, .. }) => {
-                Self::operand_mir_type(base, ctx.locals).is_some_and(|t| {
-                    matches!(t, MirType::Array { elem, .. } if elem.stored_inline_in_array())
-                })
-            }
-            // `try convert`/`try float to int` builds an Option slot and
-            // returns its pointer — copy the 16-byte struct into dst.
-            (MirType::Option(_), MirRValue::Convert { kind, .. }) => kind.is_optional(),
-            _ => false,
-        };
+        // Deciding from the pair of types instead left gaps, each one a bug:
+        // an interface object read out of a `T?` lost its vtable half (#552),
+        // `a[0] ?? d` handed back an address (#783), and a box assigned in a
+        // loop aliased the temporary the next iteration overwrote.
+        let needs_copy = dst_local.ty.passed_by_address() && !matches!(rvalue, MirRValue::WrapSome(_));
 
         // Option(T) assigned from a non-Option source: wrap as Some
         // in the stack slot. Scalars need this so `const x: i32? = 42`
@@ -2691,12 +2624,6 @@ impl<'a> FunctionBuilder<'a> {
                 }
                 (None, None) => {}
             }
-        } else if let Some(addr) = borrowed_addr {
-            // Aggregate to aggregate through the pointer — an `Option` assigned
-            // from another `Option`, say. `def_var` here would swap this
-            // frame's pointer and leave the borrowed storage untouched.
-            let size = rask_layout::size_of(&dst_local.ty, ctx.target());
-            Self::copy_bytes(builder, val, 0, addr, 0, size);
         } else {
             let var = ctx.var_map.get(dst)
                 .ok_or_else(|| CodegenError::UnsupportedFeature("Variable not found".to_string()))?;
@@ -3153,7 +3080,16 @@ impl<'a> FunctionBuilder<'a> {
 
         // Copy concrete value to heap
         if let MirOperand::Local(src_id) = value {
-            if ctx.stack_slot_map.contains_key(src_id) {
+            // A struct parameter has no slot of its own, only the pointer it
+            // arrived as, so the slot map alone took it for a scalar and boxed
+            // the pointer's bytes: `|d| show(d)` printed garbage for `d.name`.
+            let by_address = ctx
+                .locals
+                .iter()
+                .chain(ctx.params.iter())
+                .find(|l| l.id == *src_id)
+                .is_some_and(|l| l.ty.passed_by_address());
+            if by_address || ctx.stack_slot_map.contains_key(src_id) {
                 // Aggregate: memcpy from the source pointer the var holds —
                 // not the local's own slot, which may be uninitialized when
                 // the var aliases another slot (e.g. `_1 = _0`).
@@ -4366,8 +4302,8 @@ impl<'a> FunctionBuilder<'a> {
         lhs: Value,
         rhs: Value,
     ) -> CodegenResult<Value> {
-        let fr = ctx.func_refs.get("string_compare")
-            .ok_or_else(|| CodegenError::FunctionNotFound("string_compare".into()))?;
+        let fr = ctx.func_refs.get("rask_string_compare")
+            .ok_or_else(|| CodegenError::FunctionNotFound("rask_string_compare".into()))?;
         let call = builder.ins().call(*fr, &[lhs, rhs]);
         Ok(builder.inst_results(call)[0])
     }
@@ -4379,8 +4315,8 @@ impl<'a> FunctionBuilder<'a> {
         lhs: Value,
         rhs: Value,
     ) -> CodegenResult<Value> {
-        let fr = ctx.func_refs.get("string_eq")
-            .ok_or_else(|| CodegenError::FunctionNotFound("string_eq".into()))?;
+        let fr = ctx.func_refs.get("rask_string_eq")
+            .ok_or_else(|| CodegenError::FunctionNotFound("rask_string_eq".into()))?;
         let call = builder.ins().call(*fr, &[lhs, rhs]);
         let res = builder.inst_results(call)[0];
         Ok(builder.ins().icmp_imm(IntCC::NotEqual, res, 0))
@@ -5061,9 +4997,7 @@ impl<'a> FunctionBuilder<'a> {
         // `i128_to_string(out: ptr, val: i128)` made it visible by truncating
         // the value to the out pointer's width (#762).
         let injects_out_param = param_types.len() == args.len() + 1
-            && ctx.adapt_table.get(func.name.as_str())
-                .map(|(a, _)| *a == ArgAdapt::StringOutParam)
-                .unwrap_or(false);
+            && Self::call_abi(func, ctx).is_some_and(|(a, _)| a == ArgAdapt::StringOutParam);
         // A struct passed by value doesn't reach C as a pointer: it goes in
         // registers, a copy on the stack, or the address of a copy, as
         // `rask_mir::c_call` decided for the target. The declared signature
@@ -5271,7 +5205,7 @@ impl<'a> FunctionBuilder<'a> {
         // Lower MIR args to Cranelift values
         let mut arg_vals = Vec::with_capacity(args.len());
         for (arg_idx, a) in args.iter().enumerate() {
-            // string_append_cstr: second arg is raw char*, skip RaskString wrapping
+            // rask_string_append_cstr: second arg is raw char*, skip RaskString wrapping
             // Everything reaches a runtime call as a word unless it's 128-bit,
             // which is the one scalar width that doesn't fit one. Forcing that
             // to `i64` here truncated the value before the signature loop below
@@ -5281,7 +5215,7 @@ impl<'a> FunctionBuilder<'a> {
             } else {
                 types::I64
             };
-            let val = if func.name == "string_append_cstr" && arg_idx == 1 {
+            let val = if func.name == "rask_string_append_cstr" && arg_idx == 1 {
                 Self::lower_string_const_as_cstr(builder, a, ctx)?
             } else {
                 Self::lower_operand_typed(builder, a, Some(want), ctx)?
@@ -5298,7 +5232,7 @@ impl<'a> FunctionBuilder<'a> {
         Self::spill_scalars_for_aggregate_params(builder, &func.name, &mut arg_vals, args, ctx);
 
         // Adapt args for typed runtime API
-        let adapt = Self::adapt_stdlib_call(builder, &func.name, &mut arg_vals, args, dst, ctx, ctx.adapt_table);
+        let adapt = Self::adapt_stdlib_call(builder, func, &mut arg_vals, args, dst, ctx);
 
         // Re-read signature after adaptation (arg count may have changed)
         let ext_func = &builder.func.dfg.ext_funcs[*func_ref];
@@ -5348,7 +5282,7 @@ impl<'a> FunctionBuilder<'a> {
         // An index the bounds pass already proved in range needs no call:
         // the element is `data + index * elem_size`, read straight off the
         // vector's header.
-        let call_results: Vec<Value> = if func.name == "Vec_get_unchecked" {
+        let call_results: Vec<Value> = if func.name == rask_mir::runtime_ops::VEC_GET_UNCHECKED {
             vec![Self::vec_elem_addr(builder, arg_vals[0], arg_vals[1])]
         } else {
             let call_inst = builder.ins().call(*func_ref, &arg_vals);
@@ -5372,12 +5306,12 @@ impl<'a> FunctionBuilder<'a> {
             // method/field access hits the real value and a `mutate` lands in
             // the box rather than a copied slot.
             //
-            // Any other payload is stored indirectly: Mutex_new/Shared_new take
+            // Any other payload is stored indirectly: each box constructor takes
             // an address to memcpy from, so a non-struct value gets spilled to a
             // slot first and the box ends up holding the value itself. Binding
             // the pointer there handed `self.counters.lock()` a pointer to the
             // map pointer, and rask_map_get crashed on it (#477) — that payload
-            // needs one load. The struct test mirrors the one Mutex_new uses, so
+            // needs one load. The struct test mirrors the constructor's, so
             // the two sides agree on which payloads are indirect.
             if matches!(adapt, CallAdapt::BoxPayloadPtr) {
                 let results = &call_results[..];
@@ -5860,7 +5794,7 @@ impl<'a> FunctionBuilder<'a> {
                     // Store directly into our stack slot (value, not pointer).
                     Self::land_aggregate_result(builder, final_val, *ss, *size, dst_ptr.is_some());
                 } else if let Some(wrapper) = Self::dst_wrapper(ctx, dst_id) {
-                    let ret = ctx.adapt_table.get(&func.name).map(|(_, r)| *r);
+                    let ret = Self::call_abi(func, ctx).map(|(_, r)| r);
                     match (ret, &wrapper) {
                         // C function uses negative return = error convention
                         // (declared as RetAdapt::NegErr on the dispatch entry).
@@ -5904,10 +5838,9 @@ impl<'a> FunctionBuilder<'a> {
                     }
                 }
                 // main is called from C as void rask_main(void) — always return
-                // void. A `void or E` main still has to report its error branch,
-                // though: exit 1, not the silent 0 it used to give (#345).
+                // void. A `main` that can fail reports its error from the
+                // wrapper MIR builds around it (`MirLowerer::entry_wrapper`).
                 if ctx.is_main {
-                    Self::emit_main_error_check(builder, value.as_ref(), ctx)?;
                     Self::emit_unwind_pop(builder, ctx);
                     builder.ins().return_(&[]);
                 } else if let Some(val) = Self::exit_value(builder, value.as_ref(), ctx)? {
@@ -6350,119 +6283,6 @@ impl<'a> FunctionBuilder<'a> {
         } else {
             builder.ins().iconst(ret_cl_ty, 0)
         })
-    }
-
-    /// struct.targets/EX4: `func main() -> void or E` returning its error branch
-    /// exits 1. Reads the Result tag; on the error side, calls the error type's
-    /// `message()` when it has one and hands the text to the runtime, which
-    /// prints it and exits. The ok side falls through to the normal return.
-    fn emit_main_error_check(
-        builder: &mut ClifFunctionBuilder,
-        value: Option<&MirOperand>,
-        ctx: &CodegenCtx,
-    ) -> CodegenResult<()> {
-        let MirType::Result { err, .. } = ctx.ret_ty else {
-            return Ok(());
-        };
-        let Some(val_op) = value else { return Ok(()) };
-        let Some(&exit_fr) = ctx.func_refs.get("main_error_exit") else {
-            return Ok(());
-        };
-
-        let base = Self::lower_operand(builder, val_op, ctx)?;
-        let msg_fr = Self::aggregate_type_name(err, ctx)
-            .and_then(|name| ctx.func_refs.get(&format!("{}_message", name)).copied());
-
-        // `return SomeError` in a `void or E` main lowers to the bare error
-        // value, not a wrapped Result — that path is unconditionally an error.
-        let local_ty = Self::operand_mir_type(val_op, ctx.locals);
-        if Self::is_err_component(ctx.ret_ty, local_ty.as_ref()) {
-            let msg = Self::call_message(builder, msg_fr, base);
-            builder.ins().call(exit_fr, &[msg]);
-            return Ok(());
-        }
-
-        // Wrapped Result: branch on the tag.
-        if !matches!(local_ty, Some(MirType::Result { .. })) {
-            return Ok(());
-        }
-        let tag = builder.ins().load(types::I8, MemFlags::new(), base, crate::layouts::TAG_OFFSET);
-        let is_err = builder.ins().icmp_imm(IntCC::NotEqual, tag, crate::layouts::TAG_PRESENT);
-
-        let err_block = builder.create_block();
-        let ok_block = builder.create_block();
-        builder.ins().brif(is_err, err_block, &[], ok_block, &[]);
-
-        builder.switch_to_block(err_block);
-        builder.seal_block(err_block);
-        // `{ErrType}_message(payload) -> string` when the error type defines one.
-        // Without it there's nothing to print but the fact, so pass null.
-        let payload = builder
-            .ins()
-            .iadd_imm(base, rask_layout::payload_offset_of(ctx.ret_ty, ctx.target()) as i64);
-        let msg = Self::call_message(builder, msg_fr, payload);
-        builder.ins().call(exit_fr, &[msg]);
-        // rask_main_error_exit is _Noreturn, but the block still needs a
-        // terminator for the verifier.
-        builder.ins().trap(TrapCode::user(1).unwrap());
-
-        builder.switch_to_block(ok_block);
-        builder.seal_block(ok_block);
-        Ok(())
-    }
-
-    /// Call `{ErrType}_message(err) -> string` and get the 16 bytes into a slot
-    /// this frame owns.
-    ///
-    /// A string is wider than a word, so `message()` writes through a
-    /// destination pointer — this supplies one, and there is nothing to copy
-    /// afterwards. A `message()` compiled before that convention hands back a
-    /// pointer to its own frame instead, and the copy is what keeps the next
-    /// call from reusing it; the next call here is the one that prints it.
-    ///
-    /// Returns a null pointer when the error type has no `message()`.
-    fn call_message(
-        builder: &mut ClifFunctionBuilder,
-        msg_fr: Option<FuncRef>,
-        err_ptr: Value,
-    ) -> Value {
-        let Some(fr) = msg_fr else {
-            return builder.ins().iconst(types::I64, 0);
-        };
-        let ss = LocalSlot::plain(builder.create_sized_stack_slot(StackSlotData::new(
-            StackSlotKind::ExplicitSlot, 16, 0,
-        )));
-        let dst = ss.addr(builder, 0);
-        let wants_dst = {
-            let ext_func = &builder.func.dfg.ext_funcs[fr];
-            let sig = &builder.func.dfg.signatures[ext_func.signature];
-            sig.params
-                .first()
-                .is_some_and(|p| p.purpose == cranelift_codegen::ir::ArgumentPurpose::StructReturn)
-        };
-        if wants_dst {
-            builder.ins().call(fr, &[dst, err_ptr]);
-            return dst;
-        }
-        let call = builder.ins().call(fr, &[err_ptr]);
-        let src = builder.inst_results(call)[0];
-        for off in [0i32, 8] {
-            let word = builder.ins().load(types::I64, MemFlags::new(), src, off);
-            ss.store(builder, word, off);
-        }
-        dst
-    }
-
-    /// The declared name behind a struct or enum MIR type, for mangled-name
-    /// lookups like `{Type}_message`.
-    fn aggregate_type_name(ty: &MirType, ctx: &CodegenCtx) -> Option<String> {
-        match ty {
-            MirType::Struct(id) => {
-                ctx.struct_layouts.get(id.id as usize).map(|l| l.name.clone())
-            }
-            MirType::Enum(id) => ctx.enum_layouts.get(id.id as usize).map(|l| l.name.clone()),
-            _ => None,
-        }
     }
 
     /// The Cranelift value a non-`main` function hands back for `return v`.
@@ -7166,6 +6986,7 @@ impl<'a> FunctionBuilder<'a> {
                 Self::holds_string_mir(ok, ctx, depth + 1)
                     || Self::holds_string_mir(err, ctx, depth + 1)
             }
+            MirType::Union(members) => members.iter().any(|m| Self::holds_string_mir(m, ctx, depth + 1)),
             MirType::Struct(id) => ctx.struct_layouts.get(id.id as usize).is_some_and(|l| {
                 l.fields
                     .iter()
@@ -7279,6 +7100,10 @@ impl<'a> FunctionBuilder<'a> {
                     |b, p, ctx| Self::release_strings_mir(b, p, 0, &ok, ctx, depth + 1),
                     |b, p, ctx| Self::release_strings_mir(b, p, 0, &err, ctx, depth + 1),
                 )
+            }
+            MirType::Union(members) => {
+                let payload = rask_layout::payload_offset_of(ty, ctx.target()) as i32;
+                Self::release_union(builder, base, offset, payload, members, ctx, depth)
             }
             MirType::Struct(id) => {
                 let Some(layout) = ctx.struct_layouts.get(id.id as usize) else { return Ok(()) };
@@ -7458,6 +7283,49 @@ impl<'a> FunctionBuilder<'a> {
         body(builder, payload, ctx)?;
         builder.ins().jump(done, &[]);
 
+        builder.switch_to_block(done);
+        builder.seal_block(done);
+        Ok(())
+    }
+
+    /// A union: the tag is the member's index, and every member shares the
+    /// payload offset. One comparison per member that holds something.
+    fn release_union(
+        builder: &mut ClifFunctionBuilder,
+        base: Value,
+        offset: i32,
+        payload_offset: i32,
+        members: &[MirType],
+        ctx: &CodegenCtx,
+        depth: u32,
+    ) -> CodegenResult<()> {
+        let owning: Vec<(i64, MirType)> = members
+            .iter()
+            .enumerate()
+            .filter(|(_, m)| Self::holds_string_mir(m, ctx, depth + 1))
+            .map(|(i, m)| (i as i64, m.clone()))
+            .collect();
+        if owning.is_empty() {
+            return Ok(());
+        }
+        let tag = builder.ins().load(types::I8, MemFlags::new(), base, offset + crate::layouts::TAG_OFFSET);
+        let done = builder.create_block();
+        for (index, member) in owning {
+            let hit = builder.create_block();
+            let next = builder.create_block();
+            let is = builder.ins().icmp_imm(IntCC::Equal, tag, index);
+            builder.ins().brif(is, hit, &[], next, &[]);
+
+            builder.switch_to_block(hit);
+            builder.seal_block(hit);
+            let payload = builder.ins().iadd_imm(base, (offset + payload_offset) as i64);
+            Self::release_strings_mir(builder, payload, 0, &member, ctx, depth + 1)?;
+            builder.ins().jump(done, &[]);
+
+            builder.switch_to_block(next);
+            builder.seal_block(next);
+        }
+        builder.ins().jump(done, &[]);
         builder.switch_to_block(done);
         builder.seal_block(done);
         Ok(())
@@ -8072,18 +7940,28 @@ impl<'a> FunctionBuilder<'a> {
         }
     }
 
+    /// How the call's C arguments and result line up with its MIR operands:
+    /// a runtime call says so itself, a stdlib method's comes from its
+    /// declaration.
+    fn call_abi(func: &rask_mir::FunctionRef, ctx: &CodegenCtx) -> Option<(ArgAdapt, RetAdapt)> {
+        if func.runtime {
+            return Some((func.abi.args, func.abi.ret));
+        }
+        ctx.adapt_table.get(func.name.as_str()).copied()
+    }
+
     /// Adapt stdlib call args for the typed runtime API.
     /// Looks up adaptation from the dispatch table, applies mechanically.
     /// Custom entries fall through to hand-written code.
     fn adapt_stdlib_call(
         builder: &mut ClifFunctionBuilder,
-        func_name: &str,
+        func: &rask_mir::FunctionRef,
         args: &mut Vec<Value>,
         mir_args: &[MirOperand],
         dst: Option<&LocalId>,
         ctx: &CodegenCtx,
-        adapt_table: &HashMap<String, (ArgAdapt, RetAdapt)>,
     ) -> CallAdapt {
+        let func_name = func.name.as_str();
         // A name the program declares is its own function, never a stdlib one.
         //
         // MIR mints `<Type>_<method>` for a stdlib method and codegen resolves
@@ -8107,14 +7985,27 @@ impl<'a> FunctionBuilder<'a> {
         if let Some(how) = hand_adaptation(func_name) {
             return Self::adapt_by_hand(builder, how, func_name, args, mir_args, dst, ctx);
         }
-        let (arg_adapt, ret_adapt) = adapt_table
-            .get(func_name)
-            .copied()
-            .unwrap_or((ArgAdapt::None, RetAdapt::None));
+        let (arg_adapt, ret_adapt) = Self::call_abi(func, ctx).unwrap_or((ArgAdapt::None, RetAdapt::None));
 
         // Apply arg adaptation
         let call_adapt = match arg_adapt {
             ArgAdapt::None => CallAdapt::None,
+
+            ArgAdapt::ShareIntoDst => {
+                let Some((dst_ss, _)) = dst.and_then(|id| ctx.stack_slot_map.get(id)) else {
+                    return CallAdapt::None;
+                };
+                if !args.is_empty() {
+                    Self::copy_aggregate(builder, args[0], *dst_ss, 16);
+                }
+                args[0] = dst_ss.addr(builder, 0);
+                CallAdapt::StringOutParam(*dst_ss)
+            }
+
+            ArgAdapt::WrapArg0 => {
+                Self::wrap_arg_as_ptr(builder, args, mir_args, 0, ctx.locals);
+                CallAdapt::None
+            }
 
             ArgAdapt::WrapArg1 => {
                 Self::wrap_arg_as_ptr(builder, args, mir_args, 1, ctx.locals);
@@ -8176,21 +8067,12 @@ impl<'a> FunctionBuilder<'a> {
                 CallAdapt::StringResult(ss, err_ss)
             }
 
-            ArgAdapt::InPlaceStringMut => {
-                let ss = mir_args.first()
-                    .and_then(|op| if let MirOperand::Local(id) = op { Some(id) } else { None })
-                    .and_then(|id| ctx.stack_slot_map.get(id))
-                    .map(|(ss, _)| *ss)
-                    .unwrap_or_else(|| LocalSlot::plain(builder.create_sized_stack_slot(StackSlotData::new(
-                        StackSlotKind::ExplicitSlot, 16, 0,
-                    ))));
-                // C signature: push_str(out, s, other) — prepend out-param address
-                let out_addr = ss.addr(builder, 0);
-                args.insert(0, out_addr);
-                CallAdapt::StringOutParam(ss)
+            ArgAdapt::AppendOutParam => {
+                return Self::append_out_param(builder, args, dst, ctx);
             }
 
-            ArgAdapt::AppendOutParam => {
+            ArgAdapt::WrapArg1AppendOutParam => {
+                Self::wrap_arg_as_ptr(builder, args, mir_args, 1, ctx.locals);
                 return Self::append_out_param(builder, args, dst, ctx);
             }
 
@@ -8199,6 +8081,22 @@ impl<'a> FunctionBuilder<'a> {
                 return Self::append_out_param(builder, args, dst, ctx);
             }
 
+
+            ArgAdapt::AtomicPayload(payload) => {
+                Self::atomic_args(builder, payload, args, mir_args, ctx);
+                CallAdapt::None
+            }
+
+            ArgAdapt::AtomicCas(payload) => {
+                Self::atomic_args(builder, payload, args, mir_args, ctx);
+                // The observed value is the call's result; whether it swapped
+                // comes back through this slot.
+                let ss = LocalSlot::plain(builder.create_sized_stack_slot(StackSlotData::new(
+                    StackSlotKind::ExplicitSlot, 8, 0,
+                )));
+                args.push(ss.addr(builder, 0));
+                CallAdapt::CasResult(ss)
+            }
 
             ArgAdapt::OptionOutParam => {
                 // Hand the callee the destination's payload address so it can
@@ -8235,6 +8133,30 @@ impl<'a> FunctionBuilder<'a> {
             RetAdapt::NegErr | RetAdapt::NegNone => call_adapt,
             RetAdapt::BoxPayloadPtr => CallAdapt::BoxPayloadPtr,
             RetAdapt::Status => CallAdapt::Status,
+            RetAdapt::AtomicBits => CallAdapt::AtomicBits,
+        }
+    }
+
+    /// An atomic call's payload arguments as their bits, and a trailing
+    /// `MemoryOrder` as its tag. Passed as the enum, the order was the address
+    /// of a slot, which the runtime read as no order it knew and ran SeqCst:
+    /// every `Relaxed` was ignored.
+    fn atomic_args(
+        builder: &mut ClifFunctionBuilder,
+        payload: u8,
+        args: &mut [Value],
+        mir_args: &[MirOperand],
+        ctx: &CodegenCtx,
+    ) {
+        for i in (0..args.len()).filter(|&i| i < 8 && payload & (1 << i) != 0) {
+            let ty = mir_args.get(i).and_then(|op| Self::operand_mir_type(op, ctx.locals));
+            args[i] = Self::atomic_bits(builder, args[i], ty.as_ref(), ctx.target());
+        }
+        if let Some(last) = args.len().checked_sub(1) {
+            let ty = mir_args.get(last).and_then(|op| Self::operand_mir_type(op, ctx.locals));
+            if let Some(MirType::Enum(id)) = &ty {
+                args[last] = Self::load_enum_tag(builder, ctx, args[last], id.id as usize);
+            }
         }
     }
 
@@ -8387,94 +8309,10 @@ impl<'a> FunctionBuilder<'a> {
                 CallAdapt::None
             }
 
-            // `take` has no value argument, so it takes the out-param and
-            // nothing else.
-            HandAdapt::BoxTake => Self::append_out_param(builder, args, dst, ctx),
-            // `set` and `replace` both take the new value by pointer, so a
-            // scalar spills to a slot first. `replace` also gives the old value
-            // back, through an out-param of its own.
-            HandAdapt::BoxWrite { replace } => {
-                if args.len() >= 2 {
-                    let (_, is_aggregate) = Self::runtime_arg_slot(mir_args, 1, ctx);
-                    if !is_aggregate {
-                        Self::spill_arg(builder, args, mir_args, 1, ctx.locals);
-                    }
-                }
-                if replace {
-                    // The old value goes into the caller's own destination. It
-                    // used to come back by address, which meant the runtime
-                    // allocated a block for it so the pointer would outlive the
-                    // call — and nothing freed that block, so every `replace`
-                    // leaked its payload's width.
-                    //
-                    // An aggregate destination already has the slot to write
-                    // into, and marking it written skips the copy that would
-                    // otherwise be the slot onto itself. A scalar has no slot,
-                    // so it gets a word-sized one to be loaded back out of —
-                    // which is what a returned pointer was doing anyway, one
-                    // dereference later.
-                    Self::append_out_param(builder, args, dst, ctx)
-                } else {
-                    CallAdapt::None
-                }
-            }
-
-            // Each strategy's constructor takes the value by pointer, so a
-            // scalar spills to a slot first. The size, payload kind and
-            // alignment after it come from lowering (`@runtime_args` on
-            // `Shared.new`).
-            HandAdapt::BoxNew => {
-                if !args.is_empty() {
-                    let (_, is_struct) = Self::runtime_arg_slot(mir_args, 0, ctx);
-                    if !is_struct {
-                        Self::spill_arg(builder, args, mir_args, 0, ctx.locals);
-                    }
-                }
-                CallAdapt::None
-            }
-
             // An atomic's payload crosses the call as its bits in a word: an
             // integer extended by its sign, a float or a word-sized struct
             // (GA2) as its raw bytes. A numeric conversion would hand the
             // runtime 1 for 1.5, and a struct is held by address.
-            HandAdapt::Atomic => {
-                // The payload arguments are the ones `sync.rk` declares as `T`.
-                let meta = rask_stdlib::mir_metadata::lookup(func_name);
-                let values: &[usize] = meta.map_or(&[], |m| m.payload_args.as_slice());
-                for &i in values {
-                    if i < args.len() {
-                        let ty = mir_args.get(i).and_then(|op| Self::operand_mir_type(op, ctx.locals));
-                        args[i] = Self::atomic_bits(builder, args[i], ty.as_ref(), ctx.target());
-                    }
-                }
-                // The `MemoryOrder` crosses as its tag. Passed as the enum, it
-                // was the address of a slot, which the runtime read as no order
-                // it knew and ran SeqCst: every `Relaxed` was ignored.
-                if let Some(last) = args.len().checked_sub(1) {
-                    let ty = mir_args.get(last).and_then(|op| Self::operand_mir_type(op, ctx.locals));
-                    if let Some(MirType::Enum(id)) = &ty {
-                        args[last] = Self::load_enum_tag(builder, ctx, args[last], id.id as usize);
-                    }
-                }
-                if matches!(
-                    func_name,
-                    "Atomic_compare_exchange" | "Atomic_compare_exchange_weak"
-                ) {
-                    // The observed value comes back through an out-param; the
-                    // call's own result is whether it succeeded.
-                    let ss = LocalSlot::plain(builder.create_sized_stack_slot(StackSlotData::new(
-                        StackSlotKind::ExplicitSlot, 8, 0,
-                    )));
-                    args.push(ss.addr(builder, 0));
-                    return CallAdapt::CasResult(ss);
-                }
-                // A declared `-> T` comes back as the payload's bits.
-                match meta.map(|m| &m.ret_category) {
-                    Some(rask_stdlib::mir_metadata::RetCategory::TypeParam(_)) => CallAdapt::AtomicBits,
-                    _ => CallAdapt::None,
-                }
-            }
-
             // Sender_send: wrap value as pointer (structs already are)
             HandAdapt::Send => {
                 if args.len() >= 2 {
@@ -8553,26 +8391,6 @@ impl<'a> FunctionBuilder<'a> {
                 args.push(msg_ss.addr(builder, 0));
                 CallAdapt::JoinOutcome(value_ss, msg_ss)
             }
-
-            // Another reference to the same string: the 16 bytes copied into
-            // the destination's slot, then the refcount bumped there.
-            HandAdapt::ShareString => {
-                let Some((dst_ss, _)) = dst.and_then(|id| ctx.stack_slot_map.get(id)) else {
-                    return CallAdapt::None;
-                };
-                if !args.is_empty() {
-                    Self::copy_aggregate(builder, args[0], *dst_ss, 16);
-                }
-                let dst_addr = dst_ss.addr(builder, 0);
-                args[0] = dst_addr;
-                CallAdapt::StringOutParam(*dst_ss)
-            }
-
-            // `Channel.unbuffered()` is a buffered channel of capacity zero.
-            HandAdapt::Unbuffered => {
-                args.push(builder.ins().iconst(types::I64, 0));
-                CallAdapt::None
-            }
         }
     }
 
@@ -8585,7 +8403,7 @@ impl<'a> FunctionBuilder<'a> {
     }
 
     /// Lower a string constant as a raw `const char*` pointer (no RaskString wrapping).
-    /// Used by `string_append_cstr` to avoid allocating a temporary RaskString.
+    /// Used by `rask_string_append_cstr` to avoid allocating a temporary RaskString.
     fn lower_string_const_as_cstr(
         builder: &mut ClifFunctionBuilder,
         op: &MirOperand,

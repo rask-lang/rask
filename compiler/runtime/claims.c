@@ -313,6 +313,11 @@ static void fill(void *dst, RaskJsonShape *shape, int depth) {
         memcpy((char *)dst + 8, &high, 8);
         return;
     }
+    case RASK_JSHAPE_ARRAY:
+        for (int64_t i = 0; i < shape->count; i++) {
+            fill((char *)dst + i * shape->slot, shape->elem, depth);
+        }
+        return;
     case RASK_JSHAPE_ENUM: {
         if (shape->nvariants == 0) return;
         struct RaskJsonVariant *v = &shape->variants[draw((uint64_t)shape->nvariants)];
@@ -351,6 +356,17 @@ static uint64_t walk_of(RaskJsonShape *shape, uint64_t *distinct) {
             if (!fw || w > UINT64_MAX / fw) return 0;
             w *= fw;
             n *= d;
+        }
+        *distinct = n;
+        return w;
+    }
+    case RASK_JSHAPE_ARRAY: {
+        uint64_t w = 1, n = 1;
+        for (int64_t i = 0; i < shape->count; i++) {
+            uint64_t d, ew = walk_of(shape->elem, &d);
+            if (!ew || w > UINT64_MAX / ew) return 0;
+            w *= ew;
+            n = d && n > UINT64_MAX / d ? UINT64_MAX : n * d;
         }
         *distinct = n;
         return w;

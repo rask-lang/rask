@@ -1,0 +1,26 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Rejects: an array length that is no length.
+//
+// A length is a number, a module `const`, or a `comptime N: usize` parameter.
+// Any other name used to be taken for a parameter nobody declared: the
+// interpreter ran the program at the literal's length and native panicked in
+// MIR lowering. A plain type parameter in the length's place bound whatever
+// length a call passed.
+
+func count(arr: [i64; string]) -> usize { // ERROR: `string` isn't an array length
+    return arr.len()
+}
+
+func by_type<T>(arr: [i64; T]) -> usize { // ERROR: `T` is a type parameter
+    return arr.len()
+}
+
+func as_type<comptime N: usize>(x: N) -> usize { // ERROR: `N` is a `comptime` length, not a type
+    return 0
+}
+
+func main() {
+    // ERROR: `M` isn't an array length
+    let a: [i64; M] = [1, 2, 3]
+    println("{a.len()} {count([1, 2])} {by_type([1, 2])}")
+}

@@ -64,44 +64,34 @@ pub const STDLIB_DEFAULT_ARGS_ID_BASE: u32 = 50_000_000;
 /// runner's generated source declares it.
 pub const CLAIM_END_MARKER: &str = "__claim_reached_end";
 
+/// Whose declarations a [`desugar`] call is rewriting.
+pub enum Desugaring<'a> {
+    /// A program, single file or package. `stdlib` is the stdlib's types
+    /// (`StubRegistry::desugar_declarations`): constructions, struct field
+    /// defaults, error messages and annotation defaults need a type's
+    /// declaration, and the stdlib's aren't in the program. This crate can't
+    /// read the registry itself: `rask-stdlib` already depends on it.
+    Program { stdlib: &'a [Decl] },
+    /// The stdlib's own declarations, in their own NodeId bands. See
+    /// [`STDLIB_DESUGAR_ID_BASE`].
+    Stdlib,
+}
+
 /// Run the whole desugar phase over a list of declarations.
 ///
-/// Both sub-passes always run together. Splitting them was a trap: every
-/// pipeline that called only the operator pass silently lost default
-/// arguments and struct field defaults, so `Config {}` type-checked as a
-/// missing-fields error under `rask test` while `rask build` accepted it
-/// (#549).
-pub fn desugar(decls: &mut Vec<Decl>) -> DesugarOutput {
-    desugar_with_diagnostics(decls)
-}
-
-/// Desugar a single file that can call the stdlib.
-///
-/// `stdlib` is the stdlib's types (`StubRegistry::desugar_declarations`):
-/// constructions, struct field defaults and error messages need the type's
-/// declaration, and the stdlib's aren't in `decls`. This crate can't read the
-/// registry itself: `rask-stdlib` already depends on it.
-pub fn desugar_with_stdlib(decls: &mut Vec<Decl>, stdlib: &[Decl]) -> DesugarOutput {
-    desugar_inner_from(decls, stdlib, DESUGAR_ID_BASE, DEFAULT_ARGS_ID_BASE)
-}
-
-/// Desugar the stdlib's own declarations, in their own NodeId bands.
-///
-/// See [`STDLIB_DESUGAR_ID_BASE`].
-pub fn desugar_stdlib(decls: &mut Vec<Decl>) -> DesugarOutput {
-    desugar_inner_from(decls, &[], STDLIB_DESUGAR_ID_BASE, STDLIB_DEFAULT_ARGS_ID_BASE)
-}
-
-/// Desugar a package whose dependencies are known.
-///
-/// Only annotation defaults need this: they're filled into attachment text
-/// here, before name resolution, so a dependency's declarations can't be looked
-/// up later — they have to be handed in (type.annotations/AN3).
-pub fn desugar_package(
-    decls: &mut Vec<Decl>,
-    stdlib: &[Decl],
-) -> DesugarOutput {
-    desugar_inner_from(decls, stdlib, DESUGAR_ID_BASE, DEFAULT_ARGS_ID_BASE)
+/// Every sub-pass always runs. Splitting them was a trap: every pipeline that
+/// called only the operator pass silently lost default arguments and struct
+/// field defaults, so `Config {}` type-checked as a missing-fields error under
+/// `rask test` while `rask build` accepted it (#549).
+pub fn desugar(decls: &mut Vec<Decl>, what: Desugaring) -> DesugarOutput {
+    match what {
+        Desugaring::Program { stdlib } => {
+            desugar_inner_from(decls, stdlib, DESUGAR_ID_BASE, DEFAULT_ARGS_ID_BASE)
+        }
+        Desugaring::Stdlib => {
+            desugar_inner_from(decls, &[], STDLIB_DESUGAR_ID_BASE, STDLIB_DEFAULT_ARGS_ID_BASE)
+        }
+    }
 }
 
 /// Something desugaring found wrong with the program.
@@ -131,15 +121,6 @@ pub struct DesugarOutput {
     /// template describes (std.fmt/CM5). Nothing calls `format` after this
     /// pass, so this is the one record that a program used it.
     pub format_calls: Vec<rask_ast::Span>,
-}
-
-/// Desugar phase, returning any ER26 coverage errors.
-pub fn desugar_with_diagnostics(decls: &mut Vec<Decl>) -> DesugarOutput {
-    desugar_inner(decls)
-}
-
-fn desugar_inner(decls: &mut Vec<Decl>) -> DesugarOutput {
-    desugar_inner_from(decls, &[], DESUGAR_ID_BASE, DEFAULT_ARGS_ID_BASE)
 }
 
 fn desugar_inner_from(

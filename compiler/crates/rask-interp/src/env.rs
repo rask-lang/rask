@@ -228,6 +228,12 @@ impl Environment {
         self.slot_of(name)?.get()
     }
 
+    /// Whether the innermost binding of `name` is the module's own (a
+    /// `const`, a package), which anything a function binds shadows.
+    pub fn is_module_level(&self, name: &str) -> bool {
+        self.defined_at.get(name).and_then(|ix| ix.last()) == Some(&0)
+    }
+
     /// The storage a name is bound to, for sharing it with a closure.
     pub fn slot_of(&self, name: &str) -> Option<&Slot> {
         let index = *self.defined_at.get(name)?.last()?;

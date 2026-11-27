@@ -417,7 +417,7 @@ impl InferenceContext {
             },
             Type::Array { elem, len } => Type::Array {
                 elem: Box::new(self.apply(elem)),
-                len: *len,
+                len: len.map(|t| self.apply(t)),
             },
             // These three carry a type and used to fall through to the clone,
             // so a variable inside one stayed spelled as a variable even after
@@ -454,7 +454,6 @@ impl InferenceContext {
     fn apply_generic_arg(&self, arg: &GenericArg) -> GenericArg {
         match arg {
             GenericArg::Type(ty) => GenericArg::Type(Box::new(self.apply(ty))),
-            GenericArg::ConstUsize(n) => GenericArg::ConstUsize(*n),
         }
     }
 
@@ -489,7 +488,6 @@ impl InferenceContext {
     fn occurs_in_generic_arg(&self, var: TypeVarId, arg: &GenericArg) -> bool {
         match arg {
             GenericArg::Type(ty) => self.occurs_in(var, ty),
-            GenericArg::ConstUsize(_) => false,
         }
     }
 }

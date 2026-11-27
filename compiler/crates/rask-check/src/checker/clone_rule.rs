@@ -37,7 +37,7 @@ impl TypeTable {
             | Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128 | Type::Isize
             | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128 | Type::Usize
             | Type::F32 | Type::F64
-            | Type::RawPtr(_) | Type::Fn { .. } | Type::SimdVector { .. } | Type::Error => false,
+            | Type::RawPtr(_) | Type::Fn { .. } | Type::SimdVector { .. } | Type::Len(_) | Type::Error => false,
             Type::Array { elem, .. } => self.clone_runs_program_code_in(elem, seen),
             Type::Tuple(elems) => any(&mut elems.iter(), seen),
             Type::Result { ok, err } => any(&mut [ok.as_ref(), err.as_ref()].into_iter(), seen),
@@ -105,6 +105,5 @@ impl TypeTable {
 fn type_arg(arg: &GenericArg) -> Option<&Type> {
     match arg {
         GenericArg::Type(t) => Some(t),
-        GenericArg::ConstUsize(_) => None,
     }
 }

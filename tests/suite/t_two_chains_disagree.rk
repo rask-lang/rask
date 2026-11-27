@@ -18,6 +18,10 @@
 // freed twice is a double free rather than a leak, and a const container freed
 // at all is a use-after-free on the next read of it.
 //
+// A const can't be given away any more (mem.ownership/O11), so `spread` now
+// clones it and every chain owns what its closure hands back; the file keeps
+// the three chains side by side and checks each one's values.
+//
 // Each chain gets its own source vector, deliberately. One vector feeding two
 // chains is freed by nobody — that is #1148, a different bug in the same
 // family — and keeping it out is what keeps this file a statement about what
@@ -34,9 +38,9 @@ func doubled(v: Vec<i64>) -> Vec<i64> {
     }).to_vec()
 }
 
-// Hands back a const the module owns — the chain must not free it.
+// Hands back a copy of a const per element.
 func spread(keys: Vec<i64>) -> Vec<i64> {
-    return keys.flat_map(|k| SHARED).to_vec()
+    return keys.flat_map(|k| SHARED.clone()).to_vec()
 }
 
 // A third shape, so three disagreeing groups get exercised as well as two:
@@ -51,7 +55,7 @@ func triple(v: Vec<i64>) -> Vec<i64> {
     }).to_vec()
 }
 
-test "type.sequence — a fresh-per-element chain beside a borrowing one" {
+test "type.sequence — a fresh-per-element chain beside a copying one" {
     let a: Vec<i64> = [1, 2, 3]
     assert doubled(a).len() == 6
     let b: Vec<i64> = [1, 2, 3]
@@ -82,9 +86,7 @@ test "type.sequence — three chains, three answers" {
     assert triple(c).len() == 9
 }
 
-// The const survives the chains that read it. A copy that decided the
-// borrowing chain owned `SHARED` would free it, and reading it here would be
-// reading freed memory.
+// The const survives the chains that copy it.
 test "type.sequence — the const is still there afterwards" {
     let a: Vec<i64> = [1, 2]
     assert spread(a).len() == 6
@@ -95,7 +97,7 @@ test "type.sequence — the const is still there afterwards" {
     assert SHARED[2] == 9
 }
 
-// The borrowing chain first in the frame's order, so nothing depends on which
+// The copying chain first in the frame's order, so nothing depends on which
 // group happens to keep the original body's name.
 test "type.sequence — order doesn't decide it" {
     let a: Vec<i64> = [4]

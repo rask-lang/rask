@@ -99,7 +99,7 @@ impl SharedStrategy {
     }
 
     /// Acquire and release for an inline guard access. `Local` takes no lock,
-    /// so it has nothing to give back — the name that used to stand there,
+    /// so it has nothing to give back. The name that used to stand there,
     /// `Cell_noop_release`, was declared nowhere and codegen stopped at
     /// "Function not found" for every inline `.read()`/`.write()` chain on a
     /// `Shared<T, Local>`.
@@ -120,30 +120,30 @@ impl BoxWithSyms {
     // payload's address, which the box keeps owning. The release hands the
     // access back and keeps nothing.
     pub(super) const MUTEX: Self = Self {
-        acquire: Mint::like("Mutex_acquire", "Shared_read"),
-        data: Mint::like("Mutex_data", "Shared_read"),
-        release: Some(Mint::borrowing("Mutex_release")),
+        acquire: Mint::like("rask_mutex_acquire", "Shared_read").box_payload(),
+        data: Mint::like("rask_mutex_data", "Shared_read"),
+        release: Some(Mint::borrowing("rask_mutex_release")),
     };
 
-    /// `Cell_acquire` and `Cell_data` both land on `rask_cell_get` — the slot's
-    /// address, no lock involved. They stay distinct MIR names so this path and
-    /// the `cell.get()` path (CE6, which copies out) can't drift into each other.
+    /// Acquire and data are both `rask_cell_get`, the slot's address with no
+    /// lock involved. The acquire hands it back as the access; `cell.get()`
+    /// (CE6) is the same call loading the value out.
     pub(super) const CELL: Self = Self {
-        acquire: Mint::like("Cell_acquire", "Shared_read"),
-        data: Mint::like("Cell_data", "Shared_read"),
+        acquire: Mint::like("rask_cell_get", "Shared_read").box_payload(),
+        data: Mint::like("rask_cell_get", "Shared_read"),
         release: None,
     };
 
     pub(super) const SHARED_READ: Self = Self {
-        acquire: Mint::like("Shared_read_acquire", "Shared_read"),
-        data: Mint::like("Shared_data", "Shared_read"),
-        release: Some(Mint::borrowing("Shared_release")),
+        acquire: Mint::like("rask_shared_read_acquire", "Shared_read").box_payload(),
+        data: Mint::like("rask_shared_data", "Shared_read"),
+        release: Some(Mint::borrowing("rask_shared_release")),
     };
 
     pub(super) const SHARED_WRITE: Self = Self {
-        acquire: Mint::like("Shared_write_acquire", "Shared_write"),
-        data: Mint::like("Shared_data", "Shared_read"),
-        release: Some(Mint::borrowing("Shared_release")),
+        acquire: Mint::like("rask_shared_write_acquire", "Shared_write").box_payload(),
+        data: Mint::like("rask_shared_data", "Shared_read"),
+        release: Some(Mint::borrowing("rask_shared_release")),
     };
 
     /// ST1–ST3. `release` is the *commit*: it copies the working copy back and
@@ -151,15 +151,15 @@ impl BoxWithSyms {
     /// chains through (ST2); a panic skips it and the runtime's unwind drain runs
     /// the discard the acquire registered instead (ST3).
     pub(super) const MUTEX_STAGED: Self = Self {
-        acquire: Mint::like("Mutex_staged_acquire", "Shared_read"),
-        data: Mint::like("Mutex_staged_data", "Shared_read"),
-        release: Some(Mint::borrowing("Mutex_staged_commit")),
+        acquire: Mint::like("rask_mutex_staged_acquire", "Shared_read").box_payload(),
+        data: Mint::like("rask_mutex_staged_data", "Shared_read"),
+        release: Some(Mint::borrowing("rask_mutex_staged_commit")),
     };
 
     pub(super) const SHARED_STAGED: Self = Self {
-        acquire: Mint::like("Shared_staged_acquire", "Shared_staged"),
-        data: Mint::like("Shared_staged_data", "Shared_staged"),
-        release: Some(Mint::borrowing("Shared_staged_commit")),
+        acquire: Mint::like("rask_shared_staged_acquire", "Shared_staged").box_payload(),
+        data: Mint::like("rask_shared_staged_data", "Shared_staged"),
+        release: Some(Mint::borrowing("rask_shared_staged_commit")),
     };
 }
 
@@ -172,7 +172,6 @@ impl<'a> MirLowerer<'a> {
         let (_, args) = self.generic_head(&ty)?;
         match args.get(i)? {
             rask_types::GenericArg::Type(t) => Some((**t).clone()),
-            _ => None,
         }
     }
 
@@ -797,7 +796,7 @@ impl<'a> MirLowerer<'a> {
                 let bound = self.builder.alloc_local(binding.clone(), elem.clone());
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                     dst: Some(bound),
-                    func: FunctionRef::like("Field_take", "Vec_remove"),
+                    func: crate::runtime_ops::field_take(),
                     args: vec![
                         MirOperand::Local(addr),
                         MirOperand::Constant(MirConst::Int(rask_layout::size_of(elem, self.ctx.target()) as i64)),

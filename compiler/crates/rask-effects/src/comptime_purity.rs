@@ -20,20 +20,20 @@ use rask_ast::visit::walk_body;
 use rask_ast::Span;
 
 use crate::sources::ImportedNames;
-use crate::{EffectMap, Effects, MethodTargets};
+use crate::{EffectMap, Effects, CallTargets};
 
 /// What a lookup reads: the inferred effects, and how a call names its callee.
 struct Lookup<'a> {
     effects: &'a EffectMap,
     imports: ImportedNames,
-    targets: &'a MethodTargets,
+    targets: &'a CallTargets,
 }
 
 impl Lookup<'_> {
     /// The callee a call reaches, and the effects it has.
     fn callee(&self, e: &Expr) -> Option<(String, Effects)> {
         let name = match &e.kind {
-            ExprKind::Call { func, .. } => self.imports.qualify(&callee_name(func)?),
+            ExprKind::Call { func, .. } => crate::free_callee(e.id, func, self.targets, &self.imports)?,
             ExprKind::MethodCall { object, method, .. } => {
                 crate::method_callees(e.id, object, method, self.targets, &self.imports)
                     .into_iter()
@@ -63,7 +63,7 @@ pub struct ComptimePurityError {
 }
 
 /// Check every `comptime func` against CT7, transitively (CT6, CT60).
-pub fn check(decls: &[Decl], effects: &EffectMap, targets: &MethodTargets) -> Vec<ComptimePurityError> {
+pub fn check(decls: &[Decl], effects: &EffectMap, targets: &CallTargets) -> Vec<ComptimePurityError> {
     let lookup = Lookup { effects, imports: ImportedNames::from_decls(decls), targets };
     let mut out = Vec::new();
     for decl in decls {
@@ -160,7 +160,7 @@ fn fns(decl: &Decl) -> Vec<&FnDecl> {
 pub fn check_compile_time_values(
     decls: &[Decl],
     effects: &EffectMap,
-    targets: &MethodTargets,
+    targets: &CallTargets,
 ) -> Vec<CompileTimeValueError> {
     let lookup = Lookup { effects, imports: ImportedNames::from_decls(decls), targets };
     let mut out: Vec<CompileTimeValueError> = Vec::new();
@@ -260,13 +260,4 @@ fn first_impure_call(
     found
 }
 
-/// A callee written as a name or a dotted path, rendered back the way the
-/// effect tables spell it (`io.read_line`).
-fn callee_name(expr: &Expr) -> Option<String> {
-    match &expr.kind {
-        ExprKind::Ident(n) => Some(n.clone()),
-        ExprKind::Field { object, field } => Some(format!("{}.{}", callee_name(object)?, field)),
-        _ => None,
-    }
-}
 

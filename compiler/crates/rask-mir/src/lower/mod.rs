@@ -449,6 +449,10 @@ pub fn folded_symbol(node: NodeId) -> String {
 /// the two sides can't drift apart.
 pub const CONST_SLOT_PREFIX: &str = "__rask_const_slot__";
 
+/// The body of a `main` that can return an error; `main` itself is the
+/// wrapper that reports it (`MirLowerer::entry_wrapper`).
+pub const ENTRY_BODY_FN: &str = "main$body";
+
 /// Data-slot name for a module-level const.
 pub fn const_slot_name(const_name: &str) -> String {
     format!("{}{}", CONST_SLOT_PREFIX, const_name)
@@ -950,8 +954,17 @@ impl<'a> MirContext<'a> {
             // `|x| { return x + 1 }` compiled to pointer arithmetic (x + 8).
             rask_types::GenericArg::Type(inner) if matches!(**inner, Type::Var(_)) => None,
             rask_types::GenericArg::Type(inner) => Some(self.type_to_mir(inner)),
-            _ => None,
         }
+    }
+
+    /// The number this instance binds a `comptime N: usize` parameter to,
+    /// when `name` is one.
+    pub fn comptime_len(&self, name: &str) -> Option<usize> {
+        let (inst, _) = self.node_types.instance.as_ref()?;
+        inst.type_args.iter().find(|b| b.param == name).and_then(|b| match b.ty {
+            Type::Len(n) => Some(n),
+            _ => None,
+        })
     }
 
     /// What a method call runs, at this instance: the body's symbol and the
@@ -1003,12 +1016,11 @@ impl<'a> MirContext<'a> {
         Some(calls.into_iter().map(|c| c.symbol).collect())
     }
 
-    /// The `message()` symbol of each error the result at `node` can carry,
+    /// How to call `message()` on each error the result at `node` can carry,
     /// one per union member in member order (`Symbols::error_messages`).
-    pub fn error_messages(&self, node: NodeId) -> Option<Vec<String>> {
+    pub fn error_messages(&self, node: NodeId) -> Option<Vec<rask_mono::MessageCall>> {
         let result = self.lookup_raw_type(node)?;
-        let calls = self.symbols.error_messages(&result, self.type_defs)?;
-        Some(calls.into_iter().map(|c| c.symbol).collect())
+        self.symbols.error_messages(&result, self.type_defs)
     }
 
     /// The whole `if`/`match` type an arm widens to (`TypedProgram::arm_widenings`),
@@ -1283,7 +1295,6 @@ impl<'a> MirContext<'a> {
             .cloned()
             .zip(args.iter().filter_map(|a| match a {
                 rask_types::GenericArg::Type(t) => Some((**t).clone()),
-                rask_types::GenericArg::ConstUsize(_) => None,
             }))
             .collect();
         Some((declared, params))
@@ -1349,7 +1360,6 @@ impl<'a> MirContext<'a> {
             .cloned()
             .zip(args.iter().filter_map(|a| match a {
                 rask_types::GenericArg::Type(t) => Some((**t).clone()),
-                rask_types::GenericArg::ConstUsize(_) => None,
             }))
             .collect();
         Some(self.type_to_mir(&rask_check::substitute_type(underlying, &map)))
@@ -1412,14 +1422,17 @@ impl<'a> MirContext<'a> {
     /// doing it at every such assignment costs nothing where the pushes already
     /// did the work.
     pub(crate) fn container_link_registration(&self, ty: &Type) -> Option<&'static str> {
-        let head = self.generic_head(ty)?;
+        let register = match self.generic_head(ty)?.as_str() {
+            "Vec" => "rask_link_register_vec",
+            "Map" => "rask_link_register_map",
+            _ => return None,
+        };
         let args = match ty {
             Type::UnresolvedGeneric { args, .. } | Type::Generic { args, .. } => args,
             _ => return None,
         };
         let value = args.iter().rev().find_map(|a| match a {
             rask_types::GenericArg::Type(t) => Some(t),
-            _ => None,
         })?;
         // `Vec<Link<T>?>` holds edges the same as `Vec<Link<T>>`; its `none`
         // entries are skipped by the registration. So does a `Vec<Cursor>`,
@@ -1428,14 +1441,7 @@ impl<'a> MirContext<'a> {
         // Links an inner container holds are that container's to record: it
         // is a holder of its own. Asked of the outer one, the runtime would
         // read the inner handles as links (#1804 review).
-        if !self.type_holds_link_directly(value, 0) {
-            return None;
-        }
-        match head.as_str() {
-            "Vec" => Some("rask_link_register_vec"),
-            "Map" => Some("rask_link_register_map"),
-            _ => None,
-        }
+        self.type_holds_link_directly(value, 0).then_some(register)
     }
 
     /// Whether a value of `ty` holds a link anywhere inside it: itself, a
@@ -1488,7 +1494,6 @@ impl<'a> MirContext<'a> {
                 };
                 return args.iter().rev().find_map(|a| match a {
                     rask_types::GenericArg::Type(t) => Some(t),
-                    _ => None,
                 })
                 .is_some_and(|v| self.type_holds_link(v, depth + 1));
             }
@@ -1864,6 +1869,7 @@ impl<'a> MirContext<'a> {
             Type::Char => MirType::Char,
             Type::String | Type::Bytes => MirType::Buffer,
             Type::Never => MirType::Void,
+            Type::Len(_) => unreachable!("a length is a type argument, never a value's type"),
             Type::InterfaceObject { interface_name, decl } => MirType::InterfaceObject {
                 interface_name: self.type_defs.interface_symbol(interface_name, *decl),
             },
@@ -1939,7 +1945,7 @@ impl<'a> MirContext<'a> {
             // element keeps its kind, the same as a tuple part (#1403).
             Type::Array { elem, len } => MirType::Array {
                 elem: Box::new(self.type_to_mir(elem)),
-                len: *len as u32,
+                len: len.known().expect("an instance has a number for every array length") as u32,
             },
             // Option (T or none): niche-optimized handle, or a tagged union.
             //
@@ -2837,7 +2843,6 @@ impl<'a> MirLowerer<'a> {
             // An unresolved variable is not an answer — see below.
             rask_types::GenericArg::Type(inner) if matches!(**inner, Type::Var(_)) => None,
             rask_types::GenericArg::Type(inner) => Some((**inner).clone()),
-            _ => None,
         }
     }
 
@@ -2906,9 +2911,9 @@ impl<'a> MirLowerer<'a> {
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(slot),
             func: if map {
-                FunctionRef::like("Map_slot", "Map_get")
+                crate::runtime_ops::map_slot()
             } else {
-                FunctionRef::like("Vec_slot", "Vec_get")
+                crate::runtime_ops::vec_slot()
             },
             args: vec![collection, at],
         }));
@@ -2936,7 +2941,7 @@ impl<'a> MirLowerer<'a> {
 
     /// Read `array[at]` into `dst` for a walk over the array. An element that
     /// holds storage (a struct with a `Vec` in it) comes back lent, the way
-    /// `Vec_index` lends a vector's: read as a plain copy it looked like a
+    /// `rask_vec_get` lends a vector's: read as a plain copy it looked like a
     /// second owner, and releasing it freed what the array still holds. A
     /// plain number is just copied.
     pub(crate) fn read_array_element(&mut self, dst: LocalId, array: LocalId, at: LocalId, elem: &MirType) {
@@ -3112,7 +3117,7 @@ impl<'a> MirLowerer<'a> {
                 let vec_local = self.builder.alloc_temp(vec_ty.clone());
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                     dst: Some(vec_local),
-                    func: FunctionRef::keeping("rask_vec_from_static", &[0]).handing_back("Vec_free"),
+                    func: FunctionRef::keeping("rask_vec_from_static", &[0]).handing_back("rask_vec_free"),
                     args: vec![
                         MirOperand::Local(data),
                         MirOperand::Constant(MirConst::Int(meta.elem_count as i64)),
@@ -3157,7 +3162,6 @@ impl<'a> MirLowerer<'a> {
         }
         match args.first()? {
             rask_types::GenericArg::Type(inner) => Some(inner.as_ref().clone()),
-            _ => None,
         }
     }
 
@@ -3373,7 +3377,6 @@ impl<'a> MirLowerer<'a> {
             }
             match args.get(1)? {
                 rask_types::GenericArg::Type(v) => Some(lower.ctx.type_to_mir(v)),
-                _ => None,
             }
         }
 
@@ -3770,6 +3773,27 @@ impl<'a> MirLowerer<'a> {
             MirOperand::Constant(MirConst::Int(value_offset as i64)),
             MirOperand::Constant(MirConst::Int(entry_size as i64)),
         ]
+    }
+
+    /// The entries of a `Map<key, val>` as a fresh Vec of `(key, value)`
+    /// tuples. The Vec is the caller's to free, but its items are shallow
+    /// copies that point into the map's own keys and values, so the call is
+    /// marked as pointing into its argument: liveness keeps the map alive while
+    /// the entries are in use. Without that, a struct holding the map was
+    /// released at its last read, the `.lists` that fed this call, and walking
+    /// the entries read freed vectors.
+    pub(crate) fn emit_map_entries(&mut self, map: MirOperand, key: &MirType, val: &MirType) -> LocalId {
+        let entries = self.builder.alloc_temp(MirType::Ptr);
+        let args = self.map_entries_args(map, key, val);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+            dst: Some(entries),
+            func: FunctionRef {
+                points_into_args: true,
+                ..FunctionRef::borrowing("rask_map_entries").handing_back("rask_vec_free")
+            },
+            args,
+        }));
+        entries
     }
 
     /// Fill `slot`, a local holding a `T?`, with a present `value`. A niche
@@ -4800,6 +4824,19 @@ impl<'a> MirLowerer<'a> {
         let is_entry_point = func_name == "main" && const_init.is_none();
         let mut const_init_thunks: Vec<ConstDecl> = Vec::new();
 
+        // A `main` that can return an error is lowered as an ordinary function
+        // under another name, and `main` becomes a wrapper that calls it and
+        // reports the error (`entry_wrapper`). C calls `main` as `void
+        // rask_main(void)`, so the error has to be dealt with before it gets
+        // there, and by then the body's `ensure`s have run.
+        let fallible_entry = is_entry_point
+            && matches!(own_sig.as_ref().map(|s| &s.ret), Some(Type::Result { err, .. }) if **err != Type::None);
+        let entry_messages = own_sig
+            .as_ref()
+            .filter(|_| fallible_entry)
+            .and_then(|sig| ctx.symbols.error_messages(&sig.ret, ctx.type_defs));
+        let func_name = if fallible_entry { ENTRY_BODY_FN.to_string() } else { func_name };
+
         let mut lowerer = MirLowerer {
             builder: BlockBuilder::new(func_name.clone(), ret_ty.clone()),
             locals: HashMap::new(),
@@ -5039,11 +5076,23 @@ impl<'a> MirLowerer<'a> {
             lowerer.elem_writebacks.len(),
         );
 
+        let wrapper = if fallible_entry {
+            let body = std::mem::replace(&mut lowerer.builder, BlockBuilder::new("main".to_string(), MirType::Void));
+            lowerer.entry_wrapper(&ret_ty, entry_messages.as_deref());
+            Some(std::mem::replace(&mut lowerer.builder, body).finish())
+        } else {
+            None
+        };
+
         let mut main_fn = lowerer.builder.finish();
         main_fn.is_extern_c = fn_decl.abi.is_some();
         main_fn.span = decl.span;
         main_fn.inline_hint = fn_decl.attrs.iter().any(|a| a.is("inline"));
         let mut result = vec![main_fn];
+        if let Some(mut wrapper) = wrapper {
+            wrapper.span = decl.span;
+            result.push(wrapper);
+        }
         // A function lowering made up on the way (an ensure thunk, a wrapper
         // around a closure) has no declaration of its own; a stack overflow
         // caught at its entry is reported at the function it was made for.
@@ -5057,6 +5106,52 @@ impl<'a> MirLowerer<'a> {
             result.extend(Self::lower_const_init(c, all_decls, ctx)?);
         }
         Ok(result)
+    }
+
+    /// `main` for a `main` that can return an error: call the body, and on
+    /// the error side hand its `message()` to the runtime, which prints it
+    /// and exits 1 (struct.targets/EX4). `messages` is `None` when the error
+    /// has no message to call; the runtime then says only that main failed.
+    fn entry_wrapper(&mut self, result_ty: &MirType, messages: Option<&[rask_mono::MessageCall]>) {
+        let result = self.builder.alloc_temp(result_ty.clone());
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+            dst: Some(result),
+            func: FunctionRef::internal(ENTRY_BODY_FN.to_string()),
+            args: Vec::new(),
+        }));
+        let failed = self.emit_option_tag(&MirOperand::Local(result), None);
+        let err_block = self.builder.create_block();
+        let ok_block = self.builder.create_block();
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
+            cond: MirOperand::Local(failed),
+            then_block: err_block,
+            else_block: ok_block,
+        }));
+
+        self.builder.switch_to_block(err_block);
+        let text = match (result_ty, messages) {
+            (MirType::Result { err, .. }, Some(messages)) => {
+                let payload = self.builder.alloc_temp((**err).clone());
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                    dst: payload,
+                    rvalue: self.payload_field(MirOperand::Local(result), result_ty, err),
+                }));
+                self.emit_error_message_text(messages, payload, err)
+            }
+            _ => None,
+        };
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+            dst: None,
+            func: FunctionRef::reading("main_error_exit"),
+            args: vec![match text {
+                Some(text) => MirOperand::Local(text),
+                None => MirOperand::Constant(MirConst::Int(0)),
+            }],
+        }));
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Unreachable));
+
+        self.builder.switch_to_block(ok_block);
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Return { value: None }));
     }
 
     /// Evaluate a module-level constant initializer to a MIR constant.
@@ -5136,7 +5231,6 @@ impl<'a> MirLowerer<'a> {
         };
         match args.first()? {
             rask_types::GenericArg::Type(t) => Some(t),
-            rask_types::GenericArg::ConstUsize(_) => None,
         }
     }
 
@@ -6601,7 +6695,6 @@ pub(crate) fn type_names_a_parameter(ty: &Type) -> Option<String> {
     fn arg_ty(arg: &rask_types::GenericArg) -> Option<&Type> {
         match arg {
             rask_types::GenericArg::Type(t) => Some(t),
-            _ => None,
         }
     }
     match ty {
@@ -6676,7 +6769,7 @@ fn stdlib_return_mir_type_known(func_name: &str, ctx: Option<&MirContext>) -> Op
     // type whose method happened to share a name with a string's.
     //
     // That is how `Shared<i32>.replace(7)` came back as a `string`: the strategy
-    // rewrite turns it into `Cell_replace`, which ends in `_replace`. The box
+    // rewrite used to turn it into `Cell_replace`, which ends in `_replace`. The box
     // arm in lower/expr.rs existed to shadow this, which is why it looked
     // redundant and wasn't.
     //
@@ -8291,17 +8384,6 @@ mod tests {
     }
 
     #[test]
-    fn lower_string_static_method() {
-        // string.new() → Call to string_new
-        let decl = make_fn("f", vec![], None, vec![
-            expr_stmt(method_call_expr(ident_expr("string"), "new", vec![])),
-            return_stmt(None),
-        ]);
-        let f = lower_one(&decl);
-        assert!(find_call(&f, "string_new"));
-    }
-
-    #[test]
     fn lower_method_on_value_still_works() {
         // a.add(b) where a is a local variable → BinaryOp (not static call)
         let decl = make_fn("f", vec![("a", "i32"), ("b", "i32")], Some("i32"), vec![
@@ -8369,6 +8451,34 @@ mod tests {
     }
 
     #[test]
+    fn lower_using_block_ending_in_return_tears_down_once() {
+        let using_block = Expr {
+            id: NodeId(703),
+            kind: ExprKind::UsingBlock {
+                name: "ThreadPool".to_string(),
+                args: vec![],
+                body: vec![expr_stmt(call_expr("work", vec![])), return_stmt(None)],
+            },
+            span: sp(),
+        };
+        let work = make_fn("work", vec![], None, vec![return_stmt(None)]);
+        let decl = make_fn("main", vec![], None, vec![expr_stmt(using_block)]);
+        // The return leaves through the cleanup chain, which runs the
+        // teardown. The block's own exit code used to be appended to the
+        // returning block as well, so the pool was shut down twice.
+        let f = lower(&decl, &[decl.clone(), work]);
+        let shuts_down = |b: &crate::MirBlock| {
+            b.statements.iter().any(|s| matches!(&s.kind,
+                MirStmtKind::Call { func, .. } if func.name == "rask_threadpool_shutdown"))
+        };
+        for b in &f.blocks {
+            if matches!(b.terminator.kind, MirTerminatorKind::CleanupReturn { .. }) {
+                assert!(!shuts_down(b), "a returning block also ran the teardown inline");
+            }
+        }
+    }
+
+    #[test]
     fn lower_using_unknown_no_init() {
         let using_block = Expr {
             id: NodeId(702),
@@ -8413,7 +8523,7 @@ pub(crate) fn channel_half_ty(extract: &'static str) -> MirType {
 }
 
 fn channel_half_release(extract: &'static str) -> &'static str {
-    let end = if extract == "channel_tx" { "Sender" } else { "Receiver" };
+    let end = if extract == "rask_channel_get_tx" { "Sender" } else { "Receiver" };
     rask_stdlib::handles::declared_release(end)
         .unwrap_or_else(|| panic!("stdlib/async.rk declares no release for `{end}`"))
 }

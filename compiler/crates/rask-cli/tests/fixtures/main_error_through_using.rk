@@ -1,0 +1,17 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// An error out of main that leaves through a `using` block still exits 1
+// with its message, after the block's teardown has run (#2081).
+import async.JoinError
+
+func main() -> void or JoinError {
+    using Multitasking {
+        let h = spawn {
+            panic("boom")
+            return 1
+        }
+        println("joining")
+        let n = try h.join()
+        println("unreachable {n}")
+    }
+    println("unreachable after")
+}

@@ -1,0 +1,31 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A closure that hands its struct parameter to an `any` slot boxes the
+// struct. The parameter arrives as a pointer with no slot of its own, and
+// native boxed the pointer's bytes, so `d.describe()` read garbage.
+interface Describe {
+    func describe(self) -> string
+}
+
+struct Dog {
+    name: string
+    age: i64
+}
+
+Dog implements Describe {
+    func describe(self) -> string {
+        return "{self.name} is {self.age}"
+    }
+}
+
+func show(d: any Describe) -> string {
+    return d.describe()
+}
+
+test "a closure boxes its struct parameter" {
+    let dogs: Vec<Dog> = [Dog(name: "rex", age: 3), Dog(name: "fido", age: 5)]
+    mut out: Vec<string> = Vec.new()
+    dogs.as_sequence().for_each(|d| out.push(show(d)))
+    assert out.len() == 2
+    assert out[0] == "rex is 3"
+    assert out[1] == "fido is 5"
+}

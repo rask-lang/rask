@@ -30,7 +30,7 @@ use std::collections::HashMap;
 
 use rask_ast::{NodeId, Span};
 use rask_ast::decl::Decl;
-use rask_ast::expr::Expr;
+use rask_ast::expr::{Expr, ExprKind};
 use rask_ast::ty::TypeExpr;
 
 /// Effect mask per function (FX1, EF1).
@@ -52,10 +52,11 @@ pub struct Effects {
     pub grow: bool,
     /// Shrink effect: remove, clear, drain (EF1).
     pub shrink: bool,
-    /// CC2: this function needs an active `using Multitasking` runtime at the call site.
-    /// Set when the function (or something it calls without an internal block) reaches `spawn`.
-    /// NOT propagated via the regular call graph — uses unguarded-call edges only.
-    pub needs_runtime: bool,
+    /// CC2: the runtimes this function needs open at the call site. Set when
+    /// the function, or something it calls outside a block of its own,
+    /// reaches `spawn` or `ThreadPool.spawn`. Propagated along unguarded-call
+    /// edges only, not the regular call graph.
+    pub needs_runtime: Runtimes,
     /// Runs C code: an extern, or a C macro that reads memory or calls C.
     /// Only the compiled program can, so it's outside comptime (CT7). Not
     /// an effect in PU1's sense: `strlen` is pure and still C.
@@ -109,8 +110,59 @@ impl Effects {
     }
 }
 
+/// The two runtimes a block installs: `using Multitasking` for `spawn`,
+/// `using ThreadPool` for `ThreadPool.spawn` (conc.async/S1, S2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Runtimes {
+    pub multitasking: bool,
+    pub pool: bool,
+}
+
+impl Runtimes {
+    pub const NONE: Runtimes = Runtimes { multitasking: false, pool: false };
+    pub const MULTITASKING: Runtimes = Runtimes { multitasking: true, pool: false };
+    pub const POOL: Runtimes = Runtimes { multitasking: false, pool: true };
+
+    pub fn any(self) -> bool {
+        self.multitasking || self.pool
+    }
+
+    /// What `self` needs that `held` doesn't install.
+    pub fn missing_from(self, held: Runtimes) -> Runtimes {
+        Runtimes { multitasking: self.multitasking && !held.multitasking, pool: self.pool && !held.pool }
+    }
+
+    /// The runtime a `using` block of this name installs.
+    pub fn of_block(name: &str) -> Runtimes {
+        match name {
+            "Multitasking" => Runtimes::MULTITASKING,
+            "ThreadPool" => Runtimes::POOL,
+            _ => Runtimes::NONE,
+        }
+    }
+}
+
+impl std::ops::BitOr for Runtimes {
+    type Output = Runtimes;
+    fn bitor(self, o: Runtimes) -> Runtimes {
+        Runtimes { multitasking: self.multitasking || o.multitasking, pool: self.pool || o.pool }
+    }
+}
+
+impl std::ops::BitOrAssign for Runtimes {
+    fn bitor_assign(&mut self, o: Runtimes) {
+        *self = *self | o;
+    }
+}
+
 /// Per-function effect results keyed by qualified function name.
 pub type EffectMap = HashMap<String, Effects>;
+
+/// CC2 through a type parameter (comp.effects/INF1). Per generic function, the
+/// methods it calls on a type parameter, each with the runtimes no block
+/// installs around that call. Whether the body spawns depends on the type a
+/// call picks, so the answer is worked out per call, not per function.
+pub type ParamNeeds = HashMap<String, HashMap<(String, String), Runtimes>>;
 
 /// A warning or error from effect analysis (CW1, CW2, CC1, CC2).
 #[derive(Debug, Clone)]
@@ -133,9 +185,7 @@ pub struct EffectWarning {
     pub why: Option<String>,
 }
 
-/// The checker's answer for each method call it resolved, keyed by the
-/// call's node.
-pub type MethodTargets = HashMap<NodeId, rask_ast::decl::MethodTarget>;
+pub use rask_ast::decl::CallTargets;
 
 /// The checker's reading of each C macro's body, by the macro's name.
 pub type CMacros = HashMap<String, rask_ast::decl::CMacroBody>;
@@ -150,13 +200,13 @@ pub type CMacros = HashMap<String, rask_ast::decl::CMacroBody>;
 pub fn infer_effects(
     program: &[Decl],
     stdlib: &[Decl],
-    targets: &MethodTargets,
+    targets: &CallTargets,
     c_macros: &CMacros,
     warn: &[String],
 ) -> (EffectMap, Vec<EffectWarning>) {
-    let (effects, runtime_only) = infer::infer_with_reach(program, stdlib, targets, c_macros);
+    let (effects, runtime_only, param_needs) = infer::infer_with_reach(program, stdlib, targets, c_macros);
     let warn_prints = warn.iter().any(|w| w == "blocking_print");
-    let warnings = warnings::detect(program, &effects, &runtime_only, targets, warn_prints);
+    let warnings = warnings::detect(program, &effects, &runtime_only, &param_needs, targets, warn_prints);
     (effects, warnings)
 }
 
@@ -229,11 +279,11 @@ pub(crate) fn method_callees(
     call: NodeId,
     object: &Expr,
     method: &str,
-    targets: &MethodTargets,
+    targets: &CallTargets,
     imports: &sources::ImportedNames,
 ) -> Vec<String> {
-    if let Some(target) = targets.get(&call) {
-        return vec![target.name.clone()];
+    if let Some(name) = resolved_method(call, targets) {
+        return vec![name];
     }
     let mut names = Vec::new();
     if let Some(recv) = object.name() {
@@ -241,6 +291,51 @@ pub(crate) fn method_callees(
     }
     names.push(method.to_string());
     names
+}
+
+/// The method a call reaches, when the checker resolved it.
+pub(crate) fn resolved_method(call: NodeId, targets: &CallTargets) -> Option<String> {
+    targets.methods.get(&call).map(|t| t.name.clone())
+}
+
+/// The function a call `func(args)` counts as calling: its name or dotted
+/// path, read through the imports (`exists` is `fs.exists` only where the file
+/// imported it). A call through a local binding calls whatever value it holds,
+/// so it names no function even when a function shares the binding's name.
+pub(crate) fn free_callee(
+    call: NodeId,
+    func: &Expr,
+    targets: &CallTargets,
+    imports: &sources::ImportedNames,
+) -> Option<String> {
+    if targets.value_calls.contains(&call) {
+        return None;
+    }
+    Some(imports.qualify(&spelled(func)?))
+}
+
+/// The function an expression names, called or not.
+///
+/// A function handed on as a value runs wherever its receiver calls it, and
+/// nothing here follows it there, so naming it counts as reaching it at that
+/// point: `apply(work)` needs what `work` needs.
+pub(crate) fn function_ref(
+    expr: &Expr,
+    targets: &CallTargets,
+    imports: &sources::ImportedNames,
+) -> Option<String> {
+    if !targets.function_refs.contains(&expr.id) {
+        return None;
+    }
+    Some(imports.qualify(&spelled(expr)?))
+}
+
+fn spelled(e: &Expr) -> Option<String> {
+    match &e.kind {
+        ExprKind::Ident(n) | ExprKind::GenericName { name: n, .. } => Some(n.clone()),
+        ExprKind::Field { object, field } => Some(format!("{}.{}", spelled(object)?, field)),
+        _ => None,
+    }
 }
 
 #[cfg(test)]

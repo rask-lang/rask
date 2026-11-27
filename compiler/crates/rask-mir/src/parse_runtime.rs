@@ -23,32 +23,32 @@ pub enum ParseWrites {
 /// yet instantiated).
 const ENTRIES: &[(&str, ParseWrites)] = &[
     ("string_parse", ParseWrites::Int),
-    ("string_parse_i8", ParseWrites::Int),
-    ("string_parse_i16", ParseWrites::Int),
-    ("string_parse_i32", ParseWrites::Int),
-    ("string_parse_i64", ParseWrites::Int),
-    ("string_parse_u8", ParseWrites::Int),
-    ("string_parse_u16", ParseWrites::Int),
-    ("string_parse_u32", ParseWrites::Int),
-    ("string_parse_u64", ParseWrites::Int),
-    ("string_parse_f32", ParseWrites::Float),
-    ("string_parse_f64", ParseWrites::Float),
+    ("rask_string_parse_i8_into", ParseWrites::Int),
+    ("rask_string_parse_i16_into", ParseWrites::Int),
+    ("rask_string_parse_i32_into", ParseWrites::Int),
+    ("rask_string_parse_int_into", ParseWrites::Int),
+    ("rask_string_parse_u8_into", ParseWrites::Int),
+    ("rask_string_parse_u16_into", ParseWrites::Int),
+    ("rask_string_parse_u32_into", ParseWrites::Int),
+    ("rask_string_parse_uint_into", ParseWrites::Int),
+    ("rask_string_parse_float_into", ParseWrites::Float),
+    ("rask_string_parse_float_into", ParseWrites::Float),
 ];
 
 /// The entry that writes a result slot whose ok side is `ok`. `None` for a
 /// payload the runtime has no parse for.
 pub fn entry_for_slot(ok: &MirType) -> Option<&'static str> {
     Some(match ok {
-        MirType::I8 => "string_parse_i8",
-        MirType::I16 => "string_parse_i16",
-        MirType::I32 => "string_parse_i32",
-        MirType::I64 => "string_parse_i64",
-        MirType::U8 => "string_parse_u8",
-        MirType::U16 => "string_parse_u16",
-        MirType::U32 => "string_parse_u32",
-        MirType::U64 => "string_parse_u64",
-        MirType::F32 => "string_parse_f32",
-        MirType::F64 => "string_parse_f64",
+        MirType::I8 => "rask_string_parse_i8_into",
+        MirType::I16 => "rask_string_parse_i16_into",
+        MirType::I32 => "rask_string_parse_i32_into",
+        MirType::I64 => "rask_string_parse_int_into",
+        MirType::U8 => "rask_string_parse_u8_into",
+        MirType::U16 => "rask_string_parse_u16_into",
+        MirType::U32 => "rask_string_parse_u32_into",
+        MirType::U64 => "rask_string_parse_uint_into",
+        MirType::F32 => "rask_string_parse_float_into",
+        MirType::F64 => "rask_string_parse_float_into",
         _ => return None,
     })
 }
@@ -71,6 +71,15 @@ mod tests {
             let name = entry_for_slot(&ok).unwrap();
             let w = writes(name).unwrap_or_else(|| panic!("{name} is not in ENTRIES"));
             assert_eq!(w == ParseWrites::Float, matches!(ok, MirType::F32 | MirType::F64));
+        }
+    }
+
+    /// Lowering calls these by C symbol, so the header has to declare them:
+    /// otherwise the call isn't a runtime call and codegen never declares it.
+    #[test]
+    fn every_entry_is_a_runtime_symbol() {
+        for (name, _) in ENTRIES.iter().filter(|(n, _)| n.starts_with("rask_")) {
+            assert!(rask_stdlib::runtime_header::declares(name), "{name} is not in rask_runtime.h");
         }
     }
 }

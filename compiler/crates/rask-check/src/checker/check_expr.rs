@@ -14,7 +14,7 @@ use super::parse_type::resolve_type_expr;
 use rask_ast::ty::TypeExpr;
 use super::TypeChecker;
 
-use rask_types::{FnParam, GenericArg, Type};
+use rask_types::{ArrayLen, FnParam, GenericArg, Type};
 use rask_ast::ty::ParamMode;
 
 
@@ -223,7 +223,7 @@ impl TypeChecker {
                     let ty = match expected {
                         Type::Array { .. } => Type::Array {
                             elem: Box::new(want_elem),
-                            len: elements.len(),
+                            len: elements.len().into(),
                         },
                         other => other.clone(),
                     };
@@ -289,13 +289,11 @@ impl TypeChecker {
             Type::Generic { base, args } if self.types.type_name(*base) == "Vec" => {
                 match args.first()? {
                     GenericArg::Type(t) => (**t).clone(),
-                    _ => return None,
                 }
             }
             Type::UnresolvedGeneric { name, args } if name == "Vec" => {
                 match args.first()? {
                     GenericArg::Type(t) => (**t).clone(),
-                    _ => return None,
                 }
             }
             _ => return None,
@@ -1485,7 +1483,6 @@ impl TypeChecker {
                                     args.into_iter()
                                         .filter_map(|a| match a {
                                             GenericArg::Type(t) => Some(*t),
-                                            GenericArg::ConstUsize(_) => None,
                                         })
                                         .collect(),
                                 ),
@@ -1587,7 +1584,7 @@ impl TypeChecker {
                 // A declared struct is measured at its declaration; a generic
                 // one only has a size once its arguments are known.
                 if matches!(built, Type::Generic { .. }) {
-                    self.pending_value_sizes.push((built.clone(), expr.span));
+                    self.pending_value_sizes.push((built.clone(), expr.span, self.types.type_params_in_scope()));
                 }
                 built
             }
@@ -1597,7 +1594,7 @@ impl TypeChecker {
                     let elem_ty = self.ctx.fresh_var();
                     Type::Array {
                         elem: Box::new(elem_ty),
-                        len: 0,
+                        len: 0.into(),
                     }
                 } else {
                     let elem_types: Vec<Type> =
@@ -1618,7 +1615,7 @@ impl TypeChecker {
                     }
                     Type::Array {
                         elem: Box::new(first_ty),
-                        len: elements.len(),
+                        len: elements.len().into(),
                     }
                 }
             }
@@ -1630,7 +1627,7 @@ impl TypeChecker {
                     Type::Unit
                 } else {
                     let ty = Type::Tuple(elem_types);
-                    self.pending_value_sizes.push((ty.clone(), expr.span));
+                    self.pending_value_sizes.push((ty.clone(), expr.span, self.types.type_params_in_scope()));
                     ty
                 }
             }
@@ -2422,8 +2419,7 @@ impl TypeChecker {
             ExprKind::UsingBlock { name, args, body } => {
                 // Validate context name
                 match name.as_str() {
-                    "Multitasking" | "MultiTasking" | "multitasking"
-                    | "ThreadPool" | "threadpool" => {}
+                    "Multitasking" | "ThreadPool" => {}
                     _ => {
                         self.errors.push(TypeError::UnknownContext {
                             name: name.clone(),
@@ -2701,16 +2697,20 @@ impl TypeChecker {
                     ExprKind::Ident(name) if self.names_module_const(name) => self.types.const_length(name),
                     _ => None,
                 };
-                let Some(len) = known else {
-                    let comptime_param = match &count.kind {
-                        ExprKind::Ident(name) if self.current_comptime_params.contains(name) => Some(name.clone()),
-                        _ => None,
-                    };
-                    self.errors.push(TypeError::ArrayRepeatCount { comptime_param, span: count.span });
-                    return Type::Error;
+                // A `comptime N` parameter sizes it as `N`, which each instance
+                // has a number for.
+                let len = match (known, &count.kind) {
+                    (Some(n), _) => ArrayLen::Known(n),
+                    (None, ExprKind::Ident(name)) if self.current_comptime_params.contains(name) => {
+                        ArrayLen::Of(Box::new(Type::UnresolvedNamed(name.clone())))
+                    }
+                    (None, _) => {
+                        self.errors.push(TypeError::ArrayRepeatCount { span: count.span });
+                        return Type::Error;
+                    }
                 };
                 let ty = Type::Array { elem: Box::new(elem_ty), len };
-                self.pending_value_sizes.push((ty.clone(), expr.span));
+                self.pending_value_sizes.push((ty.clone(), expr.span, self.types.type_params_in_scope()));
                 ty
             }
 
@@ -3336,6 +3336,7 @@ impl TypeChecker {
                 .and_then(|sym_id| self.fn_type_params.get(&sym_id).cloned().map(|tp| (sym_id, tp)))
                 .map(|(sym_id, type_params)| {
                     let bounds = self.fn_type_param_bounds.get(&sym_id).cloned();
+                    let comptime = self.fn_comptime_params.get(&sym_id).cloned().unwrap_or_default();
                     let pairs: Vec<(String, Type)> = type_params.into_iter()
                         .enumerate()
                         .map(|(i, name)| {
@@ -3346,7 +3347,22 @@ impl TypeChecker {
                             // which is the message that names both sides.
                             if let Some(written) = written_type_args.get(i) {
                                 let resolved = self.resolve_named(written);
-                                if !matches!(resolved, Type::Error) {
+                                // A number for a type parameter, or a type
+                                // for a `comptime N`, has nothing to bind.
+                                let wants_len = comptime.contains(&name);
+                                let is_len = match &resolved {
+                                    Type::Len(_) => true,
+                                    Type::UnresolvedNamed(n) => self.current_comptime_params.contains(n),
+                                    _ => false,
+                                };
+                                if !matches!(resolved, Type::Error) && wants_len != is_len {
+                                    let msg = if wants_len {
+                                        format!("`{name}` is a `comptime` length, and `{}` is a type", self.fmt_ty(&resolved))
+                                    } else {
+                                        format!("`{name}` is a type parameter, and `{}` is a number", self.fmt_ty(&resolved))
+                                    };
+                                    self.errors.push(TypeError::GenericError(msg, span));
+                                } else if !matches!(resolved, Type::Error) {
                                     let _ = self.unify(&fresh, &resolved, span);
                                 }
                             }
@@ -3596,7 +3612,7 @@ impl TypeChecker {
 
     pub(super) fn is_builtin_function(&self, name: &str) -> bool {
         matches!(name, "println" | "print" | "panic" | "todo" | "unreachable"
-            | "assert" | "debug" | "format" | "fence" | "compiler_fence"
+            | "assert" | "debug" | "format"
             | "skip" | "expect_fail" | "drop")
     }
 
@@ -4160,7 +4176,6 @@ impl TypeChecker {
             .map(|p| p.as_str())
             .zip(type_args.iter().filter_map(|a| match a {
                 GenericArg::Type(t) => Some((**t).clone()),
-                _ => None,
             }))
             .collect();
         let field_ty = Self::substitute_type_params(&field_ty, &subst);
@@ -4301,7 +4316,12 @@ impl TypeChecker {
         // parameter itself. Resolved like a method on a `T` value: through the
         // bounds here, and per instance once `T` is known.
         if let ExprKind::Ident(name) = &object.kind {
-            if self.lookup_local(name).is_none() && self.types.is_type_param_in_scope(name) {
+            // A `comptime N: usize` is a number, so `N.to_string()` and the
+            // `N + 1` that desugars to `N.add(1)` call the value's methods.
+            if self.lookup_local(name).is_none()
+                && self.types.is_type_param_in_scope(name)
+                && !self.current_comptime_params.contains(name)
+            {
                 self.type_param_static_calls.insert(call_id);
                 let arg_types: Vec<_> = args.iter().map(|a| self.infer_expr(&a.expr)).collect();
                 let ret_ty = self.ctx.fresh_var();
@@ -5083,8 +5103,9 @@ impl TypeChecker {
     /// What's wrong with it is reported at `span`. A number there is a
     /// comptime argument, not a type, and isn't this function's to judge.
     fn resolve_type_arg(&mut self, ty: &TypeExpr, span: Span) -> Type {
-        if matches!(ty, TypeExpr::Int(_)) {
-            return Type::Error;
+        // `f<3>()`: a length, for a `comptime N: usize` parameter.
+        if let TypeExpr::Int(n) = ty {
+            return n.parse().map_or(Type::Error, Type::Len);
         }
         let resolved = self.resolve_written(ty, span).unwrap_or(Type::Error);
         match &resolved {
@@ -5193,8 +5214,15 @@ impl TypeChecker {
         // unified with `any Error`, a `parse<i64>()`'s error became the box
         // instead of the `ParseError` going into one, and nothing boxed it.
         // Wait for the call to say what it is, as for an enum to wrap it in.
+        // A union target waits too: unified with the union, a stdlib call's
+        // `IoError` became the whole `A | IoError`, and lowering, which reads
+        // the call's error to pick the member, found nothing to pick and left
+        // the union's member index unwritten. A partly settled error
+        // (`Gen<_>` from a generic call) waits as well: compared with the
+        // union before its argument is known, it matched no member.
         let erasing = matches!(target, Type::InterfaceObject { .. });
-        if matches!(src, Type::Var(_)) && (erasing || self.wrap_candidate(&target)) {
+        let union = matches!(target, Type::Union(_));
+        if Self::contains_type_var(&src) && (erasing || union || self.wrap_candidate(&target)) {
             self.pending_try_errors.push((node, src, target, span));
             return;
         }
@@ -5256,7 +5284,10 @@ impl TypeChecker {
     ) -> bool {
         let src = self.ctx.apply(src);
         let target = self.ctx.apply(target);
-        let variants = self.types.error_wrap_variants(&src, &target);
+        let mut variants = self.types.error_wrap_variants(&src, &target);
+        if variants.is_empty() {
+            variants = self.wrap_variants_with_holes(&src, &target, span);
+        }
         match variants.len() {
             0 => false,
             1 => {
@@ -5278,6 +5309,33 @@ impl TypeChecker {
                 true
             }
         }
+    }
+
+    /// The variants of the error enum `target` whose payload `src` can become
+    /// once its open type arguments settle: `try give(5)` propagates a
+    /// `Gen<_>` whose argument is still a literal's variable, and only
+    /// `G(Gen<i64>)` can hold it. One such variant settles `src` to its
+    /// payload, the way a union member is picked.
+    fn wrap_variants_with_holes(&mut self, src: &Type, target: &Type, span: Span) -> Vec<String> {
+        if matches!(src, Type::Var(_)) || self.fits_with_holes(target, src) {
+            return Vec::new();
+        }
+        let Type::Named(id) = target else { return Vec::new() };
+        let Some(rask_types::TypeDef::Enum { variants, .. }) = self.types.get(*id) else { return Vec::new() };
+        let fits: Vec<(String, Type)> = variants
+            .clone()
+            .into_iter()
+            .filter(|(_, payload)| payload.len() == 1)
+            .map(|(name, payload)| (name, self.resolve_named(&payload[0])))
+            .filter(|(_, payload)| self.fits_with_holes(payload, src))
+            .collect();
+        if let [(_, payload)] = fits.as_slice() {
+            let payload = payload.clone();
+            if self.unify(src, &payload, span).is_err() {
+                return Vec::new();
+            }
+        }
+        fits.into_iter().map(|(name, _)| name).collect()
     }
 
     /// The declared type of `field` on the annotation `get<A>()` names, when
@@ -6752,7 +6810,6 @@ impl TypeChecker {
             .iter()
             .map(|a| match a {
                 GenericArg::Type(t) => GenericArg::Type(Box::new(self.resolve_named(t))),
-                other => other.clone(),
             })
             .collect();
         self.types.shared_strategy_name(&resolved)
@@ -6992,12 +7049,15 @@ impl TypeChecker {
     /// its declaration when it has one.
     pub(super) fn validate_pending_value_sizes(&mut self) {
         let mut seen = std::collections::HashSet::new();
-        for (ty, span) in std::mem::take(&mut self.pending_value_sizes) {
+        for (ty, span, params) in std::mem::take(&mut self.pending_value_sizes) {
             let ty = self.ctx.apply(&ty);
-            if !seen.insert(ty.clone()) {
+            if !seen.insert((ty.clone(), params.clone())) {
                 continue;
             }
-            if let Some(bytes) = self.types.too_large(&ty) {
+            let mark = self.types.push_implied_type_params(params);
+            let too_large = self.types.too_large(&ty);
+            self.types.pop_type_params(mark);
+            if let Some(bytes) = too_large {
                 self.errors.push(TypeError::ValueTooLarge { ty, bytes, span });
             }
         }

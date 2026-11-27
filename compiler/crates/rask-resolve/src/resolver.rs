@@ -532,12 +532,30 @@ impl Resolver {
         }
     }
 
-    fn resolve_inner(decls: &[Decl], stdlib_mode: bool) -> Result<ResolvedProgram, Vec<ResolveError>> {
+    /// Resolve every name in a program. See [`crate::ResolveInput`].
+    pub fn resolve(input: crate::ResolveInput) -> Result<ResolvedProgram, Vec<ResolveError>> {
+        let crate::ResolveInput { decls, stdlib, package } = input;
         let mut resolver = Resolver::new();
-        resolver.stdlib_mode = stdlib_mode;
+        let (external_decls, file_packages, package_deps) = match package {
+            Some((registry, current_package)) => resolver.load_packages(registry, current_package),
+            None => Default::default(),
+        };
 
+        // The stdlib goes in under `stdlib_mode`: it *defines* `Result`,
+        // `Option` and `spawn`, so the builtin-shadowing check (E0209) would
+        // reject the definitions of the very builtins it's protecting.
+        // Declarations of both are collected before any body resolves, so
+        // either can name the other.
+        resolver.stdlib_mode = true;
+        resolver.collect_declarations(stdlib);
+        resolver.check_annotations(stdlib);
+        resolver.stdlib_mode = false;
         resolver.collect_declarations(decls);
         resolver.check_annotations(decls);
+
+        resolver.stdlib_mode = true;
+        resolver.resolve_bodies(stdlib);
+        resolver.stdlib_mode = false;
         resolver.resolve_bodies(decls);
 
         if resolver.errors.is_empty() {
@@ -545,99 +563,36 @@ impl Resolver {
                 symbols: resolver.symbols,
                 resolutions: resolver.resolutions,
                 decl_symbols: resolver.decl_symbols,
-                external_decls: HashMap::new(),
-                file_packages: HashMap::new(),
-                package_deps: HashMap::new(),
+                external_decls,
+                file_packages,
+                package_deps,
                 field_type_pattern_names: resolver.field_type_pattern_names,
             })
         } else {
+            resolver.name_unlinked_scopes();
             Err(resolver.errors)
         }
     }
 
-
-    pub fn resolve(decls: &[Decl]) -> Result<ResolvedProgram, Vec<ResolveError>> {
-        Self::resolve_inner(decls, false)
-    }
-
-    /// Resolve stdlib definition files — skips E0209 builtin shadowing checks.
-    pub fn resolve_stdlib(decls: &[Decl]) -> Result<ResolvedProgram, Vec<ResolveError>> {
-        Self::resolve_inner(decls, true)
-    }
-
-    /// Resolve the program with stdlib bodies alongside it.
-    ///
-    /// The single-file mirror of `resolve_package_with_stdlib`. Needed
-    /// because the stdlib's own bodies are compiled into every program, so they
-    /// have to be resolved — and then type-checked — for anything downstream to
-    /// know what a call inside them refers to.
-    ///
-    /// Stdlib decls go in under `stdlib_mode`: they *define* `Result`, `Option`
-    /// and `spawn`, so the builtin-shadowing check (E0209) would reject the
-    /// definitions of the very builtins it's protecting.
-    pub fn resolve_with_stdlib(
-        decls: &[Decl],
-        stdlib_decls: &[Decl],
-    ) -> Result<ResolvedProgram, Vec<ResolveError>> {
-        let mut resolver = Resolver::new();
-
-        if !stdlib_decls.is_empty() {
-            resolver.stdlib_mode = true;
-            resolver.collect_declarations(stdlib_decls);
-            resolver.stdlib_mode = false;
-        }
-        resolver.collect_declarations(decls);
-        resolver.check_annotations(decls);
-
-        if !stdlib_decls.is_empty() {
-            resolver.stdlib_mode = true;
-            resolver.resolve_bodies(stdlib_decls);
-            resolver.stdlib_mode = false;
-        }
-        resolver.resolve_bodies(decls);
-
-        if resolver.errors.is_empty() {
-            Ok(ResolvedProgram {
-                symbols: resolver.symbols,
-                resolutions: resolver.resolutions,
-                decl_symbols: resolver.decl_symbols,
-                external_decls: HashMap::new(),
-                file_packages: HashMap::new(),
-                package_deps: HashMap::new(),
-                field_type_pattern_names: resolver.field_type_pattern_names,
-            })
-        } else {
-            Err(resolver.errors)
-        }
-    }
-
-    pub fn resolve_package(
-        decls: &[Decl],
+    /// Take in the other packages of a package build: their exports, which
+    /// package owns each file, and what each package can see. Returns the
+    /// other packages' public type declarations, the file owners and the
+    /// visibility graph, for `ResolvedProgram`.
+    #[allow(clippy::type_complexity)]
+    fn load_packages(
+        &mut self,
         registry: &crate::PackageRegistry,
         current_package: crate::PackageId,
-    ) -> Result<ResolvedProgram, Vec<ResolveError>> {
-        Self::resolve_package_with_stdlib(decls, registry, current_package, &[])
-    }
-
-    /// Resolve a package with separate stdlib declarations processed in
-    /// stdlib_mode (bypasses builtin-shadowing checks). Stdlib decls are
-    /// collected and resolved first, then user decls on top.
-    pub fn resolve_package_with_stdlib(
-        decls: &[Decl],
-        registry: &crate::PackageRegistry,
-        current_package: crate::PackageId,
-        stdlib_decls: &[Decl],
-    ) -> Result<ResolvedProgram, Vec<ResolveError>> {
-        let mut resolver = Resolver::new();
+    ) -> (HashMap<String, Vec<Decl>>, HashMap<u16, String>, HashMap<String, std::collections::HashSet<String>>) {
         for (name, scope) in registry.unlinked_scopes() {
-            resolver.unlinked_scopes.insert(name.clone(), scope.clone());
+            self.unlinked_scopes.insert(name.clone(), scope.clone());
         }
-        resolver.current_package = Some(current_package);
+        self.current_package = Some(current_package);
 
-        resolver.import_index = crate::ImportIndex::new(registry, current_package);
+        self.import_index = crate::ImportIndex::new(registry, current_package);
         for pkg in registry.packages() {
             for file in &pkg.files {
-                resolver.file_package_ids.insert(file.file_id, pkg.id);
+                self.file_package_ids.insert(file.file_id, pkg.id);
             }
         }
 
@@ -699,7 +654,7 @@ impl Resolver {
         let mut external_decls: HashMap<String, Vec<Decl>> = HashMap::new();
         for pkg in registry.packages() {
             if pkg.id != current_package {
-                resolver.collect_package_exports(pkg);
+                self.collect_package_exports(pkg);
 
                 let public_type_decls: Vec<Decl> = pkg.all_decls()
                     .filter(|d| match &d.kind {
@@ -723,39 +678,7 @@ impl Resolver {
             }
         }
 
-        // Collect stdlib declarations in stdlib_mode (skip shadow checks)
-        if !stdlib_decls.is_empty() {
-            resolver.stdlib_mode = true;
-            resolver.collect_declarations(stdlib_decls);
-            resolver.stdlib_mode = false;
-        }
-
-        // Collect and resolve user declarations
-        resolver.collect_declarations(decls);
-        resolver.check_annotations(decls);
-
-        // Resolve bodies for both stdlib and user decls
-        if !stdlib_decls.is_empty() {
-            resolver.stdlib_mode = true;
-            resolver.resolve_bodies(stdlib_decls);
-            resolver.stdlib_mode = false;
-        }
-        resolver.resolve_bodies(decls);
-
-        if resolver.errors.is_empty() {
-            Ok(ResolvedProgram {
-                symbols: resolver.symbols,
-                resolutions: resolver.resolutions,
-                decl_symbols: resolver.decl_symbols,
-                external_decls,
-                file_packages,
-                package_deps,
-                field_type_pattern_names: resolver.field_type_pattern_names,
-            })
-        } else {
-            resolver.name_unlinked_scopes();
-            Err(resolver.errors)
-        }
+        (external_decls, file_packages, package_deps)
     }
 
     /// Re-label undefined names that are really unlinked scoped deps.
@@ -1276,27 +1199,6 @@ impl Resolver {
             .iter()
             .find(|m| rask_stdlib::modules::exports(m).exports(name))
             .map(|m| m.to_string())
-    }
-
-    /// Is `name` bound to a type the *program* declared — as opposed to a
-    /// builtin, something the stdlib declared, or an earlier import?
-    fn declares_locally(&self, name: &str) -> bool {
-        if self.stdlib_mode || self.imported_symbols.contains(name) {
-            return false;
-        }
-        let Some(sym_id) = self.scopes.lookup(name) else { return false };
-        if self.stdlib_symbols.contains(&sym_id) {
-            return false;
-        }
-        self.symbols.get(sym_id).is_some_and(|sym| {
-            matches!(
-                sym.kind,
-                SymbolKind::Struct { .. }
-                    | SymbolKind::Enum { .. }
-                    | SymbolKind::Interface { .. }
-                    | SymbolKind::TypeAlias { .. }
-            ) && sym.span != Span::new(0, 0)
-        })
     }
 
     fn declare_function(&mut self, fn_decl: &FnDecl, span: Span, is_pub: bool) -> SymbolId {
@@ -3122,6 +3024,7 @@ impl Default for Resolver {
 mod tests {
     use super::*;
     use crate::error::ResolveErrorKind;
+    use crate::ResolveInput;
     use rask_ast::decl::{Decl, DeclKind, ImportDecl};
 
     fn make_import_decl(path: Vec<&str>, alias: Option<&str>, is_glob: bool, is_lazy: bool) -> Decl {
@@ -3140,42 +3043,42 @@ mod tests {
     #[test]
     fn test_stdlib_import() {
         let decls = vec![make_import_decl(vec!["io"], None, false, false)];
-        let result = Resolver::resolve(&decls);
+        let result = crate::resolve(ResolveInput { decls: &decls, stdlib: &[], package: None });
         assert!(result.is_ok(), "Stdlib import should succeed");
     }
 
     #[test]
     fn test_symbol_import() {
         let decls = vec![make_import_decl(vec!["io", "stdin"], None, false, false)];
-        let result = Resolver::resolve(&decls);
+        let result = crate::resolve(ResolveInput { decls: &decls, stdlib: &[], package: None });
         assert!(result.is_ok(), "Symbol import should succeed");
     }
 
     #[test]
     fn test_aliased_import() {
         let decls = vec![make_import_decl(vec!["io"], Some("h"), false, false)];
-        let result = Resolver::resolve(&decls);
+        let result = crate::resolve(ResolveInput { decls: &decls, stdlib: &[], package: None });
         assert!(result.is_ok(), "Aliased import should succeed");
     }
 
     #[test]
     fn test_glob_import() {
         let decls = vec![make_import_decl(vec!["io"], None, true, false)];
-        let result = Resolver::resolve(&decls);
+        let result = crate::resolve(ResolveInput { decls: &decls, stdlib: &[], package: None });
         assert!(result.is_ok(), "Glob import should succeed (with warning)");
     }
 
     #[test]
     fn test_lazy_import() {
         let decls = vec![make_import_decl(vec!["fs"], None, false, true)];
-        let result = Resolver::resolve(&decls);
+        let result = crate::resolve(ResolveInput { decls: &decls, stdlib: &[], package: None });
         assert!(result.is_ok(), "Lazy import should succeed");
     }
 
     #[test]
     fn test_unknown_package_import_fails() {
         let decls = vec![make_import_decl(vec!["nonexistent"], None, false, false)];
-        let result = Resolver::resolve(&decls);
+        let result = crate::resolve(ResolveInput { decls: &decls, stdlib: &[], package: None });
         assert!(result.is_err(), "Unknown package import should fail");
     }
 
@@ -3253,7 +3156,7 @@ mod tests {
             },
         ];
 
-        let resolved = Resolver::resolve(&decls).expect("should resolve");
+        let resolved = crate::resolve(ResolveInput { decls: &decls, stdlib: &[], package: None }).expect("should resolve");
         let sym = resolved
             .symbols
             .iter()
@@ -3276,7 +3179,7 @@ mod tests {
         for name in ["min", "max", "clamp", "drop"] {
             let decls = vec![make_fn_decl(name)];
             assert!(
-                Resolver::resolve(&decls).is_ok(),
+                crate::resolve(ResolveInput { decls: &decls, stdlib: &[], package: None }).is_ok(),
                 "`{}` is not in BF1, so a program may declare its own",
                 name
             );
@@ -3295,7 +3198,7 @@ mod tests {
             "todo", "unreachable", "spawn", "transmute",
         ] {
             let decls = vec![make_fn_decl(name)];
-            let err = Resolver::resolve(&decls)
+            let err = crate::resolve(ResolveInput { decls: &decls, stdlib: &[], package: None })
                 .expect_err(&format!("`{}` is in BF1 and must be rejected", name));
             assert!(
                 err.iter().any(|e| matches!(
@@ -3325,7 +3228,7 @@ mod tests {
             }),
             span: Span::new(0, 10),
         }];
-        let result = Resolver::resolve(&decls);
+        let result = crate::resolve(ResolveInput { decls: &decls, stdlib: &[], package: None });
         assert!(result.is_err(), "Shadowing built-in type should fail");
     }
 
@@ -3346,7 +3249,7 @@ mod tests {
             }),
             span: Span::new(0, 10),
         }];
-        let result = Resolver::resolve(&decls);
+        let result = crate::resolve(ResolveInput { decls: &decls, stdlib: &[], package: None });
         assert!(result.is_err(), "Shadowing prelude enum should fail");
     }
 
@@ -3384,7 +3287,7 @@ mod tests {
         ] {
             let decls = vec![make_struct_decl(name)];
             assert!(
-                Resolver::resolve(&decls).is_err(),
+                crate::resolve(ResolveInput { decls: &decls, stdlib: &[], package: None }).is_err(),
                 "`{}` is always in scope, so a program may not declare it",
                 name
             );
@@ -3404,7 +3307,7 @@ mod tests {
         ] {
             let decls = vec![make_struct_decl(name)];
             assert!(
-                Resolver::resolve(&decls).is_ok(),
+                crate::resolve(ResolveInput { decls: &decls, stdlib: &[], package: None }).is_ok(),
                 "`{}` is not in BI1's set, so a program that hasn't imported it \
                  may declare its own",
                 name
@@ -3421,7 +3324,7 @@ mod tests {
             make_import_decl(vec!["time", "Duration"], None, false, false),
             make_struct_decl("Duration"),
         ];
-        let err = Resolver::resolve(&decls).expect_err("IM8: the second `Duration` is an error");
+        let err = crate::resolve(ResolveInput { decls: &decls, stdlib: &[], package: None }).expect_err("IM8: the second `Duration` is an error");
         assert!(
             err.iter().any(|e| matches!(
                 &e.kind,
@@ -3495,7 +3398,7 @@ mod tests {
         );
 
         let decls = vec![make_fn_decl("main")];
-        let result = Resolver::resolve_package(&decls, &registry, pkg_id);
+        let result = crate::resolve(ResolveInput { decls: &decls, stdlib: &[], package: Some((&registry, pkg_id)) });
         assert!(result.is_ok(), "Package resolution should succeed");
     }
 
@@ -3521,7 +3424,7 @@ mod tests {
             make_fn_decl("main"),
         ];
 
-        let result = Resolver::resolve_package(&decls, &registry, main_pkg);
+        let result = crate::resolve(ResolveInput { decls: &decls, stdlib: &[], package: Some((&registry, main_pkg)) });
         assert!(result.is_ok(), "Package with import should resolve");
     }
 
@@ -3596,7 +3499,7 @@ mod tests {
             make_fn_decl("main"),
         ];
 
-        let result = Resolver::resolve_package(&decls, &registry, app_pkg);
+        let result = crate::resolve(ResolveInput { decls: &decls, stdlib: &[], package: Some((&registry, app_pkg)) });
         assert!(result.is_ok(), "Cross-package import should resolve: {:?}", result.err());
 
         // Verify the import created an ExternalPackage symbol
@@ -3639,7 +3542,7 @@ mod tests {
         ];
 
         // A member the package doesn't export names nothing here.
-        let result = Resolver::resolve_package(&decls, &registry, app_pkg);
+        let result = crate::resolve(ResolveInput { decls: &decls, stdlib: &[], package: Some((&registry, app_pkg)) });
         let errors = result.expect_err("a private member isn't importable");
         assert!(
             errors.iter().any(|e| matches!(&e.kind, crate::ResolveErrorKind::UndefinedSymbol { name } if name == "internal_helper")),
@@ -3673,7 +3576,7 @@ mod tests {
             make_fn_decl("main"),
         ];
 
-        let result = Resolver::resolve_package(&decls, &registry, app_pkg);
+        let result = crate::resolve(ResolveInput { decls: &decls, stdlib: &[], package: Some((&registry, app_pkg)) });
         assert!(result.is_ok(), "Unqualified import should resolve: {:?}", result.err());
 
         // Verify greet is in scope as a Function symbol (not a dummy Variable)
@@ -3713,7 +3616,7 @@ mod tests {
             make_fn_decl("main"),
         ];
 
-        let result = Resolver::resolve_package(&decls, &registry, app_pkg);
+        let result = crate::resolve(ResolveInput { decls: &decls, stdlib: &[], package: Some((&registry, app_pkg)) });
         assert!(result.is_ok(), "Struct import should resolve: {:?}", result.err());
 
         let resolved = result.unwrap();
@@ -3734,19 +3637,19 @@ mod tests {
             make_import_decl(vec!["io"], None, false, false),
             make_fn_decl("main"),
         ];
-        let result = Resolver::resolve(&decls);
+        let result = crate::resolve(ResolveInput { decls: &decls, stdlib: &[], package: None });
         assert!(result.is_ok(), "Single-file resolve should still work");
     }
 
     #[test]
-    fn test_resolve_stdlib_allows_builtin_function() {
+    fn stdlib_may_define_builtin_function() {
         let decls = vec![make_fn_decl("println")];
-        let result = Resolver::resolve_stdlib(&decls);
-        assert!(result.is_ok(), "resolve_stdlib should allow redefining builtin functions");
+        let result = crate::resolve(ResolveInput { decls: &[], stdlib: &decls, package: None });
+        assert!(result.is_ok(), "the stdlib may define redefining builtin functions");
     }
 
     #[test]
-    fn test_resolve_stdlib_allows_builtin_type() {
+    fn stdlib_may_define_builtin_type() {
         use rask_ast::decl::StructDecl;
         let decls = vec![Decl {
             id: NodeId(0),
@@ -3761,12 +3664,12 @@ mod tests {
             }),
             span: Span::new(0, 10),
         }];
-        let result = Resolver::resolve_stdlib(&decls);
-        assert!(result.is_ok(), "resolve_stdlib should allow redefining builtin types");
+        let result = crate::resolve(ResolveInput { decls: &[], stdlib: &decls, package: None });
+        assert!(result.is_ok(), "the stdlib may define redefining builtin types");
     }
 
     #[test]
-    fn test_resolve_stdlib_allows_builtin_enum() {
+    fn stdlib_may_define_builtin_enum() {
         use rask_ast::decl::EnumDecl;
         let decls = vec![Decl {
             id: NodeId(0),
@@ -3782,8 +3685,8 @@ mod tests {
             }),
             span: Span::new(0, 10),
         }];
-        let result = Resolver::resolve_stdlib(&decls);
-        assert!(result.is_ok(), "resolve_stdlib should allow redefining builtin enums");
+        let result = crate::resolve(ResolveInput { decls: &[], stdlib: &decls, package: None });
+        assert!(result.is_ok(), "the stdlib may define redefining builtin enums");
     }
 
     fn make_pub_enum_decl(name: &str, variants: &[&str]) -> Decl {
@@ -3839,7 +3742,7 @@ mod tests {
             make_fn_decl("main"),
         ];
 
-        let result = Resolver::resolve_package(&decls, &registry, app_pkg);
+        let result = crate::resolve(ResolveInput { decls: &decls, stdlib: &[], package: Some((&registry, app_pkg)) });
         assert!(result.is_ok(), "Should resolve: {:?}", result.err());
 
         let resolved = result.unwrap();
@@ -3909,7 +3812,7 @@ mod tests {
             make_import_decl(vec!["liba"], None, false, false),
             make_fn_decl("main"),
         ];
-        let resolved = Resolver::resolve_package(&decls, &registry, app)
+        let resolved = crate::resolve(ResolveInput { decls: &decls, stdlib: &[], package: Some((&registry, app)) })
             .expect("should resolve");
 
         let ext = resolved.external_decls.get("liba").expect("liba exports");
@@ -3929,7 +3832,7 @@ mod tests {
             make_import_decl(vec!["io"], None, false, false),
             make_fn_decl("main"),
         ];
-        let result = Resolver::resolve(&decls);
+        let result = crate::resolve(ResolveInput { decls: &decls, stdlib: &[], package: None });
         assert!(result.is_ok());
         assert!(result.unwrap().external_decls.is_empty(),
             "Single-file resolve should have empty external_decls");
@@ -3975,7 +3878,7 @@ mod tests {
             make_fn_decl("main"),
         ];
 
-        let result = Resolver::resolve_package(&decls, &registry, app_pkg);
+        let result = crate::resolve(ResolveInput { decls: &decls, stdlib: &[], package: Some((&registry, app_pkg)) });
         assert!(result.is_ok());
 
         let resolved = result.unwrap();
@@ -4055,7 +3958,7 @@ mod tests {
             main_decl,
         ];
 
-        let result = Resolver::resolve_package(&decls, &registry, app_pkg);
+        let result = crate::resolve(ResolveInput { decls: &decls, stdlib: &[], package: Some((&registry, app_pkg)) });
         assert!(result.is_ok(), "Should resolve: {:?}", result.err());
 
         let resolved = result.unwrap();

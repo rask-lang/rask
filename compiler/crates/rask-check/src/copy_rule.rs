@@ -44,7 +44,6 @@ impl TypeTable {
     pub fn generic_field_subst(type_params: &[String], args: &[crate::GenericArg]) -> std::collections::HashMap<String, Type> {
         type_params.iter().zip(args.iter()).filter_map(|(name, arg)| match arg {
             crate::GenericArg::Type(t) => Some((name.clone(), (**t).clone())),
-            crate::GenericArg::ConstUsize(_) => None,
         }).collect()
     }
 
@@ -55,7 +54,7 @@ impl TypeTable {
             Type::UnresolvedNamed(name) => subst.get(name).cloned().unwrap_or_else(|| ty.clone()),
             Type::Array { elem, len } => Type::Array {
                 elem: Box::new(Self::substitute_generic_field(elem, subst)),
-                len: *len,
+                len: len.map(|t| Self::substitute_generic_field(t, subst)),
             },
             Type::Tuple(elems) => Type::Tuple(elems.iter().map(|e| Self::substitute_generic_field(e, subst)).collect()),
             ty if ty.is_option() => Type::option(Self::substitute_generic_field(ty.as_option().unwrap(), subst)),
@@ -63,7 +62,6 @@ impl TypeTable {
                 base: *base,
                 args: args.iter().map(|a| match a {
                     crate::GenericArg::Type(t) => crate::GenericArg::Type(Box::new(Self::substitute_generic_field(t, subst))),
-                    other => other.clone(),
                 }).collect(),
             },
             _ => ty.clone(),
@@ -167,6 +165,8 @@ impl TypeTable {
             Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128 | Type::Usize => Copy,
             Type::F32 | Type::F64 => Copy,
             Type::Never => Copy,
+            // A length, standing as a type argument; never a value.
+            Type::Len(_) => Copy,
 
             // String is Copy (immutable, refcounted, 16 bytes — std.strings/S1)
             Type::String => Copy,
@@ -174,7 +174,10 @@ impl TypeTable {
             Type::Bytes => Copy,
 
             // Arrays, tuples and `T?`: Copy when every part is, up to 16 bytes.
-            Type::Array { elem, len: _ } => verdict(elem).within(size()),
+            // A `[T; N]` the body has no number for moves: the body has to be
+            // right at every `N`, and most of them are over 16 bytes.
+            Type::Array { len: rask_types::ArrayLen::Of(_), .. } => Move,
+            Type::Array { elem, .. } => verdict(elem).within(size()),
             Type::Tuple(elems) => CopyVerdict::all(elems.iter().map(verdict)).within(size()),
             ty if ty.is_option() => verdict(ty.as_option().unwrap()).within(size()),
 

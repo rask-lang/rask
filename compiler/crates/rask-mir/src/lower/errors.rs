@@ -303,7 +303,7 @@ impl<'a> MirLowerer<'a> {
                     let joined = self.builder.alloc_temp(MirType::Buffer);
                     self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                         dst: Some(joined),
-                        func: FunctionRef::reading("concat"),
+                        func: FunctionRef::reading("rask_string_concat").writing_string(),
                         args: vec![
                             MirOperand::Constant(MirConst::String(format!(
                                 "{TRY_PROPAGATED_NOWHERE}: "

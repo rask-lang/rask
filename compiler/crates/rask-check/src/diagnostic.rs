@@ -699,7 +699,7 @@ impl ToDiagnostic for crate::TypeError {
                     "`{}.{}` is declared but not implemented yet",
                     ty, method
                 ))
-                .with_code("E0353")
+                .with_code("E0349")
                 .with_primary(*span, "no implementation behind this signature")
                 .with_help(format!(
                     "the signature exists so the API can be referenced, but \
@@ -1791,6 +1791,20 @@ impl ToDiagnostic for crate::TypeError {
                 ))
             }
 
+            LoopItemMismatch { yields, used_as, span } => Diagnostic::error(format!(
+                "this loop yields `{yields}`, but the body uses its item as `{used_as}`"
+            ))
+            .with_code("E0986")
+            .with_primary(*span, format!("its items are `{yields}`"))
+            .with_why(
+                "a loop's item is the element type of what it walks. This source's \
+                 element type settled only after the body was checked, so the \
+                 conflict is reported here rather than where the item was used",
+            )
+            .with_fix(format!(
+                "change the use in the body that expects `{used_as}`, or walk a source that yields `{used_as}`"
+            )),
+
             NotIterable { found, span } => {
                 let ty = found.to_string();
                 let mut diag = Diagnostic::error(format!("`{}` can't be iterated", ty))
@@ -2043,24 +2057,21 @@ impl ToDiagnostic for crate::TypeError {
                         format!("field `{}` has type `{}`, which can't be {}", f, fty, verb)
                     }
                     (Some(f), None) => format!("field `{}` can't be {}", f, verb),
-                    _ => format!("`{}` has a field that can't be {}", ty, verb),
+                    _ => format!("`{}` is, or holds, a type with no serialized form", ty),
                 };
                 // The list of what qualifies belongs in `fix`: the formatter
                 // drops `help` whenever fix/why are set, and someone reading
                 // this is exactly the person who needs the list.
-                let target = match field {
-                    Some(f) => format!("`{}`", f),
-                    None => "the offending field".to_string(),
+                const SERIALIZABLE: &str = "bool, the integer and float types, string, `T?`, \
+                    `Vec<T>`, `[T; N]`, `Map<string, T>`, or a struct or enum of those";
+                let fix = match field {
+                    Some(f) => format!("mark `{f}` with `@no_serialize`, or give it a serializable type — {SERIALIZABLE}"),
+                    None => format!("use a serializable type — {SERIALIZABLE}"),
                 };
                 Diagnostic::error(format!("`{}` cannot be {}", ty, verb))
                     .with_code("E0388")
                     .with_primary(*span, label)
-                    .with_fix(format!(
-                        "mark {} with `@no_serialize`, or give it a serializable type — bool, char, \
-                         the integer and float types, string, `T?`, tuples, `Vec<T>`, \
-                         `Map<string, T>`, or a struct or enum of those",
-                        target
-                    ))
+                    .with_fix(fix)
                     .with_why(format!("`{}` isn't implemented by hand — a type has it when its fields do, all the way down (std.encoding/E12)", interface_name))
             }
 
@@ -3330,19 +3341,11 @@ impl ToDiagnostic for crate::TypeError {
                     .with_primary(*span, "invalid conversion form")
                     .with_why("each conversion form names its data-loss behavior; the source and target kinds must match it [type.primitives/CV11–CV16]")
             }
-            ArrayRepeatCount { comptime_param, span } => {
-                let d = Diagnostic::error("the count of `[x; n]` isn't known at compile time")
-                    .with_code("E0984")
-                    .with_why("a fixed-size array's length is part of its type, so the count has to be a literal or a module `const`");
-                match comptime_param {
-                    Some(name) => d
-                        .with_primary(*span, format!("`{name}` is a `comptime` parameter"))
-                        .with_help("a `comptime` parameter can't size an array repeat yet (#1623)"),
-                    None => d
-                        .with_primary(*span, "known only when the program runs")
-                        .with_help("for a count known only at run time, push the elements into a `Vec`"),
-                }
-            }
+            ArrayRepeatCount { span } => Diagnostic::error("the count of `[x; n]` isn't known at compile time")
+                .with_code("E0984")
+                .with_why("a fixed-size array's length is part of its type, so the count has to be a literal, a module `const` or a `comptime` parameter")
+                .with_primary(*span, "known only when the program runs")
+                .with_help("for a count known only at run time, push the elements into a `Vec`"),
             ValueTooLarge { ty, bytes, span } => {
                 let d = Diagnostic::error(format!("`{}` is too large for a value", ty))
                     .with_code("E0980")
@@ -3570,8 +3573,8 @@ impl ToDiagnostic for crate::TypeError {
             }
             FixedArrayGrowth { method, array, span } => {
                 let (elem, len) = match array {
-                    crate::Type::Array { elem, len } => (elem.to_string(), *len),
-                    other => (other.to_string(), 0),
+                    crate::Type::Array { elem, len } => (elem.to_string(), len.to_string()),
+                    other => (other.to_string(), "0".to_string()),
                 };
                 let label = format!("`{}` doesn't exist on a fixed array", method);
                 Diagnostic::error(label.clone())
@@ -3579,7 +3582,7 @@ impl ToDiagnostic for crate::TypeError {
                     .with_primary(
                         *span,
                         format!("`[{}; {}]` always holds {} element{}",
-                            elem, len, len, if len == 1 { "" } else { "s" }),
+                            elem, len, len, if len == "1" { "" } else { "s" }),
                     )
                     .with_fix(format!(
                         "let it grow: `mut a: Vec<{}> = […]` — the same literal builds one",

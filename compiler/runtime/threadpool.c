@@ -44,11 +44,29 @@ static struct {
     int              worker_count;
     pthread_mutex_t  lock;
     pthread_cond_t   work_ready;
+    pthread_cond_t   idle;        // `pending` reached 0
     PoolJob         *head;
     PoolJob         *tail;
+    int64_t          pending;     // jobs spawned and not finished, under `lock`
     int              shutting_down;
-    int              started;
-} g_pool;
+    int              started;     // workers exist
+    int              depth;       // `using ThreadPool` blocks open, atomic
+} g_pool = {
+    .lock = PTHREAD_MUTEX_INITIALIZER,
+    .work_ready = PTHREAD_COND_INITIALIZER,
+    .idle = PTHREAD_COND_INITIALIZER,
+};
+
+// Serializes opening and closing blocks. The pool is one per process, and two
+// threads may each open a block over it; without this, one thread's init
+// reset the queue and flags that the other's shutdown was still using.
+static pthread_mutex_t g_life = PTHREAD_MUTEX_INITIALIZER;
+
+static void job_done(void) {
+    pthread_mutex_lock(&g_pool.lock);
+    if (--g_pool.pending == 0) rask_task_cond_broadcast(&g_pool.idle);
+    pthread_mutex_unlock(&g_pool.lock);
+}
 
 static PoolJob *dequeue_locked(void) {
     PoolJob *job = g_pool.head;
@@ -84,6 +102,7 @@ static void pool_worker_loop(void) {
         }
         rask_task_release(job->task);   // the worker's ref
         rask_free(job);
+        job_done();
     }
 }
 
@@ -108,6 +127,7 @@ static void pool_worker_fiber(void *arg) {
 
 static void enqueue(PoolJob *job) {
     pthread_mutex_lock(&g_pool.lock);
+    g_pool.pending++;
     if (g_pool.tail) {
         g_pool.tail->next = job;
         g_pool.tail = job;
@@ -121,8 +141,12 @@ static void enqueue(PoolJob *job) {
 
 // ─── Public API ────────────────────────────────────────────
 
-void rask_threadpool_init(int64_t worker_count) {
-    if (g_pool.started) return;
+// Being inside a `using ThreadPool` block and having workers are separate:
+// a default-sized pool under sim, and a pool none of whose threads could be
+// created, are in the block with no workers, and spawn gives each job its own
+// task. A block opened while another is open, on this thread or another,
+// shares the pool; the last one to close tears it down.
+static void start_workers(int64_t worker_count) {
 #ifdef RASK_SIM
     // A pool sized to the machine can't be replayed (determinism/D1), so a
     // default-sized pool under sim has no bound: every job gets its own task,
@@ -135,11 +159,6 @@ void rask_threadpool_init(int64_t worker_count) {
         if (worker_count <= 0) worker_count = 4;
     }
 
-    pthread_mutex_init(&g_pool.lock, NULL);
-    pthread_cond_init(&g_pool.work_ready, NULL);
-    g_pool.head = NULL;
-    g_pool.tail = NULL;
-    g_pool.shutting_down = 0;
     g_pool.worker_count = (int)worker_count;
     g_pool.workers = (pthread_t *)rask_alloc(sizeof(pthread_t) * (size_t)worker_count);
 
@@ -158,8 +177,6 @@ void rask_threadpool_init(int64_t worker_count) {
         }
 #endif
         if (pthread_create(&g_pool.workers[i], NULL, pool_worker, NULL) != 0) {
-            // Fewer workers than asked for is survivable — none is not, since
-            // every later spawn would enqueue into a queue nobody drains.
             g_pool.worker_count = i;
             break;
         }
@@ -172,17 +189,12 @@ void rask_threadpool_init(int64_t worker_count) {
         if (g_pool.sim_workers) rask_free(g_pool.sim_workers);
         g_pool.sim_workers = NULL;
 #endif
-        pthread_cond_destroy(&g_pool.work_ready);
-        pthread_mutex_destroy(&g_pool.lock);
-        return;   // spawn falls back to one thread per job
+        return;
     }
-
     g_pool.started = 1;
 }
 
-void rask_threadpool_shutdown(void) {
-    if (!g_pool.started) return;
-
+static void stop_workers(void) {
     pthread_mutex_lock(&g_pool.lock);
     g_pool.shutting_down = 1;
     rask_task_cond_broadcast(&g_pool.work_ready);
@@ -207,28 +219,91 @@ void rask_threadpool_shutdown(void) {
     g_pool.worker_count = 0;
     g_pool.started = 0;
     g_pool.shutting_down = 0;
-    pthread_cond_destroy(&g_pool.work_ready);
-    pthread_mutex_destroy(&g_pool.lock);
+}
+
+void rask_threadpool_init(int64_t worker_count) {
+    rask_task_mutex_lock(&g_life, "opening a ThreadPool block");
+    int depth = __atomic_load_n(&g_pool.depth, __ATOMIC_ACQUIRE);
+    if (depth == 0) start_workers(worker_count);
+    // Published after the workers exist, so a spawn that sees the block open
+    // also sees whether it has workers.
+    __atomic_store_n(&g_pool.depth, depth + 1, __ATOMIC_RELEASE);
+    pthread_mutex_unlock(&g_life);
+}
+
+// The block is open until every job spawned in it has finished, detached ones
+// included, so a job still running can spawn onto the pool. The wait happens
+// without `g_life` held: a job may open and close a block of its own.
+void rask_threadpool_shutdown(void) {
+    rask_task_mutex_lock(&g_life, "closing a ThreadPool block");
+    for (;;) {
+        int depth = __atomic_load_n(&g_pool.depth, __ATOMIC_ACQUIRE);
+        if (depth > 1) {
+            __atomic_store_n(&g_pool.depth, depth - 1, __ATOMIC_RELEASE);
+            pthread_mutex_unlock(&g_life);
+            return;
+        }
+        pthread_mutex_lock(&g_pool.lock);
+        int idle = g_pool.pending == 0;
+        pthread_mutex_unlock(&g_pool.lock);
+        if (idle) break;
+
+        pthread_mutex_unlock(&g_life);
+        pthread_mutex_lock(&g_pool.lock);
+        while (g_pool.pending > 0) {
+            rask_task_cond_wait(&g_pool.idle, &g_pool.lock, "the pool's jobs to finish");
+        }
+        pthread_mutex_unlock(&g_pool.lock);
+        // Another block may have opened meanwhile and now owns the teardown.
+        rask_task_mutex_lock(&g_life, "closing a ThreadPool block");
+    }
+    // Last block, nothing pending, and `g_life` keeps any block from opening:
+    // no job can arrive while the workers stop.
+    if (g_pool.started) stop_workers();
+    __atomic_store_n(&g_pool.depth, 0, __ATOMIC_RELEASE);
+    pthread_mutex_unlock(&g_life);
+}
+
+// A panic in a test's body skips the block's end (see rask_scope_close_if_open).
+// The next test has to find the pool closed, however deep the panic left it.
+//
+// Most panics leave no block open. Checking first keeps those from taking the
+// lock, which under sim is a scheduling point: a claim whose input panicked
+// was reported as running under sampled schedules, and lost its full walk.
+void rask_threadpool_close_if_open(void) {
+    if (__atomic_load_n(&g_pool.depth, __ATOMIC_ACQUIRE) == 0) return;
+    rask_task_mutex_lock(&g_life, "closing a ThreadPool block");
+    int open = __atomic_load_n(&g_pool.depth, __ATOMIC_ACQUIRE) > 0;
+    if (open) __atomic_store_n(&g_pool.depth, 1, __ATOMIC_RELEASE);
+    pthread_mutex_unlock(&g_life);
+    if (open) rask_threadpool_shutdown();
 }
 
 // ThreadPool.spawn (conc.async/S2). Outside a `using ThreadPool` block there
 // is no pool. A spawn that said `requires_pool: false` runs right here, now:
 // it may run beside what follows, and running it first is one of the orders
-// it may run in. Any other falls back to a dedicated thread rather than
-// enqueueing into a queue nothing drains.
+// it may run in. Any other panics (CC3): the checker rejects every pool spawn
+// it can see outside the block, so this is a call it couldn't see (a stored
+// closure, an interface call).
 RaskTask *rask_threadpool_spawn(void *closure_ptr, int64_t result_owned, int8_t requires_pool) {
     RaskTaskFn func = *(RaskTaskFn *)(closure_ptr);
     void *env = (char *)closure_ptr + 8;
 
-    if (!g_pool.started) {
+    if (__atomic_load_n(&g_pool.depth, __ATOMIC_ACQUIRE) == 0) {
         if (requires_pool) {
-            return rask_closure_spawn(closure_ptr, result_owned);
+            rask_panic("ThreadPool.spawn requires `using ThreadPool` context");
         }
         RaskTask *task = rask_task_new();
         rask_task_adopt_closure(task, closure_ptr, result_owned);
         rask_task_run_inline(task, func, env);
         rask_task_release(task);   // the runner's ref; the handle keeps one
         return task;
+    }
+    if (!g_pool.started) {
+        pthread_mutex_lock(&g_pool.lock);
+        g_pool.pending++;
+        pthread_mutex_unlock(&g_pool.lock);
+        return rask_closure_spawn_then(closure_ptr, result_owned, job_done);
     }
 
     RaskTask *task = rask_task_new();

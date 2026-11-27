@@ -176,18 +176,30 @@ fn builds_borrowing_closure(func: &MirFunction) -> bool {
 fn param_aliases(f: &MirFunction) -> HashMap<LocalId, usize> {
     let mut alias: HashMap<LocalId, usize> =
         f.params.iter().enumerate().map(|(i, p)| (p.id, i)).collect();
+    let placed = placed_locals(f);
     // A derived local can be defined after the one it comes from is itself
     // discovered, so iterate rather than assuming a single pass reaches all.
     loop {
         let mut changed = false;
         for b in &f.blocks {
             for s in &b.statements {
+                // A name bound where an element sits (`for mutate e in a`,
+                // `with a[1] as e`) is that element.
+                if let MirStmtKind::BindPlace { dst, addr } = &s.kind {
+                    if let Some(&i) = alias.get(addr) {
+                        changed |= alias.insert(*dst, i).is_none();
+                    }
+                    continue;
+                }
                 let MirStmtKind::Assign { dst, rvalue } = &s.kind else { continue };
                 let src = match rvalue {
                     MirRValue::Use(MirOperand::Local(id)) => *id,
                     // Only `base + offset`: the base is the address, and a
                     // constant offset keeps it inside the same storage.
                     MirRValue::BinaryOp { op: BinOp::Add, left: MirOperand::Local(id), .. } => *id,
+                    // The address of a bound element is the element's
+                    // address (`f(mutate e)` inside `for mutate e in a`).
+                    MirRValue::Ref(id) if placed.contains(id) => *id,
                     _ => continue,
                 };
                 let Some(&i) = alias.get(&src) else { continue };
@@ -201,6 +213,18 @@ fn param_aliases(f: &MirFunction) -> HashMap<LocalId, usize> {
         }
     }
     alias
+}
+
+/// Names bound where an element sits (`BindPlace`).
+fn placed_locals(f: &MirFunction) -> std::collections::HashSet<LocalId> {
+    f.blocks
+        .iter()
+        .flat_map(|b| b.statements.iter())
+        .filter_map(|s| match &s.kind {
+            MirStmtKind::BindPlace { dst, .. } => Some(*dst),
+            _ => None,
+        })
+        .collect()
 }
 
 pub(crate) fn params_written_through(fns: &[MirFunction]) -> HashMap<String, std::collections::HashSet<usize>> {
@@ -217,9 +241,13 @@ pub(crate) fn params_written_through(fns: &[MirFunction]) -> HashMap<String, std
     for f in fns {
         let mut set = HashSet::new();
         let alias = param_aliases(f);
+        // Assigning a bound element writes the element; assigning a copy
+        // of a parameter writes only the copy.
+        let placed = placed_locals(f);
         for b in &f.blocks {
             for s in &b.statements {
                 let written = match &s.kind {
+                    MirStmtKind::Assign { dst, .. } if placed.contains(dst) => Some(dst),
                     MirStmtKind::Store { addr, .. } => Some(addr),
                     MirStmtKind::ArrayStore { base, .. } => Some(base),
                     MirStmtKind::ZeroAggregate { local } => Some(local),
@@ -815,11 +843,13 @@ fn remap_stmt(
             base,
             index,
             elem_size,
+            inline,
             value,
         } => MirStmtKind::ArrayStore {
             base: local_map.get(base).copied().unwrap_or(*base),
             index: remap_operand(index, local_map),
             elem_size: *elem_size,
+            inline: *inline,
             value: remap_operand(value, local_map),
         },
         MirStmtKind::GlobalRef { dst, name } => MirStmtKind::GlobalRef {

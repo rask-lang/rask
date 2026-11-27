@@ -567,7 +567,6 @@ impl<'a> Monomorphizer<'a> {
                             .zip(args.iter())
                             .filter_map(|(param, arg)| match arg {
                                 rask_types::GenericArg::Type(t) => Some(TypeBinding::new(param.clone(), t.as_ref().clone())),
-                                _ => None,
                             })
                             .collect(),
                         None => Vec::new(),
@@ -667,28 +666,20 @@ impl<'a> Monomorphizer<'a> {
     }
 
     /// struct.targets/EX4: an error out of main is printed before the process
-    /// exits 1, so `{ErrType}_message` is called from the entry's return path
-    /// even when nothing in the program calls it. Nothing in the call graph
-    /// says so, hence this root.
+    /// exits 1, so its `message()` is called from the entry's wrapper even
+    /// when nothing in the program calls it. Nothing in the call graph says
+    /// so, hence these roots. An `any Error` reaches its message through the
+    /// box's vtable, which boxing it already queued.
     fn add_entry_error_message_roots(&mut self, entry: &str) {
+        let Some(typed) = self.typed else { return };
         let Some(decl) = self.fn_table.get(entry) else { return };
         let DeclKind::Fn(f) = &decl.kind else { return };
-        let Some(TypeExpr::Result { err, .. }) = &f.ret_ty else { return };
-        // `A | B` — every arm can be the one that reaches main.
-        let arms = match err.as_ref() {
-            TypeExpr::Union(arms) => arms.clone(),
-            one => vec![one.clone()],
-        };
-        for arm in arms {
-            // A module-qualified error, `cli.CliError`, has its methods under
-            // the type's own name: the module is how the program reached it.
-            let qualified = matches!(&arm, TypeExpr::Named { path, args } if path.len() > 1 && args.is_empty());
-            let name = match arm.last_segment() {
-                Some(last) if qualified => format!("{last}_message"),
-                _ => format!("{}_message", arm),
-            };
-            if self.method_table.contains_key(&name) {
-                self.enqueue_root(name);
+        let Some(sig) = typed.fn_sigs.get(&f.id) else { return };
+        let Some(calls) = self.symbols.error_messages(&sig.ret, &typed.types) else { return };
+        for call in calls {
+            if let crate::MessageCall::Direct(call) = call {
+                self.roots.push(call.symbol);
+                self.enqueue(call.qualified, call.type_args);
             }
         }
     }
@@ -885,7 +876,7 @@ impl<'a> Monomorphizer<'a> {
             // for a word read past the value.
             Type::Array { elem, len } => Some(Type::Array {
                 elem: Box::new(Self::nameable_type(elem, types)?),
-                len: *len,
+                len: len.map_opt(|t| Self::nameable_type(t, types))?,
             }),
             Type::None | Type::Unit => Some(ty.clone()),
             _ => None,
@@ -902,7 +893,7 @@ impl<'a> Monomorphizer<'a> {
         }
         let mut out = Vec::with_capacity(args.len());
         for arg in args {
-            let rask_types::GenericArg::Type(inner) = arg else { return None };
+            let rask_types::GenericArg::Type(inner) = arg;
             let named = Self::nameable_type(inner, types)?;
             out.push(rask_types::GenericArg::Type(Box::new(named)));
         }
@@ -916,7 +907,9 @@ impl<'a> Monomorphizer<'a> {
         let Some(typed) = self.typed else { return };
         let Some(result) = self.node_type(id) else { return };
         for call in self.symbols.error_messages(&result, &typed.types).unwrap_or_default() {
-            self.enqueue(call.qualified, call.type_args);
+            if let crate::MessageCall::Direct(call) = call {
+                self.enqueue(call.qualified, call.type_args);
+            }
         }
     }
 
@@ -943,7 +936,6 @@ impl<'a> Monomorphizer<'a> {
         };
         let elem = match args.first()? {
             rask_types::GenericArg::Type(inner) => inner,
-            _ => return None,
         };
         let name = rask_check::receiver_name(elem, &typed.types)?;
         let mangled = format!("{}_compare", name);
@@ -1754,13 +1746,18 @@ impl<'a> Monomorphizer<'a> {
 /// Every expression and statement node of a declaration's body: what an
 /// instance has records for.
 pub(crate) fn body_nodes(decl: &Decl) -> Vec<NodeId> {
-    struct Collect(Vec<NodeId>);
+    body_nodes_with_spans(decl).into_iter().map(|(id, _)| id).collect()
+}
+
+/// `body_nodes`, with where each is written.
+pub(crate) fn body_nodes_with_spans(decl: &Decl) -> Vec<(NodeId, rask_ast::Span)> {
+    struct Collect(Vec<(NodeId, rask_ast::Span)>);
     impl rask_ast::rewrite::Rewrite for Collect {
         fn expr(&mut self, e: &mut rask_ast::expr::Expr) {
-            self.0.push(e.id);
+            self.0.push((e.id, e.span));
         }
         fn body(&mut self, b: &mut Vec<rask_ast::stmt::Stmt>) {
-            self.0.extend(b.iter().map(|s| s.id));
+            self.0.extend(b.iter().map(|s| (s.id, s.span)));
         }
     }
     let mut c = Collect(Vec::new());

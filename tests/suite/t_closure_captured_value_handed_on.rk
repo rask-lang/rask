@@ -1,0 +1,80 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Closures whose captured values move on, or don't, depending on the path
+// taken. Each of these leaked natively at one point; the leak gate runs this
+// file. A captured Vec handed on in one branch only (#2043), a closure
+// replaced through a write guard (#2039), and a closure returned out of a
+// task (#1901).
+
+import sync.Shared
+import sync.Mutex
+import thread.ThreadPool
+
+func long(n: i64) -> string {
+    return "long-heap-string-number-{n}-xxxxxxxxxxxxxxxxxxxx"
+}
+
+func kept_if(take v: Vec<string>, c: bool) -> Vec<string> {
+    let f = || v.len()
+    mut keep: Vec<string> = Vec.new()
+    if f() > 0 && c {
+        keep = v
+    }
+    return keep
+}
+
+func pushed_in_task(n: usize) -> usize {
+    using Multitasking {
+        let v: Vec<i64> = [1, 2]
+        let flag = v.len() > n
+        let h = spawn {
+            mut out: Vec<Vec<i64>> = Vec.new()
+            if flag {
+                out.push(v)
+            }
+            return out.len()
+        }
+        return h.join()!
+    }
+}
+
+func make(s: string) -> func() -> string {
+    let v: Vec<string> = Vec.from(["{s} first", "{s} second"])
+    return || v[0]
+}
+
+func from_task() -> func() -> usize {
+    let fresh = Vec.from([1, 2, 3])
+    let h = ThreadPool.spawn {
+        let f = || fresh.len()
+        f
+    }
+    let h2 = h
+    return h2.join()!
+}
+
+test "a captured Vec kept on one branch is freed on the other" {
+    assert kept_if([long(8)], true).len() == 1
+    assert kept_if([long(9)], false).len() == 0
+}
+
+test "a task hands on a captured Vec on one branch only" {
+    assert pushed_in_task(5) == 0
+    assert pushed_in_task(1) == 1
+}
+
+test "replacing a shared closure frees the one it held" {
+    let sh: Shared<func() -> string, Mutex> = Shared.mutex(make("shared"))
+    with sh.write() as f {
+        f = make("replaced")
+    }
+    with sh.read() as f {
+        assert f() == "replaced first"
+    }
+}
+
+test "a closure returned from a task frees its environment" {
+    using ThreadPool {
+        let g = from_task()
+        assert g() == 3
+    }
+}

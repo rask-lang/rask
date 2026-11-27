@@ -640,6 +640,14 @@ pub enum TypeError {
         op: &'static str,
         span: Span,
     },
+    /// The body used a loop's item as one type, and the source it walks,
+    /// which settled only after the body was checked, yields another.
+    #[error("loop yields `{yields}`, but its item is used as `{used_as}`")]
+    LoopItemMismatch {
+        yields: Type,
+        used_as: Type,
+        span: Span,
+    },
     #[error("`{found}` can't be iterated")]
     NotIterable {
         found: Type,
@@ -1615,11 +1623,7 @@ pub enum TypeError {
     /// `[x; n]` whose count isn't known at compile time. The length is part
     /// of the array's type, so a run-time count has no type to give it.
     #[error("the count of an array repeat isn't known at compile time")]
-    ArrayRepeatCount {
-        /// A `comptime` parameter named as the count, which can't size one yet.
-        comptime_param: Option<String>,
-        span: Span,
-    },
+    ArrayRepeatCount { span: Span },
 
     #[error("`{ty}` is over the 64 KiB a value can take")]
     ValueTooLarge {
@@ -1981,6 +1985,11 @@ impl TypeError {
             IncomparableOperands { left, right, .. } => {
                 *left = f(left);
                 *right = f(right);
+            }
+
+            LoopItemMismatch { yields, used_as, .. } => {
+                *yields = f(yields);
+                *used_as = f(used_as);
             }
 
             AtomicPayload { ty, .. } => *ty = f(ty),

@@ -99,6 +99,8 @@ impl TypeChecker {
     }
 
     fn check_fn_scoped(&mut self, f: &FnDecl) {
+        let written = f.params.iter().filter_map(|p| p.ty.as_ref()).chain(f.ret_ty.as_ref());
+        self.check_length_params(&f.type_params, written, f.span);
         // GC5: public functions must have full type annotations
         let unannotated_params: Vec<String> = f.params.iter()
             .filter(|p| p.name != "self" && p.ty.is_none())
@@ -436,6 +438,38 @@ impl TypeChecker {
         // @no_alloc enforcement: scan body for heap allocations
         if f.attrs.iter().any(|a| a.is("no_alloc")) {
             self.check_no_alloc(&f.name, &f.body);
+        }
+    }
+
+    /// A declaration's parameters each stay on their side: a `comptime N:
+    /// usize` is a length and a plain `T` is a type. `func f<T>(a: [i64; T])`
+    /// otherwise type-checked and bound `T` to whatever length a call passed.
+    pub(super) fn check_length_params<'t>(
+        &mut self,
+        params: &[rask_ast::decl::TypeParam],
+        written: impl IntoIterator<Item = &'t TypeExpr>,
+        span: Span,
+    ) {
+        if params.is_empty() {
+            return;
+        }
+        for ty in written {
+            let mut wrong: Vec<String> = Vec::new();
+            ty.walk_array_lengths(&mut |len| {
+                if params.iter().any(|p| p.name == len && !p.is_comptime) {
+                    wrong.push(format!(
+                        "`{len}` is a type parameter, so it can't be an array length; declare it `comptime {len}: usize`"
+                    ));
+                }
+            });
+            ty.walk_names(&mut |name| {
+                if params.iter().any(|p| p.name == name && p.is_comptime) {
+                    wrong.push(format!("`{name}` is a `comptime` length, not a type"));
+                }
+            });
+            for msg in wrong {
+                self.errors.push(TypeError::GenericError(msg, span));
+            }
         }
     }
 
@@ -904,7 +938,6 @@ impl TypeChecker {
                     };
                     match args.get(pick)? {
                         rask_types::GenericArg::Type(t) => (**t).clone(),
-                        _ => return None,
                     }
                 }
                 _ => return None,
@@ -1004,7 +1037,7 @@ impl TypeChecker {
 }
 
 fn is_runtime_context(ty: &str) -> bool {
-    matches!(ty, "Multitasking" | "MultiTasking" | "multitasking" | "ThreadPool" | "threadpool")
+    matches!(ty, "Multitasking" | "ThreadPool")
 }
 
 /// Levenshtein distance, for type-name suggestions.

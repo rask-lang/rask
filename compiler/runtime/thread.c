@@ -248,6 +248,7 @@ typedef struct {
     RaskTaskFn  func;
     void       *env;
     RaskTask   *task;
+    void      (*done)(void);   // after the body, however it ended; may be NULL
 } TaskEntry;
 
 // ─── Task slots ────────────────────────────────────────────
@@ -502,9 +503,11 @@ static void task_entry_run(TaskEntry *entry) {
     RaskTask *t = entry->task;
     RaskTaskFn func = entry->func;
     void *env = entry->env;
+    void (*done)(void) = entry->done;
     rask_free(entry);
     rask_task_run_body(t, func, env);
     rask_task_release(t);
+    if (done) done();
 }
 
 static void *task_thread_entry(void *arg) {
@@ -527,13 +530,13 @@ static void task_fiber_entry(void *arg) {
 // ─── Threads ───────────────────────────────────────────────
 
 static RaskTask *task_spawn_thread(RaskTaskFn func, void *env, void *closure_base,
-                                   int64_t result_owned) {
+                                   int64_t result_owned, void (*done)(void)) {
     RaskTask *t = rask_task_new();
     rask_task_adopt_closure(t, closure_base, result_owned);
     t->own_thread = 1;
 
     TaskEntry *entry = (TaskEntry *)rask_alloc(sizeof(TaskEntry));
-    *entry = (TaskEntry){ .func = func, .env = env, .task = t };
+    *entry = (TaskEntry){ .func = func, .env = env, .task = t, .done = done };
 
 #ifdef RASK_SIM
     if (rask_sim_active()) {
@@ -938,12 +941,17 @@ static int64_t closure_spawn_entry(void *arg) {
 // `result_owned`: the closure hands back a heap box rather than a plain value.
 // See `RaskTask::result_owned`.
 RaskTask *rask_closure_spawn(void *closure_ptr, int64_t result_owned) {
+    return rask_closure_spawn_then(closure_ptr, result_owned, NULL);
+}
+
+// `done` runs on the task's thread once the body has ended, panic included.
+RaskTask *rask_closure_spawn_then(void *closure_ptr, int64_t result_owned, void (*done)(void)) {
     RaskTaskFn func = *(RaskTaskFn *)(closure_ptr);
     void *env = (char *)closure_ptr + 8;
 
     RaskSpawnCtx *ctx = (RaskSpawnCtx *)rask_alloc(sizeof(RaskSpawnCtx));
     *ctx = (RaskSpawnCtx){ .func = func, .env = env };
-    return task_spawn_thread(closure_spawn_entry, ctx, closure_ptr, result_owned);
+    return task_spawn_thread(closure_spawn_entry, ctx, closure_ptr, result_owned, done);
 }
 
 // `Thread.spawn` — a raw OS thread, which sim can't schedule (sim/B1). Task

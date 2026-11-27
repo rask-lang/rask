@@ -308,8 +308,15 @@ fn unwind_glue(func: &MirFunction, target: rask_ast::Target) -> Option<MirFuncti
         // the local.
         let mut map: HashMap<LocalId, LocalId> = HashMap::new();
         let ph_ty = original.get(&release.placeholder).map(|l| l.ty.clone()).unwrap_or(MirType::Ptr);
+        // A string released by value (`rc_dec`) is read out of its slot; one
+        // released in place (`ReleaseSlot`) is walked at the slot's address.
+        let in_place = release.stmts.iter().any(|s| {
+            matches!(&s.kind,
+                MirStmtKind::RcDecContents { local: l } | MirStmtKind::ReleaseSlot { addr: l, .. }
+                    if *l == release.placeholder)
+        });
         let value = fresh(match ph_ty {
-            MirType::Buffer => MirType::Buffer,
+            MirType::Buffer if !in_place => MirType::Buffer,
             _ => MirType::Ptr,
         });
         map.insert(release.placeholder, value);

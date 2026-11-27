@@ -1066,7 +1066,6 @@ impl TypeTable {
             .map(String::as_str)
             .zip(recv_args.iter().filter_map(|a| match a {
                 rask_types::GenericArg::Type(t) => Some((**t).clone()),
-                _ => None,
             }))
             .collect();
         entries.iter().find_map(|e| {
@@ -1176,7 +1175,6 @@ impl TypeTable {
             args.iter()
                 .map(|a| match a {
                     GenericArg::Type(t) => GenericArg::Type(Box::new(self.as_stdlib_reads(t))),
-                    other => other.clone(),
                 })
                 .collect()
         };
@@ -1338,7 +1336,6 @@ impl TypeTable {
             .zip(args)
             .filter_map(|(p, a)| match a {
                 GenericArg::Type(t) => Some((p.clone(), (**t).clone())),
-                _ => None,
             })
             .collect();
         crate::interfaces::substitute_type(binding, &map)
@@ -1943,7 +1940,6 @@ impl TypeTable {
                 }
                 args.iter().any(|a| match a {
                     rask_types::GenericArg::Type(t) => self.type_is_transitive_resource(t),
-                    _ => false,
                 })
             }
             Type::Tuple(elems) => elems.iter().any(|t| self.type_is_transitive_resource(t)),
@@ -1969,7 +1965,6 @@ impl TypeTable {
                 }
                 args.iter().any(|a| match a {
                     rask_types::GenericArg::Type(t) => self.type_is_transitive_resource(t),
-                    _ => false,
                 })
             }
             _ => false,
@@ -2056,7 +2051,6 @@ impl TypeTable {
     pub fn shared_payload<'t>(&self, ty: &'t Type) -> Option<&'t Type> {
         match self.shared_args(ty)?.first()? {
             GenericArg::Type(t) => Some(t),
-            _ => None,
         }
     }
 
@@ -2119,7 +2113,6 @@ impl TypeTable {
             // A container's clone copies its elements.
             return args.iter().find_map(|a| match a {
                 GenericArg::Type(t) => self.uncloneable_handle_in(t, seen, depth + 1),
-                _ => None,
             });
         }
         if seen.iter().any(|(i, a)| *i == id && a.as_slice() == args) {
@@ -2138,7 +2131,6 @@ impl TypeTable {
             .zip(args)
             .filter_map(|(p, a)| match a {
                 GenericArg::Type(t) => Some((p.clone(), (**t).clone())),
-                _ => None,
             })
             .collect();
         slots
@@ -2163,7 +2155,6 @@ impl TypeTable {
             .zip(args)
             .filter_map(|(p, a)| match a {
                 GenericArg::Type(t) => Some((p.clone(), (**t).clone())),
-                _ => None,
             })
             .collect();
         if !subst.values().any(|t| self.holds_linear_value(t)) {
@@ -2324,7 +2315,6 @@ impl TypeTable {
             "Staged" if mode != BoundMode::Task => None,
             _ => args.iter().find_map(|a| match a {
                 GenericArg::Type(t) => self.task_bound_inner(t, seen, mode),
-                _ => None,
             }),
         };
         match ty {
@@ -2705,7 +2695,6 @@ impl TypeTable {
         let in_args = |args: &[GenericArg]| {
             args.iter().find_map(|a| match a {
                 GenericArg::Type(t) => self.find_rack_of_non_struct(t),
-                _ => None,
             })
         };
         match ty {
@@ -2755,7 +2744,6 @@ impl TypeTable {
     fn first_container_in_args(&self, args: &[GenericArg]) -> Option<(String, Type)> {
         args.iter().find_map(|a| match a {
             GenericArg::Type(t) => self.find_linear_container(t),
-            _ => None,
         })
     }
 
@@ -2787,8 +2775,8 @@ impl TypeTable {
     /// only payload — the shape `try` can wrap into on the way out.
     ///
     /// Returns every match so the caller can tell "no wrap" from "more than one
-    /// variant would fit, say which". Both sides must be nominal: a union or
-    /// generic payload isn't a boundary-enum wrapper.
+    /// variant would fit, say which". The payload has to be the error's type,
+    /// whatever kind of type that is: `G(Gen<string>)` holds a `Gen<string>`.
     pub fn error_wrap_variants(&self, source: &Type, target: &Type) -> Vec<String> {
         let variants = match target {
             Type::Named(id) => match self.get(*id) {
@@ -2797,32 +2785,38 @@ impl TypeTable {
             },
             _ => return Vec::new(),
         };
-        let want = match self.nominal_key(source) {
-            Some(k) => k,
-            None => return Vec::new(),
-        };
         // Wrapping a type in itself isn't a widening — plain unification covers it.
-        if self.nominal_key(target).as_deref() == Some(want.as_str()) {
+        if self.same_type(source, target) {
             return Vec::new();
         }
         variants
             .iter()
-            .filter(|(_, payload)| {
-                payload.len() == 1 && self.nominal_key(&payload[0]).as_deref() == Some(want.as_str())
-            })
+            .filter(|(_, payload)| payload.len() == 1 && self.same_type(&payload[0], source))
             .map(|(name, _)| name.clone())
             .collect()
     }
 
-    /// The bare type name behind a nominal type, however the declaration order
-    /// left it spelled. `None` for anything structural.
-    fn nominal_key(&self, ty: &Type) -> Option<String> {
-        match ty {
-            Type::Named(id) => Some(self.type_name(*id)),
-            Type::UnresolvedNamed(name) => {
-                Some(name.trim().to_string())
-            }
+    /// The same type, however the declaration order left each side spelled: a
+    /// payload registered before its type is still `UnresolvedNamed`.
+    fn same_type(&self, a: &Type, b: &Type) -> bool {
+        let base = |t: &Type| match t {
+            Type::Named(id) | Type::Generic { base: id, .. } => Some(self.type_name(*id)),
+            Type::UnresolvedNamed(name) | Type::UnresolvedGeneric { name, .. } => Some(name.trim().to_string()),
             _ => None,
+        };
+        let args = |t: &Type| match t {
+            Type::Generic { args, .. } | Type::UnresolvedGeneric { args, .. } => args.clone(),
+            _ => Vec::new(),
+        };
+        match (base(a), base(b)) {
+            (Some(x), Some(y)) => {
+                let (xs, ys) = (args(a), args(b));
+                x == y
+                    && xs.len() == ys.len()
+                    && xs.iter().zip(&ys).all(|(GenericArg::Type(p), GenericArg::Type(q))| self.same_type(p, q))
+            }
+            (None, None) => a == b,
+            _ => false,
         }
     }
 
@@ -3023,7 +3017,7 @@ impl TypeTable {
             Type::Tuple(elems) => Type::Tuple(elems.iter().map(|e| self.named(e, written)).collect()),
             Type::Array { elem, len } => Type::Array {
                 elem: Box::new(self.named(elem, written)),
-                len: *len,
+                len: len.map(|t| self.named(t, written)),
             },
             Type::UnresolvedGeneric { name, args } => Type::UnresolvedGeneric {
                 name: name.clone(),
@@ -3047,7 +3041,6 @@ impl TypeTable {
     fn named_arg(&self, arg: &GenericArg, written: bool) -> GenericArg {
         match arg {
             GenericArg::Type(ty) => GenericArg::Type(Box::new(self.named(ty, written))),
-            GenericArg::ConstUsize(n) => GenericArg::ConstUsize(*n),
         }
     }
 

@@ -172,7 +172,11 @@ impl Interpreter {
             // width too. A narrow unsigned value has to be cut back to it:
             // `~200u8` is 55, not 18446744073709551415.
             "bit_not" => Ok(Value::Int(kind.wrap(!a), kind)),
-            "abs" => Ok(Value::Int(a.wrapping_abs(), kind)),
+            // A negative value's magnitude is its negation, checked like
+            // `-a`: `i8.MIN` has no positive i8 (OV1). An unsigned value is
+            // its own.
+            "abs" if !kind.is_unsigned() && a < 0 => checked_neg(kind, a).map(|v| Value::Int(v, kind)),
+            "abs" => Ok(Value::Int(a, kind)),
             // AR3: the floored answer, always non-negative — `(-1).mod(10)` is
             // 9, where `-1 % 10` is -1. This is the expression people write by
             // hand as `((a % n) + n) % n`, with a name and one evaluation of

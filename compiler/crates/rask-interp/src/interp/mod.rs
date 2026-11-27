@@ -197,6 +197,9 @@ pub struct Interpreter {
     pub(crate) resource_tracker: ResourceTracker,
     /// Optional output buffer for capturing stdout (used in tests).
     output_buffer: Option<Arc<Mutex<String>>>,
+    /// The `using ThreadPool` block this code runs under. Not a variable:
+    /// a job's closure carries off only what it names, and lost it.
+    pub(crate) thread_pool: Option<Arc<crate::value::ThreadPoolInner>>,
     /// Command-line arguments passed to the program.
     pub(crate) cli_args: Vec<String>,
     /// Build script state (set when running via `run_build`).
@@ -566,6 +569,7 @@ impl Interpreter {
             const_facts: Arc::new(HashMap::new()),
             resource_tracker: ResourceTracker::new(),
             output_buffer: None,
+            thread_pool: None,
             cli_args: vec![],
             build_state: None,
             sources: Arc::default(),
@@ -626,6 +630,7 @@ impl Interpreter {
             const_facts: Arc::new(HashMap::new()),
             resource_tracker: ResourceTracker::new(),
             output_buffer: None,
+            thread_pool: None,
             cli_args: args,
             node_types: HashMap::new(),
             escaping_closures: std::collections::HashSet::new(),
@@ -688,6 +693,7 @@ impl Interpreter {
             const_facts: Arc::new(HashMap::new()),
             resource_tracker: ResourceTracker::new(),
             output_buffer: Some(buffer.clone()),
+            thread_pool: None,
             cli_args: vec![],
             build_state: None,
             sources: Arc::default(),
@@ -1042,7 +1048,6 @@ impl Interpreter {
                 .zip(args)
                 .filter_map(|(p, a)| match a {
                     rask_types::GenericArg::Type(t) => Some((p.name.clone(), (**t).clone())),
-                    _ => None,
                 })
                 .collect(),
         )
@@ -1100,7 +1105,6 @@ impl Interpreter {
             Type::Array { elem, .. } => self.option_layers(elem),
             Type::Generic { args, .. } | Type::UnresolvedGeneric { args, .. } => match args.first()? {
                 GenericArg::Type(inner) => self.option_layers(inner),
-                _ => None,
             },
             _ => None,
         }
@@ -1210,6 +1214,7 @@ impl Interpreter {
         // reason, which is the failure std.testing/T19 exists to surface
         // (#1093). Shared rather than copied, because there is one report.
         child.output_buffer = self.output_buffer.clone();
+        child.thread_pool = self.thread_pool.clone();
         // The task owns what it captured. It runs on its own interpreter with
         // its own resource tracker, so without this the parent went on owing
         // a resource the task had already closed, and died at the scope's exit
@@ -1324,9 +1329,30 @@ impl Interpreter {
         Ok((child, Arc::clone(body), *ret))
     }
 
+    /// A `using Multitasking` block is open somewhere in the process.
+    pub(crate) fn require_multitasking(&self) -> Result<(), RuntimeError> {
+        if crate::value::ACTIVE_RUNTIME.read().unwrap().is_some() {
+            return Ok(());
+        }
+        Err(RuntimeError::Panic(
+            "RUNTIME PANIC: spawn with no active `using Multitasking` scope\n\
+             \n\
+             This can happen when:\n\
+             - A closure containing a spawn is stored and called outside a block\n\
+             - An interface object dispatches to an impl that spawns\n\
+             - FFI calls back into Rask outside any scope\n\
+             \n\
+             Install a `using Multitasking { ... }` block that encloses the call.".to_string(),
+        ))
+    }
+
+    pub(crate) fn no_pool() -> RuntimeError {
+        RuntimeError::Panic("ThreadPool.spawn requires `using ThreadPool` context".to_string())
+    }
+
     /// Inside a `using ThreadPool` block.
     pub(crate) fn in_thread_pool(&self) -> bool {
-        matches!(self.env.get("__thread_pool"), Some(Value::ThreadPool(_)))
+        self.thread_pool.is_some()
     }
 
     /// Start an OS thread (`Thread.spawn { … }`).
@@ -1343,19 +1369,6 @@ impl Interpreter {
     /// Start a green task (`spawn { … }` in `using Multitasking`). In the
     /// interpreter it's an OS thread.
     pub(crate) fn spawn_async_task(&mut self, closure: Value, block: &rask_ast::expr::Expr) -> Result<Value, RuntimeError> {
-        // Check for active runtime slot (CC3 fallback)
-        if crate::value::ACTIVE_RUNTIME.read().unwrap().is_none() {
-            return Err(RuntimeError::Panic(
-                "RUNTIME PANIC: spawn with no active `using Multitasking` scope\n\
-                 \n\
-                 This can happen when:\n\
-                 - A closure containing a spawn is stored and called outside a block\n\
-                 - An interface object dispatches to an impl that spawns\n\
-                 - FFI calls back into Rask outside any scope\n\
-                 \n\
-                 Install a `using Multitasking { ... }` block that encloses the call.".to_string(),
-            ));
-        }
         let (child, body, ret) = self.task_from_closure("spawn", closure, block)?;
 
         // The thread starts now; the body waits for one of the scope's
@@ -1375,41 +1388,32 @@ impl Interpreter {
     pub(crate) fn spawn_pool_task(&mut self, closure: Value, block: &rask_ast::expr::Expr) -> Result<Value, RuntimeError> {
         use crate::value::PoolTask;
 
-        // Check for thread pool context
-        let pool = match self.env.get("__thread_pool") {
-            Some(Value::ThreadPool(ref p)) => Arc::clone(p),
-            _ => {
-                return Err(RuntimeError::TypeError(
-                    "ThreadPool.spawn requires `using ThreadPool` context".to_string(),
-                ))
-            }
-        };
+        let Some(pool) = self.thread_pool.clone() else { return Err(Self::no_pool()) };
         let (child, body, ret) = self.task_from_closure("ThreadPool.spawn", closure, block)?;
 
         let (result_tx, result_rx) = mpsc::sync_channel::<Result<Value, String>>(1);
         let cancel = Arc::new(crate::value::CancelToken::default());
         let flag = cancel.clone();
 
+        let finished = Arc::clone(&pool);
         let task = PoolTask {
             work: Box::new(move || {
                 let ended = crate::value::with_cancel_flag(flag, move || run_task_body(child, body, ret));
                 let _ = result_tx.send(ended);
+                finished.job_done();
             }),
         };
 
+        // The block stays open until its last job ends (see `drain`), so a
+        // closed sender means this spawn came after the block, from a task
+        // that outlived it.
         let sender = pool.sender.lock().unwrap();
-        if let Some(ref tx) = *sender {
-            tx.send(task).map_err(|_| {
-                RuntimeError::ResourceClosed {
-                    resource_type: "ThreadPool".to_string(),
-                    operation: "spawn on".to_string(),
-                }
-            })?;
-        } else {
-            return Err(RuntimeError::TypeError(
-                "thread pool is shut down".to_string(),
-            ));
+        let Some(ref tx) = *sender else { return Err(Self::no_pool()) };
+        pool.job_started();
+        if tx.send(task).is_err() {
+            return Err(Self::no_pool());
         }
+        drop(sender);
 
         let join_handle = crate::spawn_interp_thread(move || {
             result_rx
@@ -1675,7 +1679,9 @@ impl Interpreter {
             // explicit `return SomeError` came back as an ordinary value and
             // the process reported success (#345).
             if let Some(err) = Self::main_error_return(entry.ret_ty.as_ref(), &value) {
-                let msg = self.describe_error_value(err);
+                let msg = self
+                    .describe_error_value(err)
+                    .map_err(|e| RuntimeDiagnostic::new(e, entry.span))?;
                 return Err(RuntimeDiagnostic::new(
                     RuntimeError::MainReturnedError(msg),
                     entry.span,
@@ -1735,12 +1741,15 @@ impl Interpreter {
 
     /// Human-readable text for an error value: its own `message()` when the
     /// type defines one, otherwise the value as printed.
-    fn describe_error_value(&mut self, err: &Value) -> String {
+    /// The error's `message()`, or its debug form when it has none. A panic
+    /// inside `message()` is the program's panic and comes back as one (#2096).
+    fn describe_error_value(&mut self, err: &Value) -> Result<String, RuntimeError> {
         let owned = err.clone();
-        if let Ok(Value::String(ref s)) = self.call_method(owned.clone(), "message", vec![], None) {
-            return s.lock().unwrap().clone();
+        match self.call_method(owned.clone(), "message", vec![], None) {
+            Ok(Value::String(ref s)) => Ok(s.lock().unwrap().clone()),
+            Err(e) if e.is_panic() => Err(e),
+            _ => Ok(format!("{}", owned)),
         }
-        format!("{}", owned)
     }
 
     /// Run a build script: register declarations, find `func build(ctx)`,
@@ -1777,7 +1786,9 @@ impl Interpreter {
         // missing directory skipped every `compile_c` after it, and the link
         // then failed on symbols nobody had compiled.
         if let Some(err) = Self::main_error_return(build_fn.ret_ty.as_ref(), &value) {
-            let msg = self.describe_error_value(err);
+            let msg = self
+                .describe_error_value(err)
+                .map_err(|e| RuntimeDiagnostic::new(e, build_fn.span))?;
             return Err(RuntimeDiagnostic::new(
                 RuntimeError::Generic(format!("build() returned an error: {msg}")),
                 build_fn.span,

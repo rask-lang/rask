@@ -266,9 +266,8 @@ pub struct FunctionRef {
     /// constant or calls a C function made for these argument types.
     pub c_macro: Option<Box<rask_c_parse::cexpr::MacroCall>>,
     /// A C runtime function called by its own symbol, a call lowering makes
-    /// for itself (#1555): every argument a word, a word back when the call
-    /// has a destination. Codegen declares it from the call, so it needs no
-    /// dispatch row.
+    /// for itself (#1555). Set when `rask_runtime.h` declares the name;
+    /// codegen declares it from that prototype, so it needs no dispatch row.
     pub runtime: bool,
     /// What the call does with its arguments and result, for the ownership
     /// passes. A stdlib method's is read off its declaration when the call is
@@ -276,23 +275,42 @@ pub struct FunctionRef {
     /// (`borrowing`, `releasing`, `reading`, `like`). `None` is an ordinary function: it
     /// reads its arguments and the passes ask its body, if there is one.
     pub shape: Option<CallShape>,
+    /// How the C arguments and result line up with this call's operands and
+    /// destination, for a runtime call (`crate::call_abi`).
+    pub abi: crate::call_abi::CallAbi,
 }
 
 impl FunctionRef {
     /// A call by symbol. A stdlib symbol takes the shape its declaration gives.
+    /// A runtime symbol (one `rask_runtime.h` declares) is called directly.
     pub fn internal(name: String) -> Self {
         let shape = rask_stdlib::mir_metadata::declared_shape(&name);
-        Self { name, is_extern: false, elidable_clone: false, points_into_args: false, c_macro: None, runtime: false, shape }
+        let runtime = rask_stdlib::runtime_header::declares(&name);
+        Self { name, is_extern: false, elidable_clone: false, points_into_args: false, c_macro: None, runtime, shape, abi: Default::default() }
     }
 
     /// Extern "C" call.
     pub fn extern_c(name: String) -> Self {
-        Self { name, is_extern: true, elidable_clone: false, points_into_args: false, c_macro: None, runtime: false, shape: None }
+        Self { name, is_extern: true, elidable_clone: false, points_into_args: false, c_macro: None, runtime: false, shape: None, abi: Default::default() }
     }
 
-    /// A runtime function by its C symbol (`runtime`).
+    /// A runtime function by its C symbol, which `rask_runtime.h` declares.
     pub fn runtime(name: String) -> Self {
-        Self { runtime: true, ..Self::internal(name) }
+        let f = Self::internal(name);
+        debug_assert!(f.runtime, "`{}` isn't declared in rask_runtime.h", f.name);
+        f
+    }
+
+    /// This call, with its C arguments and result lined up as `abi` says.
+    pub fn with_abi(self, abi: crate::call_abi::CallAbi) -> Self {
+        Self { abi, ..self }
+    }
+
+    /// This runtime call, which writes the string it makes through a
+    /// `RaskStr *out` in front of its arguments.
+    pub fn writing_string(self) -> Self {
+        debug_assert!(self.runtime, "`{}` isn't declared in rask_runtime.h", self.name);
+        self.with_abi(crate::call_abi::CallAbi::STRING_OUT)
     }
 
     /// A call whose shape lowering states, because no declaration answers for it.
@@ -301,7 +319,7 @@ impl FunctionRef {
     }
 
     /// A spelling lowering makes up for the stdlib operation `declared_as`
-    /// (`Vec_index` for `Vec.get`, a `Shared<T, Local>`'s `Cell_set` for
+    /// (`rask_vec_get` for `Vec.get`, a `Shared<T, Local>`'s `rask_cell_set` for
     /// `Shared.set`): the same operation, so the same shape.
     pub fn like(name: impl Into<String>, declared_as: &str) -> Self {
         let shape = rask_stdlib::mir_metadata::declared_shape(declared_as)
@@ -376,6 +394,7 @@ impl FunctionRef {
 pub(crate) struct Mint {
     name: &'static str,
     what: MintWhat,
+    abi: crate::call_abi::CallAbi,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -387,17 +406,23 @@ enum MintWhat {
 
 impl Mint {
     pub(crate) const fn like(name: &'static str, declared_as: &'static str) -> Self {
-        Self { name, what: MintWhat::Like(declared_as) }
+        Self { name, what: MintWhat::Like(declared_as), abi: crate::call_abi::CallAbi::DIRECT }
     }
 
     pub(crate) const fn borrowing(name: &'static str) -> Self {
-        Self { name, what: MintWhat::Borrowing }
+        Self { name, what: MintWhat::Borrowing, abi: crate::call_abi::CallAbi::DIRECT }
+    }
+
+    /// The access a sync box's acquire hands back: the payload's address.
+    pub(crate) const fn box_payload(self) -> Self {
+        Self { abi: crate::call_abi::CallAbi::BOX_PAYLOAD, ..self }
     }
 
     pub(crate) fn call(self) -> FunctionRef {
-        match self.what {
+        let f = match self.what {
             MintWhat::Like(declared_as) => FunctionRef::like(self.name, declared_as),
             MintWhat::Borrowing => FunctionRef::borrowing(self.name),
-        }
+        };
+        f.with_abi(self.abi)
     }
 }

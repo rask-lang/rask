@@ -40,7 +40,6 @@ pub(super) fn normalize_type(ty: &Type, types: &TypeTable) -> Type {
                 .iter()
                 .map(|a| match a {
                     GenericArg::Type(t) => GenericArg::Type(Box::new(normalize_type(t, types))),
-                    other => other.clone(),
                 })
                 .collect();
             if let Some(id) = types.get_type_id(name) {
@@ -60,13 +59,12 @@ pub(super) fn normalize_type(ty: &Type, types: &TypeTable) -> Type {
             base: *base,
             args: args.iter().map(|a| match a {
                 GenericArg::Type(t) => GenericArg::Type(Box::new(normalize_type(t, types))),
-                other => other.clone(),
             }).collect(),
         },
         Type::Tuple(elems) => Type::Tuple(elems.iter().map(|e| normalize_type(e, types)).collect()),
         Type::Array { elem, len } => Type::Array {
             elem: Box::new(normalize_type(elem, types)),
-            len: *len,
+            len: len.map(|t| normalize_type(t, types)),
         },
         Type::Fn { params, ret } => Type::Fn {
             params: params.iter().map(|p| p.map(|p| normalize_type(p, types))).collect(),
@@ -228,7 +226,6 @@ impl TypeChecker {
                 args.iter()
                     .filter_map(|a| match a {
                         GenericArg::Type(t) => Some((**t).clone()),
-                        _ => None,
                     })
                     .collect::<Vec<_>>(),
             ),
@@ -1040,7 +1037,6 @@ impl TypeChecker {
             args.iter()
                 .filter_map(|a| match a {
                     GenericArg::Type(t) => Some((**t).clone()),
-                    _ => None,
                 })
                 .collect()
         };
@@ -1225,7 +1221,6 @@ impl TypeChecker {
                 args.iter()
                     .filter_map(|a| match a {
                         GenericArg::Type(t) => Some((**t).clone()),
-                        _ => None,
                     })
                     .collect(),
             ),
@@ -1259,7 +1254,6 @@ impl TypeChecker {
                             args.iter()
                                 .filter_map(|a| match a {
                                     GenericArg::Type(t) => Some((**t).clone()),
-                                    _ => None,
                                 })
                                 .collect(),
                         ),
