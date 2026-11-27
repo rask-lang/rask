@@ -416,10 +416,11 @@ pub enum TypeError {
         method: String,
         span: Span,
     },
-    #[error("`{name}` is not a type any more — it's a strategy on `Shared`")]
-    RetiredBoxType {
+    /// `Mutex.new(1)`: a locking strategy called as if it held a value.
+    #[error("`{name}` is a strategy for `Shared`, not a container")]
+    StrategyAsContainer {
         name: String,
-        replacement: String,
+        constructor: &'static str,
         span: Span,
     },
     #[error("cannot mutate `{name}` — declared `let`")]
@@ -1509,13 +1510,6 @@ pub enum TypeError {
         span: Span,
     },
 
-    /// ER23: `is TypeName` must reference a component of the union error
-    #[error("type pattern `{ty_name}` is not part of the error union `{union}`")]
-    TypePatternNotInUnion {
-        ty_name: String,
-        union: Type,
-        span: Span,
-    },
 
     /// E19/E21: a serialization annotation the compiler can't act on — the old
     /// `@skip` spelling, or `@rename` given something that isn't a string.
@@ -1970,7 +1964,9 @@ impl TypeError {
             | NoSuchField { ty, .. }
             | NoSuchMethod { ty, .. }
             | NotCallable { ty, .. }
-            | ResultNotDisjoint { ty, .. } => *ty = f(ty),
+            | ResultNotDisjoint { ty, .. }
+            | UnionOwningMember { ty, .. }
+            | VariadicArg { ty, .. } => *ty = f(ty),
 
             FixedArrayGrowth { array, .. } => *array = f(array),
 
@@ -2010,8 +2006,6 @@ impl TypeError {
             | WrapperFieldCut { receiver, .. } => *receiver = f(receiver),
 
             MissingReturn { expected_type, .. } => *expected_type = f(expected_type),
-
-            TypePatternNotInUnion { union, .. } => *union = f(union),
 
             PatternVariantMismatch { scrutinee, .. } => *scrutinee = f(scrutinee),
             TupleArity { tuple, .. } => *tuple = f(tuple),
@@ -2120,7 +2114,7 @@ impl TypeError {
             | AliasingViolation { .. }
             | MutateReadOnlyParam { .. }
             | MutateConst { .. }
-            | RetiredBoxType { .. }
+            | StrategyAsContainer { .. }
             | SharedAccessClosure { .. }
             | SharedStrategyMismatch { .. }
             | NonOptionalLink { .. }
@@ -2193,11 +2187,9 @@ impl TypeError {
             | MethodNotVisible { .. }
             | MissingFields { .. }
             | UnionMemberCount { .. }
-            | UnionOwningMember { .. }
             | NotCCallable { .. }
             | AddressOfValue { .. }
             | CMacroCall { .. }
-            | VariadicArg { .. }
             | TypeCalledAsFunction { .. }
             | PublicMissingAnnotation { .. }
             | NoReturnFinishes { .. }

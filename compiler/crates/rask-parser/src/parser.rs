@@ -671,10 +671,13 @@ impl Parser {
             }
         }
 
-        ParseResult {
-            decls,
-            errors: std::mem::take(&mut self.errors),
-        }
+        // The lexer already reported each unreadable character. A parse error
+        // that lands on one is that same mistake seen again.
+        let mut errors = std::mem::take(&mut self.errors);
+        errors.retain(|e| {
+            !self.tokens.iter().any(|t| matches!(t.kind, TokenKind::Invalid) && t.span.start == e.span.start)
+        });
+        ParseResult { decls, errors }
     }
 
     fn parse_decl(&mut self) -> Result<Decl, ParseError> {

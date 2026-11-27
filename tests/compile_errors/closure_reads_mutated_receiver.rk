@@ -1,0 +1,13 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: a closure argument reading the collection the call changes
+//
+// `remove_where` has `v` lent to it for writing while it calls the closure,
+// so the closure can't read `v` at the same time.
+
+func main() {
+    mut v: Vec<i64> = Vec.new()
+    v.push(1)
+    // ERROR: mutated while borrowed [E0320]
+    v.remove_where(|x| x < v.len())
+    println(v.len())
+}

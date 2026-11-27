@@ -1,0 +1,10 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: `import build` in a program
+//
+// The `build` module only exists for a package's build script.
+
+// ERROR: build-script only [E0955]
+import build
+
+func main() {
+}

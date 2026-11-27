@@ -620,7 +620,9 @@ impl<'a> Lexer<'a> {
                 Err(RawError::Unexpected) => {
                     let ch = self.source[span.start..].chars().next().unwrap_or('?');
                     self.errors.push(LexError::unexpected_char(ch, span.start));
-                    continue;
+                    // Kept as a token so the parser knows something stood here
+                    // and doesn't report the gap as a second mistake.
+                    TokenKind::Invalid
                 }
                 // Both run to end of input, so nothing follows to recover.
                 Err(RawError::UnterminatedString) => {

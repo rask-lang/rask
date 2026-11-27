@@ -1047,17 +1047,13 @@ impl TypeChecker {
             &self.types,
         );
         match &resolved {
-            Type::Result { err, .. } => {
+            Type::Result { .. } => {
                 // Every branch the scrutinee could hold — a flat `T? or E`
                 // offers `T`, `none` and `E` (OPT30).
                 let branches = super::check_pattern::two_branch_leaves(
                     &mut self.ctx,
                     &self.types,
                     &resolved,
-                );
-                let err_applied = super::check_pattern::normalize_type(
-                    &self.ctx.apply(err),
-                    &self.types,
                 );
                 // Exactly one unresolved branch and no match: the pattern
                 // names it. `"42".parse<i32>() is i32` pins the ok side that
@@ -1097,19 +1093,7 @@ impl TypeChecker {
                     return Ok(false);
                 }
                 if !branches.contains(&narrow_applied) {
-                    if matches!(&err_applied, Type::Union(_)) {
-                        Err(TypeError::TypePatternNotInUnion {
-                            ty_name,
-                            union: err_applied,
-                            span,
-                        })
-                    } else {
-                        Err(TypeError::TypePatternNotResult {
-                            ty_name,
-                            found: resolved,
-                            span,
-                        })
-                    }
+                    Err(TypeError::TypePatternNotResult { ty_name, found: resolved, span })
                 } else {
                     Ok(true)
                 }
@@ -2046,6 +2030,9 @@ impl TypeChecker {
 
             (Type::Var(id), other) => {
                 if self.ctx.occurs_in(*id, other) {
+                    // No type can be this; once it's said, nothing after it
+                    // should ask for the type again.
+                    self.ctx.substitutions.insert(*id, Type::Error);
                     return Err(TypeError::InfiniteType {
                         var: *id,
                         ty: other.clone(),
@@ -2088,6 +2075,9 @@ impl TypeChecker {
 
             (other, Type::Var(id)) => {
                 if self.ctx.occurs_in(*id, other) {
+                    // No type can be this; once it's said, nothing after it
+                    // should ask for the type again.
+                    self.ctx.substitutions.insert(*id, Type::Error);
                     return Err(TypeError::InfiniteType {
                         var: *id,
                         ty: other.clone(),

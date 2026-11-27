@@ -261,6 +261,8 @@ pub enum TokenKind {
     // Special
     Newline,
     Eof,
+    /// A character the lexer couldn't read. The lexer has reported it.
+    Invalid,
 
     /// Doc comment (`/// ...`)
     DocComment(String),
@@ -345,6 +347,7 @@ impl TokenKind {
             // Special
             TokenKind::Newline => "end of line",
             TokenKind::Eof => "end of file",
+            TokenKind::Invalid => "unreadable character",
             TokenKind::DocComment(_) => "doc comment",
             // `KEYWORDS` has every keyword; the lexer's test holds it to that.
             keyword => unreachable!("{keyword:?} is a keyword missing from KEYWORDS"),

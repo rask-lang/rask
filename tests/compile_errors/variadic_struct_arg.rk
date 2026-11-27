@@ -1,0 +1,18 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: a struct passed through C's `...`
+//
+// C reads variadic arguments by the type the format string names, so only
+// scalars and pointers can cross.
+
+struct Point {
+    x: i64
+}
+
+extern "C" func printf(fmt: *u8, ...) -> i32
+
+func main() {
+    unsafe {
+        // ERROR: can't be passed through `...` [E0937]
+        printf("x".as_ptr(), Point(x: 1))
+    }
+}

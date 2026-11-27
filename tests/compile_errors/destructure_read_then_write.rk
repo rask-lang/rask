@@ -1,0 +1,16 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: destructuring a value for writing while a read of it lives
+
+struct Person {
+    name: string
+    age: i64
+}
+
+func main() {
+    let p = Person(name: "a", age: 1)
+    let Person(name: name, ..) = p
+    // ERROR: written while read [E0801]
+    mut Person(name: other, ..) = p
+    println(name)
+    println(other)
+}

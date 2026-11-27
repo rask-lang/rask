@@ -778,7 +778,7 @@ impl TypeChecker {
                 }
                 self.pending_pattern_sides.push((pattern.id, scrutinee_ty.clone(), narrow_ty.clone()));
                 match &resolved {
-                    Type::Result { err, .. } => {
+                    Type::Result { .. } => {
                         // Every branch the scrutinee could hold — a flat
                         // `T? or E` offers `T`, `none` and `E` (OPT30).
                         let branches = two_branch_leaves(&mut self.ctx, &self.types, &resolved);
@@ -812,22 +812,11 @@ impl TypeChecker {
                                 span,
                             });
                         } else if !branches.contains(&narrow_ty) {
-                            let err_applied = normalize_type(&self.ctx.apply(err), &self.types);
-                            // A union error side gets the "not in union"
-                            // wording, which names the alternatives.
-                            if matches!(&err_applied, Type::Union(_)) {
-                                self.errors.push(TypeError::TypePatternNotInUnion {
-                                    ty_name: ty.to_string(),
-                                    union: err_applied,
-                                    span,
-                                });
-                            } else {
-                                self.errors.push(TypeError::TypePatternNotResult {
-                                    ty_name: ty.to_string(),
-                                    found: resolved,
-                                    span,
-                                });
-                            }
+                            self.errors.push(TypeError::TypePatternNotResult {
+                                ty_name: ty.to_string(),
+                                found: resolved,
+                                span,
+                            });
                         }
                     }
                     Type::Var(_) => {

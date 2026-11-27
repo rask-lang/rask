@@ -324,6 +324,19 @@ go down.
 | [type_declaration_rules.rk](type_declaration_rules.rk) | Aliases that name each other (E0395, with no unknown-type cascade after it), a method named like a field (E0403), an inherent method on a primitive (E0892), an error union naming one error twice (E0354: `A | A` used to be quietly shortened to `A`), `A or A` (E0343) |
 | [foreign_wrapper_spellings.rk](foreign_wrapper_spellings.rk) | `Some(x)` as a call (E0348), `Ok(v)` as a pattern (E0350), `??` on a result (E0364), `catch` on an optional (E0363), `take` on a `let` (E0366) |
 | [function_body_rules.rk](function_body_rules.rk) | A body whose last expression is dropped instead of returned (E0318), `+` on strings (E0335), `try` in a constant (E0317) |
+| [unknown_character.rk](unknown_character.rk) | A `$` the language has no use for (E0001), and only that: the parser used to report the gap it left as a missing newline |
+| [unknown_escape.rk](unknown_escape.rk) | `"\q"`, an escape the language doesn't have (E0003) |
+| [closure_calls_itself_with_itself.rk](closure_calls_itself_with_itself.rk) | `\|x\| x(x)`: a type that would contain itself (E0314), with no "couldn't work out the type" after it |
+| [no_alloc_allocates.rk](no_alloc_allocates.rk) | `Vec.new()` inside a `@no_alloc` function (E0324) |
+| [format_template_not_literal.rk](format_template_not_literal.rk) | `format(t, 1)` with the template in a variable (E0338); placeholders are matched to arguments while compiling |
+| [c_callback_wrong_function.rk](c_callback_wrong_function.rk) | A Rask function (E0935) and a capturing closure (E0936) passed where C expects a function pointer |
+| [variadic_struct_arg.rk](variadic_struct_arg.rk) | A struct passed through C's `...` (E0937). The message used to name the type `<type#N>` |
+| [import_build_outside_build_script.rk](import_build_outside_build_script.rk) | `import build` in a program (E0955) |
+| [strategy_as_container.rk](strategy_as_container.rk) | `Mutex.new(1)` and `Local.new(1)` (E0380). `Mutex.new` used to say "no method `new`", and `Mutex<i64>.new` said `Mutex` "is not a type any more", which it is: a strategy for `Shared` |
+| [type_test_not_in_error_union.rk](type_test_not_in_error_union.rk) | `r is NetFailed` on an `i64 or (ParseFailed \| DiskFailed)` (E0398). A union error side used to get a code of its own (E0347) for the same mistake, and the type printed without its parentheses |
+| [closure_reads_mutated_receiver.rk](closure_reads_mutated_receiver.rk) | `v.remove_where(\|x\| x < v.len())`: the closure reads `v` while the call has it lent for writing (E0320) |
+| [destructure_read_then_write.rk](destructure_read_then_write.rk) | `mut Person(name: other, ..) = p` while an earlier `let` destructuring still reads `p` (E0801) |
+| [closure_carries_uncloneable.rk](closure_carries_uncloneable.rk) | A returned closure carrying an `any Displayable` (E0976); cloning the closure would have to clone it |
 
 ## Running Tests
 

@@ -1359,18 +1359,17 @@ impl ToDiagnostic for crate::TypeError {
                     )
             }
 
-            RetiredBoxType { name, replacement, span } => {
-                Diagnostic::error(format!(
-                    "`{}` is not a type any more — it's a strategy on `Shared`", name
-                ))
+            StrategyAsContainer { name, constructor, span } => {
+                Diagnostic::error(format!("`{}` is a strategy for `Shared`, not a container", name))
                     .with_code("E0380")
-                    .with_primary(*span, format!("`{}` used as a type here", name))
-                    .with_fix(format!("write `{}`", replacement))
+                    .with_primary(*span, format!("`{}` holds no value to make or lock", name))
+                    .with_fix(format!("let shared = {}(value)", constructor))
+                    .with_help(format!("`{}` builds a `Shared<T, {}>`", constructor, name))
                     .with_why(
                         "`Cell`, `Shared` and `Mutex` were one concept — one value, \
                          several accessors, a scoped view — differing only in what \
-                         synchronization they took. That is a strategy, not three \
-                         types, so it moved into `Shared<T, S>` \
+                         synchronization they took. `Shared` holds the value, and \
+                         `Readers`, `Mutex` and `Local` name how it locks \
                          [analysis.storage-consolidation]",
                     )
             }
@@ -3171,13 +3170,6 @@ impl ToDiagnostic for crate::TypeError {
                         .with_fix("drop the test, or test a `T or E` or a `T?` — a plain value has only its own type, so the answer is already known")
                         .with_why("`is Type` picks one branch of a two-branch value [type.errors/ER23]")
                 }
-            }
-            TypePatternNotInUnion { ty_name, union, span } => {
-                Diagnostic::error(format!("`{}` is not a component of `{}`", ty_name, union))
-                    .with_code("E0347")
-                    .with_primary(*span, format!("not in `{}`", union))
-                    .with_help("the type in a type pattern must appear in the Result's error union")
-                    .with_why("type dispatch can only match types that the Result is declared to contain [type.errors/ER23]")
             }
             BadFieldAnnotation { attr, field, problem, fix, span } => {
                 Diagnostic::error(format!("`@{}` on field `{}`: {}", attr, field, problem))

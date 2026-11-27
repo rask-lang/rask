@@ -1,0 +1,7 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: a backslash escape the language doesn't have
+
+func main() {
+    // ERROR: unknown escape [E0003]
+    println("bad \q escape")
+}

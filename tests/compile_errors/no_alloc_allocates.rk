@@ -1,0 +1,13 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: allocating inside a function marked `@no_alloc`
+
+@no_alloc
+func count() -> usize {
+    // ERROR: allocates [E0324]
+    let v: Vec<i64> = Vec.new()
+    return v.len()
+}
+
+func main() {
+    println(count())
+}

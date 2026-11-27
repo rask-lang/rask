@@ -604,7 +604,9 @@ fn check_loaded_scoped(
             diags.push(e.to_diagnostic());
         }
         source_files.push((path.clone(), source));
-        if !parse_result.is_ok() {
+        // Tokens the lexer dropped leave a tree that isn't what was written,
+        // and checking it would report mistakes that aren't there.
+        if !parse_result.is_ok() || !lex_result.errors.is_empty() {
             return PipelineOutput::fail_with_sources(diags, source_files);
         }
         decls.extend(parse_result.decls);

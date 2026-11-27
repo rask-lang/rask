@@ -1,0 +1,15 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: a locking strategy called like a container
+//
+// `Mutex` used to hold a value. It is a strategy on `Shared` now: `Shared`
+// holds the value and `Mutex` says how it locks.
+
+import sync.Mutex
+import sync.Local
+
+func main() {
+    // ERROR: strategy, not container [E0380]
+    let m = Mutex.new(1)
+    // ERROR: strategy, not container [E0380]
+    let c = Local.new(1)
+}

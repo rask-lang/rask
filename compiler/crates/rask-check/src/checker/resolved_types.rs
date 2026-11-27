@@ -122,7 +122,8 @@ fn walk_stmt(
         StmtKind::Let { name, .. } if name == "_" || name.starts_with('_') => {}
         StmtKind::Let { name, name_span, ty: None, init } => {
             if let Some(t) = node_types.get(&init.id) {
-                if t.has_unsolved_var() {
+                // A type with an error in it was reported where the error is.
+                if t.has_unsolved_var() && !t.contains(&|t| matches!(t, Type::Error)) {
                     out.push(TypeError::UnresolvedType {
                         name: name.clone(),
                         hint: suggest(t, names),
