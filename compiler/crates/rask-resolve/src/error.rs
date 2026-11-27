@@ -167,20 +167,6 @@ impl ResolveError {
             span,
         }
     }
-
-    pub fn c_header_not_found(header: String, detail: String, span: Span) -> Self {
-        Self {
-            kind: ResolveErrorKind::CHeaderNotFound { header, detail },
-            span,
-        }
-    }
-
-    pub fn c_parse_error(header: String, detail: String, span: Span) -> Self {
-        Self {
-            kind: ResolveErrorKind::CParseError { header, detail },
-            span,
-        }
-    }
 }
 
 /// The kind of resolution error.
@@ -264,12 +250,6 @@ pub enum ResolveErrorKind {
     /// IM8: a declaration or local named like a module the program imported.
     #[error("`{name}` already names the imported module `{module}`")]
     ShadowsModule { name: String, module: String, imported_at: Span },
-
-    #[error("C header not found: `{header}` ({detail})")]
-    CHeaderNotFound { header: String, detail: String },
-
-    #[error("C header parse error in `{header}`: {detail}")]
-    CParseError { header: String, detail: String },
 
     #[error("`{module}` has no `{symbol}` to import{}", suggestion.as_ref().map(|s| format!(" — did you mean `{}`?", s)).unwrap_or_default())]
     NoSuchStdlibExport {

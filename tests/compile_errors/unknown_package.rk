@@ -1,0 +1,13 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: importing a package that doesn't exist
+//
+// One mistake, one error: each use of the name below used to add an
+// "undefined symbol" of its own.
+
+// ERROR: unknown package [E0207]
+import nosuchpkg
+
+func main() {
+    nosuchpkg.start()
+    nosuchpkg.stop()
+}

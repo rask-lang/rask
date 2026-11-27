@@ -60,6 +60,9 @@ pub struct Resolver {
     /// link, name -> scope. Read when an import fails, so the error says why
     /// the package isn't here instead of "not found" (`struct.build/D4`).
     unlinked_scopes: HashMap<String, String>,
+    /// Names an import would have bound had it found its package. The import
+    /// already reported the mistake, so a use of the name isn't a second one.
+    failed_imports: HashSet<String>,
     /// The subset of `imported_symbols` an import brought in as a *type* — a
     /// module name, a companion type, an enum's own name, a selective type
     /// import.
@@ -142,6 +145,7 @@ impl Resolver {
             file_package_ids: HashMap::new(),
             imported_symbols: HashSet::new(),
             unlinked_scopes: HashMap::new(),
+            failed_imports: HashSet::new(),
             imported_type_names: HashSet::new(),
             type_param_scopes: Vec::new(),
             reported_missing_imports: HashSet::new(),
@@ -601,6 +605,7 @@ impl Resolver {
                 unused_imports,
             })
         } else {
+            resolver.drop_failed_import_uses();
             resolver.name_unlinked_scopes();
             Err(resolver.errors)
         }
@@ -711,6 +716,17 @@ impl Resolver {
         }
 
         (external_decls, file_packages, package_deps)
+    }
+
+    fn drop_failed_import_uses(&mut self) {
+        if self.failed_imports.is_empty() {
+            return;
+        }
+        let failed = &self.failed_imports;
+        self.errors.retain(|err| {
+            let crate::error::ResolveErrorKind::UndefinedSymbol { name, .. } = &err.kind else { return true };
+            !failed.contains(name.split('.').next().unwrap_or(name))
+        });
     }
 
     /// Re-label undefined names that are really unlinked scoped deps.
@@ -1508,6 +1524,7 @@ impl Resolver {
             } else {
                 let scope = path.first().and_then(|n| self.unlinked_scopes.get(n)).cloned();
                 self.errors.push(ResolveError::unknown_package_in_scope(path.clone(), scope, span));
+                self.failed_imports.insert(binding_name);
                 return;
             }
 
@@ -1703,6 +1720,7 @@ impl Resolver {
             } else {
                 let scope = path.first().and_then(|n| self.unlinked_scopes.get(n)).cloned();
                 self.errors.push(ResolveError::unknown_package_in_scope(path.clone(), scope, span));
+                self.failed_imports.insert(binding_name);
                 return;
             }
 

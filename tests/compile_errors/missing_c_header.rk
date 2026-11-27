@@ -1,0 +1,10 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: `import c` naming a header that isn't anywhere
+//
+// The message lists every directory searched, the importing file's own first.
+
+// ERROR: C header not found [E0214]
+import c "no_such_header_for_rask_tests.h"
+
+func main() {
+}

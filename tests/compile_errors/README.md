@@ -310,6 +310,9 @@ go down.
 | [unterminated_string.rk](unterminated_string.rk) | A string whose closing quote never comes (E0002). It used to be reported as a stray `"` character |
 | [unterminated_block_comment.rk](unterminated_block_comment.rk) | A `/*` comment still open at the end of the file, nested comments included (E0006). It used to surface as a missing `}` |
 | [call_on_a_value.rk](call_on_a_value.rk) | `n(3)` on an `i64`, `s()` on a string (E0311). The result type was left unsolved and the error came later or not at all |
+| [missing_c_header.rk](missing_c_header.rk) | `import c` of a header that isn't on any search path (E0214). The error carried no code, and a file named without a directory listed an empty entry as the first place searched |
+| [return_outside_function.rk](return_outside_function.rk) | `return` inside a constant's initializer block (E0206) |
+| [unknown_package.rk](unknown_package.rk) | `import nosuchpkg` (E0207), and only that: every later `nosuchpkg.x` used to add an undefined-symbol error of its own |
 | [range_step_rules.rk](range_step_rules.rk) | `(0..10).step(0)` (E0337). The check looked for the range's type before the checker resolved it, so it never fired |
 | [call_site_markers_and_strategies.rk](call_site_markers_and_strategies.rk) | A `deleting` parameter called with `mutate` (E0330), a `Local` `Shared` where `Readers` is expected (E0381), and `using` an unknown context (E0342) |
 | [optional_operators.rk](optional_operators.rk) | `!x` on a `bool?` (E0830), and `else as e` on an optional, which has no error to bind (E0397) |

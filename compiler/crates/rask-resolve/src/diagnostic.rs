@@ -394,24 +394,6 @@ impl ToDiagnostic for crate::ResolveError {
                         .with_fix(format!("import {}", module)),
                 }
             }
-
-            CHeaderNotFound { header, detail } => {
-                Diagnostic::error(format!("C header not found: `{}`", header))
-                    .with_code("E0214")
-                    .with_primary(self.span, detail.as_str())
-                    .with_help("check the header path or install the library's development package")
-                    .with_fix("verify the header path and include directories")
-                    .with_why("import c requires the header file to exist in system or project include paths")
-            }
-
-            CParseError { header, detail } => {
-                Diagnostic::error(format!("failed to parse C header: `{}`", header))
-                    .with_code("E0211")
-                    .with_primary(self.span, detail.as_str())
-                    .with_help("check the header for C++ or non-standard extensions")
-                    .with_fix("use explicit `extern \"C\"` bindings for problematic declarations")
-                    .with_why("the built-in C parser handles standard C headers — use explicit bindings for edge cases")
-            }
         }
     }
 }
