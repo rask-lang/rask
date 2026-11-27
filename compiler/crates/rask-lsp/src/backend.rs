@@ -270,13 +270,15 @@ fn run_pipeline(uri: &Url, source: &str, version: i32) -> PipelineOutput {
         parse_result.decls.extend(sibling_decls);
     }
     let stdlib_bodies = if is_stdlib { Vec::new() } else { rask_stdlib::StubRegistry::compilable_decls() };
+    // No dependency names are rewritten here, so every use is still visible.
+    let no_rewrites = std::collections::HashMap::new();
     let input = if is_stdlib {
         rask_resolve::ResolveInput { decls: &[], stdlib: &parse_result.decls, package: None }
     } else {
         rask_resolve::ResolveInput {
             decls: &parse_result.decls,
             stdlib: &stdlib_bodies,
-            package: pkg_ctx.as_ref().map(|ctx| (&ctx.registry, ctx.root_id)),
+            package: pkg_ctx.as_ref().map(|ctx| rask_resolve::PackageBuild { registry: &ctx.registry, id: ctx.root_id, written_uses: &no_rewrites }),
         }
     };
     let resolved = match rask_resolve::resolve(input) {
