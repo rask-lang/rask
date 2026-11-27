@@ -34,7 +34,7 @@ impl ToDiagnostic for crate::ResolveError {
             // A name that used to exist gets told what replaced it. "Not found
             // in this scope" is true and useless for a rename someone is
             // meeting for the first time.
-            UndefinedSymbol { name } if retired_name(name).is_some() => {
+            UndefinedSymbol { name, .. } if retired_name(name).is_some() => {
                 let (replacement, why) = retired_name(name).unwrap();
                 Diagnostic::error(format!("`{}` is not a type any more", name))
                     .with_code("E0200")
@@ -45,7 +45,7 @@ impl ToDiagnostic for crate::ResolveError {
 
             // C's and Rust's null spellings. A pointer that may be absent is an
             // optional like any other (mem.unsafe/PT6).
-            UndefinedSymbol { name } if matches!(name.as_str(), "null" | "nullptr" | "NULL" | "nil") => {
+            UndefinedSymbol { name, .. } if matches!(name.as_str(), "null" | "nullptr" | "NULL" | "nil") => {
                 Diagnostic::error(format!("there is no `{}`: absence is `none`", name))
                     .with_code("E0200")
                     .with_primary(self.span, "write `none` here")
@@ -53,12 +53,17 @@ impl ToDiagnostic for crate::ResolveError {
                     .with_why("a `*T` is never null. A pointer that may be absent is `*T?`, one word with null for `none`, and it's tested with `p?` or `p is none` like any other optional [mem.unsafe/PT6]")
             }
 
-            UndefinedSymbol { name } => Diagnostic::error(format!("undefined symbol: `{}`", name))
-                .with_code("E0200")
-                .with_primary(self.span, "not found in this scope")
-                .with_help("check spelling or add an import")
-                .with_fix("check spelling or add an import")
-                .with_why("all symbols must be defined before use — Rask requires explicit imports"),
+            UndefinedSymbol { name, similar } => {
+                let fix = match similar {
+                    Some(s) => format!("did you mean `{}`?", s),
+                    None => "check spelling or add an import".to_string(),
+                };
+                Diagnostic::error(format!("undefined symbol: `{}`", name))
+                    .with_code("E0200")
+                    .with_primary(self.span, "not found in this scope")
+                    .with_fix(fix)
+                    .with_why("all symbols must be defined before use — Rask requires explicit imports")
+            }
 
             // structure.modules/IM1: `pkg.Name` follows from `import pkg`. The
             // stdlib's own source is resolved alongside the program and declares
@@ -224,11 +229,15 @@ impl ToDiagnostic for crate::ResolveError {
                 } else {
                     path.join(".")
                 };
+                let fix = match path.as_slice() {
+                    [name] => stdlib_module_for(name),
+                    _ => None,
+                }
+                .unwrap_or_else(|| "check the package name or add it as a dependency".to_string());
                 Diagnostic::error(format!("unknown package: `{}`", path_str))
                     .with_code("E0207")
                     .with_primary(self.span, "package not found")
-                    .with_help("check the package name or add it as a dependency")
-                    .with_fix("check the package name or add it as a dependency")
+                    .with_fix(fix)
                     .with_why("imported packages must exist in the project or be declared as dependencies")
             }
 
@@ -425,5 +434,29 @@ impl ToDiagnostic for crate::ResolveError {
                     .with_why("the built-in C parser handles standard C headers — use explicit bindings for edge cases")
             }
         }
+    }
+}
+
+/// The stdlib module someone meant by `import <name>`: a name other languages
+/// use for it, or a near-miss spelling.
+fn stdlib_module_for(name: &str) -> Option<String> {
+    match name {
+        "env" | "environ" | "dotenv" => {
+            Some("environment variables are in `os`: `import os`, then `os.env(\"HOME\")`".to_string())
+        }
+        "sys" | "process" | "argv" | "args" => {
+            Some("the program's arguments are in `os`: `import os`, then `os.args()`".to_string())
+        }
+        _ => rask_diagnostics::suggestions::did_you_mean(name, rask_stdlib::modules::module_names().iter().copied()),
+    }
+}
+
+impl ToDiagnostic for crate::UnusedLocal {
+    fn to_diagnostic(&self) -> Diagnostic {
+        Diagnostic::warning(format!("unused variable `{}`", self.name))
+            .with_code("W0901")
+            .with_primary(self.span, "nothing reads this")
+            .with_fix(format!("use it, or name it `_{}` if that's meant", self.name))
+            .with_why("an unread binding is usually a typo or a leftover from an edit [tool.warnings/W3]")
     }
 }

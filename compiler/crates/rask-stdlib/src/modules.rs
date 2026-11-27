@@ -59,8 +59,6 @@ const EXTRA_NAMES: &[(&str, &[&str])] = &[
 /// exception — and each of these is answered by the compiler rather than by
 /// Rask code, which is why there's nothing to put in a file.
 const COMPILER_MODULES: &[&str] = &[
-    // Environment variables — the checker answers `env.get` directly.
-    "env",
     // `core.transmute`, `core.Error`.
     "core",
     // Build configuration read at comptime (`cfg.target_os`).

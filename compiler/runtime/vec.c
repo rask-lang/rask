@@ -833,6 +833,13 @@ static void vec_drop_borrow(int64_t handle) {
     if (v && v->borrows > 0) v->borrows--;
 }
 
+// A fixed-size array's index check failed. The message is the one a vector
+// index gives, so the same mistake reads the same on either collection.
+void rask_panic_index(int64_t index, int64_t len) {
+    rask_panic_fmt("index out of bounds: index is %lld but length is %lld",
+                   (long long)index, (long long)len);
+}
+
 // Lend out a pointer straight into the buffer, so a callee writing through a
 // `mutate` parameter writes the real element instead of a copy. Paired with
 // rask_vec_release_elem; in between, anything that would move the buffer panics.

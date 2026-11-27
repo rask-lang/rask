@@ -658,7 +658,6 @@ pub enum ModuleKind {
     Io,     // io.read_line, io.print, etc.
     Cli,    // cli.Parser, cli.CliError
     Std,    // std.exit (legacy alias for os.exit)
-    Env,    // env.var, env.vars (legacy alias for os.env)
     Time,   // time.Instant, time.Duration, time.sleep
     Random, // random.f64, random.range, Rng, etc.
     Math,   // math.sin, math.PI, etc.
@@ -680,7 +679,6 @@ impl ModuleKind {
             ModuleKind::Io => "io",
             ModuleKind::Cli => "cli",
             ModuleKind::Std => "std",
-            ModuleKind::Env => "env",
             ModuleKind::Time => "time",
             ModuleKind::Random => "random",
             ModuleKind::Math => "math",
@@ -727,7 +725,6 @@ pub const ALL_MODULE_KINDS: &[ModuleKind] = &[
     ModuleKind::Io,
     ModuleKind::Cli,
     ModuleKind::Std,
-    ModuleKind::Env,
     ModuleKind::Time,
     ModuleKind::Random,
     ModuleKind::Math,

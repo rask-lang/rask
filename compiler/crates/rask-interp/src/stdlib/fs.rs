@@ -9,30 +9,29 @@ use std::sync::{Arc, Mutex};
 use crate::interp::{Interpreter, RuntimeError};
 use crate::value::Value;
 
-/// `Err(IoError.X)` for a failed filesystem call.
+/// `Err(IoError.X)` for a filesystem call on `path` that failed.
 ///
 /// Every `fs.*` and `File` method is declared `… or IoError`, but the error
 /// side used to be a bare string, so `if result is IoError as e` never matched
 /// and the program silently took the success path. The variant comes from the
-/// OS error kind; anything without a spelled-out variant lands in `Other(msg)`.
-pub(crate) fn io_error_result(e: &std::io::Error) -> Value {
+/// OS error kind. Matches `IoError.at` in stdlib/io.rk: the three path
+/// variants carry the path, `Other` puts it in front of the OS message.
+pub(crate) fn io_error_at(e: &std::io::Error, path: &str) -> Value {
     use std::io::ErrorKind;
-    let msg = e.to_string();
-    let (variant, carries_msg) = match e.kind() {
-        ErrorKind::NotFound => ("NotFound", true),
-        ErrorKind::PermissionDenied => ("PermissionDenied", true),
-        ErrorKind::AlreadyExists => ("AlreadyExists", true),
-        ErrorKind::BrokenPipe => ("BrokenPipe", false),
-        ErrorKind::ConnectionReset => ("ConnectionReset", false),
-        ErrorKind::TimedOut => ("TimedOut", false),
-        ErrorKind::UnexpectedEof => ("UnexpectedEof", false),
-        _ => ("Other", true),
+    let (variant, fields) = match e.kind() {
+        ErrorKind::NotFound => ("NotFound", vec![path.to_string()]),
+        ErrorKind::PermissionDenied => ("PermissionDenied", vec![path.to_string()]),
+        ErrorKind::AlreadyExists => ("AlreadyExists", vec![path.to_string()]),
+        ErrorKind::BrokenPipe => ("BrokenPipe", vec![]),
+        ErrorKind::ConnectionReset => ("ConnectionReset", vec![]),
+        ErrorKind::TimedOut => ("TimedOut", vec![]),
+        ErrorKind::UnexpectedEof => ("UnexpectedEof", vec![]),
+        _ => ("Other", vec![format!("{path}: {e}")]),
     };
-    let fields = if carries_msg {
-        vec![Value::String(Arc::new(Mutex::new(msg)))]
-    } else {
-        vec![]
-    };
+    let fields = fields
+        .into_iter()
+        .map(|s| Value::String(Arc::new(Mutex::new(s))))
+        .collect();
     Value::err(Value::stdlib_enum("IoError", variant, fields))
 }
 
@@ -80,7 +79,7 @@ impl Interpreter {
                 let path = self.expect_string(&args, 0)?;
                 match std::fs::read_to_string(&path) {
                     Ok(content) => Ok(Value::ok(Value::String(Arc::new(Mutex::new(content))))),
-                    Err(e) => Ok(io_error_result(&e)),
+                    Err(e) => Ok(io_error_at(&e, &path)),
                 }
             }
             "read_bytes" => {
@@ -93,7 +92,7 @@ impl Interpreter {
                             .collect();
                         Ok(Value::ok(Value::vec(values)))
                     }
-                    Err(e) => Ok(io_error_result(&e)),
+                    Err(e) => Ok(io_error_at(&e, &path)),
                 }
             }
             "read_lines" => {
@@ -106,7 +105,7 @@ impl Interpreter {
                             .collect();
                         Ok(Value::ok(Value::vec(lines)))
                     }
-                    Err(e) => Ok(io_error_result(&e)),
+                    Err(e) => Ok(io_error_at(&e, &path)),
                 }
             }
             "write_text" => {
@@ -114,7 +113,7 @@ impl Interpreter {
                 let content = self.expect_string(&args, 1)?;
                 match std::fs::write(&path, &content) {
                     Ok(()) => Ok(Value::ok(Value::Unit)),
-                    Err(e) => Ok(io_error_result(&e)),
+                    Err(e) => Ok(io_error_at(&e, &path)),
                 }
             }
             "write_bytes" => {
@@ -138,7 +137,7 @@ impl Interpreter {
                 };
                 match std::fs::write(&path, &bytes) {
                     Ok(()) => Ok(Value::ok(Value::Unit)),
-                    Err(e) => Ok(io_error_result(&e)),
+                    Err(e) => Ok(io_error_at(&e, &path)),
                 }
             }
             "append_text" => {
@@ -152,7 +151,7 @@ impl Interpreter {
                     .and_then(|mut f| f.write_all(content.as_bytes()));
                 match result {
                     Ok(()) => Ok(Value::ok(Value::Unit)),
-                    Err(e) => Ok(io_error_result(&e)),
+                    Err(e) => Ok(io_error_at(&e, &path)),
                 }
             }
             "exists" => {
@@ -188,7 +187,7 @@ impl Interpreter {
                     Ok(p) => Ok(Value::ok(Value::String(Arc::new(Mutex::new(
                             p.to_string_lossy().to_string(),
                         ))))),
-                    Err(e) => Ok(io_error_result(&e)),
+                    Err(e) => Ok(io_error_at(&e, &path)),
                 }
             }
             // `rask_fs_stat_load` and the three readers: one stat kept for
@@ -270,7 +269,7 @@ impl Interpreter {
                 let path = self.expect_string(&args, 0)?;
                 match std::fs::remove_file(&path) {
                     Ok(()) => Ok(Value::ok(Value::Unit)),
-                    Err(e) => Ok(io_error_result(&e)),
+                    Err(e) => Ok(io_error_at(&e, &path)),
                 }
             }
 
@@ -278,14 +277,14 @@ impl Interpreter {
                 let path = self.expect_string(&args, 0)?;
                 match std::fs::create_dir(&path) {
                     Ok(()) => Ok(Value::ok(Value::Unit)),
-                    Err(e) => Ok(io_error_result(&e)),
+                    Err(e) => Ok(io_error_at(&e, &path)),
                 }
             }
             "create_dir_all" => {
                 let path = self.expect_string(&args, 0)?;
                 match std::fs::create_dir_all(&path) {
                     Ok(()) => Ok(Value::ok(Value::Unit)),
-                    Err(e) => Ok(io_error_result(&e)),
+                    Err(e) => Ok(io_error_at(&e, &path)),
                 }
             }
             "rename" => {
@@ -293,7 +292,7 @@ impl Interpreter {
                 let to = self.expect_string(&args, 1)?;
                 match std::fs::rename(&from, &to) {
                     Ok(()) => Ok(Value::ok(Value::Unit)),
-                    Err(e) => Ok(io_error_result(&e)),
+                    Err(e) => Ok(io_error_at(&e, &from)),
                 }
             }
             "copy" => {
@@ -301,7 +300,7 @@ impl Interpreter {
                 let to = self.expect_string(&args, 1)?;
                 match std::fs::copy(&from, &to) {
                     Ok(_bytes) => Ok(Value::ok(Value::Unit)),
-                    Err(e) => Ok(io_error_result(&e)),
+                    Err(e) => Ok(io_error_at(&e, &from)),
                 }
             }
             "current_dir" => {

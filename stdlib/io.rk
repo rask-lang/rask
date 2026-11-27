@@ -70,6 +70,30 @@ extend IoError {
         return IoError.Other(msg)
     }
 
+    /// `last_os_error` for a call on `path`, naming the path.
+    ///
+    /// "not found: No such file or directory (os error 2)" doesn't say which
+    /// file. `NotFound`, `PermissionDenied` and `AlreadyExists` carry the path
+    /// instead of the OS text, as the spec writes them (`IoError.NotFound(p)`),
+    /// and `Other` puts the path in front of its message.
+    public func at(path: string) -> IoError {
+        let kind = IoError.kind_of(IoError.errno_now())
+        if kind == 0 {
+            return IoError.NotFound(path)
+        }
+        if kind == 1 {
+            return IoError.PermissionDenied(path)
+        }
+        if kind == 2 {
+            return IoError.AlreadyExists(path)
+        }
+        // errno is untouched by the reads above, so this sees the same error.
+        match IoError.last_os_error() {
+            IoError.Other(msg) => return IoError.Other("{path}: {msg}")
+            other => return other
+        }
+    }
+
     /// errno, which is a macro over a thread-local, so Rask can't name it.
     @native("rask_io_errno")
     @ambient

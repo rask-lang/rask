@@ -42,6 +42,8 @@ func process(data: Vec<u8>) -> i32 {
 }
 ```
 
+**W3 (unused_variable) scope:** `let` and `mut` locals. A plain `x = v` doesn't count as reading `x`; `x += v` does, since it reads the old value. Parameters and names bound by patterns aren't checked yet.
+
 **W11 (mod_for_index) scope:** Only where the remainder *is* the index of a `[…]` access — a `%` whose result is a value is usually exactly what was meant. Silent when the left operand can't be negative: a non-negative literal, a `.len()`/`.count()` call, or a sum/product of those. A suggestion, so the fix is printed as code: `ring[(i - 1).mod(n)]`.
 
 **W9 (torn_lock_update) implementation:** checked at the `with` binding in

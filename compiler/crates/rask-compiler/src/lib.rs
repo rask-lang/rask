@@ -627,6 +627,7 @@ fn check_loaded_scoped(
                 return PipelineOutput::fail_with_sources(diags, source_files);
             }
     };
+    diags.extend(resolved.unused_locals.iter().map(|u| u.to_diagnostic()));
     parse_result.decls.extend(rounds.library_copies().iter().cloned());
 
     // --- Typecheck (lenient — always returns TypedProgram + errors, so
@@ -1152,6 +1153,7 @@ fn check_package_scoped(
                 return PipelineOutput::fail_with_sources(diags, source_files);
             }
         };
+        diags.extend(resolved.unused_locals.iter().map(|u| u.to_diagnostic()));
 
         // --- A dependency's internals are not the program's to name ---
         //
@@ -1600,7 +1602,7 @@ fn private_declaration_named(
     private_elsewhere: &HashMap<String, Vec<PrivateDecl>>,
 ) -> Option<Diagnostic> {
     let name = match &e.kind {
-        rask_resolve::ResolveErrorKind::UndefinedSymbol { name } => name,
+        rask_resolve::ResolveErrorKind::UndefinedSymbol { name, .. } => name,
         _ => return None,
     };
     let base = name.as_str();

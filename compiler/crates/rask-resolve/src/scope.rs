@@ -110,6 +110,17 @@ impl ScopeTree {
         None
     }
 
+    /// Every name visible from the current scope, innermost first.
+    pub fn visible_names(&self) -> impl Iterator<Item = &str> {
+        let mut scope_id = Some(self.current);
+        std::iter::from_fn(move || {
+            let scope = self.scopes.get(scope_id?.0 as usize)?;
+            scope_id = scope.parent;
+            Some(scope.bindings.keys().map(String::as_str))
+        })
+        .flatten()
+    }
+
     /// Define a name in the current scope.
     /// Shadowing is allowed - a new binding replaces the previous one.
     pub fn define(&mut self, name: String, symbol: SymbolId, _span: Span) -> Result<(), ResolveError> {

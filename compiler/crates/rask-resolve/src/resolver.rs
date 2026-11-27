@@ -105,6 +105,14 @@ pub struct Resolver {
     /// with no span, so declaring it was reported as shadowing a built-in
     /// type that doesn't exist (#1126).
     builtin_enums: HashSet<SymbolId>,
+    /// The program's `let`/`mut` bindings, for the unused-variable warning
+    /// (tool.warnings/W3). The stdlib's aren't recorded.
+    local_bindings: Vec<SymbolId>,
+    /// Plain-name assignment targets (`x = 2`): a resolution that writes
+    /// the binding without reading it.
+    write_only: HashSet<NodeId>,
+    /// The function being resolved says `@allow(unused_variable)`.
+    allow_unused_variable: bool,
 }
 
 impl Resolver {
@@ -132,6 +140,9 @@ impl Resolver {
             stdlib_symbols: HashSet::new(),
             stub_functions: HashMap::new(),
             builtin_enums: HashSet::new(),
+            local_bindings: Vec::new(),
+            write_only: HashSet::new(),
+            allow_unused_variable: false,
         };
 
         resolver.register_builtins();
@@ -559,6 +570,7 @@ impl Resolver {
         resolver.resolve_bodies(decls);
 
         if resolver.errors.is_empty() {
+            let unused_locals = resolver.unused_locals();
             Ok(ResolvedProgram {
                 symbols: resolver.symbols,
                 resolutions: resolver.resolutions,
@@ -567,6 +579,7 @@ impl Resolver {
                 file_packages,
                 package_deps,
                 field_type_pattern_names: resolver.field_type_pattern_names,
+                unused_locals,
             })
         } else {
             resolver.name_unlinked_scopes();
@@ -693,7 +706,7 @@ impl Resolver {
             return;
         }
         for err in &mut self.errors {
-            let crate::error::ResolveErrorKind::UndefinedSymbol { name } = &err.kind else { continue };
+            let crate::error::ResolveErrorKind::UndefinedSymbol { name, .. } = &err.kind else { continue };
             let head = name.split('.').next().unwrap_or(name);
             if let Some(scope) = self.unlinked_scopes.get(head) {
                 err.kind = crate::error::ResolveErrorKind::ScopedDependencyUse {
@@ -1819,6 +1832,10 @@ impl Resolver {
             ScopeKind::Function(SymbolId(u32::MAX))
         };
         self.scopes.push(scope_kind);
+        let outer_allow = std::mem::replace(
+            &mut self.allow_unused_variable,
+            fn_decl.attrs.iter().filter_map(rask_ast::allow_names::allowed_name).any(|a| a == "unused_variable"),
+        );
 
         // IM1 for the signature and for every `let`/`mut` annotation in the
         // body, with the function's type parameters in scope — a local
@@ -1899,8 +1916,42 @@ impl Resolver {
             self.resolve_stmt(stmt);
         }
 
+        self.allow_unused_variable = outer_allow;
         self.pop_type_params();
         self.scopes.pop();
+    }
+
+    /// Keep a binding for the unused-variable warning when it's the program's
+    /// own: not the stdlib's, and in a package build not a dependency's.
+    fn record_local_binding(&mut self, sym_id: SymbolId, span: Span) {
+        let other_package = self.current_package.is_some()
+            && self.file_package_ids.get(&span.file_id) != self.current_package.as_ref();
+        if !self.stdlib_mode && !self.allow_unused_variable && !other_package {
+            self.local_bindings.push(sym_id);
+        }
+    }
+
+    /// `let`/`mut` bindings nothing reads (tool.warnings/W3). `_` in front
+    /// of the name says it's meant. Assigning a binding isn't reading it, so
+    /// `mut total = 0` followed only by `total = 5` is still unused.
+    fn unused_locals(&self) -> Vec<crate::UnusedLocal> {
+        let read: HashSet<SymbolId> = self
+            .resolutions
+            .iter()
+            .filter(|(node, _)| !self.write_only.contains(node))
+            .map(|(_, sym)| *sym)
+            .collect();
+        let mut unused: Vec<crate::UnusedLocal> = self
+            .local_bindings
+            .iter()
+            .filter(|sym| !read.contains(sym))
+            .filter_map(|sym| self.symbols.get(*sym))
+            .filter(|sym| !sym.name.starts_with('_'))
+            .map(|sym| crate::UnusedLocal { name: sym.name.clone(), span: sym.span })
+            .collect();
+        unused.sort_by_key(|u| (u.span.file_id, u.span.start));
+        unused.dedup_by_key(|u| (u.span.file_id, u.span.start));
+        unused
     }
 
     fn resolve_impl(&mut self, impl_decl: &ImplDecl) {
@@ -1945,6 +1996,7 @@ impl Resolver {
                 if let Err(e) = self.scopes.define(name.clone(), sym_id, stmt.span) {
                     self.errors.push(e);
                 }
+                self.record_local_binding(sym_id, *name_span);
             }
             StmtKind::Let { name, name_span, ty, init } => {
                 self.resolve_expr(init);
@@ -1964,6 +2016,7 @@ impl Resolver {
                 if let Err(e) = self.scopes.define(name.clone(), sym_id, stmt.span) {
                     self.errors.push(e);
                 }
+                self.record_local_binding(sym_id, *name_span);
             }
             StmtKind::MutTuple { patterns, init } => {
                 self.resolve_expr(init);
@@ -2012,8 +2065,12 @@ impl Resolver {
                     }
                 }
             }
-            StmtKind::Assign { target, value, .. } => {
+            StmtKind::Assign { target, value, op } => {
                 self.resolve_expr(target);
+                // `x += 1` reads `x`; only a plain `x = …` doesn't.
+                if op.is_none() && matches!(target.kind, ExprKind::Ident(_)) {
+                    self.write_only.insert(target.id);
+                }
                 self.resolve_expr(value);
             }
             StmtKind::Return(value) => {
@@ -2382,7 +2439,11 @@ impl Resolver {
         if self.report_missing_import(name, expr.span) {
             return;
         }
-        self.errors.push(ResolveError::undefined(name.to_string(), expr.span));
+        let similar = rask_diagnostics::suggestions::closest(name, self.scopes.visible_names());
+        self.errors.push(ResolveError {
+            kind: crate::error::ResolveErrorKind::UndefinedSymbol { name: name.to_string(), similar },
+            span: expr.span,
+        });
     }
 
     fn resolve_expr(&mut self, expr: &Expr) {
@@ -3545,7 +3606,7 @@ mod tests {
         let result = crate::resolve(ResolveInput { decls: &decls, stdlib: &[], package: Some((&registry, app_pkg)) });
         let errors = result.expect_err("a private member isn't importable");
         assert!(
-            errors.iter().any(|e| matches!(&e.kind, crate::ResolveErrorKind::UndefinedSymbol { name } if name == "internal_helper")),
+            errors.iter().any(|e| matches!(&e.kind, crate::ResolveErrorKind::UndefinedSymbol { name, .. } if name == "internal_helper")),
             "{errors:?}"
         );
     }

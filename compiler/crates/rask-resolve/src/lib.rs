@@ -36,7 +36,7 @@ pub use package::{ImportIndex, Package, PackageId, PackageRegistry, PackageError
 pub use lockfile::LockFile;
 
 use rask_ast::decl::Decl;
-use rask_ast::NodeId;
+use rask_ast::{NodeId, Span};
 use std::collections::{HashMap, HashSet};
 
 /// True when `name` names a builtin stdlib module.
@@ -83,6 +83,17 @@ pub struct ResolvedProgram {
     /// the checker, which does know, either binds `amount` itself or reports
     /// a use of a name nothing bound.
     pub field_type_pattern_names: HashMap<SymbolId, FieldTypePattern>,
+    /// The program's `let`/`mut` bindings nothing reads, in source order
+    /// (tool.warnings/W3). Warnings, so they ride on a successful resolve.
+    pub unused_locals: Vec<UnusedLocal>,
+}
+
+/// A `let`/`mut` binding nothing reads.
+#[derive(Debug, Clone)]
+pub struct UnusedLocal {
+    pub name: String,
+    /// The name where it's bound.
+    pub span: Span,
 }
 
 /// `field: ty` in the pattern `pattern(…)`, where `ty` names a type.

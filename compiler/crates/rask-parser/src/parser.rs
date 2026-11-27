@@ -291,6 +291,76 @@ impl Parser {
         name.chars().next().map(|c| c.is_uppercase()).unwrap_or(false)
     }
 
+    /// At `{ field: …`, the Rust/Go/C# way of building a struct. A labelled
+    /// loop (`{ outer: loop`) is a block, not a field.
+    fn looks_like_brace_struct_literal(&self) -> bool {
+        self.brace_struct_literal_at(0)
+    }
+
+    /// `{ name:` at `peek(at)`, and not `{ label: loop`.
+    fn brace_struct_literal_at(&self, at: usize) -> bool {
+        if self.peek(at) != &TokenKind::LBrace {
+            return false;
+        }
+        let mut i = at + 1;
+        while self.peek(i) == &TokenKind::Newline {
+            i += 1;
+        }
+        matches!(self.peek(i), TokenKind::Ident(_))
+            && self.peek(i + 1) == &TokenKind::Colon
+            && !matches!(self.peek(i + 2), TokenKind::Loop | TokenKind::For | TokenKind::While)
+    }
+
+    /// `Point { x: 1, y: 2 }`: recorded as one error, and read as the call
+    /// `Point(x: 1, y: 2)` it means, so nothing downstream trips over it.
+    fn parse_brace_struct_literal(
+        &mut self,
+        name: String,
+        type_args: Vec<TypeExpr>,
+        start: usize,
+        name_end: usize,
+    ) -> Result<Expr, ParseError> {
+        let open = self.advance().span;
+        let args = self.parse_arg_list(false, &TokenKind::RBrace)?;
+        self.expect(&TokenKind::RBrace)?;
+        let end = self.tokens[self.pos - 1].span.end;
+
+        let fields: Vec<String> = args
+            .iter()
+            .map(|a| match &a.name {
+                Some(n) => format!("{n}: …"),
+                None => "..base".to_string(),
+            })
+            .collect();
+        let written = if type_args.is_empty() {
+            name.clone()
+        } else {
+            let args: Vec<String> = type_args.iter().map(ToString::to_string).collect();
+            format!("{name}<{}>", args.join(", "))
+        };
+        self.errors.push(ParseError {
+            span: self.span(start, open.end),
+            message: format!("a struct is built with parentheses, not braces: `{written}(…)`"),
+            hint: Some(format!("write `{written}({})`", fields.join(", "))),
+            why: Some(
+                "Rask builds a struct like a call with named arguments, so `{` always opens a block"
+                    .to_string(),
+            ),
+        });
+
+        let callee_kind = if type_args.is_empty() {
+            ExprKind::Ident(name)
+        } else {
+            ExprKind::GenericName { name, type_args }
+        };
+        let func = Expr { id: self.next_id(), kind: callee_kind, span: self.span(start, name_end) };
+        Ok(Expr {
+            id: self.next_id(),
+            kind: ExprKind::Call { func: Box::new(func), args },
+            span: self.span(start, end),
+        })
+    }
+
     /// Check for postfix operator after newlines (method chaining).
     fn peek_past_newlines_is_postfix(&self) -> bool {
         let mut pos = self.pos + 1;
@@ -350,6 +420,13 @@ impl Parser {
     }
 
     fn looks_like_generic_followed_by(&self, expected: &TokenKind) -> bool {
+        self.generic_args_end().is_some_and(|pos| &self.tokens[pos].kind == expected)
+    }
+
+    /// At a `<`: the index of the token after the `>` that would close it as
+    /// type arguments, or `None` when the scan reaches the end of the line or
+    /// leaves an enclosing group first.
+    fn generic_args_end(&self) -> Option<usize> {
         let mut pos = self.pos + 1;
         let mut depth: i32 = 1;
         let mut paren_depth: i32 = 0;
@@ -362,10 +439,7 @@ impl Parser {
                 TokenKind::GtGt => {
                     depth -= 2;
                     if depth < 0 {
-                        if pos + 1 < self.tokens.len() {
-                            return &self.tokens[pos + 1].kind == expected;
-                        }
-                        return false;
+                        return (pos + 1 < self.tokens.len()).then_some(pos + 1);
                     }
                 }
                 // Track parens/brackets so we don't scan past enclosing groups.
@@ -373,28 +447,25 @@ impl Parser {
                 TokenKind::LParen => paren_depth += 1,
                 TokenKind::RParen => {
                     paren_depth -= 1;
-                    if paren_depth < 0 { return false; }
+                    if paren_depth < 0 { return None; }
                 }
                 TokenKind::LBracket => bracket_depth += 1,
                 TokenKind::RBracket => {
                     bracket_depth -= 1;
-                    if bracket_depth < 0 { return false; }
+                    if bracket_depth < 0 { return None; }
                 }
                 // An array type's `;` sits inside its brackets:
                 // `size_of<[u16; 3]>()`.
                 TokenKind::Semi if bracket_depth > 0 => {}
                 TokenKind::Eof | TokenKind::Newline | TokenKind::Semi => {
-                    return false;
+                    return None;
                 }
                 _ => {}
             }
             pos += 1;
         }
 
-        if depth == 0 && pos < self.tokens.len() {
-            return &self.tokens[pos].kind == expected;
-        }
-        false
+        (depth == 0 && pos < self.tokens.len()).then_some(pos)
     }
 
     /// Handle `>>` splitting in generic contexts.
@@ -4071,7 +4142,13 @@ impl Parser {
                     // Only type names (uppercase) can have static methods or struct literals
                     let is_static_method = Self::is_type_name(&name)
                         && self.looks_like_generic_type_with_static_method();
-                    if is_generic_call || is_static_method {
+                    // `Pair<i64> { a: 1 }`, for the braces error below.
+                    let is_brace_struct = Self::is_type_name(&name)
+                        && self.allow_brace_expr
+                        && self
+                            .generic_args_end()
+                            .is_some_and(|after| self.brace_struct_literal_at(after - self.pos));
+                    if is_generic_call || is_static_method || is_brace_struct {
                         self.advance(); // consume '<'
                         loop {
                             type_args.push(self.parse_type_name()?);
@@ -4084,6 +4161,10 @@ impl Parser {
                 }
 
                 let end = self.tokens[self.pos - 1].span.end;
+
+                if Self::is_type_name(&name) && self.allow_brace_expr && self.looks_like_brace_struct_literal() {
+                    return self.parse_brace_struct_literal(name, type_args, start, end);
+                }
 
                 if type_args.is_empty() {
                     Ok(Expr { id: self.next_id(), kind: ExprKind::Ident(name), span: self.span(start, end) })
@@ -4917,15 +4998,20 @@ impl Parser {
     /// without splitting it into interpolation segments. Only `format` wants
     /// this — its template is a compile-time input, not a string to render.
     fn parse_args_with(&mut self, raw_first_string: bool) -> Result<Vec<CallArg>, ParseError> {
+        self.parse_arg_list(raw_first_string, &TokenKind::RParen)
+    }
+
+    /// The arguments up to `close`, which is left unconsumed.
+    fn parse_arg_list(&mut self, raw_first_string: bool, close: &TokenKind) -> Result<Vec<CallArg>, ParseError> {
         let mut args = Vec::new();
         self.skip_newlines();
-        if self.check(&TokenKind::RParen) { return Ok(args); }
+        if self.check(close) { return Ok(args); }
 
         let outer_list = std::mem::replace(&mut self.in_comma_list, true);
         // Inside `f(` a `{` can't open the body of an enclosing `if`, so
         // `spawn { … }` is a value again.
         let outer_braces = std::mem::replace(&mut self.allow_brace_expr, true);
-        let result = self.parse_args_loop(raw_first_string, &mut args);
+        let result = self.parse_args_loop(raw_first_string, &mut args, close);
         self.allow_brace_expr = outer_braces;
         self.in_comma_list = outer_list;
         result?;
@@ -4936,6 +5022,7 @@ impl Parser {
         &mut self,
         raw_first_string: bool,
         args: &mut Vec<CallArg>,
+        close: &TokenKind,
     ) -> Result<(), ParseError> {
         loop {
             if raw_first_string && args.is_empty() {
@@ -4948,7 +5035,7 @@ impl Parser {
                         mode: ArgMode::Default,
                         expr: Expr { id: self.next_id(), kind: ExprKind::String(s), span },
                     });
-                    if !self.list_continues(&TokenKind::RParen)? { break; }
+                    if !self.list_continues(close)? { break; }
                     continue;
                 }
             }
@@ -4957,7 +5044,7 @@ impl Parser {
             if self.match_token(&TokenKind::DotDot) {
                 let expr = self.parse_expr()?;
                 args.push(CallArg { name: None, mode: ArgMode::Spread, expr });
-                self.list_continues(&TokenKind::RParen)?;
+                self.list_continues(close)?;
                 break;
             }
             // Capture named argument labels (name: expr)
@@ -4977,7 +5064,7 @@ impl Parser {
 
             let expr = self.parse_expr()?;
             args.push(CallArg { name: arg_name, mode, expr });
-            if !self.list_continues(&TokenKind::RParen)? { break; }
+            if !self.list_continues(close)? { break; }
         }
 
         Ok(())
