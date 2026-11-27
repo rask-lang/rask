@@ -266,6 +266,13 @@ pub(crate) fn run_check(
 }
 
 fn main() {
+    // Rust ignores SIGPIPE, so `rask check x | head` turned the closed pipe
+    // into a panic from `println!` (exit 101). A command-line tool should end
+    // quietly when its reader goes away, like every other one in the pipe.
+    #[cfg(unix)]
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+    }
     output::init();
     rask_manifest::install();
     let args: Vec<String> = env::args().collect();

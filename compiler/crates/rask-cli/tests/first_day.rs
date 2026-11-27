@@ -8,6 +8,7 @@
 //! Programs are written inline so the test reads as the story it guards.
 
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -277,4 +278,31 @@ fn help_leads_with_the_everyday_commands() {
     for cmd in ["init", "run", "test", "check", "fmt", "lint"] {
         assert!(everyday.contains(&format!("\n  {cmd} ")), "`{cmd}` should be under Everyday:\n{everyday}");
     }
+}
+
+/// `rask lex big.rk | head` panicked with "failed printing to stdout:
+/// Broken pipe" and exit 101 once `head` had its lines. It ends quietly now.
+#[test]
+fn piping_into_head_ends_quietly() {
+    let dir = TempDir::new();
+    let mut source = String::new();
+    for i in 0..3000 {
+        source.push_str(&format!("func f{i}(x: i64) -> i64 {{\n    return x + {i}\n}}\n\n"));
+    }
+    dir.write("big.rk", &source);
+    let mut child = Command::new(rask_binary())
+        .args(["lex", "big.rk"])
+        .current_dir(dir.path())
+        .env("NO_COLOR", "1")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("run rask");
+    let mut first = [0u8; 64];
+    child.stdout.take().unwrap().read_exact(&mut first).unwrap();
+    // The read end is closed here; the rest of the output has nowhere to go.
+    let out = child.wait_with_output().unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!stderr.contains("panicked"), "{stderr}");
+    assert_ne!(out.status.code(), Some(101), "{stderr}");
 }
