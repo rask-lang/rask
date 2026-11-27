@@ -34,7 +34,7 @@ impl ToDiagnostic for crate::ResolveError {
             // A name that used to exist gets told what replaced it. "Not found
             // in this scope" is true and useless for a rename someone is
             // meeting for the first time.
-            UndefinedSymbol { name } if retired_name(name).is_some() => {
+            UndefinedSymbol { name, .. } if retired_name(name).is_some() => {
                 let (replacement, why) = retired_name(name).unwrap();
                 Diagnostic::error(format!("`{}` is not a type any more", name))
                     .with_code("E0200")
@@ -45,7 +45,7 @@ impl ToDiagnostic for crate::ResolveError {
 
             // C's and Rust's null spellings. A pointer that may be absent is an
             // optional like any other (mem.unsafe/PT6).
-            UndefinedSymbol { name } if matches!(name.as_str(), "null" | "nullptr" | "NULL" | "nil") => {
+            UndefinedSymbol { name, .. } if matches!(name.as_str(), "null" | "nullptr" | "NULL" | "nil") => {
                 Diagnostic::error(format!("there is no `{}`: absence is `none`", name))
                     .with_code("E0200")
                     .with_primary(self.span, "write `none` here")
@@ -53,12 +53,17 @@ impl ToDiagnostic for crate::ResolveError {
                     .with_why("a `*T` is never null. A pointer that may be absent is `*T?`, one word with null for `none`, and it's tested with `p?` or `p is none` like any other optional [mem.unsafe/PT6]")
             }
 
-            UndefinedSymbol { name } => Diagnostic::error(format!("undefined symbol: `{}`", name))
-                .with_code("E0200")
-                .with_primary(self.span, "not found in this scope")
-                .with_help("check spelling or add an import")
-                .with_fix("check spelling or add an import")
-                .with_why("all symbols must be defined before use — Rask requires explicit imports"),
+            UndefinedSymbol { name, similar } => {
+                let fix = match similar {
+                    Some(s) => format!("did you mean `{}`?", s),
+                    None => "check spelling or add an import".to_string(),
+                };
+                Diagnostic::error(format!("undefined symbol: `{}`", name))
+                    .with_code("E0200")
+                    .with_primary(self.span, "not found in this scope")
+                    .with_fix(fix)
+                    .with_why("all symbols must be defined before use — Rask requires explicit imports")
+            }
 
             // structure.modules/IM1: `pkg.Name` follows from `import pkg`. The
             // stdlib's own source is resolved alongside the program and declares

@@ -306,3 +306,36 @@ fn piping_into_head_ends_quietly() {
     assert!(!stderr.contains("panicked"), "{stderr}");
     assert_ne!(out.status.code(), Some(101), "{stderr}");
 }
+
+// ─── Names that don't exist ────────────────────────────────────────────────
+
+/// The fix line for a name that's wrong, on `rask check`.
+fn fix_for(source: &str) -> String {
+    let run = check_program(source);
+    assert_eq!(run.code, 1, "{run:?}");
+    run.all().lines().find(|l| l.contains("fix:")).unwrap_or_else(|| panic!("no fix line:\n{run:?}")).to_string()
+}
+
+/// Spelling distance alone sent these to the wrong place: `fs.read_file`
+/// suggested `read_dir`, `fs.write_file` suggested `create_file`. The names
+/// other languages use map to Rask's.
+#[test]
+fn names_from_other_languages_point_at_the_rask_name() {
+    let cases = [
+        ("import fs\n\nfunc main() {\n    let t = try fs.read_file(\"a.txt\")\n    println(t)\n}\n", "read_text"),
+        ("import fs\n\nfunc main() {\n    try fs.write_file(\"a.txt\", \"hi\")\n}\n", "write_text"),
+        ("import cli\n\nfunc main() {\n    let a = cli.args()\n    println(\"{a.len()}\")\n}\n", "os.args"),
+        ("func main() {\n    let s = \"abc\"\n    println(\"{s.size()}\")\n}\n", "`len`"),
+        ("func main() {\n    mut v: Vec<i64> = Vec.new()\n    v.add(1)\n    println(\"{v.len()}\")\n}\n", "`push`"),
+    ];
+    for (source, wanted) in cases {
+        let fix = fix_for(source);
+        assert!(fix.contains(wanted), "wanted `{wanted}` in {fix:?} for:\n{source}");
+    }
+}
+
+#[test]
+fn a_misspelled_local_suggests_the_local() {
+    let fix = fix_for("func main() {\n    let count = 3\n    println(\"{cuont}\")\n}\n");
+    assert!(fix.contains("did you mean `count`?"), "{fix}");
+}

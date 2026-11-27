@@ -43,6 +43,30 @@ fn nearest_methods(ty: &str, method: &str) -> Vec<&'static str> {
     nearest_names(&rask_stdlib::registry::type_method_names(type_base(ty)), method)
 }
 
+/// What a name from another language is called in Rask, where spelling
+/// distance can't find it: `fs.read_file` is closer to `read_dir` than to
+/// `read_text`. `owner` is a module or a type's base name. The answer may
+/// name another module (`cli.args` → `os.args`).
+fn rask_spelling(owner: &str, name: &str) -> Option<&'static str> {
+    Some(match (owner, name) {
+        ("fs", "read_file" | "read_to_string" | "read_all" | "readFile") => "read_text",
+        ("fs", "write_file" | "writeFile" | "write_all") => "write_text",
+        ("fs", "append_file" | "appendFile") => "append_text",
+        ("fs", "mkdir") => "create_dir",
+        ("fs", "mkdir_all" | "makedirs") => "create_dir_all",
+        ("fs", "list_dir" | "listdir" | "readdir") => "read_dir",
+        ("fs", "delete" | "unlink" | "remove") => "remove_file",
+        ("cli" | "env" | "sys" | "process", "args" | "argv") => "os.args",
+        ("os", "getenv" | "get_env" | "var") => "env",
+        ("os", "argv") => "args",
+        ("string" | "Vec" | "Map" | "Set" | "StringSlice", "size" | "length") => "len",
+        ("Vec", "add" | "append" | "push_back") => "push",
+        ("Map", "put" | "set") => "insert",
+        ("Map", "contains_key" | "has" | "has_key") => "contains",
+        _ => return None,
+    })
+}
+
 /// The rules `nearest_methods` describes, over any list of names.
 fn nearest_names<'a>(candidates: &[&'a str], method: &str) -> Vec<&'a str> {
     if candidates.is_empty() || method.is_empty() {
@@ -619,7 +643,11 @@ impl ToDiagnostic for crate::TypeError {
                         .with_fix(format!("check the arguments to `{}`", method))
                         .with_why(format!("the name resolves — `{}` does have `{}`, and it is the call that didn't fit", ty, method));
                 }
-                match nearest_methods(&ty_name, method) {
+                let names = match rask_spelling(type_base(&ty_name), method) {
+                    Some(n) => vec![n],
+                    None => nearest_methods(&ty_name, method),
+                };
+                match names {
                     names if !names.is_empty() => diag
                         .with_help(format!("did you mean `{}`?", names.join("` or `")))
                         .with_fix(format!("did you mean `{}`?", names.join("` or `")))
@@ -681,8 +709,18 @@ impl ToDiagnostic for crate::TypeError {
                             .with_fix(format!("{}.{}(…)", ty, function))
                     };
                 }
+                if let Some(qualified) = rask_spelling(module, function).filter(|n| n.contains('.')) {
+                    let other = qualified.split('.').next().unwrap_or_default();
+                    return diag
+                        .with_help(format!("that's in `{}`: `import {}`", other, other))
+                        .with_fix(format!("{}(…)", qualified));
+                }
                 let names: Vec<&str> = available.iter().map(String::as_str).collect();
-                match nearest_names(&names, function).first() {
+                let nearest = match rask_spelling(module, function) {
+                    Some(n) => vec![n],
+                    None => nearest_names(&names, function),
+                };
+                match nearest.first() {
                     Some(n) => diag
                         .with_help(format!("did you mean `{}.{}`?", module, n))
                         .with_fix(format!("{}.{}(…)", module, n)),

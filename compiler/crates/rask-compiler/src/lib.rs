@@ -1600,7 +1600,7 @@ fn private_declaration_named(
     private_elsewhere: &HashMap<String, Vec<PrivateDecl>>,
 ) -> Option<Diagnostic> {
     let name = match &e.kind {
-        rask_resolve::ResolveErrorKind::UndefinedSymbol { name } => name,
+        rask_resolve::ResolveErrorKind::UndefinedSymbol { name, .. } => name,
         _ => return None,
     };
     let base = name.as_str();

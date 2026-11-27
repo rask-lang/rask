@@ -15,7 +15,7 @@ pub struct ResolveError {
 impl ResolveError {
     pub fn undefined(name: String, span: Span) -> Self {
         Self {
-            kind: ResolveErrorKind::UndefinedSymbol { name },
+            kind: ResolveErrorKind::UndefinedSymbol { name, similar: None },
             span,
         }
     }
@@ -201,7 +201,11 @@ impl ResolveError {
 #[derive(Debug, Clone, Error)]
 pub enum ResolveErrorKind {
     #[error("undefined symbol: {name}")]
-    UndefinedSymbol { name: String },
+    UndefinedSymbol {
+        name: String,
+        /// A name in scope one typo away, for "did you mean".
+        similar: Option<String>,
+    },
 
     /// A stdlib module or type name used with no `import` for it (IM1).
     #[error("`{name}` is used but never imported")]

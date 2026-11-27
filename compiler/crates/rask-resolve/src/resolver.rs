@@ -693,7 +693,7 @@ impl Resolver {
             return;
         }
         for err in &mut self.errors {
-            let crate::error::ResolveErrorKind::UndefinedSymbol { name } = &err.kind else { continue };
+            let crate::error::ResolveErrorKind::UndefinedSymbol { name, .. } = &err.kind else { continue };
             let head = name.split('.').next().unwrap_or(name);
             if let Some(scope) = self.unlinked_scopes.get(head) {
                 err.kind = crate::error::ResolveErrorKind::ScopedDependencyUse {
@@ -2382,7 +2382,11 @@ impl Resolver {
         if self.report_missing_import(name, expr.span) {
             return;
         }
-        self.errors.push(ResolveError::undefined(name.to_string(), expr.span));
+        let similar = rask_diagnostics::suggestions::closest(name, self.scopes.visible_names());
+        self.errors.push(ResolveError {
+            kind: crate::error::ResolveErrorKind::UndefinedSymbol { name: name.to_string(), similar },
+            span: expr.span,
+        });
     }
 
     fn resolve_expr(&mut self, expr: &Expr) {
@@ -3545,7 +3549,7 @@ mod tests {
         let result = crate::resolve(ResolveInput { decls: &decls, stdlib: &[], package: Some((&registry, app_pkg)) });
         let errors = result.expect_err("a private member isn't importable");
         assert!(
-            errors.iter().any(|e| matches!(&e.kind, crate::ResolveErrorKind::UndefinedSymbol { name } if name == "internal_helper")),
+            errors.iter().any(|e| matches!(&e.kind, crate::ResolveErrorKind::UndefinedSymbol { name, .. } if name == "internal_helper")),
             "{errors:?}"
         );
     }
