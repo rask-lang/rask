@@ -1146,7 +1146,7 @@ fn transmute_sizes_and_targets_are_checked() {
 fn a_field_default_that_does_io_is_rejected() {
     let (failed, out) = compile_error_output("field_default_not_constant.rk");
     assert!(failed, "a default calling `println` must not compile: {out}");
-    assert_eq!(out.matches("E0875").count(), 2, "one error per default: {out}");
+    assert_eq!(out.matches("error[E0875]").count(), 2, "one error per default: {out}");
     assert!(out.contains("the default for field `retries`"), "{out}");
     assert!(out.contains("the default for field `tries`"), "{out}");
     assert!(!out.contains("__decode_default"), "the generated name leaked into the message: {out}");
@@ -1160,7 +1160,7 @@ fn a_field_default_that_does_io_is_rejected() {
 fn a_comptime_value_with_no_constant_form_is_rejected() {
     let (failed, out) = compile_error_output("comptime_no_constant_form.rk");
     assert!(failed, "an `any` const and a struct holding a Vec must not compile: {out}");
-    assert_eq!(out.matches("E0383").count(), 3, "one error per value, the default once: {out}");
+    assert_eq!(out.matches("error[E0383]").count(), 3, "one error per value, the default once: {out}");
     assert!(out.contains("as any Opaque"), "{out}");
     assert!(out.contains("field `items` of `Holder`"), "{out}");
     assert!(!out.contains("W0303"), "no fallback warning any more: {out}");
@@ -1171,7 +1171,7 @@ fn a_comptime_value_with_no_constant_form_is_rejected() {
 fn a_default_argument_that_does_io_is_rejected() {
     let (failed, out) = compile_error_output("param_default_not_constant.rk");
     assert!(failed, "a default argument calling `println` must not compile: {out}");
-    assert_eq!(out.matches("E0875").count(), 2, "one error per default: {out}");
+    assert_eq!(out.matches("error[E0875]").count(), 2, "one error per default: {out}");
     assert!(out.contains("parameter `times` of `retry`"), "{out}");
     assert!(out.contains("parameter `attempts` of `send`"), "{out}");
     assert!(!out.contains("E0341"), "the method default's name has to resolve: {out}");
@@ -1205,7 +1205,7 @@ fn primitive_operator_rejects_a_wrong_operand() {
     // Seven bad operators, seven errors — and no follow-on "couldn't work out
     // the type", which is what pinning the result before reporting buys.
     assert_eq!(
-        out.matches("E0382").count(),
+        out.matches("error[E0382]").count(),
         7,
         "one error per bad operator, no more and no fewer: {out}"
     );
@@ -1280,7 +1280,7 @@ fn error_try_in_a_function_that_returns_nothing() {
     );
     // Both sites, not just the first — `main` is the one people write.
     assert!(
-        out.matches("E0316").count() >= 2,
+        out.matches("error[E0316]").count() >= 2,
         "should report the helper and main, not stop at the first: {}", out,
     );
 }
@@ -1291,7 +1291,7 @@ fn error_union_narrowing_is_rejected() {
     // and an argument, and the backends then disagreed about the stored error.
     let (failed, out) = compile_error_output("error_union_narrowing.rk");
     assert!(failed, "a wider error union into a narrower slot must be rejected: {}", out);
-    assert_eq!(out.matches("E0415").count(), 3, "one error per narrowing site: {}", out);
+    assert_eq!(out.matches("error[E0415]").count(), 3, "one error per narrowing site: {}", out);
     assert!(out.contains("can fail with `Other`"), "should name the error that doesn't fit: {}", out);
 }
 
@@ -1313,7 +1313,7 @@ fn try_without_an_error_branch_is_rejected() {
         "should name each return type that has nowhere to put the error: {}", out,
     );
     assert!(
-        out.matches("E0316").count() >= 3,
+        out.matches("error[E0316]").count() >= 3,
         "should report all three sites, not stop at the first: {}", out,
     );
 }
@@ -1331,7 +1331,7 @@ fn a_type_that_contains_itself_is_rejected() {
     let (failed, out) = compile_error_output("recursive_type_has_no_size.rk");
     assert!(failed, "a type containing itself inline must be rejected: {}", out);
     assert!(
-        out.matches("E0890").count() >= 4,
+        out.matches("error[E0890]").count() >= 4,
         "the struct, the enum, the tuple and the two-type cycle: {}", out,
     );
     assert!(
@@ -1620,17 +1620,17 @@ fn error_optional_operators_need_optionals() {
     let (failed, out) = compile_error_output("optional_operators_need_optionals.rk");
     assert!(failed, "`??`/`!`/`take` on a non-optional must be rejected: {}", out);
     assert_eq!(
-        out.matches("E0831").count(), 6,
+        out.matches("error[E0831]").count(), 6,
         "one per `??`: a local, a string, a map index, a struct field, a call \
          whose closure settles last, a generic handing back a number: {}", out,
     );
     assert!(!out.contains("E0308"), "no mismatch blamed on another line: {}", out);
     assert_eq!(
-        out.matches("E0832").count(), 1,
+        out.matches("error[E0832]").count(), 1,
         "one `!` on a non-optional: {}", out,
     );
     assert_eq!(
-        out.matches("E0365").count(), 1,
+        out.matches("error[E0365]").count(), 1,
         "one `take` on a non-optional place: {}", out,
     );
     assert!(
@@ -1667,7 +1667,7 @@ fn error_no_auto_wrap_outside_return() {
         "should name the error type rather than printing `<type#N>`: {}", out,
     );
     assert_eq!(
-        out.matches("E0828").count(), 4,
+        out.matches("error[E0828]").count(), 4,
         "one per coercion position — binding, argument, method argument, field — \
          and nothing for the wrapped-by-a-call forms or the optional: {}", out,
     );
@@ -1687,7 +1687,7 @@ fn error_with_guard_escapes() {
         "should name the with-guard-escape rule: {}", out,
     );
     assert_eq!(
-        out.matches("E0829").count(), 1,
+        out.matches("error[E0829]").count(), 1,
         "only the bare-identifier case should fire — the field read, method \
          call, and scalar payload in the same file are all legitimate: {}", out,
     );
@@ -1790,7 +1790,7 @@ fn error_decode_bound_not_satisfied() {
 fn error_decode_malformed() {
     let (failed, out) = compile_error_output("decode_malformed.rk");
     assert!(failed, "a `decode` a decoder can't call must be rejected: {}", out);
-    assert_eq!(out.matches("E0425").count(), 9, "nine shapes are E0425: {}", out);
+    assert_eq!(out.matches("error[E0425]").count(), 9, "nine shapes are E0425: {}", out);
     for want in [
         "`WithSelf`'s `decode` can't be used by a decoder",
         "`decode` is written with `self`",
@@ -1807,7 +1807,7 @@ fn error_decode_malformed() {
     }
     // A rejection with no `message()` has its own error, and the adapter the
     // compiler writes beside `decode` adds none of its own.
-    assert_eq!(out.matches("E0344").count(), 1, "{}", out);
+    assert_eq!(out.matches("error[E0344]").count(), 1, "{}", out);
     assert!(
         !out.contains("E0308") && !out.contains("E0313") && !out.contains("E0361") && !out.contains("E0893"),
         "no second error out of code the author never wrote: {}", out,
@@ -1823,7 +1823,7 @@ fn error_encode_skips_decode() {
     let (failed, out) = compile_error_output("encode_skips_decode.rk");
     assert!(failed, "writing a type that decodes through its own decode must be rejected: {}", out);
     assert_eq!(
-        out.matches("E0426").count(), 5,
+        out.matches("error[E0426]").count(), 5,
         "`Port`, the `Listener` that holds a `Vec<Port>`, the `Routes` that holds a `Map`, and the `Flag` \
          with an empty `Encode` block, at the block and where it is written: {}", out,
     );
@@ -1852,7 +1852,7 @@ fn error_encode_skips_decode() {
 fn error_encode_malformed() {
     let (failed, out) = compile_error_output("encode_malformed.rk");
     assert!(failed, "an `encode` an encoder can't call must be rejected: {}", out);
-    assert_eq!(out.matches("E0425").count(), 9, "nine shapes: {}", out);
+    assert_eq!(out.matches("error[E0425]").count(), 9, "nine shapes: {}", out);
     for want in [
         "`NoSelf`'s `encode` can't be used by an encoder",
         "`encode` has no `self`",
@@ -1938,7 +1938,7 @@ fn error_not_displayable() {
 fn error_cstring_points_at_decode() {
     let (failed, out) = compile_error_output("cstring_not_displayable.rk");
     assert!(failed, "rendering a cstring must be rejected: {out}");
-    assert_eq!(out.matches("E0826").count(), 2, "the call and the placeholder: {out}");
+    assert_eq!(out.matches("error[E0826]").count(), 2, "the call and the placeholder: {out}");
     assert!(out.contains("decode()"), "the fix names decode(): {out}");
     assert!(!out.contains("implements Displayable {"), "no conformance suggestion: {out}");
 }
@@ -3288,7 +3288,7 @@ fn a_method_called_on_an_interface_name_is_rejected() {
 fn two_blocks_defining_one_method_are_rejected() {
     let (failed, out) = compile_error_output("method_name_clash.rk");
     assert!(failed, "{}", out);
-    assert_eq!(out.matches("E0898").count(), 2, "one per second definition: {}", out);
+    assert_eq!(out.matches("error[E0898]").count(), 2, "one per second definition: {}", out);
     assert!(out.contains("`Doc` already defines `label`"), "{}", out);
     assert!(out.contains("`Counter` already defines `bump`"), "{}", out);
     assert!(out.contains("rename the method in the interface you own"), "the fix offers the rename: {}", out);
@@ -4954,7 +4954,7 @@ fn try_inside_ensure_is_rejected() {
     // `break` and never looked at a match guard, so two of these compiled clean
     // and blew up in codegen. A `contains` still passes with that hole in it.
     assert_eq!(
-        output.matches("E0847").count(), 4,
+        output.matches("error[E0847]").count(), 4,
         "every `try` in cleanup should be reported, including in `break` and in a match guard:\n{}",
         output,
     );
@@ -5386,7 +5386,7 @@ fn dynamic_field_name_must_be_comptime() {
     let (failed, output) = compile_error_output("dynamic_field_name.rk");
     assert!(failed, "a runtime field name must be a compile error:\n{output}");
     assert_eq!(
-        output.matches("E0385").count(),
+        output.matches("error[E0385]").count(),
         2,
         "both the call-derived name and the `mut` must be rejected:\n{output}"
     );
@@ -5423,7 +5423,7 @@ fn a_wide_scalar_field_counts_its_real_width() {
     let (failed, output) = compile_error_output("wide_scalar_copy_threshold.rk");
     assert!(failed, "32 bytes is over the threshold and has to move:\n{output}");
     assert_eq!(
-        output.matches("E0800").count(),
+        output.matches("error[E0800]").count(),
         1,
         "one move, one error:\n{output}"
     );
@@ -5492,7 +5492,7 @@ fn bare_package_state_cannot_be_written() {
     let (failed, output) = compile_error_output("package_state_unsynchronized.rk");
     assert!(failed, "an unsynchronized const collection must be rejected:\n{output}");
     assert_eq!(
-        output.matches("E0856").count(),
+        output.matches("error[E0856]").count(),
         2,
         "both the Vec and the Map are writes:\n{output}"
     );
@@ -5511,7 +5511,7 @@ fn a_link_cannot_escape_inside_a_collection() {
     let (failed, output) = compile_error_output("link_escapes_in_collection.rk");
     assert!(failed, "the links in `v` dangle at the return:\n{output}");
     assert_eq!(
-        output.matches("E0379").count(),
+        output.matches("error[E0379]").count(),
         2,
         "the push and the literal are both escapes:\n{output}"
     );
@@ -7352,7 +7352,7 @@ fn a_detached_panic_is_reported_the_same_on_both_backends() {
 fn a_map_key_that_is_not_hashable_is_rejected_per_kind() {
     let (failed, out) = compile_error_output("map_key_hashable.rk");
     assert!(failed, "an unhashable Map key must be rejected: {}", out);
-    assert_eq!(out.matches("E0834").count(), 3, "three bad keys, no more: {}", out);
+    assert_eq!(out.matches("error[E0834]").count(), 3, "three bad keys, no more: {}", out);
     // The newtype is told about its clause, the float about its bits, the struct
     // about a declared conformance.
     assert!(out.contains("`Id` is not Hashable"), "{}", out);
@@ -7804,7 +7804,7 @@ fn generic_struct_with_an_aggregate_type_arg_and_methods() {
 fn error_int_float_arithmetic() {
     let (failed, out) = compile_error_output("int_float_arithmetic.rk");
     assert!(failed, "mixing an integer and a float must be rejected: {}", out);
-    assert_eq!(out.matches("E0401").count(), 4, "one per operator: {}", out);
+    assert_eq!(out.matches("error[E0401]").count(), 4, "one per operator: {}", out);
     assert!(
         out.contains("one is an integer, the other a float"),
         "should say which is which: {}", out,
@@ -7835,7 +7835,7 @@ fn error_field_view_outlives_replace() {
 fn error_mutate_param_left_empty() {
     let (failed, out) = compile_error_output("mutate_param_left_empty.rk");
     assert!(failed, "a consumed `mutate` parameter must be replaced: {}", out);
-    assert_eq!(out.matches("E0836").count(), 2, "two sites, no more: {}", out);
+    assert_eq!(out.matches("error[E0836]").count(), 2, "two sites, no more: {}", out);
     assert!(
         out.contains("didn't put anything back"),
         "should say what's missing: {}", out,
@@ -7947,7 +7947,7 @@ fn error_closure_returns_borrowed_capture() {
 fn error_consume_borrowed_param() {
     let (failed, out) = compile_error_output("consume_borrowed_param.rk");
     assert!(failed, "giving away a borrowed parameter must be rejected: {}", out);
-    assert_eq!(out.matches("E0835").count(), 3, "three sites, no more: {}", out);
+    assert_eq!(out.matches("error[E0835]").count(), 3, "three sites, no more: {}", out);
     assert!(
         out.contains("borrowed, not owned"),
         "should say the parameter isn't owned: {}", out,
@@ -7987,8 +7987,8 @@ fn error_consume_borrowed_param() {
 fn error_heap_not_consumed() {
     let (failed, out) = compile_error_output("heap_not_consumed.rk");
     assert!(failed, "an unconsumed `own` value must be rejected: {}", out);
-    assert_eq!(out.matches("E0837").count(), 2, "two leaks: {}", out);
-    assert_eq!(out.matches("E0800").count(), 2, "two second-consumes: {}", out);
+    assert_eq!(out.matches("error[E0837]").count(), 2, "two leaks: {}", out);
+    assert_eq!(out.matches("error[E0800]").count(), 2, "two second-consumes: {}", out);
     assert!(
         out.contains("allocated with `Heap(…)` and never dropped"),
         "should say what wasn't done: {}", out,
@@ -8022,7 +8022,7 @@ fn error_heap_not_consumed() {
 fn error_optional_resource_not_consumed() {
     let (failed, out) = compile_error_output("optional_resource.rk");
     assert!(failed, "an unconsumed optional resource must be rejected: {}", out);
-    assert_eq!(out.matches("E0805").count(), 3, "exactly three leaks: {}", out);
+    assert_eq!(out.matches("error[E0805]").count(), 3, "exactly three leaks: {}", out);
     assert!(
         out.contains("resource `maybe` must be consumed"),
         "the optional binding itself: {}", out,
@@ -8050,7 +8050,7 @@ fn error_optional_resource_not_consumed() {
 fn error_resource_field_debts() {
     let (failed, out) = compile_error_output("resource_field_debts.rk");
     assert!(failed, "an unpaid resource field must be rejected: {}", out);
-    assert_eq!(out.matches("E0805").count(), 3, "exactly three unpaid fields: {}", out);
+    assert_eq!(out.matches("error[E0805]").count(), 3, "exactly three unpaid fields: {}", out);
     assert!(
         out.contains("resource `p.b` must be consumed"),
         "one of two fields closed leaves the other: {}", out,
@@ -8149,11 +8149,11 @@ fn error_tag_shape() {
     let (failed, out) = compile_error_output("tag_shape.rk");
     assert!(failed, "malformed `@tag` must not compile: {}", out);
     assert_eq!(
-        out.matches("E0841").count(), 1,
+        out.matches("error[E0841]").count(), 1,
         "one `@tag` on a variant whose payload is unnamed: {}", out,
     );
     assert_eq!(
-        out.matches("E0842").count(), 2,
+        out.matches("error[E0842]").count(), 2,
         "two tag/field collisions — `Event.Click` and `Mixed.Bad`: {}", out,
     );
     // The collision is per-variant, not per-enum: `Mixed.Fine` doesn't use the
@@ -9720,12 +9720,12 @@ fn error_spawn_needs_multitasking_scope() {
     assert!(failed, "spawn with no scope must not compile:\n{out}");
 
     assert_eq!(
-        out.matches("E0352").count(),
+        out.matches("error[E0352]").count(),
         2,
         "CC1 fires at the entry point and in a test body, and nowhere else:\n{out}"
     );
     assert_eq!(
-        out.matches("E0353").count(),
+        out.matches("error[E0353]").count(),
         3,
         "CC2 fires at each call that reaches a spawn: a function, a method, \
          a stdlib function:\n{out}"

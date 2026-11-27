@@ -20,7 +20,7 @@ pub fn qualify_in_place(decls: &mut [Decl], map: &HashMap<String, String>) {
     if map.is_empty() {
         return;
     }
-    rewrite_references(decls, map);
+    let _ = rewrite_references(decls, map);
     for decl in decls.iter_mut() {
         rename_declaration(decl, map);
     }
@@ -35,35 +35,58 @@ pub fn qualify_in_place(decls: &mut [Decl], map: &HashMap<String, String>) {
 /// declaration and not per block, so a name bound anywhere in a body is left
 /// alone throughout it: erring that way leaves a reference that resolve
 /// reports, where erring the other way silently reads a local as a function.
-pub fn rewrite_references(decls: &mut [Decl], map: &HashMap<String, String>) {
+///
+/// Returns the names of `map` that were found and rewritten: the program's
+/// uses of them, by the name it wrote.
+#[must_use]
+pub fn rewrite_references(decls: &mut [Decl], map: &HashMap<String, String>) -> HashSet<String> {
+    let mut used: HashSet<String> = HashSet::new();
     if map.is_empty() {
-        return;
+        return used;
     }
     for decl in decls.iter_mut() {
         let shadowed = names_bound_in(decl);
-        let mut r = Qualifier { map, shadowed: &shadowed };
+        let mut r = Qualifier { map, shadowed: &shadowed, used: &mut used };
         rewrite::rewrite_decl(decl, &mut r);
     }
+    used
 }
 
 struct Qualifier<'a> {
     map: &'a HashMap<String, String>,
     shadowed: &'a HashSet<String>,
+    used: &'a mut HashSet<String>,
 }
 
 impl Qualifier<'_> {
-    /// A name that names a declaration here, and isn't a local.
-    fn lookup(&self, name: &str) -> Option<&String> {
+    /// The new name for one that names a declaration here and isn't a local.
+    fn lookup(&mut self, name: &str) -> Option<String> {
         if self.shadowed.contains(name) {
             return None;
         }
-        self.map.get(name)
+        self.renamed(name)
+    }
+
+    /// The new name for `name`, with no shadow check, noting the use.
+    fn renamed(&mut self, name: &str) -> Option<String> {
+        let q = self.map.get(name)?;
+        self.used.insert(name.to_string());
+        Some(q.clone())
     }
 }
 
 impl Rewrite for Qualifier<'_> {
     fn ty(&mut self, t: &mut crate::ty::TypeExpr) {
         // A type can never name a local, so the shadow set doesn't apply.
+        let mut found: Vec<String> = Vec::new();
+        t.walk_paths(&mut |path| {
+            if let [n] = path {
+                if self.map.contains_key(n) {
+                    found.push(n.clone());
+                }
+            }
+        });
+        self.used.extend(found);
         t.rename(&|name| self.map.get(name).cloned());
     }
 
@@ -71,15 +94,15 @@ impl Rewrite for Qualifier<'_> {
         match &mut e.kind {
             ExprKind::Ident(name) | ExprKind::GenericName { name, .. } => {
                 if let Some(q) = self.lookup(name) {
-                    *name = q.clone();
+                    *name = q;
                 }
             }
             // A type name, so no shadow check.
-            ExprKind::StructLit { name, .. } => rename_path_head(name, |n| self.map.get(n).cloned()),
+            ExprKind::StructLit { name, .. } => rename_path_head(name, |n| self.renamed(n)),
             // `using pool { … }` names a declaration the same way a call does.
             ExprKind::UsingBlock { name, .. } => {
                 if let Some(q) = self.lookup(name) {
-                    *name = q.clone();
+                    *name = q;
                 }
             }
             _ => {}
@@ -102,7 +125,7 @@ impl Rewrite for Qualifier<'_> {
             | PatternKind::Range { .. }
             | PatternKind::TypePat { .. } => return,
         };
-        rename_path_head(name, |n| self.map.get(n).cloned());
+        rename_path_head(name, |n| self.renamed(n));
     }
 }
 
@@ -111,7 +134,7 @@ impl Rewrite for Qualifier<'_> {
 /// `Shape`, `Shape.Circle` in a pattern, `Shape.Circle { r: 1 }` as a
 /// literal: the first segment is the declaration and the rest are its
 /// members, which keep their names.
-pub fn rename_path_head(name: &mut String, new_name: impl Fn(&str) -> Option<String>) {
+pub fn rename_path_head(name: &mut String, mut new_name: impl FnMut(&str) -> Option<String>) {
     let (head, tail) = match name.split_once('.') {
         Some((head, tail)) => (head, Some(tail)),
         None => (name.as_str(), None),

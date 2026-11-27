@@ -109,22 +109,68 @@ fn detect_env() -> String {
 /// `cfg.features.contains("x")` a bool. A `comptime if` whose condition then
 /// folds to a constant is replaced by the branch it takes, so the other
 /// branch is never resolved or checked.
-pub fn apply_cfg(decls: &mut [Decl], cfg: &CfgConfig) {
-    rask_ast::rewrite::rewrite_decls(decls, &mut ApplyCfg { cfg });
+///
+/// The warnings are about the source, which holds every target's branch, so
+/// what was folded comes back for them to read.
+pub fn apply_cfg(decls: &mut [Decl], cfg: &CfgConfig) -> CfgFolds {
+    let mut apply = ApplyCfg { cfg, folds: CfgFolds::default() };
+    rask_ast::rewrite::rewrite_decls(decls, &mut apply);
+    apply.folds
+}
+
+/// What `apply_cfg` folded away.
+#[derive(Debug, Clone, Default)]
+pub struct CfgFolds {
+    /// Each `comptime if` replaced by the branch it took. That branch leaving
+    /// the function doesn't make the code after the `comptime if` dead: on
+    /// another target the branch isn't there.
+    pub taken: Vec<rask_ast::Span>,
+    /// The names written in branches this target dropped, each a dotted name's
+    /// first segment: what an import would bind. An import used only for
+    /// another target is still used.
+    pub dropped_names: Vec<(String, rask_ast::Span)>,
+}
+
+impl CfgFolds {
+    /// Whether `inner` was folded in from a taken branch of the `comptime if`
+    /// that `outer` isn't part of.
+    pub fn taken_without(&self, inner: rask_ast::Span, outer: rask_ast::Span) -> bool {
+        self.taken.iter().any(|t| within(inner, *t) && !within(outer, *t))
+    }
+}
+
+fn within(inner: rask_ast::Span, outer: rask_ast::Span) -> bool {
+    inner.file_id == outer.file_id && outer.start <= inner.start && inner.end <= outer.end
 }
 
 /// Finds the `comptime` blocks and expressions, wherever they are.
 struct ApplyCfg<'a> {
     cfg: &'a CfgConfig,
+    folds: CfgFolds,
+}
+
+impl ApplyCfg<'_> {
+    /// The branch a folded `comptime` body takes, noting what it took and
+    /// dropped.
+    fn fold(&mut self, body: &mut Vec<Stmt>, span: rask_ast::Span) -> Option<Vec<Stmt>> {
+        fold_cfg(body, self.cfg);
+        let (taken, mut dropped) = taken_branch(body)?;
+        self.folds.taken.push(span);
+        if let Some(dropped) = &mut dropped {
+            let at = dropped.span;
+            rask_ast::rewrite::rewrite_expr(dropped, &mut Names { at, found: &mut self.folds.dropped_names });
+        }
+        Some(taken)
+    }
 }
 
 impl rask_ast::rewrite::Rewrite for ApplyCfg<'_> {
     fn body(&mut self, stmts: &mut Vec<Stmt>) {
         let mut i = 0;
         while i < stmts.len() {
+            let span = stmts[i].span;
             if let StmtKind::Comptime(body) = &mut stmts[i].kind {
-                fold_cfg(body, self.cfg);
-                if let Some(taken) = taken_branch(body) {
+                if let Some(taken) = self.fold(body, span) {
                     // The taken branch is ordinary code in the enclosing
                     // scope; the walk continues into it from here.
                     stmts.splice(i..=i, taken);
@@ -136,11 +182,49 @@ impl rask_ast::rewrite::Rewrite for ApplyCfg<'_> {
     }
 
     fn expr(&mut self, expr: &mut Expr) {
+        let span = expr.span;
         if let ExprKind::Comptime { body } = &mut expr.kind {
-            fold_cfg(body, self.cfg);
-            if let Some(taken) = taken_branch(body) {
+            if let Some(taken) = self.fold(body, span) {
                 expr.kind = ExprKind::Block(taken);
             }
+        }
+    }
+}
+
+/// Collects the names code refers to, by their first segment, each at the
+/// span of the branch it was written in.
+struct Names<'a> {
+    at: rask_ast::Span,
+    found: &'a mut Vec<(String, rask_ast::Span)>,
+}
+
+impl Names<'_> {
+    fn push(&mut self, name: &str) {
+        let root = name.split('.').next().unwrap_or(name);
+        self.found.push((root.to_string(), self.at));
+    }
+}
+
+impl rask_ast::rewrite::Rewrite for Names<'_> {
+    fn expr(&mut self, e: &mut Expr) {
+        match &e.kind {
+            ExprKind::Ident(name)
+            | ExprKind::GenericName { name, .. }
+            | ExprKind::StructLit { name, .. } => self.push(name),
+            _ => {}
+        }
+    }
+    fn pattern(&mut self, p: &mut Pattern) {
+        match &p.kind {
+            PatternKind::Constructor { name, .. } | PatternKind::Struct { name, .. } => self.push(name),
+            _ => {}
+        }
+    }
+    fn ty(&mut self, t: &mut rask_ast::ty::TypeExpr) {
+        let mut roots = Vec::new();
+        t.walk_paths(&mut |path| roots.push(path[0].clone()));
+        for root in roots {
+            self.push(&root);
         }
     }
 }
@@ -188,18 +272,23 @@ fn is_cfg(expr: &Expr) -> bool {
     matches!(&expr.kind, ExprKind::Ident(n) if n == "cfg")
 }
 
-/// The statements a `comptime if` takes, when its condition is a constant
-/// once `cfg` has been folded in. `None` leaves it to comptime evaluation.
-fn taken_branch(stmts: &[Stmt]) -> Option<Vec<Stmt>> {
+/// The statements a `comptime if` takes, and the branch it drops, when its
+/// condition is a constant once `cfg` has been folded in. `None` leaves it to
+/// comptime evaluation.
+fn taken_branch(stmts: &[Stmt]) -> Option<(Vec<Stmt>, Option<Expr>)> {
     let [stmt] = stmts else { return None };
     let StmtKind::Expr(inner) = &stmt.kind else { return None };
     let ExprKind::If { cond, then_branch, else_branch, .. } = &inner.kind else { return None };
-    let branch = if const_bool(cond)? { Some(then_branch) } else { else_branch.as_ref() };
-    match branch.map(|b| &b.kind) {
-        Some(ExprKind::Block(body)) => Some(body.clone()),
-        Some(_) => None,
-        None => Some(Vec::new()),
-    }
+    let then_branch = Some(then_branch.as_ref());
+    let else_branch = else_branch.as_deref();
+    let (branch, dropped) =
+        if const_bool(cond)? { (then_branch, else_branch) } else { (else_branch, then_branch) };
+    let taken = match branch.map(|b| &b.kind) {
+        Some(ExprKind::Block(body)) => body.clone(),
+        Some(_) => return None,
+        None => Vec::new(),
+    };
+    Some((taken, dropped.cloned()))
 }
 
 /// A condition built from literals: `true`, `"linux" == "linux"`, `!`, `&&`,

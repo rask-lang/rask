@@ -951,3 +951,128 @@ fn allow_unused_result_is_an_unknown_name() {
     );
     let _ = std::fs::remove_file(&path);
 }
+
+// ═══════════════════════════════════════════════════════════════════════
+// Warnings about the program as written (tool.warnings/W1, W4)
+// ═══════════════════════════════════════════════════════════════════════
+
+fn warning_codes(diagnostics: &[rask_diagnostics::Diagnostic]) -> Vec<String> {
+    diagnostics
+        .iter()
+        .filter(|d| matches!(d.severity, rask_diagnostics::Severity::Warning))
+        .filter_map(|d| d.code.as_ref().map(|c| c.0.clone()))
+        .collect()
+}
+
+/// A build script gets `import build.{BuildContext, BuildError}` without
+/// writing it. A script that names neither was warned about an import it
+/// never wrote.
+#[test]
+fn a_build_script_prelude_is_never_an_unused_import() {
+    let src = "func build(ctx: BuildContext) -> void or Error {\n    return\n}\n";
+    let path = tmp_rk(src);
+    let out = rask_compiler::check_build_script(&path, src, &default_config());
+    assert_eq!(error_count(&out.diagnostics), 0, "{:?}", out.diagnostics);
+    assert!(warning_codes(&out.diagnostics).is_empty(), "{:?}", out.diagnostics);
+    let _ = std::fs::remove_file(&path);
+}
+
+/// `comptime for` is written out once per element in a later template round,
+/// and a `return` in one copy made the next copy look dead.
+#[test]
+fn a_return_inside_comptime_for_is_not_unreachable_code() {
+    let src = concat!(
+        "import std.reflect\n\n",
+        "struct Pt {\n    x: i64\n    y: i64\n}\n\n",
+        "func first_name<T>() -> string {\n",
+        "    comptime for f in reflect.fields<T>() {\n        return f.name\n    }\n",
+        "    return \"none\"\n",
+        "}\n\n",
+        "func main() {\n    println(first_name<Pt>())\n}\n",
+    );
+    let path = tmp_rk(src);
+    let out = check_file(path.to_str().unwrap(), &default_config());
+    assert_eq!(error_count(&out.diagnostics), 0, "{:?}", out.diagnostics);
+    assert!(warning_codes(&out.diagnostics).is_empty(), "{:?}", out.diagnostics);
+    let _ = std::fs::remove_file(&path);
+}
+
+/// The source holds every target's `comptime if cfg.*` branch, and the
+/// warnings are about the source. An import used only in another target's
+/// branch is used; a branch this target takes leaving the function doesn't
+/// make the fallback after it dead. Dead code inside the taken branch, and
+/// an import nothing names on any target, still warn.
+#[test]
+fn comptime_cfg_branches_count_for_every_target() {
+    let src = concat!(
+        "import time.Duration\n",
+        "import os\n\n",
+        "func pause() -> i64 {\n",
+        "    comptime if cfg.os == \"plan9\" {\n",
+        "        let d = Duration.seconds(1)\n        return d.as_millis() as i64\n",
+        "    }\n",
+        "    return 0\n",
+        "}\n\n",
+        "func sep() -> string {\n",
+        "    comptime if cfg.os != \"plan9\" {\n        return \"/\"\n    }\n",
+        "    return \"\\\\\"\n",
+        "}\n\n",
+        "func dead() -> i64 {\n",
+        "    comptime if cfg.os != \"plan9\" {\n        return 1\n        println(\"dead here\")\n    }\n",
+        "    return 2\n",
+        "}\n\n",
+        "func main() {\n    println(\"{pause()} {sep()} {dead()}\")\n}\n",
+    );
+    let path = tmp_rk(src);
+    let out = check_file(path.to_str().unwrap(), &default_config());
+    assert_eq!(error_count(&out.diagnostics), 0, "{:?}", out.diagnostics);
+    let messages: Vec<&str> = out
+        .diagnostics
+        .iter()
+        .filter(|d| matches!(d.severity, rask_diagnostics::Severity::Warning))
+        .map(|d| d.message.as_str())
+        .collect();
+    assert_eq!(messages, ["unused import `os`", "unreachable code"], "{:?}", out.diagnostics);
+    let _ = std::fs::remove_file(&path);
+}
+
+/// A parameter or closure parameter named like an import hides it, so reading
+/// it is no use of the import.
+#[test]
+fn a_local_with_the_import_name_is_not_a_use() {
+    let src = concat!(
+        "import time\n",
+        "import os\n\n",
+        "func f(time: i64) -> i64 {\n    return time\n}\n\n",
+        "func main() {\n",
+        "    let g = |os: i64| os + 1\n",
+        "    println(\"{f(1)} {g(2)}\")\n",
+        "}\n",
+    );
+    let path = tmp_rk(src);
+    let out = check_file(path.to_str().unwrap(), &default_config());
+    assert_eq!(error_count(&out.diagnostics), 0, "{:?}", out.diagnostics);
+    let messages: Vec<&str> = out.diagnostics.iter().map(|d| d.message.as_str()).collect();
+    assert_eq!(messages, ["unused import `time`", "unused import `os`"], "{:?}", out.diagnostics);
+    let _ = std::fs::remove_file(&path);
+}
+
+/// One unused member of `import pkg.{A, B}` is fixed by editing the braces,
+/// so the warning points at the member and says so.
+#[test]
+fn an_unused_group_member_points_at_the_member() {
+    let src = "import time.{Duration, Instant}\n\nfunc main() {\n    let d = Duration.seconds(1)\n    println(\"{d.as_millis()}\")\n}\n";
+    let path = tmp_rk(src);
+    let out = check_file(path.to_str().unwrap(), &default_config());
+    let w: Vec<_> = out
+        .diagnostics
+        .iter()
+        .filter(|d| matches!(d.severity, rask_diagnostics::Severity::Warning))
+        .collect();
+    assert_eq!(w.len(), 1, "{:?}", out.diagnostics);
+    assert_eq!(w[0].message, "unused import `Instant`");
+    assert_eq!(w[0].fix.as_deref(), Some("remove `Instant` from the braces"));
+    let at = &w[0].labels[0].span;
+    assert_eq!(&src[at.start..at.end], "Instant");
+    let _ = std::fs::remove_file(&path);
+}

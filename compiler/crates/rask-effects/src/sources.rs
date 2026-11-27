@@ -86,6 +86,8 @@ mod tests {
                 alias: alias.map(str::to_string),
                 is_glob: false,
                 is_lazy: false,
+                implicit: false,
+                member_span: None,
             }),
             span: rask_ast::Span::new(0, 0),
         };

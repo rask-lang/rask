@@ -463,10 +463,14 @@ impl ToDiagnostic for crate::UnusedLocal {
 
 impl ToDiagnostic for crate::UnusedImport {
     fn to_diagnostic(&self) -> Diagnostic {
+        let (span, fix) = match self.member_span {
+            Some(member) => (member, format!("remove `{}` from the braces", self.name)),
+            None => (self.span, "remove the import".to_string()),
+        };
         Diagnostic::warning(format!("unused import `{}`", self.name))
             .with_code("W0201")
-            .with_primary(self.span, "nothing uses this")
-            .with_fix("remove the import")
+            .with_primary(span, "nothing uses this")
+            .with_fix(fix)
             .with_why("an import nothing uses is usually left over from an edit [tool.warnings/W1]")
     }
 }

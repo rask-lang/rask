@@ -103,8 +103,9 @@ pub struct UnusedLocal {
 pub(crate) struct ProgramImport {
     /// The name it binds: the alias, or the path's last segment.
     pub binding: String,
-    pub path: Vec<String>,
     pub span: Span,
+    /// The member's own span in `import pkg.{A, B}`.
+    pub member_span: Option<Span>,
     /// The package the import is written in.
     pub package: Option<PackageId>,
 }
@@ -116,6 +117,9 @@ pub struct UnusedImport {
     pub name: String,
     /// The `import` line.
     pub span: Span,
+    /// The member's own span when the import is one of a group,
+    /// `import pkg.{A, B}`. Removing it means editing the braces.
+    pub member_span: Option<Span>,
 }
 
 /// `field: ty` in the pattern `pattern(…)`, where `ty` names a type.
@@ -148,11 +152,11 @@ pub struct PackageBuild<'a> {
     pub registry: &'a PackageRegistry,
     /// The one `decls` is.
     pub id: PackageId,
-    /// Per dependency, by the name the program imports it as: each declared
-    /// name against the name it was merged under (`Dog` → `Dog_libpkg`).
-    /// References were rewritten to those names before resolve, so it's what
-    /// a use of an import looks like here. Empty when nothing was renamed.
-    pub renamed: &'a HashMap<String, HashMap<String, String>>,
+    /// Per package, the import bindings a reference went through when the
+    /// driver rewrote references to a dependency's merged names before
+    /// resolve (`libpkg.greet` → `greet_libpkg` uses `libpkg`; an imported
+    /// `Dog` → `Dog_libpkg` uses `Dog`). Those uses no longer show here.
+    pub written_uses: &'a HashMap<PackageId, HashSet<String>>,
 }
 
 /// Resolve every name in a program.

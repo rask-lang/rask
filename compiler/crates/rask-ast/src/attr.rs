@@ -500,3 +500,42 @@ pub fn c_name(attrs: &[Attr]) -> Option<CName> {
     }
     value.string().map(CName::Spelled)
 }
+
+/// Every annotation written on a declaration and the declarations inside it
+/// (fields, variants, methods), in source order. The same sites
+/// `rewrite::rewrite_decl` visits.
+pub fn each_attr<'a>(decl: &'a crate::decl::Decl, f: &mut impl FnMut(&'a Attr)) {
+    use crate::decl::DeclKind;
+    let mut all = |attrs: &'a [Attr]| attrs.iter().for_each(&mut *f);
+    match &decl.kind {
+        DeclKind::Fn(func) => all(&func.attrs),
+        DeclKind::Struct(s) => {
+            all(&s.attrs);
+            s.fields.iter().for_each(|field| all(&field.attrs));
+            s.methods.iter().for_each(|m| all(&m.attrs));
+        }
+        DeclKind::Enum(e) => {
+            all(&e.attrs);
+            for v in &e.variants {
+                all(&v.attrs);
+                v.fields.iter().for_each(|field| all(&field.attrs));
+            }
+            e.methods.iter().for_each(|m| all(&m.attrs));
+        }
+        DeclKind::Interface(t) => {
+            all(&t.attrs);
+            t.methods.iter().for_each(|m| all(&m.attrs));
+        }
+        DeclKind::Impl(i) => i.methods.iter().for_each(|m| all(&m.attrs)),
+        DeclKind::Const(c) => all(&c.attrs),
+        DeclKind::Test(t) => all(&t.attrs),
+        DeclKind::Benchmark(b) => all(&b.attrs),
+        DeclKind::Union(u) => u.fields.iter().for_each(|field| all(&field.attrs)),
+        DeclKind::TypeAlias(_)
+        | DeclKind::Annotation(_)
+        | DeclKind::Extern(_)
+        | DeclKind::Import(_)
+        | DeclKind::Export(_)
+        | DeclKind::CImport(_) => {}
+    }
+}

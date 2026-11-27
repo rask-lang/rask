@@ -423,6 +423,59 @@ fn a_package_import_used_under_its_merged_name_is_used() {
     assert_eq!(warned, ["warning[W0201]: unused import `other`"], "{run:?}");
 }
 
+/// A dependency's annotation, written `@libpkg.mark`, is a use of
+/// `import libpkg`; one reached through its own import (`@flag`) is a use of
+/// that, and so is a name in an annotation's arguments. And the dependency's
+/// own dead code is its author's to hear about, not the program's.
+#[test]
+fn annotations_use_imports_and_a_dependency_keeps_its_warnings() {
+    let run = check_with_libpkg(
+        "public enum Level {\n    Low\n    High\n}\n\n\
+         public annotation @mark {\n    level: Level = Level.Low\n}\n\npublic annotation @flag {\n    on: bool = false\n}\n\n\
+         public func dead() -> i64 {\n    return 1\n    println(\"lib dead\")\n}\n",
+        "import libpkg\nimport libpkg.flag\nimport libpkg.Level\n\n\
+         struct Signup {\n    @libpkg.mark(level: Level.High)\n    @flag(on: true)\n    name: string\n}\n\n\
+         func main() {\n    let s = Signup(name: \"x\")\n    println(\"{s.name} {libpkg.dead()}\")\n}\n",
+    );
+    assert_eq!(run.code, 0, "{run:?}");
+    assert!(!run.all().contains("W0201"), "{run:?}");
+    assert!(!run.all().contains("W0902"), "{run:?}");
+}
+
+/// `import libpkg` and `import libpkg.Dog` are two imports. Both reach the
+/// resolver as the same merged name, `Dog_libpkg`, so using one must not
+/// count for the other.
+#[test]
+fn a_package_and_its_member_are_separate_imports() {
+    let lib = "public struct Dog {\n    public age: i64\n}\n\npublic func twice(n: i64) -> i64 {\n    return n * 2\n}\n";
+    let imports = "import libpkg\nimport libpkg.Dog\n\n";
+    let run = check_with_libpkg(lib, &format!("{imports}func main() {{\n    let d = Dog(age: 3)\n    println(\"{{d.age}}\")\n}}\n"));
+    assert!(run.all().contains("unused import `libpkg`"), "{run:?}");
+    assert!(!run.all().contains("unused import `Dog`"), "{run:?}");
+    let run = check_with_libpkg(lib, &format!("{imports}func main() {{\n    println(\"{{libpkg.twice(2)}}\")\n}}\n"));
+    assert!(run.all().contains("unused import `Dog`"), "{run:?}");
+    assert!(!run.all().contains("unused import `libpkg`"), "{run:?}");
+}
+
+/// `rask check` on an `app` package that depends on a path package `libpkg`.
+fn check_with_libpkg(lib: &str, main: &str) -> Run {
+    let dir = TempDir::new();
+    let toml = |name: &str, deps: &str| {
+        format!(
+            "schema = \"rask-package@1\"\n\n[package]\nname = \"{name}\"\nversion = \"0.1.0\"\n\
+             description = \"x\"\nlicense = \"MIT OR Apache-2.0\"\n{deps}"
+        )
+    };
+    for sub in ["app", "libpkg"] {
+        fs::create_dir_all(dir.path().join(sub)).unwrap();
+    }
+    dir.write("app/rask.toml", &toml("app", "\n[dependencies]\nlibpkg = { path = \"../libpkg\" }\n"));
+    dir.write("libpkg/rask.toml", &toml("libpkg", ""));
+    dir.write("libpkg/defs.rk", lib);
+    dir.write("app/main.rk", main);
+    rask_in(&dir.path().join("app"), &["check"])
+}
+
 /// An import nothing uses is left over from an edit (tool.warnings/W1).
 /// Every way a name gets used counts: a call through the module, a type in
 /// a signature, a type argument, a type pattern, an `implements` block, a

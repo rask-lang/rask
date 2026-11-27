@@ -52,8 +52,8 @@ pub struct Resolver {
     extern_symbols: HashMap<String, SymbolId>,
     /// What an import path names, and from which package each file imports.
     import_index: crate::ImportIndex,
-    /// See [`crate::PackageBuild::renamed`].
-    renamed: HashMap<String, HashMap<String, String>>,
+    /// See [`crate::PackageBuild::written_uses`].
+    written_uses: HashMap<crate::PackageId, HashSet<String>>,
     file_package_ids: HashMap<u16, PackageId>,
     imported_symbols: HashSet<String>,
     /// Packages the manifest declares under a `scope` this build doesn't
@@ -137,7 +137,7 @@ impl Resolver {
             field_type_pattern_names: HashMap::new(),
             current_package: None,
             import_index: crate::ImportIndex::default(),
-            renamed: HashMap::new(),
+            written_uses: HashMap::new(),
             extern_symbols: HashMap::new(),
             file_package_ids: HashMap::new(),
             imported_symbols: HashSet::new(),
@@ -563,7 +563,7 @@ impl Resolver {
         let mut resolver = Resolver::new();
         let (external_decls, file_packages, package_deps) = match package {
             Some(build) => {
-                resolver.renamed = build.renamed.clone();
+                resolver.written_uses = build.written_uses.clone();
                 resolver.load_packages(build.registry, build.id)
             }
             None => Default::default(),
@@ -872,6 +872,18 @@ impl Resolver {
                         true,
                     );
                     exports.insert(e.name.clone(), sym_id);
+                }
+                // `import pa.validate`, then `@validate` (type.annotations/AN5).
+                // The same struct symbol the package's own scope gives it.
+                DeclKind::Annotation(a) if a.is_pub => {
+                    let sym_id = self.symbols.insert(
+                        a.name.clone(),
+                        SymbolKind::Struct { fields: vec![] },
+                        None,
+                        Span::new(0, 0),
+                        true,
+                    );
+                    exports.insert(a.name.clone(), sym_id);
                 }
                 _ => {}
             }
@@ -1964,6 +1976,14 @@ impl Resolver {
             return;
         }
         let root = name.split('.').next().unwrap_or(name);
+        // A local with the import's name hides it: in `func f(time: i64)`,
+        // reading `time` reads the parameter.
+        let local = self.scopes.lookup(root).and_then(|id| self.symbols.get(id)).is_some_and(|sym| {
+            matches!(sym.kind, SymbolKind::Variable { .. } | SymbolKind::Parameter { .. })
+        });
+        if local {
+            return;
+        }
         let pkg = self.package_of(span);
         self.used_names.insert((pkg, root.to_string()));
     }
@@ -2008,43 +2028,59 @@ impl Resolver {
         }
     }
 
+    /// The names a declaration's annotations use: a user annotation's own
+    /// name (`@validate`, `@liba.validate`) and anything named in its
+    /// arguments (`@default(Color.Red)`).
+    fn note_annotation_uses(&mut self, decl: &Decl) {
+        if self.stdlib_mode {
+            return;
+        }
+        let mut uses: Vec<(String, Span)> = Vec::new();
+        rask_ast::attr::each_attr(decl, &mut |attr| {
+            uses.push((attr.path[0].clone(), attr.span));
+            for arg in attr.args.iter().flatten() {
+                if let rask_ast::attr::AttrValue::Expr(e) = &arg.value {
+                    rask_ast::visit::walk_expr(e, &mut |e| {
+                        if let ExprKind::Ident(name) = &e.kind {
+                            uses.push((name.clone(), e.span));
+                        }
+                    });
+                }
+            }
+        });
+        for (name, span) in uses {
+            self.note_use(&name, span);
+        }
+    }
+
     /// Keep an import for the unused-import warning when it's the program's
     /// own. A glob import binds names the program never wrote, so there's no
-    /// one name to look for; IM6 already warns about it.
+    /// one name to look for; IM6 already warns about it. One the compiler
+    /// supplied was never the program's to remove.
     fn record_program_import(&mut self, import_decl: &ImportDecl, span: Span) {
         let other_package = self.current_package.is_some()
             && self.package_of(span) != self.current_package;
-        if self.stdlib_mode || other_package || import_decl.is_glob {
+        if self.stdlib_mode || other_package || import_decl.is_glob || import_decl.implicit {
             return;
         }
         let Some(last) = import_decl.path.last() else { return };
         let binding = import_decl.alias.clone().unwrap_or_else(|| last.clone());
         self.program_imports.push(crate::ProgramImport {
             binding,
-            path: import_decl.path.clone(),
             span,
+            member_span: import_decl.member_span,
             package: self.package_of(span),
         });
     }
 
-    /// The names a use of `import` can arrive as: its binding, and in a
-    /// package build the merged names of what it brings in. A dependency's
-    /// names reach the resolver already renamed to carry their origin
-    /// (`libpkg.greet` and an imported `Dog` arrive as `greet_libpkg` and
-    /// `Dog_libpkg`), so there the binding itself never shows up.
-    fn import_use_names(&self, import: &crate::ProgramImport) -> Vec<String> {
-        let mut names = vec![import.binding.clone()];
-        let path = &import.path;
-        let Some((pkg, n)) = self.import_index.package(path, import.package) else { return names };
-        let Some(renamed) = self.import_index.key(pkg).and_then(|key| self.renamed.get(key)) else {
-            return names;
-        };
-        if n == path.len() {
-            names.extend(renamed.values().cloned());
-        } else if n + 1 == path.len() {
-            names.extend(renamed.get(&path[n]).cloned());
-        }
-        names
+    /// Whether anything in its package refers to `import` by its binding,
+    /// here or in a reference the driver rewrote before resolve.
+    fn import_used(&self, import: &crate::ProgramImport) -> bool {
+        self.used_names.contains(&(import.package, import.binding.clone()))
+            || import
+                .package
+                .and_then(|p| self.written_uses.get(&p))
+                .is_some_and(|written| written.contains(&import.binding))
     }
 
     /// Imports nothing in their package refers to (tool.warnings/W1).
@@ -2052,10 +2088,13 @@ impl Resolver {
         let mut unused: Vec<crate::UnusedImport> = self
             .program_imports
             .iter()
-            .filter(|i| {
-                !self.import_use_names(i).into_iter().any(|n| self.used_names.contains(&(i.package, n)))
+            .filter_map(|i| {
+                (!self.import_used(i)).then(|| crate::UnusedImport {
+                    name: i.binding.clone(),
+                    span: i.span,
+                    member_span: i.member_span,
+                })
             })
-            .map(|i| crate::UnusedImport { name: i.binding.clone(), span: i.span })
             .collect();
         unused.sort_by_key(|u| (u.span.file_id, u.span.start));
         unused
@@ -2517,6 +2556,7 @@ impl Resolver {
     fn check_annotations(&mut self, decls: &[Decl]) {
         for decl in decls {
             self.note_interface_uses(decl);
+            self.note_annotation_uses(decl);
             match &decl.kind {
                 DeclKind::Struct(s) => {
                     self.push_type_params(Self::declared_type_params(&s.type_params));
@@ -3237,6 +3277,8 @@ mod tests {
                 alias: alias.map(String::from),
                 is_glob,
                 is_lazy,
+                implicit: false,
+                member_span: None,
             }),
             span: Span::new(0, 10),
         }
@@ -3600,7 +3642,7 @@ mod tests {
         );
 
         let decls = vec![make_fn_decl("main")];
-        let result = crate::resolve(ResolveInput { decls: &decls, stdlib: &[], package: Some(crate::PackageBuild { registry: &registry, id: pkg_id, renamed: &HashMap::new() }) });
+        let result = crate::resolve(ResolveInput { decls: &decls, stdlib: &[], package: Some(crate::PackageBuild { registry: &registry, id: pkg_id, written_uses: &HashMap::new() }) });
         assert!(result.is_ok(), "Package resolution should succeed");
     }
 
@@ -3626,7 +3668,7 @@ mod tests {
             make_fn_decl("main"),
         ];
 
-        let result = crate::resolve(ResolveInput { decls: &decls, stdlib: &[], package: Some(crate::PackageBuild { registry: &registry, id: main_pkg, renamed: &HashMap::new() }) });
+        let result = crate::resolve(ResolveInput { decls: &decls, stdlib: &[], package: Some(crate::PackageBuild { registry: &registry, id: main_pkg, written_uses: &HashMap::new() }) });
         assert!(result.is_ok(), "Package with import should resolve");
     }
 
@@ -3701,7 +3743,7 @@ mod tests {
             make_fn_decl("main"),
         ];
 
-        let result = crate::resolve(ResolveInput { decls: &decls, stdlib: &[], package: Some(crate::PackageBuild { registry: &registry, id: app_pkg, renamed: &HashMap::new() }) });
+        let result = crate::resolve(ResolveInput { decls: &decls, stdlib: &[], package: Some(crate::PackageBuild { registry: &registry, id: app_pkg, written_uses: &HashMap::new() }) });
         assert!(result.is_ok(), "Cross-package import should resolve: {:?}", result.err());
 
         // Verify the import created an ExternalPackage symbol
@@ -3744,7 +3786,7 @@ mod tests {
         ];
 
         // A member the package doesn't export names nothing here.
-        let result = crate::resolve(ResolveInput { decls: &decls, stdlib: &[], package: Some(crate::PackageBuild { registry: &registry, id: app_pkg, renamed: &HashMap::new() }) });
+        let result = crate::resolve(ResolveInput { decls: &decls, stdlib: &[], package: Some(crate::PackageBuild { registry: &registry, id: app_pkg, written_uses: &HashMap::new() }) });
         let errors = result.expect_err("a private member isn't importable");
         assert!(
             errors.iter().any(|e| matches!(&e.kind, crate::ResolveErrorKind::UndefinedSymbol { name, .. } if name == "internal_helper")),
@@ -3778,7 +3820,7 @@ mod tests {
             make_fn_decl("main"),
         ];
 
-        let result = crate::resolve(ResolveInput { decls: &decls, stdlib: &[], package: Some(crate::PackageBuild { registry: &registry, id: app_pkg, renamed: &HashMap::new() }) });
+        let result = crate::resolve(ResolveInput { decls: &decls, stdlib: &[], package: Some(crate::PackageBuild { registry: &registry, id: app_pkg, written_uses: &HashMap::new() }) });
         assert!(result.is_ok(), "Unqualified import should resolve: {:?}", result.err());
 
         // Verify greet is in scope as a Function symbol (not a dummy Variable)
@@ -3818,7 +3860,7 @@ mod tests {
             make_fn_decl("main"),
         ];
 
-        let result = crate::resolve(ResolveInput { decls: &decls, stdlib: &[], package: Some(crate::PackageBuild { registry: &registry, id: app_pkg, renamed: &HashMap::new() }) });
+        let result = crate::resolve(ResolveInput { decls: &decls, stdlib: &[], package: Some(crate::PackageBuild { registry: &registry, id: app_pkg, written_uses: &HashMap::new() }) });
         assert!(result.is_ok(), "Struct import should resolve: {:?}", result.err());
 
         let resolved = result.unwrap();
@@ -3944,7 +3986,7 @@ mod tests {
             make_fn_decl("main"),
         ];
 
-        let result = crate::resolve(ResolveInput { decls: &decls, stdlib: &[], package: Some(crate::PackageBuild { registry: &registry, id: app_pkg, renamed: &HashMap::new() }) });
+        let result = crate::resolve(ResolveInput { decls: &decls, stdlib: &[], package: Some(crate::PackageBuild { registry: &registry, id: app_pkg, written_uses: &HashMap::new() }) });
         assert!(result.is_ok(), "Should resolve: {:?}", result.err());
 
         let resolved = result.unwrap();
@@ -4014,7 +4056,7 @@ mod tests {
             make_import_decl(vec!["liba"], None, false, false),
             make_fn_decl("main"),
         ];
-        let resolved = crate::resolve(ResolveInput { decls: &decls, stdlib: &[], package: Some(crate::PackageBuild { registry: &registry, id: app, renamed: &HashMap::new() }) })
+        let resolved = crate::resolve(ResolveInput { decls: &decls, stdlib: &[], package: Some(crate::PackageBuild { registry: &registry, id: app, written_uses: &HashMap::new() }) })
             .expect("should resolve");
 
         let ext = resolved.external_decls.get("liba").expect("liba exports");
@@ -4080,7 +4122,7 @@ mod tests {
             make_fn_decl("main"),
         ];
 
-        let result = crate::resolve(ResolveInput { decls: &decls, stdlib: &[], package: Some(crate::PackageBuild { registry: &registry, id: app_pkg, renamed: &HashMap::new() }) });
+        let result = crate::resolve(ResolveInput { decls: &decls, stdlib: &[], package: Some(crate::PackageBuild { registry: &registry, id: app_pkg, written_uses: &HashMap::new() }) });
         assert!(result.is_ok());
 
         let resolved = result.unwrap();
@@ -4160,7 +4202,7 @@ mod tests {
             main_decl,
         ];
 
-        let result = crate::resolve(ResolveInput { decls: &decls, stdlib: &[], package: Some(crate::PackageBuild { registry: &registry, id: app_pkg, renamed: &HashMap::new() }) });
+        let result = crate::resolve(ResolveInput { decls: &decls, stdlib: &[], package: Some(crate::PackageBuild { registry: &registry, id: app_pkg, written_uses: &HashMap::new() }) });
         assert!(result.is_ok(), "Should resolve: {:?}", result.err());
 
         let resolved = result.unwrap();

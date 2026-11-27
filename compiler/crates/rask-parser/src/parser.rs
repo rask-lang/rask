@@ -2605,7 +2605,7 @@ impl Parser {
         };
 
         self.expect_terminator()?;
-        Ok(DeclKind::Import(ImportDecl { path, alias, is_glob, is_lazy }))
+        Ok(DeclKind::Import(ImportDecl { path, alias, is_glob, is_lazy, implicit: false, member_span: None }))
     }
 
     /// Parse `import c "header.h"` (CI1).
@@ -2668,7 +2668,7 @@ impl Parser {
         self.expect(&TokenKind::LBrace)?;
         self.skip_newlines();
 
-        let mut items: Vec<(String, Option<String>)> = Vec::new();
+        let mut items: Vec<(String, Option<String>, Span)> = Vec::new();
 
         loop {
             if self.check(&TokenKind::RBrace) {
@@ -2678,13 +2678,15 @@ impl Parser {
                 break;
             }
 
+            let member_start = self.current().span.start;
             let name = self.expect_ident()?;
             let alias = if self.match_token(&TokenKind::As) {
                 Some(self.expect_ident()?)
             } else {
                 None
             };
-            items.push((name, alias));
+            let member_end = self.tokens.get(self.pos.saturating_sub(1)).map(|t| t.span.end).unwrap_or(member_start);
+            items.push((name, alias, self.span(member_start, member_end)));
 
             if !self.match_token(&TokenKind::Comma) {
                 break;
@@ -2702,7 +2704,7 @@ impl Parser {
         // (which is what the LIFO drain used to need) would hand the imports back
         // last-first.
         for i in 1..items.len() {
-            let (ref name, ref alias) = items[i];
+            let (ref name, ref alias, member) = items[i];
             let mut path = base_path.clone();
             path.push(name.clone());
             let decl = Decl {
@@ -2712,16 +2714,18 @@ impl Parser {
                     alias: alias.clone(),
                     is_glob: false,
                     is_lazy,
+                    implicit: false,
+                    member_span: Some(member),
                 }),
                 span: self.span(start, end),
             };
             self.pending_decls.push(decl);
         }
 
-        let (name, alias) = items.into_iter().next().unwrap();
+        let (name, alias, member) = items.into_iter().next().unwrap();
         let mut path = base_path;
         path.push(name);
-        Ok(DeclKind::Import(ImportDecl { path, alias, is_glob: false, is_lazy }))
+        Ok(DeclKind::Import(ImportDecl { path, alias, is_glob: false, is_lazy, implicit: false, member_span: Some(member) }))
     }
 
     fn parse_export_decl(&mut self) -> Result<DeclKind, ParseError> {

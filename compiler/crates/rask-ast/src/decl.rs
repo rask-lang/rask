@@ -699,6 +699,12 @@ pub struct ImportDecl {
     pub is_glob: bool,
     /// Whether this is a lazy import: `import lazy pkg`
     pub is_lazy: bool,
+    /// The compiler put it there (a build script's prelude, a desugaring),
+    /// so the unused-import warning has nothing to say about it.
+    pub implicit: bool,
+    /// Where this member is written when the import is one of a group,
+    /// `import pkg.{A, B as C}`: the group's lines share the decl's span.
+    pub member_span: Option<Span>,
 }
 
 /// A C header import declaration.
