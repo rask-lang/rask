@@ -307,7 +307,7 @@ go down.
 | [list_leading_operator.rk](list_leading_operator.rk) | A list item that starts with `-` on a new line (SYNTAX.md, Lists). A newline separates items, so `1` then `- 2` would quietly be two arguments; the fix is the operator at the end of the line above, or a comma |
 | [container_turbofish.rk](container_turbofish.rk) | `Vec.new<string>()` followed by a push of the wrong type (#1084) — the written type argument used to be dropped, so the binding stayed open and widened instead |
 | [context_on_entry_point.rk](context_on_entry_point.rk) | A `using` clause on the entry point (CC11, E0831) — nothing can supply the hidden param, so it used to run on garbage (#732) |
-| [unterminated_string.rk](unterminated_string.rk) | A string whose closing quote never comes (E0002). It used to be reported as a stray `"` character |
+| [unterminated_string.rk](unterminated_string.rk) | A `"` or `r"` string whose line ends before its closing quote (E0002), reported at its opening quote. It used to run on to the next quote in the file |
 | [unterminated_block_comment.rk](unterminated_block_comment.rk) | A `/*` comment still open at the end of the file, nested comments included (E0006). It used to surface as a missing `}` |
 | [call_on_a_value.rk](call_on_a_value.rk) | `n(3)` on an `i64`, `s()` on a string (E0311). The result type was left unsolved and the error came later or not at all |
 | [missing_c_header.rk](missing_c_header.rk) | `import c` of a header that isn't on any search path (E0214). The error carried no code, and a file named without a directory listed an empty entry as the first place searched |
@@ -334,6 +334,7 @@ go down.
 | [import_build_outside_build_script.rk](import_build_outside_build_script.rk) | `import build` in a program (E0955) |
 | [strategy_as_container.rk](strategy_as_container.rk) | `Mutex.new(1)` and `Local.new(1)` (E0380). `Mutex.new` used to say "no method `new`", and `Mutex<i64>.new` said `Mutex` "is not a type any more", which it is: a strategy for `Shared` |
 | [type_test_not_in_error_union.rk](type_test_not_in_error_union.rk) | `r is NetFailed` on an `i64 or (ParseFailed \| DiskFailed)` (E0398). A union error side used to get a code of its own (E0347) for the same mistake, and the type printed without its parentheses |
+| [type_contains_itself.rk](type_contains_itself.rk) | A `type alias` that names itself anywhere, even inside `Vec<…>` (E0395), and a nominal `type` that wraps itself inline (E0890). The aliases overflowed the compiler's stack; the nominal ones were accepted |
 | [closure_reads_mutated_receiver.rk](closure_reads_mutated_receiver.rk) | `v.remove_where(\|x\| x < v.len())`: the closure reads `v` while the call has it lent for writing (E0320) |
 | [destructure_read_then_write.rk](destructure_read_then_write.rk) | `mut Person(name: other, ..) = p` while an earlier `let` destructuring still reads `p` (E0801) |
 | [closure_carries_uncloneable.rk](closure_carries_uncloneable.rk) | A returned closure carrying an `any Displayable` (E0976); cloning the closure would have to clone it |

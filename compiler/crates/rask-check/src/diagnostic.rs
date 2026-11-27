@@ -1260,15 +1260,19 @@ impl ToDiagnostic for crate::TypeError {
                     .with_why("a required edge needs two things this prototype doesn't have: a batch to build it in (a cycle needs one side written before its target exists) and a declared delete policy — cascade or restrict — for when its target dies, since there is no `none` to fall back to. An optional edge needs neither. Inside a container (`Vec<Link<T>>`, `Map<K, Link<T>>`) a bare link is fine either way: delete drops the entry rather than nulling it")
             }
 
-            RecursiveTypeHasNoSize { name, through, span } => {
+            RecursiveTypeHasNoSize { name, through, site, span } => {
+                let what = match site {
+                    crate::checker::HoldsItself::Field => "this field",
+                    crate::checker::HoldsItself::Wraps => "the type it wraps",
+                };
                 Diagnostic::error(format!("`{}` contains itself, so it has no size", name))
                     .with_code("E0890")
                     .with_primary(
                         *span,
                         if through.is_empty() {
-                            format!("this field is a `{}`, the type being declared", name)
+                            format!("{} is a `{}`, the type being declared", what, name)
                         } else {
-                            format!("this field reaches `{}` again: {}", name, through)
+                            format!("{} reaches `{}` again: {}", what, name, through)
                         },
                     )
                     .with_help(format!(

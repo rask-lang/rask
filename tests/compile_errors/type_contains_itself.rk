@@ -1,0 +1,45 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: type declarations that contain themselves
+//
+// A `type alias` is replaced by what it stands for wherever it is written, so
+// one that mentions itself anywhere, even inside `Vec<…>`, expands forever.
+// These used to overflow the compiler's stack.
+//
+// A nominal `type X = …` is stored as the type it wraps, so wrapping itself
+// inline leaves it no size. Behind a `Vec` it is fine: `type Items = Vec<Items>`
+// is a list of lists.
+
+// ERROR: the alias names itself inside a tuple [E0395]
+type alias Pair = (i64, Pair)
+
+// ERROR: the alias names itself as a Vec element [E0395]
+type alias Nested = Vec<Nested>
+
+// ERROR: a generic alias that is only itself [E0395]
+type alias Tree<T> = Tree<T>
+
+type alias Forward = Backward?
+
+// ERROR: two aliases that name each other [E0395]
+type alias Backward = Vec<Forward>
+
+// ERROR: a nominal type that is itself [E0890]
+type Selfish = Selfish
+
+// ERROR: two nominal types that wrap each other [E0890]
+type Ping = Pong
+
+type Pong = Ping
+
+// ERROR: a nominal type holding itself inline [E0890]
+type Cons = (i64, Cons)
+
+// ERROR: an optional is inline too [E0890]
+type Maybe = Maybe?
+
+type Items = Vec<Items>
+
+func main() {
+    let items = Items(Vec.new())
+    println(items.value.len())
+}

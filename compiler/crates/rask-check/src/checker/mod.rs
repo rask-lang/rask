@@ -44,7 +44,7 @@ pub use type_defs::{CContext, Callee, ConformanceCall, LiteralConversion, Litera
 pub use type_table::{primitive_spelling, CustomDecode, CustomEncode, TaskBound, TypeTable, WireHook};
 pub use operators::{operator_interface, OperatorTarget};
 pub use inference::{TypeConstraint, InferenceContext};
-pub use errors::{ArgProblem, WireHookProblem, TypeError, TypeArgSite, MapKeyFix, InvalidCastClass, IndexErrorKind, InterfaceBoundContext, KeptBy};
+pub use errors::{ArgProblem, HoldsItself, WireHookProblem, TypeError, TypeArgSite, MapKeyFix, InvalidCastClass, IndexErrorKind, InterfaceBoundContext, KeptBy};
 pub use parse_type::resolve_type_expr;
 
 pub use generics::{bind_header_pattern, bind_header_patterns};

@@ -788,6 +788,11 @@ impl TypeTable {
         self.cyclic_aliases.insert(name);
     }
 
+    /// An alias refused for reaching itself: declared, and already reported.
+    pub fn is_cyclic_alias(&self, name: &str) -> bool {
+        self.cyclic_aliases.contains(name)
+    }
+
     pub fn register_alias(&mut self, name: String, params: Vec<String>, target: TypeExpr) {
         let alias = Alias { params, target };
         if self.stdlib_mode {
@@ -855,20 +860,45 @@ impl TypeTable {
         self.alias_target(name).filter(|t| t.args().is_empty()).and_then(TypeExpr::name)
     }
 
-    /// Check if registering `name -> target` would create a cycle.
-    /// Returns the cycle path if so.
+    /// The alias chain by which registering `name -> target` would reach
+    /// `name` again, as `["Tree", "Forest", "Tree"]`. An alias is replaced by
+    /// what it stands for wherever it appears, so a mention anywhere counts:
+    /// `type alias Pair = (i64, Pair)` and `type alias Items = Vec<Items>`
+    /// both expand forever.
     pub fn check_alias_cycle(&self, name: &str, target: &TypeExpr) -> Option<Vec<String>> {
-        let mut path = vec![name.to_string(), target.to_string()];
-        let mut current = target;
-        loop {
-            let current_name = current.bare_name()?;
-            if current_name == name {
-                return Some(path);
+        let mut path = vec![name.to_string()];
+        let mut seen = HashSet::new();
+        self.alias_reaches(name, target, &mut path, &mut seen).then_some(path)
+    }
+
+    fn alias_reaches(
+        &self,
+        name: &str,
+        target: &TypeExpr,
+        path: &mut Vec<String>,
+        seen: &mut HashSet<String>,
+    ) -> bool {
+        let mentioned = std::cell::RefCell::new(Vec::new());
+        target.mentions(&|n| {
+            mentioned.borrow_mut().push(n.to_string());
+            false
+        });
+        for next in mentioned.into_inner() {
+            if next == name {
+                path.push(next);
+                return true;
             }
-            let next = &self.aliases().get(current_name)?.target;
-            path.push(next.to_string());
-            current = next;
+            if !seen.insert(next.clone()) {
+                continue;
+            }
+            let Some(alias) = self.aliases().get(&next) else { continue };
+            path.push(next);
+            if self.alias_reaches(name, &alias.target, path, seen) {
+                return true;
+            }
+            path.pop();
         }
+        false
     }
 
     /// Look up a type by name.

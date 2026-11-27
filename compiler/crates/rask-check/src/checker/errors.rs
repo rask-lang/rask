@@ -382,6 +382,7 @@ pub enum TypeError {
     RecursiveTypeHasNoSize {
         name: String,
         through: String,
+        site: HoldsItself,
         span: Span,
     },
     /// mem.racks/RK11: `<`, `compare` or `sort` on links. A link is the node's
@@ -2248,4 +2249,12 @@ pub enum ArgProblem {
     /// Labels that place fine, on a kind of call the checker matches by
     /// position only. A compiler gap, reported rather than miscompiled.
     NotReordered,
+}
+
+/// Where a type that holds itself does so: in a field or variant payload, or
+/// as the type a nominal `type X = …` wraps.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HoldsItself {
+    Field,
+    Wraps,
 }
