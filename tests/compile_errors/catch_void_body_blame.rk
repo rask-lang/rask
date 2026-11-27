@@ -9,7 +9,7 @@
 
 func main() {
     let a = "3".parse()
-    a catch e => {                     // ERROR: expected i64, found void
+    a catch e => {                     // ERROR: expected i64, found void [E0308]
         println("bad")
     }
     println("A {a catch _ => -1}")

@@ -17,7 +17,7 @@ struct Row {
 func runtime_has() -> i64 {
     mut n = 0
     for f in reflect.fields<Row>() {
-        if f.has<label>() {          // ERROR: not a comptime for binding
+        if f.has<label>() {          // ERROR: not a comptime for binding [E0966]
             n += 1
         }
     }
@@ -26,19 +26,19 @@ func runtime_has() -> i64 {
 
 func runtime_get() -> string {
     let fs = reflect.fields<Row>()
-    return fs[0].get<label>().name   // ERROR: not a comptime for binding
+    return fs[0].get<label>().name   // ERROR: not a comptime for binding [E0966]
 }
 
 func runtime_is() -> bool {
     let ps = reflect.params<func(i64)>()
-    return ps[0].is<i64>()           // ERROR: not a comptime for binding
+    return ps[0].is<i64>()           // ERROR: not a comptime for binding [E0966]
 }
 
 func probe<F>(f: F) {
     comptime for p in reflect.params<F>() {
         // A local of the same name hides the binding.
         let p = reflect.params<func(i64)>()[0].clone()
-        if p.is<i64>() {             // ERROR: not the comptime for binding
+        if p.is<i64>() {             // ERROR: not the comptime for binding [E0966]
             println("i64")
         }
     }

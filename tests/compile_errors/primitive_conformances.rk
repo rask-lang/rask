@@ -16,9 +16,9 @@ func flip<T: Neg>(x: T) -> T {
 }
 
 func main() {
-    // ERROR: f64 isn't BitAnd
+    // ERROR: f64 isn't BitAnd [E0333]
     let x = band(1.5, 2.5)
     let small: u32 = 5
-    // ERROR: u32 isn't Neg
+    // ERROR: u32 isn't Neg [E0333]
     let y = flip(small)
 }

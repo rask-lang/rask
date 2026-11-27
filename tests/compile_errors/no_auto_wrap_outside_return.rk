@@ -57,17 +57,17 @@ func failed() -> i64 or LoadError {
 }
 
 func main() {
-    // ERROR: assignment — the value must already have the union type
+    // ERROR: assignment — the value must already have the union type [E0828]
     let from_binding: i64 or LoadError = 7
 
-    // ERROR: argument
+    // ERROR: argument [E0828]
     let n = consume(7)
 
-    // ERROR: method argument — same rule, same message
+    // ERROR: method argument — same rule, same message [E0828]
     let loader = Loader(tag: 1)
     let m: i64 = loader.absorb(7)
 
-    // ERROR: struct field
+    // ERROR: struct field [E0828]
     let rec = Record(size: 7)
 
     // THE FIX: get it from something whose `return` does the wrapping.

@@ -15,14 +15,14 @@ struct Big {
 }
 
 func main() {
-    // ERROR: a Vec isn't one word (GA2)
+    // ERROR: a Vec isn't one word (GA2) [E0384]
     let v = Atomic<Vec<i64>>.new([])
-    // ERROR: 16 bytes is two words (GA2)
+    // ERROR: 16 bytes is two words (GA2) [E0384]
     let big = Atomic<Big>.new(Big(a: 1, b: 2))
     let flag = Atomic<bool>.new(false)
-    // ERROR: a bool can't be added (GA3)
+    // ERROR: a bool can't be added (GA3) [E0402]
     let x = flag.fetch_add(true)
     let n = Atomic<i64>.new(1)
-    // ERROR: store takes the payload type
+    // ERROR: store takes the payload type [E0308]
     n.store("s")
 }

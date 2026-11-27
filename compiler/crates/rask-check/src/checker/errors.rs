@@ -1206,14 +1206,6 @@ pub enum TypeError {
         span: Span,
     },
 
-    /// D1: use after discard
-    #[error("use of discarded value: `{name}`")]
-    UseAfterDiscard {
-        name: String,
-        discarded_at: Span,
-        span: Span,
-    },
-
     /// SP3: zero step on range
     #[error("zero step")]
     ZeroStep {
@@ -2222,7 +2214,6 @@ impl TypeError {
             | VariadicArg { .. }
             | TypeCalledAsFunction { .. }
             | PublicMissingAnnotation { .. }
-            | UseAfterDiscard { .. }
             | NoReturnFinishes { .. }
             | NoReturnReturns { .. }
             | ZeroStep { .. }

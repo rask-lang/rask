@@ -6,17 +6,17 @@
 // interpreter's `as` read it as `i32`. Rask's integers say their width, so the
 // aliases are gone and the error names the type to write instead.
 
-// ERROR: unknown type `int`
+// ERROR: unknown type `int` [E0356]
 func takes_int(x: int) -> i64 {
     return 1
 }
 
-// ERROR: did you mean `u64`?
+// ERROR: did you mean `u64`? [E0356]
 func returns_uint() -> uint {
     return 2
 }
 
-// ERROR: did you mean `f64`?
+// ERROR: did you mean `f64`? [E0356]
 func takes_float(y: float) -> i64 {
     return 3
 }

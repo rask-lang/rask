@@ -4,7 +4,7 @@
 // Each section tests a specific type rule the checker should enforce.
 
 // --- implicit bool conversion (CF4, BL3) ---
-// ERROR: expected bool, found i32
+// ERROR: expected bool, found i32 [E0308]
 func test_int_as_bool() {
     let x = 42
     if x {
@@ -13,41 +13,41 @@ func test_int_as_bool() {
 }
 
 // --- implicit int<->bool (BL3) ---
-// ERROR: cannot convert bool to i32
+// ERROR: cannot convert bool to i32 [E0308]
 func test_bool_to_int() {
     let x: i32 = true
 }
 
 // --- narrowing cast via `as` (CV1) ---
-// ERROR: cannot use 'as' for narrowing conversion, name a policy: `.to<T>()!`, `.wrap<T>()` or `.clamp<T>()`
+// ERROR: cannot use 'as' for narrowing conversion, name a policy: `.to<T>()!`, `.wrap<T>()` or `.clamp<T>()` [E0817]
 func test_narrowing_as() {
     let big: i64 = 1000
     let small: i32 = big as i32
 }
 
 // --- float to int via `as` (CV4) ---
-// ERROR: cannot use 'as' for float-to-int, name a fraction policy: `.round<T>()`, `.floor<T>()`, `.ceil<T>()`
+// ERROR: cannot use 'as' for float-to-int, name a fraction policy: `.round<T>()`, `.floor<T>()`, `.ceil<T>()` [E0817]
 func test_float_to_int_as() {
     let f: f64 = 3.14
     let i: i32 = f as i32
 }
 
 // --- int to char via `as` (CH5) ---
-// ERROR: cannot use 'as' to convert integer to char, use char.from_u32()
+// ERROR: cannot use 'as' to convert integer to char, use char.from_u32() [E0817]
 func test_int_to_char() {
     let n: u32 = 65
     let c: char = n as char
 }
 
 // --- Option<T> does not auto-unwrap (OPT9) ---
-// ERROR: expected i32, found i32?
+// ERROR: expected i32, found i32? [E0308]
 func test_option_no_auto_unwrap() {
     let opt: i32? = 42
     let x: i32 = opt
 }
 
 // --- try in non-Option function (OPT13) ---
-// ERROR: cannot use try on Option in non-Option function
+// ERROR: cannot use try on Option in non-Option function [E0316]
 func test_try_option_wrong_return() -> i32 {
     let opt: i32? = 42
     let x = try opt
@@ -55,7 +55,7 @@ func test_try_option_wrong_return() -> i32 {
 }
 
 // --- try error type mismatch (ER4) ---
-// ERROR: cannot propagate ParseError where IoError is expected
+// ERROR: cannot propagate ParseError where IoError is expected [E0355]
 struct IoError { msg: string }
 struct ParseError { msg: string }
 
@@ -76,19 +76,19 @@ func load() -> i32 or IoError {
 }
 
 // --- wrong number of type arguments ---
-// ERROR: Option takes 1 type argument, found 2
+// ERROR: Option takes 1 type argument, found 2 [E0885]
 func test_wrong_type_args() {
     let x: Option<i32, string> = 42
 }
 
 // --- branch type mismatch in if expression (CF6) ---
-// ERROR: if branches have incompatible types: i32 vs string
+// ERROR: if branches have incompatible types: i32 vs string [E0308]
 func test_if_type_mismatch() {
     let x = if true: 42 else: "hello"
 }
 
 // --- break value type mismatch (CF16) ---
-// ERROR: break expressions have inconsistent types
+// ERROR: break expressions have inconsistent types [E0308]
 func test_break_type_mismatch() {
     let x = loop {
         if true { break 42 }

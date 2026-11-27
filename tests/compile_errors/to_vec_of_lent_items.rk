@@ -22,13 +22,13 @@ func mk(x: i64) -> Vec<i64> {
 func main() {
     let plain: Vec<i64> = [1, 2, 3]
     let vs = plain.map(|x| mk(x)).to_vec()
-    // ERROR: `Vec<i64>` is lent by `filter`, not owned
+    // ERROR: `Vec<i64>` is lent by `filter`, not owned [E0905]
     let some = vs.filter(|v| v[0] > 1).to_vec()
 
     let users: Vec<User> = []
-    // ERROR: `User` is lent by `take`
+    // ERROR: `User` is lent by `take` [E0905]
     let first = users.take(1).to_vec()
-    // ERROR: the pair holds a lent `User`
+    // ERROR: the pair holds a lent `User` [E0905]
     let numbered = users.enumerate().skip(1).to_vec()
 
     // Fine: a `map` makes values the chain owns, so the clone is written.

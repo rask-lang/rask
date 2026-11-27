@@ -20,7 +20,7 @@ extend Bag {
     func each_mut(mutate self) -> SequenceMut<Counter> {
         return |yield| {
             for mutate c in self.items {
-                // ERROR: `yield` mutates `c` — mark it at the call site
+                // ERROR: `yield` mutates `c` — mark it at the call site [E0373]
                 if !yield(c) {
                     return
                 }
@@ -34,7 +34,7 @@ func bump(mutate c: Counter) {
 }
 
 func apply(f: func(mutate Counter), mutate c: Counter) {
-    // ERROR: `f` mutates `c` — mark it at the call site
+    // ERROR: `f` mutates `c` — mark it at the call site [E0373]
     f(c)
 }
 

@@ -22,13 +22,13 @@ extend LookupError {
 }
 
 func by_name(n: i64) -> i64 or Error {
-    // ERROR: `Error` is an interface, not an enum — `NotFound` is not one of its variants
+    // ERROR: `Error` is an interface, not an enum — `NotFound` is not one of its variants [E0863]
     if n < 0 { return Error.NotFound }
     return n
 }
 
 func invented(n: i64) -> i64 or Error {
-    // ERROR: a name nobody declared anywhere is caught for the same reason
+    // ERROR: a name nobody declared anywhere is caught for the same reason [E0863]
     if n < 0 { return Error.CompletelyMadeUpNonsense }
     return n
 }

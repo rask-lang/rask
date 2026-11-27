@@ -20,19 +20,19 @@ func count(p: Vec<i64>) -> u64 {
 }
 
 func modes_differ() {
-    // ERROR: `stash` takes its parameter; the slot would let the caller keep it
+    // ERROR: `stash` takes its parameter; the slot would let the caller keep it [E0912]
     let f: func(Vec<i64>) -> Vec<i64> = stash
 
-    // ERROR: `grow` writes its parameter; the slot lends it read-only
+    // ERROR: `grow` writes its parameter; the slot lends it read-only [E0912]
     let g: func(Vec<i64>) = grow
 
-    // ERROR: `count` only borrows; a `take` slot would leak what it hands over
+    // ERROR: `count` only borrows; a `take` slot would leak what it hands over [E0912]
     let h: func(take Vec<i64>) -> u64 = count
 
-    // ERROR: a closure can't declare `take`, so it can't fill a `take` slot
+    // ERROR: a closure can't declare `take`, so it can't fill a `take` slot [E0912]
     let c: func(take Vec<i64>) -> u64 = |p: Vec<i64>| p.len()
 
-    // ERROR: a borrowing closure in a `mutate` slot
+    // ERROR: a borrowing closure in a `mutate` slot [E0912]
     let m: func(mutate Vec<i64>) -> u64 = |p: Vec<i64>| p.len()
 }
 
@@ -40,16 +40,16 @@ func calls_through_values() {
     let take_it: func(take Vec<i64>) -> u64 = consume
     let v: Vec<i64> = [1, 2]
     println("{take_it(v)}")
-    // ERROR: `v` went to a `take` parameter through the value
+    // ERROR: `v` went to a `take` parameter through the value [E0800]
     println("{v.len()}")
 
     let grow_it = grow
     mut w: Vec<i64> = [1]
-    // ERROR: the `mutate` marker is required through a value too
+    // ERROR: the `mutate` marker is required through a value too [E0373]
     grow_it(w)
 
     let fixed: Vec<i64> = [1]
-    // ERROR: a `let` can't be lent for writing, through a value or not
+    // ERROR: a `let` can't be lent for writing, through a value or not [E0302]
     grow_it(mutate fixed)
 }
 

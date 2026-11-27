@@ -15,7 +15,7 @@ func make(base: Vec<i64>) -> func(i64) -> i64 {
     return |x| x + base.len().wrap<i64>()
 }
 
-// ERROR: SL4 carries `make`'s limit out to the call, and `v` dies here
+// ERROR: SL4 carries `make`'s limit out to the call, and `v` dies here [E0862]
 func returns_a_borrowed_result() -> func(i64) -> i64 {
     let v: Vec<i64> = [1, 2]
     return make(v)

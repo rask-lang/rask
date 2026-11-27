@@ -16,29 +16,29 @@ struct Holder<Thing> {
     }
 }
 
-// ERROR: unknown type `Nowhere`
+// ERROR: unknown type `Nowhere` [E0356]
 extend Nowhere {
     func a(self) -> i64 {
         return 1
     }
 }
 
-// ERROR: unknown type `Nope`
+// ERROR: unknown type `Nope` [E0356]
 type alias Many = Vec<Nope>
 
 union Raw {
-    // ERROR: unknown type `Nada`
+    // ERROR: unknown type `Nada` [E0356]
     a: Nada,
 }
 
 func main() {
-    // ERROR: unknown type `Nonexistent`
+    // ERROR: unknown type `Nonexistent` [E0356]
     let n: i64 = 5 as Nonexistent
-    // ERROR: unknown type `Nonexistent`
+    // ERROR: unknown type `Nonexistent` [E0356]
     let c = |q: Nonexistent| 1
-    // ERROR: unknown type `Missing`
+    // ERROR: unknown type `Missing` [E0356]
     let m: Missing = 5
-    // ERROR: unknown type `Elsewhere`
+    // ERROR: unknown type `Elsewhere` [E0356]
     let v: Vec<Elsewhere> = Vec.new()
     let h = Holder(v: 3)
     println(h.get())

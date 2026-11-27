@@ -15,6 +15,6 @@ enum LoadError {
 }
 
 func main() {
-    println("width {80}")              // ERROR: a constant in a hole
+    println("width {80}")              // ERROR: a constant in a hole [E0100]
     println("{LoadError.NotFound(1)}")
 }

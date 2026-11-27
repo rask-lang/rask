@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 // Compile Error: one expression takes two locks at once
-// ERROR: this expression takes 2 locks at once
+// ERROR: this expression takes 2 locks at once [E0884]
 //
 // An inline access holds its lock until the expression it starts ends
 // (conc.sync/R5), so two of them hold two locks at the same time — and two

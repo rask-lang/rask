@@ -9,11 +9,11 @@ import sync.{Atomic, MemoryOrder}
 
 func main() {
     let ready = Atomic<bool>.new(false)
-    // ERROR: a load has no release half
+    // ERROR: a load has no release half [E0933]
     let seen = ready.load(order: MemoryOrder.Release)
-    // ERROR: a store has no acquire half
+    // ERROR: a store has no acquire half [E0933]
     ready.store(true, order: MemoryOrder.Acquire)
-    // ERROR: AcqRel is for read-modify-writes
+    // ERROR: AcqRel is for read-modify-writes [E0933]
     ready.store(seen, order: MemoryOrder.AcqRel)
     // These fit, and aren't reported.
     ready.store(true, order: MemoryOrder.Release)

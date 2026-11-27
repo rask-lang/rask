@@ -4,23 +4,23 @@
 // Common mistakes from Rust users. Each should produce a helpful error
 // pointing to the Rask equivalent.
 
-// ERROR: `pub` is not a keyword — use `public`
+// ERROR: `pub` is not a keyword — use `public` [E0100]
 pub struct Point { x: i32 }
 
-// ERROR: `fn` is not a keyword — use `func`
+// ERROR: `fn` is not a keyword — use `func` [E0100]
 fn add(a: i32, b: i32) -> i32 { return a + b }
 
-// ERROR: `::` path separator — use `.`
+// ERROR: `::` path separator — use `.` [E0100]
 func test_path() {
     let x = Result::Ok(42)
 }
 
-// ERROR: `const` is only for module-level constants — use `let` in a body
+// ERROR: `const` is only for module-level constants — use `let` in a body [E0100]
 func test_const() {
     const counter = 0
 }
 
-// ERROR: `let mut` is not Rask — use `mut` directly
+// ERROR: `let mut` is not Rask — use `mut` directly [E0100]
 func test_let_mut() {
     let mut counter = 0
 }

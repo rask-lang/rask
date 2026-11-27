@@ -28,21 +28,21 @@ import sync.{Atomic, MemoryOrder}
 
 func too_many() {
     let a = Atomic<i64>.new(1)
-    // ERROR: `load` takes an ordering and nothing else
+    // ERROR: `load` takes an ordering and nothing else [E0310]
     println(a.load(MemoryOrder.SeqCst, 3))
     return
 }
 
 func too_few() {
     let a = Atomic<i64>.new(1)
-    // ERROR: `store` takes a value
+    // ERROR: `store` takes a value [E0310]
     a.store()
     return
 }
 
 func take_takes_none() {
     let a = Atomic<i64>.new(1)
-    // ERROR: `take` reads the word without an ordering — it consumes the atomic
+    // ERROR: `take` reads the word without an ordering — it consumes the atomic [E0310]
     println(a.take(MemoryOrder.SeqCst))
     return
 }
@@ -51,7 +51,7 @@ func take_takes_none() {
 // swallow the old one.
 func no_such_name() {
     let a = Atomic<i64>.new(1)
-    // ERROR: no method `increment` — the name is `fetch_add`
+    // ERROR: no method `increment` — the name is `fetch_add` [E0313]
     println(a.increment(1))
     return
 }
@@ -67,7 +67,7 @@ struct Pair {
 
 func no_arithmetic_on_the_payload() {
     let a = Atomic<Pair>.new(Pair(a: 1, b: 2))
-    // ERROR: `fetch_add` needs a payload it can add, and `Pair` isn't one
+    // ERROR: `fetch_add` needs a payload it can add, and `Pair` isn't one [E0402]
     println(a.fetch_add(1).a)
     return
 }

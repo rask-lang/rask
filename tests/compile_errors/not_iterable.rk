@@ -22,7 +22,7 @@ struct Bag {
 }
 
 extend Bag {
-    // ERROR: `i64` can't be iterated — a count wants the range it counts
+    // ERROR: `i64` can't be iterated — a count wants the range it counts [E0827]
     func over_int(self) -> i64 {
         mut total = 0
         for x in self.count {
@@ -31,7 +31,7 @@ extend Bag {
         return total
     }
 
-    // ERROR: `string` can't be iterated — a string is a sequence, of chars
+    // ERROR: `string` can't be iterated — a string is a sequence, of chars [E0827]
     func over_string(self) -> i64 {
         mut n = 0
         for c in self.label {
@@ -40,7 +40,7 @@ extend Bag {
         return n
     }
 
-    // ERROR: `Row` can't be iterated — a struct has fields, not elements
+    // ERROR: `Row` can't be iterated — a struct has fields, not elements [E0827]
     func over_struct(self) -> i64 {
         mut n = 0
         for r in self.one {
@@ -49,7 +49,7 @@ extend Bag {
         return n
     }
 
-    // ERROR: cannot index `Vec<Row>` with `string` — #310's index check now
+    // ERROR: cannot index `Vec<Row>` with `string` — #310's index check now [E0819]
     // reaches a container arrived at through a field. It ran at the index site,
     // where the container was still an unresolved variable, so it classified
     // nothing and let this through.

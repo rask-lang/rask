@@ -9,20 +9,20 @@ interface Printable {
     func print(self) -> string
 }
 
-// ERROR: no interface named `Printabel` — a function bound, never called
+// ERROR: no interface named `Printabel` — a function bound, never called [E0833]
 func show<T: Printabel>(x: T) {
 }
 
-// ERROR: in a `where` clause
+// ERROR: in a `where` clause [E0833]
 func show_all<T>(xs: Vec<T>) where T: Printabel {
 }
 
-// ERROR: on a struct's parameter
+// ERROR: on a struct's parameter [E0833]
 struct Holder<T: Printabel> {
     item: T
 }
 
-// ERROR: on an enum's parameter
+// ERROR: on an enum's parameter [E0833]
 enum Slot<T: Printabel> {
     Full(T)
     Empty
@@ -32,7 +32,7 @@ struct Doc {
     n: i64
 }
 
-// ERROR: in an `implements` header
+// ERROR: in an `implements` header [E0833]
 Doc implements Printabel {
     func print(self) -> string {
         return "doc"
@@ -40,18 +40,18 @@ Doc implements Printabel {
 }
 
 extend Doc {
-    // ERROR: on a method's own parameter
+    // ERROR: on a method's own parameter [E0833]
     func pair<U: Printabel>(self, u: U) -> i64 {
         return self.n
     }
 }
 
-// ERROR: as a super-interface
+// ERROR: as a super-interface [E0833]
 interface Loud: Printabel {
     func shout(self) -> string
 }
 
-// ERROR: on an associated type
+// ERROR: on an associated type [E0833]
 interface Source {
     type Item: Printabel
 }
@@ -68,7 +68,7 @@ Page implements Printable {
 
 // A bad bound beside a good one is reported here, once, and not again at the
 // call below.
-// ERROR: the second bound
+// ERROR: the second bound [E0833]
 func both<T: Printable + Printabel>(x: T) -> string {
     return x.print()
 }

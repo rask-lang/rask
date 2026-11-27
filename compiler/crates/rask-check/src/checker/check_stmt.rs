@@ -647,14 +647,10 @@ impl TypeChecker {
                 self.pop_scope();
             }
             StmtKind::Discard { name, name_span } => {
-                // D1: a discarded binding is gone, for `discard` too.
-                if let Some(&discarded_at) = self.discarded_bindings.get(name.as_str()) {
-                    self.errors.push(TypeError::UseAfterDiscard {
-                        name: name.clone(),
-                        discarded_at,
-                        span: *name_span,
-                    });
-                } else if let Some(ty) = self.lookup_local(name) {
+                // D1, a use after the discard, is the ownership pass's: it
+                // follows each function's paths, where a name here would
+                // match every later binding spelled the same, in any function.
+                if let Some(ty) = self.lookup_local(name) {
                     let resolved = self.ctx.apply(&ty);
                     // D3: @resource types cannot be discarded
                     if self.is_resource_type(&resolved) {
@@ -674,8 +670,6 @@ impl TypeChecker {
                         self.pending_discards.push((name.clone(), resolved, stmt.span));
                     }
                     self.span_types.insert((name_span.start, name_span.end, name_span.file_id), ty);
-                    // D1: Invalidate the binding
-                    self.discarded_bindings.insert(name.clone(), stmt.span);
                 } else {
                     self.errors.push(TypeError::UndefinedName {
                         name: name.clone(),

@@ -7,20 +7,20 @@
 // MIR lowering. A plain type parameter in the length's place bound whatever
 // length a call passed.
 
-func count(arr: [i64; string]) -> usize { // ERROR: `string` isn't an array length
+func count(arr: [i64; string]) -> usize { // ERROR: `string` isn't an array length [E0319]
     return arr.len()
 }
 
-func by_type<T>(arr: [i64; T]) -> usize { // ERROR: `T` is a type parameter
+func by_type<T>(arr: [i64; T]) -> usize { // ERROR: `T` is a type parameter [E0319]
     return arr.len()
 }
 
-func as_type<comptime N: usize>(x: N) -> usize { // ERROR: `N` is a `comptime` length, not a type
+func as_type<comptime N: usize>(x: N) -> usize { // ERROR: `N` is a `comptime` length, not a type [E0319]
     return 0
 }
 
 func main() {
-    // ERROR: `M` isn't an array length
+    // ERROR: `M` isn't an array length [E0319]
     let a: [i64; M] = [1, 2, 3]
     println("{a.len()} {count([1, 2])} {by_type([1, 2])}")
 }

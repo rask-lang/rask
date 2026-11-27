@@ -22,43 +22,43 @@ enum Slot<T> {
 }
 
 struct Holder {
-    // ERROR: `Box2` takes 1 type argument, found 2
+    // ERROR: `Box2` takes 1 type argument, found 2 [E0885]
     b: Box2<i64, i64>,
 }
 
 enum Wrapped {
-    // ERROR: `Plain` takes no type arguments, found 1
+    // ERROR: `Plain` takes no type arguments, found 1 [E0885]
     One(Plain<i64>)
 }
 
-// ERROR: `Box2` takes 1 type argument, found 2
+// ERROR: `Box2` takes 1 type argument, found 2 [E0885]
 extend Box2<T, U> {
     func get(self) -> T {
         return self.v
     }
 }
 
-// ERROR: `Box2` takes 1 type argument, found 2
+// ERROR: `Box2` takes 1 type argument, found 2 [E0885]
 func f(b: Box2<i64, string>) -> i64 {
     return 1
 }
 
-// ERROR: `Plain` takes no type arguments, found 1
+// ERROR: `Plain` takes no type arguments, found 1 [E0885]
 func g(p: Plain<i64>) -> i64 {
     return 2
 }
 
-// ERROR: `Vec` takes 1 type argument, found 2
+// ERROR: `Vec` takes 1 type argument, found 2 [E0885]
 func h(v: Vec<i64, i64>) -> i64 {
     return 3
 }
 
-// ERROR: `Map` takes 2 type arguments, found 1
+// ERROR: `Map` takes 2 type arguments, found 1 [E0885]
 func k(m: Map<string>) -> i64 {
     return 4
 }
 
-// ERROR: `Box2` takes 1 type argument, found 2
+// ERROR: `Box2` takes 1 type argument, found 2 [E0885]
 func r() -> Box2<i64, i64> {
     return Box2(v: 1)
 }
@@ -68,18 +68,18 @@ func fine(s: Shared<i64>, t: Shared<i64, Readers>, b: Box2<i64>, m: Map<string, 
 }
 
 func main() {
-    // ERROR: `Slot` takes 1 type argument, found 2
+    // ERROR: `Slot` takes 1 type argument, found 2 [E0885]
     let x: Slot<i64, i64> = Slot.Full(1)
 
-    // ERROR: `Box2` takes 1 type argument, found 2
+    // ERROR: `Box2` takes 1 type argument, found 2 [E0885]
     let b = Box2<i64, string>(v: 1)
 
-    // ERROR: `Shared` takes 2 type arguments, found 3
+    // ERROR: `Shared` takes 2 type arguments, found 3 [E0885]
     let s: Shared<i64, Readers, i64> = Shared.new(1)
 
-    // ERROR: `Vec` takes 1 type argument, found 2
+    // ERROR: `Vec` takes 1 type argument, found 2 [E0885]
     let v = Vec<i64, i64>.new()
 
-    // ERROR: `Box2` takes 1 type argument, found 2
+    // ERROR: `Box2` takes 1 type argument, found 2 [E0885]
     let c = |q: Box2<i64, i64>| 0
 }

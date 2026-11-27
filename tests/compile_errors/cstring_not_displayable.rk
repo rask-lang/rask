@@ -11,7 +11,7 @@ func main() {
     // ERROR: `cstring` does not implement `Displayable` [E0826]
     println(c.to_string())
 
-    // ERROR: same through a placeholder
+    // ERROR: same through a placeholder [E0826]
     println("{c}")
 
     // Fine: the text, with the failure handled.

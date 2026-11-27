@@ -33,7 +33,7 @@ func might_fail() -> i32 or MyError {
     return MyError.Bad
 }
 
-// ERROR: nowhere for the error to go — `helper` returns nothing.
+// ERROR: nowhere for the error to go — `helper` returns nothing. [E0316]
 func helper() {
     let x = try might_fail()
     println("unreachable: {x}")

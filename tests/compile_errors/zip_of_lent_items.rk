@@ -14,11 +14,11 @@ struct User {
 func main() {
     let groups: Vec<Vec<i64>> = [[1], [2, 3]]
     let ids: Vec<i64> = [10, 20]
-    // ERROR: the pair would hold a lent `Vec<i64>`
+    // ERROR: the pair would hold a lent `Vec<i64>` [E0924]
     let bad = groups.zip(ids)
 
     let users: Vec<User> = []
-    // ERROR: the second side is lent too
+    // ERROR: the second side is lent too [E0924]
     let also_bad = ids.zip(users)
 
     // Fine: Copy values and strings copy into the pair.

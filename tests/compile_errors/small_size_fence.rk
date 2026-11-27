@@ -10,7 +10,7 @@
 // — `Pair<i64>` is 16 bytes and `Pair<string>` is 32, and only the second one
 // breaks it.
 
-// ERROR: `@small` type `TooBig` outgrew the copy threshold — 24 bytes [SM2]
+// ERROR: `@small` type `TooBig` outgrew the copy threshold — 24 bytes [SM2] [E0374]
 @small
 struct TooBig {
     a: i64
@@ -18,7 +18,7 @@ struct TooBig {
     c: i64
 }
 
-// ERROR: `@small` type `WideNames` outgrew the copy threshold — 32 bytes [SM2]
+// ERROR: `@small` type `WideNames` outgrew the copy threshold — 32 bytes [SM2] [E0374]
 // A `string` is 16 bytes, so two of them clear the threshold on their own.
 @small
 struct WideNames {
@@ -26,7 +26,7 @@ struct WideNames {
     last: string
 }
 
-// ERROR: `@small` type `Pair` outgrew the copy threshold at `Pair<string>` [SM3]
+// ERROR: `@small` type `Pair` outgrew the copy threshold at `Pair<string>` [SM3] [E0375]
 @small
 struct Pair<T> {
     a: T

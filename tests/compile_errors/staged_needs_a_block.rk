@@ -27,15 +27,15 @@ func main() {
         println("{v}")
     }
 
-    // ERROR: nothing to commit at — the copy would be dropped on the spot.
+    // ERROR: nothing to commit at — the copy would be dropped on the spot. [E0846]
     let a = s.staged()
 
-    // ERROR: an argument is no different.
+    // ERROR: an argument is no different. [E0846]
     println("{passthrough(s.staged())}")
 
-    // ERROR: nor is an operand.
+    // ERROR: nor is an operand. [E0846]
     let b = s.staged() + 1
 
-    // ERROR: the statement form, which was the one case already rejected.
+    // ERROR: the statement form, which was the one case already rejected. [E0846]
     s.staged()
 }

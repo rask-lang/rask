@@ -20,114 +20,114 @@ import os.Command
 
 // Channel.recv → receive
 func old_recv(rx: Receiver<i64>) {
-    let _ = rx.recv()  // ERROR: no method `recv` (renamed to `receive`)
+    let _ = rx.recv()  // ERROR: no method `recv` (renamed to `receive`) [E0313]
 }
 
 // Channel.try_recv → try_receive
 func old_try_recv(rx: Receiver<i64>) {
-    let _ = rx.try_recv()  // ERROR: no method `try_recv` (renamed to `try_receive`)
+    let _ = rx.try_recv()  // ERROR: no method `try_recv` (renamed to `try_receive`) [E0313]
 }
 
 // Duration.as_secs → as_seconds
 func old_as_secs(d: Duration) -> i64 {
-    return d.as_secs()      // ERROR: no method `as_secs` (renamed to `as_seconds`)
+    return d.as_secs()      // ERROR: no method `as_secs` (renamed to `as_seconds`) [E0313]
 }
 
 // Duration.as_secs_f64 → as_seconds_f64
 func old_as_secs_f64(d: Duration) -> f64 {
-    return d.as_secs_f64()  // ERROR: no method `as_secs_f64` (renamed to `as_seconds_f64`)
+    return d.as_secs_f64()  // ERROR: no method `as_secs_f64` (renamed to `as_seconds_f64`) [E0313]
 }
 
 // os.getpid → os.pid
 func old_getpid() -> i64 {
-    return os.getpid()      // ERROR: no method `getpid` (renamed to `pid`)
+    return os.getpid()      // ERROR: no method `getpid` (renamed to `pid`) [E0411]
 }
 
 // os.vars → os.env_vars
 func old_os_vars() {
-    os.vars()               // ERROR: no method `vars` (renamed to `env_vars`)
+    os.vars()               // ERROR: no method `vars` (renamed to `env_vars`) [E0411]
 }
 
 // fs.read_file → fs.read_text
 func old_read_file() {
-    let _ = fs.read_file("/tmp/x")  // ERROR: no method `read_file` (renamed to `read_text`)
+    let _ = fs.read_file("/tmp/x")  // ERROR: no method `read_file` (renamed to `read_text`) [E0411]
 }
 
 // fs.write_file → fs.write_text
 func old_write_file() {
-    let _ = fs.write_file("/tmp/x", "y")  // ERROR: no method `write_file` (renamed to `write_text`)
+    let _ = fs.write_file("/tmp/x", "y")  // ERROR: no method `write_file` (renamed to `write_text`) [E0411]
 }
 
 // fs.append_file → fs.append_text
 func old_append_file() {
-    let _ = fs.append_file("/tmp/x", "y")  // ERROR: no method `append_file` (renamed to `append_text`)
+    let _ = fs.append_file("/tmp/x", "y")  // ERROR: no method `append_file` (renamed to `append_text`) [E0411]
 }
 
 // File.lines() removed (#276) — only fs.read_lines (eager) survives.
 func old_file_lines(f: File) {
-    for line in f.lines() {            // ERROR: no method `lines` on File (removed; use fs.read_lines)
+    for line in f.lines() {            // ERROR: no method `lines` on File (removed; use fs.read_lines) [E0313]
         println(line)
     }
 }
 
 // fs.remove → fs.remove_file
 func old_fs_remove() {
-    let _ = fs.remove("/tmp/x")        // ERROR: no method `remove` (renamed to `remove_file`)
+    let _ = fs.remove("/tmp/x")        // ERROR: no method `remove` (renamed to `remove_file`) [E0411]
 }
 
 // fs.canonicalize → fs.absolute_path
 func old_fs_canonicalize() {
-    let _ = fs.canonicalize("/tmp/x")  // ERROR: no method `canonicalize` (renamed to `absolute_path`)
+    let _ = fs.canonicalize("/tmp/x")  // ERROR: no method `canonicalize` (renamed to `absolute_path`) [E0411]
 }
 
 // string.rfind → string.last_index_of
 func old_rfind(s: string) {
-    let _ = s.rfind("x")               // ERROR: no method `rfind` (renamed to `last_index_of`)
+    let _ = s.rfind("x")               // ERROR: no method `rfind` (renamed to `last_index_of`) [E0313]
 }
 
 // string.trim_bounds → string.trim_indices
 func old_trim_bounds(s: string) {
-    let _ = s.trim_bounds()            // ERROR: no method `trim_bounds` (renamed to `trim_indices`)
+    let _ = s.trim_bounds()            // ERROR: no method `trim_bounds` (renamed to `trim_indices`) [E0313]
 }
 
 // Map.ensure → Map.insert_if_missing
 func old_map_ensure(m: Map<string, i64>) {
-    m.ensure("k", || 0)                // ERROR: no method `ensure` (renamed to `insert_if_missing`)
+    m.ensure("k", || 0)                // ERROR: no method `ensure` (renamed to `insert_if_missing`) [E0313]
 }
 
 // Vec.dedup → Vec.remove_adjacent_duplicates
 func old_vec_dedup(v: Vec<i64>) {
-    v.dedup()                          // ERROR: no method `dedup` (renamed to `remove_adjacent_duplicates`)
+    v.dedup()                          // ERROR: no method `dedup` (renamed to `remove_adjacent_duplicates`) [E0313]
 }
 
 // Duration.from_secs_f64 → Duration.seconds_f64
 func old_from_secs_f64() -> Duration {
-    return Duration.from_secs_f64(1.5) // ERROR: no method `from_secs_f64` (renamed to `seconds_f64`)
+    return Duration.from_secs_f64(1.5) // ERROR: no method `from_secs_f64` (renamed to `seconds_f64`) [E0313]
 }
 
 // Instant.duration_since dropped — only the `-` operator remains.
 func old_instant_duration_since(a: Instant, b: Instant) -> Duration {
-    return a.duration_since(b)         // ERROR: no method `duration_since` on Instant (use `a - b`)
+    return a.duration_since(b)         // ERROR: no method `duration_since` on Instant (use `a - b`) [E0313]
 }
 
 // os.Command.cwd → os.Command.working_dir
 func old_command_cwd() -> Command {
-    return Command.new("ls").cwd("/tmp")  // ERROR: no method `cwd` (renamed to `working_dir`)
+    return Command.new("ls").cwd("/tmp")  // ERROR: no method `cwd` (renamed to `working_dir`) [E0313]
 }
 
 // Path.new dropped — only Path.from remains.
 func old_path_new() -> Path {
-    return Path.new("/tmp")            // ERROR: no method `new` on Path (renamed to `from`)
+    return Path.new("/tmp")            // ERROR: no method `new` on Path (renamed to `from`) [E0313]
 }
 
 // Path.join dropped — only the `/` operator remains.
 func old_path_join(p: Path) -> Path {
-    return p.join("x")                 // ERROR: no method `join` on Path (use the `/` operator)
+    return p.join("x")                 // ERROR: no method `join` on Path (use the `/` operator) [E0313]
 }
 
 // math.clamp dropped — only the prelude `clamp` function remains.
 func old_math_clamp() -> f64 {
-    return math.clamp(1.0, 0.0, 2.0)   // ERROR: no method `clamp` on math (use prelude `clamp(...)`)
+    return math.clamp(1.0, 0.0, 2.0)   // ERROR: no method `clamp` on math (use prelude `clamp(...)`) [E0411]
 }
 
 func main() {}

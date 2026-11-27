@@ -13,7 +13,7 @@ func test_use_after_move() {
     mut v = Vec<i32>.new()
     v.push(1)
     let v2 = v
-    v.push(2)       // ERROR: v was moved to v2
+    v.push(2)       // ERROR: v was moved to v2 [E0800]
 }
 
 // --- use after move in function (O3, PM3) ---
@@ -24,7 +24,7 @@ func consume(take data: LargeData) {}
 func test_use_after_take() {
     let data = LargeData(values: Vec.new())
     consume(data)
-    println("{data.values.len()}")   // ERROR: data was taken
+    println("{data.values.len()}")   // ERROR: data was taken [E0800]
 }
 
 // --- use after move in one branch (O3 edge case) ---
@@ -33,14 +33,14 @@ func test_conditional_move(cond: bool) {
     if cond {
         let v2 = v     // moved in this branch
     }
-    v.push(1)            // ERROR: v may have been moved
+    v.push(1)            // ERROR: v may have been moved [E0813]
 }
 
 // --- double move (O3) ---
 func test_double_move() {
     mut v = Vec<i32>.new()
     let a = v
-    let b = v          // ERROR: v already moved to a
+    let b = v          // ERROR: v already moved to a [E0800]
 }
 
 // --- @unique prevents copy on small types (U1) ---
@@ -50,7 +50,7 @@ struct Token { id: i32 }
 func test_unique_no_copy() {
     mut t = Token(id: 1)
     mut t2 = t           // moves, not copies (despite being small)
-    println("{t.id}")    // ERROR: t was moved
+    println("{t.id}")    // ERROR: t was moved [E0800]
 }
 
 // --- @unique transitive propagation (U4) ---
@@ -59,7 +59,7 @@ struct Wrapper { tok: Token, label: string }
 func test_unique_transitive() {
     mut w = Wrapper(tok: Token(id: 1), label: "test")
     mut w2 = w           // moves (Wrapper contains @unique Token)
-    println("{w.label}")  // ERROR: w was moved
+    println("{w.label}")  // ERROR: w was moved [E0800]
 }
 
 // --- discard on @resource (D3) ---
@@ -68,24 +68,24 @@ struct FileHandle { fd: i32 }
 
 func test_discard_resource() {
     let f = FileHandle(fd: 3)
-    discard f            // ERROR: @resource must be consumed, not discarded
+    discard f            // ERROR: @resource must be consumed, not discarded [E0389]
 }
 
 // --- @resource must be consumed (R1) ---
-// ERROR: resource 'f' not consumed before scope exit
+// ERROR: resource 'f' not consumed before scope exit [E0805]
 func test_resource_leak() {
     let f = FileHandle(fd: 3)
     // f goes out of scope without being consumed
 }
 
 // --- @resource double consume (R2) ---
-// ERROR: resource 'f' consumed more than once
+// ERROR: resource 'f' consumed more than once [E0805]
 func close_file(take f: FileHandle) {}
 
 func test_double_consume() {
     let f = FileHandle(fd: 3)
     close_file(f)
-    close_file(f)        // ERROR: f already consumed
+    close_file(f)        // ERROR: f already consumed [E0800]
 }
 
 // --- Vec is never Copy (VS3) ---
@@ -94,5 +94,5 @@ func take_vec(take v: Vec<i32>) {}
 func test_vec_no_copy() {
     mut v = Vec<i32>.new()
     take_vec(v)
-    v.push(1)            // ERROR: v was taken
+    v.push(1)            // ERROR: v was taken [E0800]
 }

@@ -2850,15 +2850,6 @@ impl ToDiagnostic for crate::TypeError {
                 .with_why("resource types must be consumed exactly once — `discard` would silently leak the resource")
             }
 
-            UseAfterDiscard { name, discarded_at, span } => {
-                Diagnostic::error(format!("use of discarded value: `{}`", name))
-                    .with_code("E0336")
-                    .with_primary(*span, "value used here after discard")
-                    .with_secondary(*discarded_at, "value discarded here")
-                    .with_help("remove the `discard` or restructure so the value isn't needed after this point")
-                    .with_why("`discard` explicitly drops a value and invalidates its binding — using it afterwards is an error")
-            }
-
             ZeroStep { span } => {
                 Diagnostic::error("zero step".to_string())
                     .with_code("E0337")

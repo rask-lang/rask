@@ -9,7 +9,7 @@ func half(x: i32) -> i32 {
 
 func main() {
     let flat: Vec<Vec<i64>> = [[5000000000], [8]]
-    // ERROR: the loop yields `i64`, the body hands it to an `i32` parameter
+    // ERROR: the loop yields `i64`, the body hands it to an `i32` parameter [E0986]
     for v in flat.as_sequence().map(|w| w.as_sequence()).flatten() {
         println("{half(v)}")
     }

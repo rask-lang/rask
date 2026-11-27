@@ -10,10 +10,10 @@ func maybe() -> i64? {
     return 1
 }
 
-// ERROR: `try` has nowhere to send the error here
+// ERROR: `try` has nowhere to send the error here [E0317]
 const X: i64 = try maybe()
 
-// ERROR: `try` has nowhere to send the error here
+// ERROR: `try` has nowhere to send the error here [E0317]
 const Y: i64 = try "2".parse<i64>()
 
 func main() {

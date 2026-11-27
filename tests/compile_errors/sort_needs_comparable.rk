@@ -12,13 +12,13 @@ func sort_optionals() {
     mut v: Vec<i64?> = Vec.new()
     v.push(3)
     v.push(none)
-    v.sort()   // ERROR: i64? is not Comparable
+    v.sort()   // ERROR: i64? is not Comparable [E0333]
 }
 
 func min_of_optionals() -> i64 {
     mut v: Vec<i64?> = Vec.new()
     v.push(3)
-    let best = v.min()   // ERROR: min needs Comparable too
+    let best = v.min()   // ERROR: min needs Comparable too [E0333]
     return 0
 }
 
@@ -29,7 +29,7 @@ func maybe(x: i64) -> i64? {
 func key_is_optional() {
     mut v: Vec<i64> = Vec.new()
     v.push(3)
-    v.sort_by_key(|x| maybe(x))   // ERROR: the key has no order either
+    v.sort_by_key(|x| maybe(x))   // ERROR: the key has no order either [E0333]
 }
 
 // The same `where`-clause check covers every method in such a block: `hash`
@@ -37,7 +37,7 @@ func key_is_optional() {
 func hash_floats() -> u64 {
     mut v: Vec<f64> = Vec.new()
     v.push(1.5)
-    return v.hash()   // ERROR: f64 is not Hashable
+    return v.hash()   // ERROR: f64 is not Hashable [E0333]
 }
 
 // Floats are Comparable (CO4), and so is a struct of them.

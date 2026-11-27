@@ -19,7 +19,7 @@ interface Mul<Rhs> {
     func mul(self, rhs: Rhs) -> Self.Out
 }
 
-// ERROR: the header leaves `Rhs` unbound, and `Scale` declares no default for it
+// ERROR: the header leaves `Rhs` unbound, and `Scale` declares no default for it [E0885]
 Meters implements Scale {
     func scale(self, k: f64) -> Meters {
         return Meters(v: self.v * k)
@@ -28,7 +28,7 @@ Meters implements Scale {
 
 struct Feet { v: f64 }
 
-// ERROR: `k: i64` isn't what `Scale<f64>` asks for — the method is there, the
+// ERROR: `k: i64` isn't what `Scale<f64>` asks for — the method is there, the [E0888]
 // ERROR: signature answers a different question
 Feet implements Scale<f64> {
     func scale(self, k: i64) -> Feet {
@@ -38,7 +38,7 @@ Feet implements Scale<f64> {
 
 struct Yards { v: f64 }
 
-// ERROR: nothing says what `Out` is, and `Mul` gives it no default
+// ERROR: nothing says what `Out` is, and `Mul` gives it no default [E0886]
 Yards implements Mul<f64> {
     func mul(self, k: f64) -> Yards {
         return Yards(v: self.v * k)
@@ -48,14 +48,14 @@ Yards implements Mul<f64> {
 struct Chains { v: f64 }
 
 Chains implements Mul<f64> {
-    // ERROR: `Ouput` is not a member `Mul` declares
+    // ERROR: `Ouput` is not a member `Mul` declares [E0887]
     type Ouput = Chains
     func mul(self, k: f64) -> Chains {
         return Chains(v: self.v * k)
     }
 }
 
-// ERROR: `Self.Oot` names an associated type the interface never declared
+// ERROR: `Self.Oot` names an associated type the interface never declared [E0887]
 interface Div<Rhs> {
     type Out
     func div(self, rhs: Rhs) -> Self.Oot
@@ -82,7 +82,7 @@ Meters implements Mul<f64> {
 struct Blob { bytes: Vec<u8> }
 
 Meters implements Ordered<f64> {
-    // ERROR: `Blob` isn't Comparable, and `Ordered` requires its `Out` to be
+    // ERROR: `Blob` isn't Comparable, and `Ordered` requires its `Out` to be [E0333]
     type Out = Blob
     func pick(self, k: f64) -> Blob {
         return Blob(bytes: Vec.new())
@@ -98,7 +98,7 @@ extend Fathoms {
 }
 
 func scale_it(f: Fathoms) -> Fathoms {
-    // ERROR: the method is there and the conformance isn't, so nothing says
+    // ERROR: the method is there and the conformance isn't, so nothing says [E0894]
     // ERROR: what this pair means — `f.mul(2.0)` is still an ordinary call
     return f * 2.0
 }

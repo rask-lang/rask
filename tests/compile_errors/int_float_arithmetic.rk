@@ -13,11 +13,11 @@ func main() {
 
     // ERROR: `+` between an integer and a float [E0401, CV1a]
     let a = i + f
-    // ERROR: the other way round is the same answer [E0371]
+    // ERROR: the other way round is the same answer [E0401]
     let b = f - i
-    // ERROR: and every arithmetic operator [E0371]
+    // ERROR: and every arithmetic operator [E0401]
     let c = i * f
-    // ERROR: including division [E0371]
+    // ERROR: including division [E0401]
     let d = f / i
 
     println("{a} {b} {c} {d}")

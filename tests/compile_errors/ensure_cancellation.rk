@@ -17,7 +17,7 @@ extend Tx {
 }
 
 // --- Consumed in an if-without-else, then paths merge (C4) ---
-// ERROR: consumption of 'tx' depends on which path ran
+// ERROR: consumption of 'tx' depends on which path ran [E0821]
 func maybe_consume_if(fast: bool) {
     let tx = Tx(id: 1)
     ensure tx.rollback()
@@ -30,7 +30,7 @@ func maybe_consume_if(fast: bool) {
 }
 
 // --- Consumed in one match arm only, arms merge (C4) ---
-// ERROR: consumption of 'tx' depends on which path ran
+// ERROR: consumption of 'tx' depends on which path ran [E0821]
 func maybe_consume_match(n: i32) {
     let tx = Tx(id: 2)
     ensure tx.rollback()
@@ -42,7 +42,7 @@ func maybe_consume_match(n: i32) {
 }
 
 // --- Consumed inside a nested block, then merge (C4) ---
-// ERROR: consumption of 'tx' depends on which path ran
+// ERROR: consumption of 'tx' depends on which path ran [E0821]
 func maybe_consume_nested(fast: bool) {
     let tx = Tx(id: 3)
     ensure tx.rollback()
@@ -62,7 +62,7 @@ func sink(take v: Vec<string>) -> u64 {
 // --- An ordinary value moved on one path, read by the ensure (C6) ---
 // The ensure consumes nothing, so nothing cancels it, and moving what it
 // reads is refused on any path (#1978).
-// ERROR: `v` is given away while the ensure still reads it
+// ERROR: `v` is given away while the ensure still reads it [E0977]
 func maybe_move_plain(fast: bool) {
     mut v: Vec<string> = Vec.new()
     v.push("x")

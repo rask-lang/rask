@@ -9,9 +9,9 @@
 func main() {
     let pair = (1, 2)
     let maybe: i64? = 5
-    // ERROR: a tuple answers `==` and `!=`, not a method called `ne`
+    // ERROR: a tuple answers `==` and `!=`, not a method called `ne` [E0313]
     let a = pair.ne((1, 2))
-    // ERROR: an optional answers `==` and `!=`, not a method called `ne`
+    // ERROR: an optional answers `==` and `!=`, not a method called `ne` [E0367]
     let b = maybe.ne(5)
     println(a)
     println(b)

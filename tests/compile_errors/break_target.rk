@@ -8,7 +8,7 @@
 // here with the label-or-value question spelled out (E0215).
 
 // --- neither a label nor a variable ---
-// ERROR: `nowhere` is neither a variable to break with nor a label to break to
+// ERROR: `nowhere` is neither a variable to break with nor a label to break to [E0215]
 func test_break_unknown_name() {
     mut i = 0
     loop {
@@ -18,7 +18,7 @@ func test_break_unknown_name() {
 }
 
 // --- misspelled label, with a real one in scope ---
-// ERROR: `outr` is neither a variable to break with nor a label to break to
+// ERROR: `outr` is neither a variable to break with nor a label to break to [E0215]
 func test_break_misspelled_label() {
     outer: loop {
         for i in 0..3 {
@@ -28,7 +28,7 @@ func test_break_misspelled_label() {
 }
 
 // --- a label from a loop we already left is out of scope ---
-// ERROR: `done` is neither a variable to break with nor a label to break to
+// ERROR: `done` is neither a variable to break with nor a label to break to [E0215]
 func test_break_label_out_of_scope() {
     done: for i in 0..3 {
         print("{i}\n")

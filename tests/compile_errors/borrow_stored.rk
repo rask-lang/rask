@@ -11,7 +11,7 @@
 // file can only test the parser. Keeping the value past its statement — the
 // actual S3 rejection — is in borrow_errors.rk, where the checker gets to run.
 
-// ERROR: `string[..]` is not a type — a slice expression has no type spelling
+// ERROR: `string[..]` is not a type — a slice expression has no type spelling [E0100]
 struct Parser {
     input: string[..]
     position: usize

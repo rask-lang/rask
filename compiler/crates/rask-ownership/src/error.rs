@@ -363,24 +363,6 @@ pub enum OwnershipErrorKind {
         taken_at: Span,
     },
 
-    /// #804: a `mutate` parameter was consumed and nothing put back, so the caller
-    /// is left holding a value that moved out from under it.
-    #[error("`{name}` was consumed and not replaced before returning")]
-    MutateParamNotReplaced {
-        name: String,
-        ty: String,
-        consumed_at: Span,
-    },
-
-    /// #804: a plain (borrowed) parameter was consumed — passed to a `take`
-    /// parameter, or had a `take self` method called on it. The caller still owns
-    /// it, so this is a second consumption of one value.
-    #[error("`{name}` is borrowed from the caller and can't be given away")]
-    ConsumedBorrowedParam {
-        name: String,
-        ty: String,
-    },
-
     /// conc.sync/SH7: a task-local `Shared` captured by a task block.
     #[error("this `Shared` is task-local and cannot be sent")]
     LocalSharedSent {
@@ -697,12 +679,6 @@ pub enum OwnershipErrorKind {
         consumed_at: Span,
     },
 
-    /// Trying to move a value out of a borrowed parameter.
-    #[error("cannot move `{name}` — parameter is borrowed, not owned")]
-    MoveFromBorrowedParam {
-        name: String,
-    },
-
     /// Resource consumed more than once.
     #[error("resource `{name}` already consumed")]
     ResourceAlreadyConsumed {
@@ -787,12 +763,6 @@ pub enum OwnershipErrorKind {
     UseAfterDiscard {
         name: String,
         discarded_at: Span,
-    },
-
-    /// D3: discard on @resource type
-    #[error("cannot discard resource `{name}` — use its consuming method")]
-    DiscardResource {
-        name: String,
     },
 
     /// SL2 / MC3: a closure that points at what it captured outlives one of

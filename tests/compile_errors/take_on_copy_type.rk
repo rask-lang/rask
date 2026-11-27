@@ -24,17 +24,17 @@ struct Big {
     c: i64
 }
 
-// ERROR: `take` on `i64` takes nothing
+// ERROR: `take` on `i64` takes nothing [E0404]
 func charge_twice(take amount: i64) -> i64 {
     return amount * 2
 }
 
-// ERROR: `take` on `string` takes nothing — a string is Copy (16 bytes, refcounted)
+// ERROR: `take` on `string` takes nothing — a string is Copy (16 bytes, refcounted) [E0404]
 func shout(take word: string) -> u64 {
     return word.len()
 }
 
-// ERROR: `take` on `bool` takes nothing
+// ERROR: `take` on `bool` takes nothing [E0404]
 func flip(take b: bool) -> bool {
     return !b
 }

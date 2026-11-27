@@ -10,7 +10,7 @@
 // the block was told it was missing a method it had, because the required
 // signature named a type that didn't exist.
 
-// ERROR: unknown type in an interface method's parameter
+// ERROR: unknown type in an interface method's parameter [E0356]
 // ERROR: and the same name in its return type — reported per position, the
 // ERROR: same as an ordinary `func f(x: NoSuchType) -> NoSuchType`
 interface Convert {

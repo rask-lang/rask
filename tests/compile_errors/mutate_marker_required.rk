@@ -36,22 +36,22 @@ func bump_scalar(mutate n: i64) {
 func main() {
     mut player = Player(health: 100)
 
-    // ERROR: `apply_damage` mutates `player` — mark it at the call site
+    // ERROR: `apply_damage` mutates `player` — mark it at the call site [E0373]
     apply_damage(player, 10)
 
     // PM5: a Copy argument is no exception.
     mut count: i64 = 0
-    // ERROR: `bump_scalar` mutates `count` — mark it at the call site
+    // ERROR: `bump_scalar` mutates `count` — mark it at the call site [E0373]
     bump_scalar(count)
 
     // A field path is a legal `mutate` argument and takes the marker too.
     mut c = Counter(n: 0)
-    // ERROR: `bump_scalar` mutates `c.n` — mark it at the call site
+    // ERROR: `bump_scalar` mutates `c.n` — mark it at the call site [E0373]
     bump_scalar(c.n)
 
     // The marker on a parameter that isn't `mutate` is the other error (E0328)
     // — a marker without a `mutate` parameter is a lie.
-    // ERROR: unexpected `mutate` annotation
+    // ERROR: unexpected `mutate` annotation [E0306]
     let h = read_health(mutate player)
 
     // The receiver is exempt: no marker, and no error.

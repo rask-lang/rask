@@ -13,7 +13,7 @@ struct Holder<T: Named> {
     item: T
 }
 
-// ERROR: a bound can't go in an `extend Holder<…>` header
+// ERROR: a bound can't go in an `extend Holder<…>` header [E0100]
 extend Holder<T: Named> {
     func label(self) -> string {
         return self.item.name()

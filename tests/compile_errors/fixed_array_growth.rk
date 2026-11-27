@@ -13,25 +13,25 @@
 
 func grow_it() {
     mut a: [i32; 3] = [1, 2, 3]
-    // ERROR: nowhere for a fourth element to go.
+    // ERROR: nowhere for a fourth element to go. [E0843]
     a.push(4)
 }
 
 func shrink_it() {
     mut a: [i32; 3] = [1, 2, 3]
-    // ERROR: same in the other direction — the length is in the type.
+    // ERROR: same in the other direction — the length is in the type. [E0843]
     a.pop()
 }
 
 func clear_it() {
     mut a: [i32; 3] = [1, 2, 3]
-    // ERROR: clearing would make it `[i32; 0]`.
+    // ERROR: clearing would make it `[i32; 0]`. [E0843]
     a.clear()
 }
 
 func dedup_it() {
     mut a: [i32; 3] = [1, 1, 3]
-    // ERROR: dropping the repeat leaves two elements. This one and `take_all`
+    // ERROR: dropping the repeat leaves two elements. This one and `take_all` [E0843]
     // used to slip past the check (#1405).
     a.remove_adjacent_duplicates()
 }

@@ -11,6 +11,11 @@ marker directly above (or on the end of) the line that should be rejected. A run
 of consecutive `// ERROR` lines counts as one marker — several lines often
 describe a single rejection.
 
+**Markers name the code they expect**, in brackets: `// ERROR: wrong type [E0308]`.
+The error under the marker has to carry that code, so a file rejected for some
+other reason (an earlier error that stops the check before the rule runs) fails
+instead of passing.
+
 Markers no diagnostic answers yet are listed in
 [DEAD_MARKERS.txt](DEAD_MARKERS.txt) with a per-file count. That count may only
 go down.

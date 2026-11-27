@@ -3,13 +3,13 @@
 // (std.bytes/BY10). The error points at the character that broke it.
 
 func main() {
-    // ERROR: 'G' is not a hex digit
+    // ERROR: 'G' is not a hex digit [E0005]
     let bad = x"89 5G"
 
-    // ERROR: a digit with no partner
+    // ERROR: a digit with no partner [E0005]
     let odd = x"89 504"
 
-    // ERROR: whitespace inside a pair splits it
+    // ERROR: whitespace inside a pair splits it [E0005]
     let split = x"8 9"
     println(bad.len() + odd.len() + split.len())
 }

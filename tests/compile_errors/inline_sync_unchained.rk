@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 // Compile Error: an inline `.read()` with nothing chained onto it
-// ERROR: standalone `.read()` on `Shared` has nothing chained onto it
+// ERROR: standalone `.read()` on `Shared` has nothing chained onto it [E0339]
 //
 // R5 scopes an inline access to the chain it starts, so `cfg.read()` with
 // nothing after it takes a lock, releases it, and hands back a value that was

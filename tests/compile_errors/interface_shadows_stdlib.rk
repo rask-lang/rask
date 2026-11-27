@@ -19,6 +19,6 @@ func emit<T: Writer>(w: T) -> void or IoError {
 
 func main() {
     let b = Buffer.new()
-    // ERROR: `Buffer` implements the stdlib's `Writer`, not this one
+    // ERROR: `Buffer` implements the stdlib's `Writer`, not this one [E0333]
     emit(b) catch _ => {}
 }

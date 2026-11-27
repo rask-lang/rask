@@ -34,7 +34,7 @@ func parse_config(content: string) -> Config or ParseError {
 func load_config(path: string) -> Config or IoError {
     let content = try read_file(path)  // OK: IoError matches return type
 
-    // ERROR: parse_config returns ParseError, but function returns IoError
+    // ERROR: parse_config returns ParseError, but function returns IoError [E0355]
     // The `try` operator cannot automatically convert between them
     let config = try parse_config(content)
 
@@ -87,7 +87,7 @@ func load_config_v3(path: string) -> Config or Error {
 
 // Another error case: error type can't widen
 func narrow_error() -> i32 or ParseError {
-    // ERROR: IoError cannot convert to ParseError
+    // ERROR: IoError cannot convert to ParseError [E0355]
     // Widening works (specific -> general), narrowing doesn't
     let x = try might_fail()  // Returns i32 or IoError
 

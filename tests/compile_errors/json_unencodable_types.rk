@@ -23,12 +23,12 @@ struct Counts {
 }
 
 func main() {
-    // ERROR: a tuple field has no JSON form
+    // ERROR: a tuple field has no JSON form [E0388]
     println(json.encode(Pair(xy: (1, 2))))
-    // ERROR: nor does a `char`
+    // ERROR: nor does a `char` [E0388]
     println(json.encode(Letter(c: 'a')))
-    // ERROR: nor a `Set`
+    // ERROR: nor a `Set` [E0388]
     println(json.encode(Tags(s: Set.new())))
-    // ERROR: a map's keys are object keys, so they're strings
+    // ERROR: a map's keys are object keys, so they're strings [E0388]
     println(json.encode(Counts(by_id: Map.new())))
 }

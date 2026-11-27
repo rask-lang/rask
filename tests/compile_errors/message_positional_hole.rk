@@ -8,15 +8,15 @@
 
 @message
 enum LoadError {
-    // ERROR: `{0}` in the message of `Missing`, which names its payloads
+    // ERROR: `{0}` in the message of `Missing`, which names its payloads [E0100]
     @message("missing: {0}")
     Missing(path: string)
 
-    // ERROR: `{1}` in the message of `Bad`, which has one payload
+    // ERROR: `{1}` in the message of `Bad`, which has one payload [E0100]
     @message("bad: {1}")
     Bad(string)
 
-    // ERROR: `{0}` in the message of `Empty`, which has no payload
+    // ERROR: `{0}` in the message of `Empty`, which has no payload [E0100]
     @message("empty: {0}")
     Empty
 }

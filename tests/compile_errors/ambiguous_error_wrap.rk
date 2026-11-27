@@ -38,7 +38,7 @@ func lookup(key: string) -> string or StoreError {
     return StoreError.NotFound(key)
 }
 
-// ERROR: Store or Fatal? Say which.
+// ERROR: Store or Fatal? Say which. [E0359]
 func ambiguous(key: string) -> string or ApiError {
     return try lookup(key)
 }

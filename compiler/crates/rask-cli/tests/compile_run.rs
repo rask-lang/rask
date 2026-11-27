@@ -9370,11 +9370,33 @@ fn a_name_a_c_header_never_declared_is_not_a_type() {
 
 // ─── The compile_errors/ marker gate ─────────────────────────
 
-/// A file's `// ERROR` markers, one entry per marker, holding the line each
-/// one is anchored to. A run of consecutive comment-only markers is one
-/// marker: several lines often describe a single rejection.
-fn marker_anchors(source: &str) -> Vec<usize> {
-    let mut anchors = Vec::new();
+/// One `// ERROR` marker: the line it's anchored to, and the codes it names.
+/// A marker that names a code claims that rejection, not just any.
+struct Marker {
+    line: usize,
+    codes: Vec<String>,
+}
+
+/// Diagnostic codes written in `text`: `E`, `W` or `R` and four digits,
+/// standing alone.
+fn codes_in(text: &str) -> Vec<String> {
+    let b = text.as_bytes();
+    let mut codes = Vec::new();
+    for i in 0..b.len() {
+        let starts = matches!(b[i], b'E' | b'W' | b'R') && (i == 0 || !b[i - 1].is_ascii_alphanumeric());
+        let digits = i + 5 <= b.len() && b[i + 1..i + 5].iter().all(u8::is_ascii_digit);
+        if starts && digits && (i + 5 == b.len() || !b[i + 5].is_ascii_alphanumeric()) {
+            codes.push(text[i..i + 5].to_string());
+        }
+    }
+    codes
+}
+
+/// A file's `// ERROR` markers, one entry per marker. A run of consecutive
+/// comment-only markers is one marker: several lines often describe a single
+/// rejection.
+fn markers(source: &str) -> Vec<Marker> {
+    let mut found: Vec<Marker> = Vec::new();
     let mut in_standalone_run = false;
     for (idx, raw) in source.lines().enumerate() {
         let trimmed = raw.trim_start();
@@ -9391,40 +9413,41 @@ fn marker_anchors(source: &str) -> Vec<usize> {
             in_standalone_run = false;
             continue;
         }
+        let codes = codes_in(raw);
         if standalone && in_standalone_run {
+            found.last_mut().unwrap().codes.extend(codes);
             continue;
         }
-        anchors.push(idx + 1);
+        found.push(Marker { line: idx + 1, codes });
         in_standalone_run = standalone;
     }
-    anchors
+    found
 }
 
-/// Line numbers `rask check` pointed at, from the `--> file.rk:LINE:COL` line
-/// of each error. A warning says the code compiles, so it answers no marker:
-/// an unused import on a line below `// ERROR` would otherwise pass for the
-/// rejection.
-fn diagnostic_lines(output: &str) -> Vec<usize> {
-    let mut in_error = false;
-    let mut lines: Vec<usize> = output
+/// Where `rask check` pointed, from the `--> file.rk:LINE:COL` line of each
+/// error, with the error's code. A warning says the code compiles, so it
+/// answers no marker: an unused import on a line below `// ERROR` would
+/// otherwise pass for the rejection.
+fn error_sites(output: &str) -> Vec<(usize, Option<String>)> {
+    let mut code: Option<Option<String>> = None;
+    let mut sites: Vec<(usize, Option<String>)> = output
         .lines()
         .filter_map(|l| {
-            if l.starts_with("error") {
-                in_error = true;
+            if let Some(rest) = l.strip_prefix("error") {
+                code = Some(rest.strip_prefix('[').and_then(|r| r.split(']').next()).map(str::to_string));
             } else if l.starts_with("warning") {
-                in_error = false;
+                code = None;
             }
-            l.trim().strip_prefix("--> ").filter(|_| in_error)
-        })
-        .filter_map(|loc| {
+            let loc = l.trim().strip_prefix("--> ")?;
             let mut parts = loc.rsplitn(3, ':');
             parts.next()?; // column
-            parts.next()?.parse().ok()
+            let line = parts.next()?.parse().ok()?;
+            Some((line, code.clone()?))
         })
         .collect();
-    lines.sort_unstable();
-    lines.dedup();
-    lines
+    sites.sort_unstable();
+    sites.dedup();
+    sites
 }
 
 fn compile_errors_dir() -> PathBuf {
@@ -9467,6 +9490,11 @@ fn read_dead_marker_registry(dir: &Path) -> std::collections::BTreeMap<String, u
 /// It walks the directory, so a new fixture is covered the moment it lands —
 /// 28 files had no test calling them at all.
 ///
+/// Every marker names the code it expects, and must get that code. Without it
+/// a file passed when an earlier error stopped the check before the rule ran: the
+/// `@memory_only` fixture was rejected for a clash with the stdlib's `strlen`,
+/// and hid that `@memory_only` was refused on an extern too.
+///
 /// Markers still unanswered are listed in DEAD_MARKERS.txt with a count per
 /// file. That count may only go down: a new dead marker fails the test, and so
 /// does a count that's too high, so a fix can't be quietly left unrecorded.
@@ -9489,13 +9517,15 @@ fn every_compile_error_marker_is_answered_by_a_diagnostic() {
     );
 
     let mut new_dead = Vec::new();
+    let mut wrong_code = Vec::new();
+    let mut no_code = Vec::new();
     let mut stale_registry = Vec::new();
     let mut seen = std::collections::BTreeSet::new();
 
     for path in &fixtures {
         let name = path.file_name().unwrap().to_string_lossy().to_string();
         let source = std::fs::read_to_string(path).unwrap();
-        let anchors = marker_anchors(&source);
+        let anchors = markers(&source);
         if anchors.is_empty() {
             continue;
         }
@@ -9511,14 +9541,29 @@ fn every_compile_error_marker_is_answered_by_a_diagnostic() {
             String::from_utf8_lossy(&out.stdout),
             String::from_utf8_lossy(&out.stderr),
         );
-        let diagnostics = diagnostic_lines(&combined);
+        let sites = error_sites(&combined);
 
         let mut dead = Vec::new();
-        for (i, &anchor) in anchors.iter().enumerate() {
-            let next = anchors.get(i + 1).copied().unwrap_or(usize::MAX);
-            let answered = diagnostics.iter().any(|&d| d >= anchor && d < next);
-            if !answered {
-                dead.push(anchor);
+        for (i, marker) in anchors.iter().enumerate() {
+            let next = anchors.get(i + 1).map_or(usize::MAX, |m| m.line);
+            let under: Vec<&Option<String>> = sites
+                .iter()
+                .filter(|(l, _)| *l >= marker.line && *l < next)
+                .map(|(_, c)| c)
+                .collect();
+            if marker.codes.is_empty() {
+                no_code.push(format!("  {name}:{}", marker.line));
+            }
+            if under.is_empty() {
+                dead.push(marker.line);
+            } else if !marker.codes.is_empty()
+                && !under.iter().any(|c| c.as_ref().is_some_and(|c| marker.codes.contains(c)))
+            {
+                let got: Vec<&str> = under.iter().filter_map(|c| c.as_deref()).collect();
+                wrong_code.push(format!(
+                    "  {name}:{} names {:?}, the compiler said {:?}",
+                    marker.line, marker.codes, got
+                ));
             }
         }
 
@@ -9545,6 +9590,23 @@ fn every_compile_error_marker_is_answered_by_a_diagnostic() {
              the marker sits below something that halts the pipeline before its pass runs:\n",
         );
         problems.push_str(&new_dead.join("\n"));
+        problems.push('\n');
+    }
+    if !no_code.is_empty() {
+        problems.push_str(
+            "\nMarkers that name no code. Put the code the compiler answers with in\n\
+             brackets on the marker, `// ERROR: what's wrong [E0308]`, so a rejection\n\
+             for some other reason can't pass for this one:\n",
+        );
+        problems.push_str(&no_code.join("\n"));
+        problems.push('\n');
+    }
+    if !wrong_code.is_empty() {
+        problems.push_str(
+            "\nMarkers rejected for a different reason than the code they name. The file\n\
+             fails, but not for the rule it claims to test:\n",
+        );
+        problems.push_str(&wrong_code.join("\n"));
         problems.push('\n');
     }
     if !stale_registry.is_empty() {
@@ -10515,6 +10577,25 @@ fn c_in_comptime_is_refused_for_what_it_does() {
     assert!(!ok, "{out}");
     assert!(out.contains("reaches a call that blocks at compile time — `G` does"), "{out}");
     assert!(out.contains("reaches C code at compile time — `labs` does"), "{out}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `@memory_only` belongs on an `extern`, and there it's accepted. The table of
+/// compiler annotations said anyone could write it, while an extern only lets
+/// through the ones marked for externs, so the one place it goes rejected it.
+#[test]
+fn memory_only_on_an_extern_compiles() {
+    let dir = temp_project(
+        "memory_only_extern",
+        &[(
+            "main.rk",
+            "@memory_only\nextern \"C\" func labs(x: c_long) -> c_long\n\n\
+             func main() {\n    unsafe {\n        println(\"{labs(-3)}\")\n    }\n}\n",
+        )],
+    );
+    let (out, ok) = run_project("--native", &dir);
+    assert!(ok, "{out}");
+    assert!(out.contains('3'), "{out}");
     let _ = std::fs::remove_dir_all(&dir);
 }
 

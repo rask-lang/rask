@@ -26,7 +26,7 @@ func main() {
     let n = g<i32>(1)
     let items = Vec.from([1])
     discard items
-    // ERROR: it's already gone [E0336]
+    // ERROR: it's already gone [E0811]
     discard items
 
     // FIX

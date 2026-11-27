@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 // Compile Error: a link can't leave its rack inside a container either
-// ERROR: `v` holds links that would outlive the rack they point into
+// ERROR: `v` holds links that would outlive the rack they point into [E0379]
 //
 // E0379 stopped a link leaving through a return, an assignment to a
 // longer-lived name, or an aggregate literal — but not inside a collection

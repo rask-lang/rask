@@ -21,15 +21,15 @@ func main() {
     // Fine: both fields are `T = i32`, in either order.
     let ok = Slot.Pair(right: 1, left: 2)
 
-    // ERROR: `T` can't be both `string` and `i32`
+    // ERROR: `T` can't be both `string` and `i32` [E0308]
     let p = Slot.Pair(left: "a", right: 5)
 
-    // ERROR: a written type argument fixes `T`
+    // ERROR: a written type argument fixes `T` [E0308]
     let q: Slot<string> = Slot.Pair(left: 1, right: 2)
 
-    // ERROR: a non-generic variant's fields are checked by name too
+    // ERROR: a non-generic variant's fields are checked by name too [E0308]
     let c = Shape.Circle(radius: "wide")
 
-    // ERROR: matched by name, not by position
+    // ERROR: matched by name, not by position [E0308]
     let r = Shape.Rect(h: 2, w: "five")
 }

@@ -16,7 +16,7 @@ func length(s: string) -> u64 {
 
 // FIX: on the C declaration it describes
 @memory_only
-extern "C" func strlen(s: *u8) -> u64
+extern "C" func strlen(s: *u8) -> usize
 
 func main() {
     println("{length("abc")}")

@@ -6,23 +6,23 @@
 // checked as if it weren't there (#1486). A reader sees a default that does
 // nothing, so it's refused where it's written.
 
-// ERROR: a struct's type parameter `T` can't have a default
+// ERROR: a struct's type parameter `T` can't have a default [E0100]
 struct Sx<T = i64> {
     v: T,
 }
 
-// ERROR: an enum's type parameter `T` can't have a default
+// ERROR: an enum's type parameter `T` can't have a default [E0100]
 enum Slot<T = i64> {
     Full(T),
     Empty,
 }
 
-// ERROR: a function's type parameter `T` can't have a default
+// ERROR: a function's type parameter `T` can't have a default [E0100]
 func same<T = i64>(x: T) -> T {
     return x
 }
 
-// ERROR: a type alias's type parameter `T` can't have a default
+// ERROR: a type alias's type parameter `T` can't have a default [E0100]
 type alias Items<T = i64> = Vec<T>
 
 // An interface's may: `Scale` written bare means `Scale<Self>`.

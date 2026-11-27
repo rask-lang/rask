@@ -4,16 +4,16 @@
 func main() {
     let b = x"68 69"
 
-    // ERROR: bytes isn't Displayable; the fix is `{b:debug}` (BY6)
+    // ERROR: bytes isn't Displayable; the fix is `{b:debug}` (BY6) [E0826]
     println("{b}")
 
-    // ERROR: no `+` on bytes
+    // ERROR: no `+` on bytes [E0313]
     let both = b + b
 
-    // ERROR: a list literal doesn't turn into bytes (BY10)
+    // ERROR: a list literal doesn't turn into bytes (BY10) [E0308]
     let listed: bytes = [104u8, 105u8]
 
-    // ERROR: from_utf8 takes bytes; a Vec<u8> freezes first
+    // ERROR: from_utf8 takes bytes; a Vec<u8> freezes first [E0308]
     let v: Vec<u8> = [104, 105]
     let s = string.from_utf8(v) catch _ => ""
     println("{both:debug} {listed:debug} {s}")

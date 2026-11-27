@@ -28,24 +28,24 @@ func zero_all(mutate n: Link<Node>) {
 // --- The view must not become a writer ---
 
 func launder(n: Link<Node>) {
-    zero_all(mutate n)          // ERROR: `n` is a view; the caller granted no write
+    zero_all(mutate n)          // ERROR: `n` is a view; the caller granted no write [E0321]
 }
 
 func launder_across_an_edge(n: Link<Node>) {
     if n.child? as c {
-        zero_all(mutate c)      // ERROR: derived from a view, so still a view
+        zero_all(mutate c)      // ERROR: derived from a view, so still a view [E0372]
     }
 }
 
 // --- The view must not write directly either ---
 
 func writes_directly(n: Link<Node>) {
-    n.value = 1                 // ERROR: no write permission came with `n`
+    n.value = 1                 // ERROR: no write permission came with `n` [E0378]
 }
 
 func writes_across_an_edge(n: Link<Node>) {
     if n.child? as c {
-        c.value = 2             // ERROR: still no permission, one edge along
+        c.value = 2             // ERROR: still no permission, one edge along [E0378]
     }
 }
 

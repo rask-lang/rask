@@ -26,7 +26,7 @@ func move_one_branch_ifelse(cond: bool) {
     } else {
         let x = 1
     }
-    v.len()            // ERROR: v moved on the then-branch
+    v.len()            // ERROR: v moved on the then-branch [E0813]
 }
 
 // --- Use after move in an if-without-else (O3, #294) ---
@@ -35,7 +35,7 @@ func move_one_branch_ifnoelse(cond: bool) {
     if cond {
         let moved = v
     }
-    v.len()            // ERROR: v moved when cond was true
+    v.len()            // ERROR: v moved when cond was true [E0813]
 }
 
 // --- Linear resource consumed in one if/else branch only (L1) ---
@@ -65,7 +65,7 @@ func resource_one_branch_ifnoelse(cond: bool) {
 func move_in_loop() {
     let v = Vec<i32>.new()
     loop {
-        take_vec(v)   // ERROR: v already moved on the previous iteration
+        take_vec(v)   // ERROR: v already moved on the previous iteration [E0813]
     }
 }
 

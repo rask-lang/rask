@@ -624,15 +624,6 @@ impl TypeChecker {
             ExprKind::None => Type::option(self.ctx.fresh_var()),
 
             ExprKind::Ident(name) | ExprKind::GenericName { name, .. } => {
-                // D1: use after discard is a compile error
-                if let Some(&discard_span) = self.discarded_bindings.get(name.as_str()) {
-                    self.errors.push(TypeError::UseAfterDiscard {
-                        name: name.clone(),
-                        discarded_at: discard_span,
-                        span: expr.span,
-                    });
-                    return Type::Error;
-                }
                 // `Holder<i64>.Empty`: the resolver points the name at the enum's
                 // symbol, whose type carries no arguments, so the variant
                 // reference came out with a fresh variable for `T` and the

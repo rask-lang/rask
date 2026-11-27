@@ -5,7 +5,7 @@
 
 func main() {
     let rows: Vec<Vec<Vec<i64>>> = [[[1, 2], [3, 4, 5]], [[6]]]
-    // ERROR: the loop yields `Vec<i64>`, the body uses `r` as an `i32`
+    // ERROR: the loop yields `Vec<i64>`, the body uses `r` as an `i32` [E0986]
     for r in rows.as_sequence().map(|v| v.as_sequence()).flatten() {
         let q: i32 = r
     }

@@ -7,11 +7,11 @@
 // reached the decoder as the string "x" and every POST handler failed (#506).
 
 func main() {
-    // ERROR: `{"x":1,"y":2}` is not a valid interpolation
+    // ERROR: `{"x":1,"y":2}` is not a valid interpolation [E0100]
     let body = "{\"x\":1,\"y\":2}"
     println(body)
 
-    // ERROR: `{"x":1}` is not a valid interpolation
+    // ERROR: `{"x":1}` is not a valid interpolation [E0100]
     // A single pair is the hard case: `1` is a perfectly good width spec, so
     // the spec grammar can't rule it out. The bare string literal in the
     // expression position can — nobody interpolates a literal they already

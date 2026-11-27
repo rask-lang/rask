@@ -321,15 +321,9 @@ impl Default for ErrorCodeRegistry {
                 "E0805" => ("resource not consumed", Ownership,
                     "A resource-typed value (marked with @resource) wasn't properly consumed. Resource types must be explicitly closed, released, or passed to a consuming function.",
                     "func open_file() {\n    let f = fs.open(\"data.txt\")\n    // error: f not consumed (must call f.close())\n}"),
-                "E0806" => ("move from borrowed parameter", Ownership,
-                    "A borrowed parameter was used in a context that requires ownership. Parameters are borrowed by default — the caller retains ownership. Use `take` to transfer ownership into the function.",
-                    "func push(self, value: T) {\n    self.data[i] = value  // error: value is borrowed\n}\n// fix: func push(self, take value: T)"),
                 "E0811" => ("use after discard", Ownership,
                     "`discard` explicitly drops a value and invalidates its binding. Using the binding after `discard` is a compile error (D1).",
                     "let data = load_data()\ndiscard data\nprintln(data)  // error: use of discarded value"),
-                "E0812" => ("discard resource type", Ownership,
-                    "Resource types (@resource) must be consumed properly via their consuming method (.close(), .release(), etc). `discard` on a resource type is a compile error (D3).",
-                    "@resource\nstruct File { fd: i32 }\nlet f = File(fd: 1)\ndiscard f  // error: use f.close() instead"),
                 "E0813" => ("use after maybe-move", Ownership,
                     "A value moved on some paths but not all (e.g. one `if` branch) was used after the paths merged. The spec treats maybe-moved as moved (O3) — move on every path, or keep the use inside the branch that still owns the value.",
                     "let v = Vec.new()\nif c { consume(v) }\nv.len()  // error: v may have been moved"),
@@ -518,9 +512,6 @@ impl Default for ErrorCodeRegistry {
                 "E0334" => ("public function is missing type annotations", Type,
                     "A public function's signature is its contract, so it's written out rather than inferred (struct.grouping/GC5). Inference still works inside the body, and on anything not `public` — the rule is about what callers can see. A caller reading the declaration should not have to read the body to learn what goes in and what comes out.",
                     "public func scale(v, k) {        // error: no types on `v`, `k`, or the return\n    return v * k\n}\n// fix: write the contract\npublic func scale(v: f64, k: f64) -> f64 {\n    return v * k\n}"),
-                "E0336" => ("value used after `discard`", Ownership,
-                    "`discard name` drops a value and invalidates the binding on purpose — it's the way to say \"this is finished with\" for a type that would otherwise be flagged as unconsumed. After it, the name holds nothing. Either drop the `discard` and go on using the value, or move the `discard` past the last use.",
-                    "let buf = load()\ndiscard buf\nprintln(\"{buf.len}\")   // error: `buf` was discarded above\n// fix: move the discard after the last use"),
                 "E0337" => ("range step of zero", Type,
                     "A zero step never advances, so the loop would run forever without making progress (ctrl.ranges/SP3). A step's sign also picks the direction: positive counts up, negative counts down. Zero says neither.",
                     "for i in (0..10).step(0) { … }   // error: never advances\n// fix: `.step(2)` to count up by two, `.step(-1)` on a descending range"),
@@ -944,9 +935,6 @@ let old = a.load()"),
                 "E0404" => ("`take` on a Copy type", Type,
                     "The three parameter modes are read at the call site to know what happens to the argument (mem.parameters/PM4, PM5). `take` says the caller loses the value — and a Copy value is never given away: it is copied into the parameter and the caller keeps theirs (PM6b). So `take` on a type that is Copy at every instantiation promises something that does not happen, and the rule is that a marker says the truth or is not written (PM6c).\n\nOnly the spelling is checked, and only for types whose Copy-ness cannot change: the primitives and `string`. `take p: Point` is fine — a struct stops being Copy the day it grows past sixteen bytes — and so is `take item: T`, which is how `Vec.push` is declared.",
                     "func charge(take amount: i64) -> i64 {   // error: `take` on `i64` takes nothing\n    return amount * 2\n}\n// fix: drop the keyword\nfunc charge(amount: i64) -> i64 { … }"),
-                "E0860" => ("a `take` parameter was consumed and never replaced", Ownership,
-                    "`take x: T` hands the value over for the duration of the call and expects one back — the caller's name still refers to the slot afterwards. Consuming the value and returning without assigning a new one leaves that slot empty.",
-                    "func swap(take buf: Buffer) {\n    buf.close()              // error: `buf` is still empty when this returns\n}\n// fix: put one back\nfunc swap(take buf: Buffer) { buf.close(); buf = Buffer.new() }"),
                 "E0862" => ("a closure holding a scoped borrow can't escape", Ownership,
                     "A closure that captures a block-scoped borrow lives as long as that block and no longer. Returning it, or storing it somewhere that outlives the block, would leave it holding a reference to something already gone.\n\nA closure that outlives its frame normally carries what it captured (mem.closures/CM1), so this only fires on a borrow it cannot take with it — one lent by a `with` block or a borrowed parameter. Give the closure a value of its own instead: clone what it needs, or hold the source somewhere that outlives it.",
                     "with data.read() as d {\n    return || { d.len() }    // error: closure would outlive the borrow\n}\n// fix: take a value the closure can keep\nlet n = with data.read() as d { d.len() }\nreturn || { n }"),
@@ -1439,12 +1427,11 @@ mod registry_audit {
     /// a citation by name in `specs/` pins it, otherwise the meaning the
     /// registry entry already described, otherwise the one a user hits most.
     ///
-    /// The two left are one error each, spelled two ways for the reader's
-    /// sake: a resource that wasn't consumed, named or opaque, and a borrowed
-    /// parameter given away, phrased as a consume or as a move. Splitting them
-    /// would make `rask explain` answer half a question. Pinned here so the
-    /// count can only go down.
-    const SHARED_CODES: &[&str] = &["E0805", "E0806"];
+    /// The one left is one error spelled two ways for the reader's sake: a
+    /// resource that wasn't consumed, named or opaque. Splitting it would make
+    /// `rask explain` answer half a question. Pinned here so the count can only
+    /// go down.
+    const SHARED_CODES: &[&str] = &["E0805"];
 
     #[test]
     fn no_new_code_serves_two_errors() {

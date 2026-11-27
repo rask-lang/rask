@@ -24,7 +24,7 @@ struct Silent {
     tag: i64
 }
 
-// ERROR: conformance header with no evidence — the block doesn't define `greet`
+// ERROR: conformance header with no evidence — the block doesn't define `greet` [E0333]
 Silent implements Greeter {
     public func other(self) -> i64 {
         return self.tag
@@ -39,21 +39,21 @@ func needs_greeter<T: Greeter>(g: T) -> i64 {
     return 1
 }
 
-// ERROR: a bound naming an interface nobody declared — did-you-mean, not `_`.
+// ERROR: a bound naming an interface nobody declared — did-you-mean, not `_`. [E0833]
 // Reported here at the bound, not at the call below (#1483).
 func typo<T: Intger>(x: i64) -> T {
     return unreachable("stub")
 }
 
 func main() {
-    // ERROR: numeric bound — nothing to implement, so the fix lists the members
+    // ERROR: numeric bound — nothing to implement, so the fix lists the members [E0333]
     let bad: Marker = needs_int(1)
 
-    // ERROR: ordinary generic bound — the fix is the conformance or another type
+    // ERROR: ordinary generic bound — the fix is the conformance or another type [E0333]
     let s = Silent(tag: 1)
     let n = needs_greeter(s)
 
-    // ERROR: `as any Interface` on a type without the methods
+    // ERROR: `as any Interface` on a type without the methods [E0333]
     let boxed = s as any Greeter
 
     let t: i32 = typo(1)

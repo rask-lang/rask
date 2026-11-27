@@ -10,12 +10,12 @@
 func main() {
     let v: Vec<i64> = [1, 2, 3]
     let n: u64 = v.len()
-    // ERROR: a `u64` doesn't fit a 32-bit `usize`
+    // ERROR: a `u64` doesn't fit a 32-bit `usize` [E0370]
     let m: usize = n
     let k: i64 = 4
-    // ERROR: an `i64` doesn't fit a 32-bit `isize`
+    // ERROR: an `i64` doesn't fit a 32-bit `isize` [E0370]
     let j: isize = k
-    // ERROR: a `usize` doesn't fit a `u32` on a 64-bit target
+    // ERROR: a `usize` doesn't fit a `u32` on a 64-bit target [E0370]
     let w: u32 = v.len()
     println(m)
     println(j)

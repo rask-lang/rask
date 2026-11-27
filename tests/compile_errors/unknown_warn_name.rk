@@ -7,7 +7,7 @@
 // and the per-item ones the spec lists (`implicit_copy`) aren't built. An
 // `@warn` that turned nothing on would look exactly like one that worked.
 
-// ERROR: `@warn(blocking_print)` turns nothing on
+// ERROR: `@warn(blocking_print)` turns nothing on [E0855]
 @warn(blocking_print)
 func report(lines: Vec<string>) {
     for line in lines {
@@ -15,11 +15,11 @@ func report(lines: Vec<string>) {
     }
 }
 
-// ERROR: `@warn(blocking_prnt)` turns nothing on
+// ERROR: `@warn(blocking_prnt)` turns nothing on [E0855]
 @warn(blocking_prnt)
 func typo() {}
 
-// ERROR: `@warn(implicit_copy)` turns nothing on
+// ERROR: `@warn(implicit_copy)` turns nothing on [E0855]
 @warn(implicit_copy)
 func copy_all() {}
 

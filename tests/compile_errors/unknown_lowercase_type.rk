@@ -10,17 +10,17 @@
 // `str` is the one that motivated this: it isn't a Rask type — the string type
 // is `string` — and it reached two spec drafts because nothing rejected it.
 
-// ERROR: unknown type `str`
+// ERROR: unknown type `str` [E0356]
 func takes_str(s: str) -> i64 {
     return 1
 }
 
-// ERROR: unknown type `uszie`
+// ERROR: unknown type `uszie` [E0356]
 func typo(n: uszie) -> i64 {
     return 2
 }
 
-// ERROR: unknown type `zqzq`
+// ERROR: unknown type `zqzq` [E0356]
 func returns_nothing_real() -> zqzq {
     return 3
 }

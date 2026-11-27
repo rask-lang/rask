@@ -512,8 +512,6 @@ pub struct TypeChecker {
     /// Each checked function's signature, by `FnDecl::id`, with inference
     /// variables still in it until the program is finished.
     pub(super) fn_sigs: HashMap<NodeId, rask_types::FnSignature>,
-    /// D1: Bindings invalidated by `discard`. Maps name → discard span.
-    pub(super) discarded_bindings: HashMap<String, rask_ast::Span>,
     /// CV1–CV10: cast/convert sites validated after literal defaults resolve
     /// their source types. Deferred so `1 as bool` sees `i32`, not a fresh var.
     pub(super) pending_casts: Vec<check_expr::PendingCast>,
@@ -818,7 +816,6 @@ impl TypeChecker {
             mutate_self_fns: std::collections::HashSet::new(),
             fn_sigs: HashMap::new(),
             accumulate_errors: false,
-            discarded_bindings: HashMap::new(),
             pending_casts: Vec::new(),
             pending_transmutes: Vec::new(),
             pending_for_mutate: Vec::new(),

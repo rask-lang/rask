@@ -157,7 +157,7 @@ pub const COMPILER_ATTRS: &[(&str, ArgForm, Writer)] = &[
     ("c_name", ArgForm::Exprs, Writer::Anyone),             // struct.c-interop/PP4, on a C struct or union
     ("export", ArgForm::Exprs, Writer::Anyone),             // compiler.mangling
     ("traced", ArgForm::Exprs, Writer::Anyone),             // type.errors/ER34
-    ("memory_only", ArgForm::Exprs, Writer::Anyone),        // on an `extern` only, comp.effects/INF5
+    ("memory_only", ArgForm::Exprs, Writer::StdlibOrExtern), // comp.effects/INF5
     ("call_text", ArgForm::Exprs, Writer::Anyone),          // ctrl.call-info (proposed)
     ("call_location", ArgForm::Exprs, Writer::Anyone),      // ctrl.call-info (proposed)
 ];

@@ -15,7 +15,7 @@ func compare_mismatch() {
     let plain = "x"
     let maybe: i64? = 1
 
-    // ERROR: mismatched types — `string` vs `i64?`. Reported once.
+    // ERROR: mismatched types — `string` vs `i64?`. Reported once. [E0308]
     if plain == maybe {
         println("eq")
     }
@@ -26,7 +26,7 @@ func nested_once() {
     let maybe: i64? = 1
 
     if true {
-        // ERROR: mismatched types. Two block levels deep — used to be 4 copies.
+        // ERROR: mismatched types. Two block levels deep — used to be 4 copies. [E0308]
         if plain == maybe {
             println("eq")
         }
@@ -39,7 +39,7 @@ func in_match_arm() {
 
     match 1 {
         1 => {
-            // ERROR: mismatched types. Match arms are value blocks too.
+            // ERROR: mismatched types. Match arms are value blocks too. [E0308]
             if plain == maybe {
                 println("eq")
             }
@@ -55,7 +55,7 @@ func in_else_branch() {
     if false {
         println("no")
     } else {
-        // ERROR: mismatched types.
+        // ERROR: mismatched types. [E0308]
         if plain == maybe {
             println("eq")
         }

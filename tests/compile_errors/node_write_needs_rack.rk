@@ -23,7 +23,7 @@ struct Scene {
 // The rack is named here and only readable.
 func read_only_rack(world: Rack<Entity>) {
     for e in world.nodes() {
-        e.health = 0            // ERROR: `world` is only readable
+        e.health = 0            // ERROR: `world` is only readable [E0378]
     }
 }
 
@@ -33,7 +33,7 @@ func read_only_rack(world: Rack<Entity>) {
 func read_only_across_an_edge(world: Rack<Entity>) {
     for e in world.nodes() {
         if e.target? as t {
-            t.health -= e.damage    // ERROR: still `world`
+            t.health -= e.damage    // ERROR: still `world` [E0378]
         }
     }
 }
@@ -41,18 +41,18 @@ func read_only_across_an_edge(world: Rack<Entity>) {
 // A rack inside a struct, reached through a plain borrow.
 func read_only_field(scene: Scene) {
     for e in scene.nodes.nodes() {
-        e.health = 1            // ERROR: `scene` is only readable
+        e.health = 1            // ERROR: `scene` is only readable [E0378]
     }
 }
 
 // No rack in scope at all: the link arrived alone.
 func no_store_at_all(e: Link<Entity>) {
-    e.health = 2                // ERROR: nothing granted this write
+    e.health = 2                // ERROR: nothing granted this write [E0378]
 }
 
 // And the same through a `take` link, which owns the name but not the node.
 func taken_link(take e: Link<Entity>) {
-    e.health = 3                // ERROR: still no rack
+    e.health = 3                // ERROR: still no rack [E0378]
 }
 
 func main() {
