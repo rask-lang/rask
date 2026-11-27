@@ -188,3 +188,16 @@ fn an_array_index_in_range_still_works() {
         "11 12 13\n",
     );
 }
+
+// ─── Numbers ───────────────────────────────────────────────────────────────
+
+/// `let a = 3` is an unsuffixed literal, so multiplied by a float it is a
+/// float. The checker settled it by hash-map order when an integer literal and
+/// a float literal met, and native printed `7` or `7.5` from run to run.
+#[test]
+fn an_integer_literal_name_times_a_float_is_a_float_every_time() {
+    let source = "func main() {\n    let a = 3\n    let b = 2.5\n    println(\"{a * b} {b * a}\")\n}\n";
+    for _ in 0..6 {
+        prints_on_both(source, "7.5 7.5\n");
+    }
+}

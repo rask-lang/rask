@@ -332,11 +332,16 @@ impl InferenceContext {
             // concrete type isn't a variable and needs nothing.
             let Type::Var(tail) = self.apply(&Type::Var(var_id)) else { continue };
             // Two literals can land on the same variable — a wide one and a
-            // narrow one. Take the wider, so nothing gets truncated.
+            // narrow one. Take the wider, so nothing gets truncated. A float
+            // outranks every integer: `let a = 3` times `let b = 2.5` is
+            // `3.0 * 2.5` (type.primitives/CV1a). Ranked equal, the answer was
+            // whichever literal the hash map visited first, and native printed
+            // `7` or `7.5` from one run to the next.
             let rank = |t: &Type| match t {
                 Type::I64 => 0,
                 Type::U64 => 1,
                 Type::I128 => 2,
+                Type::F64 => 3,
                 _ => 0,
             };
             match defaults.get(&tail) {
