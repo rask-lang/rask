@@ -224,11 +224,15 @@ impl ToDiagnostic for crate::ResolveError {
                 } else {
                     path.join(".")
                 };
+                let fix = match path.as_slice() {
+                    [name] => stdlib_module_for(name),
+                    _ => None,
+                }
+                .unwrap_or_else(|| "check the package name or add it as a dependency".to_string());
                 Diagnostic::error(format!("unknown package: `{}`", path_str))
                     .with_code("E0207")
                     .with_primary(self.span, "package not found")
-                    .with_help("check the package name or add it as a dependency")
-                    .with_fix("check the package name or add it as a dependency")
+                    .with_fix(fix)
                     .with_why("imported packages must exist in the project or be declared as dependencies")
             }
 
@@ -425,5 +429,19 @@ impl ToDiagnostic for crate::ResolveError {
                     .with_why("the built-in C parser handles standard C headers — use explicit bindings for edge cases")
             }
         }
+    }
+}
+
+/// The stdlib module someone meant by `import <name>`: a name other languages
+/// use for it, or a near-miss spelling.
+fn stdlib_module_for(name: &str) -> Option<String> {
+    match name {
+        "env" | "environ" | "dotenv" => {
+            Some("environment variables are in `os`: `import os`, then `os.env(\"HOME\")`".to_string())
+        }
+        "sys" | "process" | "argv" | "args" => {
+            Some("the program's arguments are in `os`: `import os`, then `os.args()`".to_string())
+        }
+        _ => rask_diagnostics::suggestions::did_you_mean(name, rask_stdlib::modules::module_names().iter().copied()),
     }
 }

@@ -4,7 +4,6 @@
 //! Routes `module.method()` calls to the appropriate stdlib module handler.
 
 mod async_mod;
-mod env;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) mod fs;
 #[cfg(not(target_arch = "wasm32"))]
@@ -97,7 +96,6 @@ impl Interpreter {
             ))),
 
             // Legacy aliases — forward to new modules
-            ModuleKind::Env => self.call_env_method(method, args),
             ModuleKind::Std => self.call_os_method(method, args),
         }
     }

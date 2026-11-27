@@ -216,3 +216,20 @@ fn a_struct_built_with_braces_is_one_error_that_shows_the_call() {
     assert!(run.all().contains("Point(x: …, y: …)"), "{run:?}");
     assert_eq!(run.all().matches("error[").count(), 1, "{run:?}");
 }
+
+/// `import env` passed check and ran on the interpreter, then failed natively
+/// with "unresolved variable `env`": a second, unspecified copy of `os.env`
+/// that only one backend had. It's gone, and the import names the real one.
+#[test]
+fn import_env_points_at_os_env() {
+    let run = check_program("import env\n\nfunc main() {\n    println(\"hi\")\n}\n");
+    assert_eq!(run.code, 1, "{run:?}");
+    assert!(run.all().contains("os.env(\"HOME\")"), "{run:?}");
+}
+
+#[test]
+fn a_misspelled_stdlib_import_suggests_the_module() {
+    let run = check_program("import strings\n\nfunc main() {\n    println(\"hi\")\n}\n");
+    assert_eq!(run.code, 1, "{run:?}");
+    assert!(run.all().contains("did you mean `string`?"), "{run:?}");
+}
