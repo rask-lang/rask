@@ -954,8 +954,8 @@ fn dirs_home() -> Option<PathBuf> {
 /// how `aarch64-macos` came to emit ELF (#1185).
 pub fn cmd_targets() {
     use rask_codegen::targets::{Tier, TARGETS};
-    eprintln!("{}", "Available targets:".green().bold());
-    eprintln!();
+    println!("{}", "Available targets:".green().bold());
+    println!();
 
     let tiers = [
         (Tier::One, "Tier 1".yellow().bold(), "tested, guaranteed"),
@@ -964,15 +964,15 @@ pub fn cmd_targets() {
         (Tier::FrontEnd, "Front end only".dimmed(), "checks and lowers to MIR, no backend yet"),
     ];
     for (tier, heading, note) in tiers {
-        eprintln!("  {} ({}):", heading, note);
+        println!("  {} ({}):", heading, note);
         for t in TARGETS.iter().filter(|t| t.tier == tier) {
-            eprintln!("    {:<22} {}", t.name, t.triple.dimmed());
+            println!("    {:<22} {}", t.name, t.triple.dimmed());
         }
-        eprintln!();
+        println!();
     }
 
     // Detect and show host
     let host = std::env::consts::ARCH;
     let os = std::env::consts::OS;
-    eprintln!("  {} {}-{}", "Host:".dimmed(), host, os);
+    println!("  {} {}-{}", "Host:".dimmed(), host, os);
 }

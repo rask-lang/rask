@@ -50,6 +50,11 @@ func main() {
     } else {
         print("No first\n")
     }
+    if last? as n {
+        print("Last: ")
+        print(n)
+        print("\n")
+    }
 
     // Block-scoped views with structs
     let user = User(name: "Alice", age: 30)

@@ -627,6 +627,7 @@ fn check_loaded_scoped(
                 return PipelineOutput::fail_with_sources(diags, source_files);
             }
     };
+    diags.extend(resolved.unused_locals.iter().map(|u| u.to_diagnostic()));
     parse_result.decls.extend(rounds.library_copies().iter().cloned());
 
     // --- Typecheck (lenient — always returns TypedProgram + errors, so
@@ -1152,6 +1153,7 @@ fn check_package_scoped(
                 return PipelineOutput::fail_with_sources(diags, source_files);
             }
         };
+        diags.extend(resolved.unused_locals.iter().map(|u| u.to_diagnostic()));
 
         // --- A dependency's internals are not the program's to name ---
         //

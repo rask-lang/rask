@@ -218,6 +218,16 @@ fn a_struct_built_with_braces_is_one_error_that_shows_the_call() {
     assert_eq!(run.all().matches("error[").count(), 1, "{run:?}");
 }
 
+#[test]
+fn a_generic_struct_built_with_braces_is_the_same_one_error() {
+    let run = check_program(
+        "struct Pair<T> {\n    a: T\n    b: T\n}\n\nfunc main() {\n    let q = Pair<i64> { a: 1, b: 2 }\n    println(\"{q.a}\")\n}\n",
+    );
+    assert_eq!(run.code, 1, "{run:?}");
+    assert!(run.all().contains("Pair<i64>(a: …, b: …)"), "{run:?}");
+    assert_eq!(run.all().matches("error[").count(), 1, "{run:?}");
+}
+
 /// `import env` passed check and ran on the interpreter, then failed natively
 /// with "unresolved variable `env`": a second, unspecified copy of `os.env`
 /// that only one backend had. It's gone, and the import names the real one.
@@ -280,6 +290,16 @@ fn help_leads_with_the_everyday_commands() {
     }
 }
 
+/// Build status moved to stderr so `rask run` prints only the program's
+/// output. `rask targets` went with it, though its list is the answer.
+#[test]
+fn targets_lists_on_stdout() {
+    let dir = TempDir::new();
+    let run = rask_in(dir.path(), &["targets"]);
+    assert_eq!(run.code, 0, "{run:?}");
+    assert!(run.stdout.contains("Host:"), "{run:?}");
+}
+
 /// `rask lex big.rk | head` panicked with "failed printing to stdout:
 /// Broken pipe" and exit 101 once `head` had its lines. It ends quietly now.
 #[test]
@@ -338,4 +358,62 @@ fn names_from_other_languages_point_at_the_rask_name() {
 fn a_misspelled_local_suggests_the_local() {
     let fix = fix_for("func main() {\n    let count = 3\n    println(\"{cuont}\")\n}\n");
     assert!(fix.contains("did you mean `count`?"), "{fix}");
+}
+
+/// Names in scope come out of a hash map, so with two equally close the
+/// suggestion changed from run to run. Ties go to the one that sorts first.
+#[test]
+fn a_tied_suggestion_is_the_same_every_run() {
+    let source = "func main() {\n    let cut = 1\n    let cat = 2\n    let cet = 3\n    println(\"{cot} {cut} {cat} {cet}\")\n}\n";
+    for _ in 0..4 {
+        assert!(fix_for(source).contains("did you mean `cat`?"));
+    }
+}
+
+/// A binding nothing reads is usually a typo. The spec has warned about it
+/// since the start (tool.warnings/W3); nothing did.
+#[test]
+fn an_unused_variable_is_a_warning() {
+    let run = check_program("func main() {\n    let total = 5\n    mut count = 0\n    count = 2\n    let _quiet = 1\n    println(\"hi\")\n}\n");
+    assert_eq!(run.code, 0, "{run:?}");
+    assert!(run.all().contains("unused variable `total`"), "{run:?}");
+    assert!(run.all().contains("unused variable `count`"), "assigning isn't reading:\n{run:?}");
+    assert!(!run.all().contains("_quiet"), "{run:?}");
+    let allowed = check_program("@allow(unused_variable)\nfunc main() {\n    let total = 5\n}\n");
+    assert!(!allowed.all().contains("W0901"), "{allowed:?}");
+}
+
+/// One mistake, one error. After `??` was rejected on a result, `n` had no
+/// type, and `{n + 1}` (which is `n.add(1)`) was also reported as mutating
+/// the `let` binding `n`, because `Set.add` mutates.
+#[test]
+fn a_rejected_fallback_does_not_also_report_mutation() {
+    let run = check_program("func main() {\n    let n = \"42\".parse<i64>() ?? 0\n    println(\"{n + 1}\")\n}\n");
+    assert_eq!(run.code, 1, "{run:?}");
+    assert!(!run.all().contains("cannot mutate"), "{run:?}");
+    assert_eq!(run.all().matches("error[").count(), 1, "{run:?}");
+}
+
+// ─── Files ─────────────────────────────────────────────────────────────────
+//
+// The first file anyone reads is one that isn't there yet. The error used to
+// be "not found: No such file or directory (os error 2)", which doesn't say
+// which file.
+
+#[test]
+fn a_missing_file_error_names_the_file() {
+    let source = "import fs\n\nfunc main() -> void or fs.IoError {\n    let text = try fs.read_text(\"notes.txt\")\n    println(text)\n}\n";
+    for interp in [true, false] {
+        let run = run_program(source, interp);
+        let backend = if interp { "interpreter" } else { "native" };
+        assert_eq!(run.code, 1, "{backend}:\n{run:?}");
+        assert!(run.stderr.contains("not found: notes.txt"), "{backend} should name the file:\n{run:?}");
+    }
+}
+
+/// `os.args()[0]` on a native `rask run` was the temp file it compiled to,
+/// `/tmp/rask_main_12345`; the interpreter gave `main.rk`.
+#[test]
+fn the_program_name_is_the_script_on_both_backends() {
+    prints_on_both("import os\n\nfunc main() {\n    println(os.args()[0])\n}\n", "main.rk\n");
 }

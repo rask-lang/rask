@@ -294,10 +294,15 @@ impl Parser {
     /// At `{ field: …`, the Rust/Go/C# way of building a struct. A labelled
     /// loop (`{ outer: loop`) is a block, not a field.
     fn looks_like_brace_struct_literal(&self) -> bool {
-        if !self.check(&TokenKind::LBrace) {
+        self.brace_struct_literal_at(0)
+    }
+
+    /// `{ name:` at `peek(at)`, and not `{ label: loop`.
+    fn brace_struct_literal_at(&self, at: usize) -> bool {
+        if self.peek(at) != &TokenKind::LBrace {
             return false;
         }
-        let mut i = 1;
+        let mut i = at + 1;
         while self.peek(i) == &TokenKind::Newline {
             i += 1;
         }
@@ -327,10 +332,16 @@ impl Parser {
                 None => "..base".to_string(),
             })
             .collect();
+        let written = if type_args.is_empty() {
+            name.clone()
+        } else {
+            let args: Vec<String> = type_args.iter().map(ToString::to_string).collect();
+            format!("{name}<{}>", args.join(", "))
+        };
         self.errors.push(ParseError {
             span: self.span(start, open.end),
-            message: format!("a struct is built with parentheses, not braces: `{name}(…)`"),
-            hint: Some(format!("write `{name}({})`", fields.join(", "))),
+            message: format!("a struct is built with parentheses, not braces: `{written}(…)`"),
+            hint: Some(format!("write `{written}({})`", fields.join(", "))),
             why: Some(
                 "Rask builds a struct like a call with named arguments, so `{` always opens a block"
                     .to_string(),
@@ -409,6 +420,13 @@ impl Parser {
     }
 
     fn looks_like_generic_followed_by(&self, expected: &TokenKind) -> bool {
+        self.generic_args_end().is_some_and(|pos| &self.tokens[pos].kind == expected)
+    }
+
+    /// At a `<`: the index of the token after the `>` that would close it as
+    /// type arguments, or `None` when the scan reaches the end of the line or
+    /// leaves an enclosing group first.
+    fn generic_args_end(&self) -> Option<usize> {
         let mut pos = self.pos + 1;
         let mut depth: i32 = 1;
         let mut paren_depth: i32 = 0;
@@ -421,10 +439,7 @@ impl Parser {
                 TokenKind::GtGt => {
                     depth -= 2;
                     if depth < 0 {
-                        if pos + 1 < self.tokens.len() {
-                            return &self.tokens[pos + 1].kind == expected;
-                        }
-                        return false;
+                        return (pos + 1 < self.tokens.len()).then_some(pos + 1);
                     }
                 }
                 // Track parens/brackets so we don't scan past enclosing groups.
@@ -432,28 +447,25 @@ impl Parser {
                 TokenKind::LParen => paren_depth += 1,
                 TokenKind::RParen => {
                     paren_depth -= 1;
-                    if paren_depth < 0 { return false; }
+                    if paren_depth < 0 { return None; }
                 }
                 TokenKind::LBracket => bracket_depth += 1,
                 TokenKind::RBracket => {
                     bracket_depth -= 1;
-                    if bracket_depth < 0 { return false; }
+                    if bracket_depth < 0 { return None; }
                 }
                 // An array type's `;` sits inside its brackets:
                 // `size_of<[u16; 3]>()`.
                 TokenKind::Semi if bracket_depth > 0 => {}
                 TokenKind::Eof | TokenKind::Newline | TokenKind::Semi => {
-                    return false;
+                    return None;
                 }
                 _ => {}
             }
             pos += 1;
         }
 
-        if depth == 0 && pos < self.tokens.len() {
-            return &self.tokens[pos].kind == expected;
-        }
-        false
+        (depth == 0 && pos < self.tokens.len()).then_some(pos)
     }
 
     /// Handle `>>` splitting in generic contexts.
@@ -4130,7 +4142,13 @@ impl Parser {
                     // Only type names (uppercase) can have static methods or struct literals
                     let is_static_method = Self::is_type_name(&name)
                         && self.looks_like_generic_type_with_static_method();
-                    if is_generic_call || is_static_method {
+                    // `Pair<i64> { a: 1 }`, for the braces error below.
+                    let is_brace_struct = Self::is_type_name(&name)
+                        && self.allow_brace_expr
+                        && self
+                            .generic_args_end()
+                            .is_some_and(|after| self.brace_struct_literal_at(after - self.pos));
+                    if is_generic_call || is_static_method || is_brace_struct {
                         self.advance(); // consume '<'
                         loop {
                             type_args.push(self.parse_type_name()?);

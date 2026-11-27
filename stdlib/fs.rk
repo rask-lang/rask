@@ -61,7 +61,7 @@ extend fs {
         if fs.open_handle(path) is File as f {
             return f
         }
-        return IoError.last_os_error()
+        return IoError.at(path)
     }
 
     /// Create a new file at the given path.
@@ -72,7 +72,7 @@ extend fs {
         if fs.create_handle(path) is File as f {
             return f
         }
-        return IoError.last_os_error()
+        return IoError.at(path)
     }
 
     /// The raw `fopen`: `none` when it failed, with the OS error left for
@@ -89,7 +89,7 @@ extend fs {
     /// Read the entire contents of a file as a string.
     public func read_text(path: string) -> string or IoError {
         let f = unsafe rask_libc_fopen(path.as_ptr(), "rb\0".as_ptr()) ?? {
-            return IoError.last_os_error()
+            return IoError.at(path)
         }
         let raw = try read_to_end(f)
         let result = unsafe string.from_raw(raw.ptr, raw.len.wrap<usize>())
@@ -100,7 +100,7 @@ extend fs {
     /// Read the entire contents of a file as bytes.
     public func read_bytes(path: string) -> Vec<u8> or IoError {
         let f = unsafe rask_libc_fopen(path.as_ptr(), "rb\0".as_ptr()) ?? {
-            return IoError.last_os_error()
+            return IoError.at(path)
         }
         let raw = try read_to_end(f)
         mut data: Vec<u8> = Vec.with_capacity(raw.len.wrap<usize>())
@@ -118,7 +118,7 @@ extend fs {
     public func write_text(path: string, content: string) -> void or IoError {
         let p = unsafe path.as_ptr()
         let f = unsafe rask_libc_fopen(p, "wb\0".as_ptr()) ?? {
-            return IoError.last_os_error()
+            return IoError.at(path)
         }
         return write_all_then_close(f, unsafe content.as_ptr(), content.len())
     }
@@ -126,7 +126,7 @@ extend fs {
     /// Write bytes to a file, replacing its contents.
     public func write_bytes(path: string, data: Vec<u8>) -> void or IoError {
         let f = unsafe rask_libc_fopen(path.as_ptr(), "wb\0".as_ptr()) ?? {
-            return IoError.last_os_error()
+            return IoError.at(path)
         }
         // Byte by byte into a flat buffer, the one shape `fwrite` takes.
         let n = data.len()
@@ -164,8 +164,9 @@ extend fs {
         let buf = unsafe rask_alloc(4096)
         let result = unsafe realpath(path.as_ptr(), buf)
         if result is none {
+            let err = IoError.at(path)
             unsafe rask_free(buf)
-            return IoError.last_os_error()
+            return err
         }
         let len = unsafe strlen(buf)
         let s = unsafe string.from_raw(buf, len)
@@ -176,11 +177,11 @@ extend fs {
     /// Copy a file from one path to another.
     public func copy(from: string, to: string) -> void or IoError {
         let src = unsafe rask_libc_fopen(from.as_ptr(), "rb\0".as_ptr()) ?? {
-            return IoError.last_os_error()
+            return IoError.at(from)
         }
         let dst = unsafe rask_libc_fopen(to.as_ptr(), "wb\0".as_ptr()) ?? {
             unsafe fclose(src)
-            return IoError.last_os_error()
+            return IoError.at(to)
         }
         let buf = unsafe rask_alloc(8192)
         loop {
@@ -212,7 +213,7 @@ extend fs {
     public func rename(from: string, to: string) -> void or IoError {
         let r = unsafe rask_libc_rename(from.as_ptr(), to.as_ptr())
         if r != 0 {
-            return IoError.last_os_error()
+            return IoError.at(from)
         }
         return
     }
@@ -221,7 +222,7 @@ extend fs {
     public func remove_file(path: string) -> void or IoError {
         let r = unsafe rask_libc_unlink(path.as_ptr())
         if r != 0 {
-            return IoError.last_os_error()
+            return IoError.at(path)
         }
         return
     }
@@ -230,7 +231,7 @@ extend fs {
     public func create_dir(path: string) -> void or IoError {
         let r = unsafe rask_libc_mkdir(path.as_ptr(), 493)
         if r != 0 {
-            return IoError.last_os_error()
+            return IoError.at(path)
         }
         return
     }
@@ -245,7 +246,7 @@ extend fs {
             }
             prefix = if prefix.is_empty() || prefix == "/" { "{prefix}{part}" } else { "{prefix}/{part}" }
             if (unsafe rask_libc_mkdir_or_dir(prefix.as_ptr(), 493)) != 0 {
-                return IoError.last_os_error()
+                return IoError.at(prefix)
             }
         }
         return
@@ -255,7 +256,7 @@ extend fs {
     public func append_text(path: string, content: string) -> void or IoError {
         let p = unsafe path.as_ptr()
         let f = unsafe rask_libc_fopen(p, "ab\0".as_ptr()) ?? {
-            return IoError.last_os_error()
+            return IoError.at(path)
         }
         return write_all_then_close(f, unsafe content.as_ptr(), content.len())
     }
@@ -275,13 +276,13 @@ extend fs {
             }
             return entries
         }
-        return IoError.last_os_error()
+        return IoError.at(path)
     }
 
     /// Remove an empty directory. A file is an error: that's `remove_file`.
     public func remove_dir(path: string) -> void or IoError {
         if fs.remove_dir_raw(path) != 0 {
-            return IoError.last_os_error()
+            return IoError.at(path)
         }
         return
     }
@@ -292,7 +293,7 @@ extend fs {
         for entry in try fs.read_dir(path) {
             let kind = fs.kind_raw(entry.path)
             if kind < 0 {
-                return IoError.last_os_error()
+                return IoError.at(entry.path)
             }
             if kind == 2 {
                 try fs.remove_dir_all(entry.path)
@@ -335,7 +336,7 @@ extend fs {
         if fs.open_with_handle(path, flags) is File as f {
             return f
         }
-        return IoError.last_os_error()
+        return IoError.at(path)
     }
 
     /// Get metadata for a file or directory.
@@ -344,7 +345,7 @@ extend fs {
     /// to hand back a null pointer as a `Metadata`, and the `catch` never ran.
     public func metadata(path: string) -> Metadata or IoError {
         if fs.stat_load(path) != 0 {
-            return IoError.last_os_error()
+            return IoError.at(path)
         }
         return fs.loaded_metadata()
     }

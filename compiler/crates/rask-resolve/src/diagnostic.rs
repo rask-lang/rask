@@ -450,3 +450,13 @@ fn stdlib_module_for(name: &str) -> Option<String> {
         _ => rask_diagnostics::suggestions::did_you_mean(name, rask_stdlib::modules::module_names().iter().copied()),
     }
 }
+
+impl ToDiagnostic for crate::UnusedLocal {
+    fn to_diagnostic(&self) -> Diagnostic {
+        Diagnostic::warning(format!("unused variable `{}`", self.name))
+            .with_code("W0901")
+            .with_primary(self.span, "nothing reads this")
+            .with_fix(format!("use it, or name it `_{}` if that's meant", self.name))
+            .with_why("an unread binding is usually a typo or a leftover from an edit [tool.warnings/W3]")
+    }
+}

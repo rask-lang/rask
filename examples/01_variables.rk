@@ -14,6 +14,10 @@ func main() {
     print(age)
     print("\n")
 
+    print("Height: ")
+    print(height)
+    print("\n")
+
     // mut - binding can be reassigned
     mut counter = 0
     counter = counter + 1

@@ -61,7 +61,10 @@ pub fn closest<'a>(name: &str, candidates: impl IntoIterator<Item = &'a str>) ->
 
         let dist = edit_distance(name, candidate);
         if dist <= max_distance {
-            if best.is_none() || dist < best.unwrap().1 {
+            // Ties go to the name that sorts first, so the answer doesn't
+            // depend on the order candidates come in: callers pass hash-map
+            // keys, and the suggestion changed from run to run.
+            if best.is_none_or(|(b, d)| (dist, candidate) < (d, b)) {
                 best = Some((candidate, dist));
             }
         }

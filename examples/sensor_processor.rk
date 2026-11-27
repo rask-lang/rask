@@ -6,36 +6,6 @@ import thread.Thread
 import time
 import async.Sender
 
-// ============================================================================
-// Lookup Tables (runtime-initialized)
-// ============================================================================
-
-func build_crc8_table() -> Vec<i64> {
-    mut table = Vec.new()
-    for i in 0..256 {
-        mut crc = i
-        for j in 0..8 {
-            if (crc & 128) != 0 {
-                crc = crc * 2 & 255 ^ 7
-            } else {
-                crc = crc * 2 & 255
-            }
-        }
-        table.push(crc)
-    }
-    return table
-}
-
-func crc8(data: Vec<i64>, table: Vec<i64>) -> i64 {
-    mut crc: i64 = 0
-    let n = data.len()
-    for i in 0..n {
-        let byte = data.get(i)!
-        crc = table.get((crc ^ byte) & 255)!
-    }
-    return crc
-}
-
 // Read from simulated hardware register
 func read_hardware_sensor(sensor_id: i64, tick: i64) -> f64 {
     let base = match sensor_id {
@@ -217,9 +187,6 @@ func main() {
     println("Process rate: {PROCESS_RATE_HZ} Hz (main loop)")
     println("Hard deadline: {HARD_DEADLINE_US} µs")
     println("")
-
-    // Build lookup tables
-    let crc_table = build_crc8_table()
 
     // ISR → main channel. Sender is moved into the spawned thread,
     // Receiver stays here for draining.

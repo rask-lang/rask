@@ -1116,9 +1116,12 @@ pub fn cmd_run_native(path: &str, program_args: Vec<String>, format: Format, lin
     // Compile quietly — suppress the "Compiled →" banner (errors still show)
     super::codegen::cmd_compile(path, Some(&bin_str), format, true, link_opts, release, None);
 
-    let status = process::Command::new(&bin_str)
-        .args(&program_args)
-        .status();
+    let mut cmd = process::Command::new(&bin_str);
+    // `os.args()[0]` is the script as it was named, as on the interpreter,
+    // not the temp file it was compiled to.
+    #[cfg(unix)]
+    std::os::unix::process::CommandExt::arg0(&mut cmd, path);
+    let status = cmd.args(&program_args).status();
 
     let _ = std::fs::remove_file(&bin_path);
 

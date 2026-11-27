@@ -355,10 +355,7 @@ func is_reference_def(line: string) -> bool {
     if !trimmed.starts_with("[") {
         return false
     }
-    let close = trimmed.index_of("]:") ?? {
-        return false
-    }
-    return true
+    return trimmed.contains("]:")
 }
 
 // ─── Inline Parser ──────────────────────────────────────────────────
@@ -444,7 +441,6 @@ func parse_inline_until(mutate scanner: Scanner, stop: string) -> Vec<Inline> or
         if scanner.matches("[") {
             flush_text(mutate result, mutate text_buf)
             scanner.advance()
-            let link_start = scanner.pos
             if scanner.scan_until_char(']')? as text_content {
                 if scanner.matches("(") {
                     scanner.advance()

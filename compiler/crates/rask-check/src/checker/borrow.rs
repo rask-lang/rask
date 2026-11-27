@@ -365,6 +365,14 @@ impl TypeChecker {
     fn receiver_self_param(&self, ty: &Type, method_name: &str) -> Option<SelfParam> {
         let resolved = self.resolve_named(&self.ctx.apply(ty));
 
+        // A receiver whose type already failed has had its error. Treating it
+        // as open asked "is this name `mutate self` anywhere", and `Set.add`
+        // is: after a rejected `let n = s.parse<i64>() ?? 0`, `n + 1` (which
+        // is `n.add(1)`) reported "cannot mutate `n`" too.
+        if matches!(resolved, Type::Error) {
+            return Some(SelfParam::Value);
+        }
+
         // A box mutates through its heap slot, not through the binding
         // (`conc.sync/R2`) — `let c = Shared.new(0)`
         // followed by `c.write()` is the point of the type, not a mistake. This
