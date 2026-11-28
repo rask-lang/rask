@@ -50,7 +50,7 @@ func main() {
     println("{ship(s)}")
 
     // ERROR: the decode direction (E0408)
-    let w = json.decode<OneWay>("{}")
+    let w = json.decode<OneWay>("{{}}")
 
     let sess = Session(id: 1, act: |x| x + 1)
     // ERROR: a field with no wire representation is E0388, not E0408

@@ -1001,7 +1001,7 @@ test "images" {
 test "code blocks" {
     let input = """
 ```rust
-fn main() {}
+fn main() {{}}
 ```
 """
     let result = render_markdown(input)!
