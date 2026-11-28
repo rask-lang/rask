@@ -594,7 +594,7 @@ extend Reader {
                 self.pos = self.pos + 1
                 break
             }
-            return self.error("expected `,` or `}` in the inline table")
+            return self.error("expected `,` or `}}` in the inline table")
         }
         mut all = Vec<usize>.new()
         mut i: usize = 0

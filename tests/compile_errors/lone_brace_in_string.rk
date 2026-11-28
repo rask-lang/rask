@@ -1,0 +1,17 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: a brace in a string that belongs to no interpolation
+//
+// A `{` in a string starts an interpolation and a `}` ends one. A brace meant
+// as text is written doubled: `{{` and `}}`. A lone one used to be kept as text
+// without a word, so `"{name"` printed `{name` when `{name}` was meant.
+
+func main() {
+    let name = "Ada"
+    // ERROR: a `{` that nothing closes [E0100]
+    println("hello {name")
+    // ERROR: a `}` that closes nothing [E0100]
+    println("expected '}' here")
+    // ERROR: raw strings interpolate too [E0100]
+    println(r"{ starts a block")
+    println("{{ and }} are braces: {name}")
+}

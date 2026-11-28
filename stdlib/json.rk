@@ -224,7 +224,7 @@ extend JsonParser {
                 return JsonValue.Object(map)
             }
 
-            return JsonError.ParseError("expected ',' or '}' in object")
+            return JsonError.ParseError("expected ',' or '}}' in object")
         }
     }
 
@@ -701,7 +701,7 @@ func stringify_pretty_inner(value: JsonValue, mutate out: StringBuilder, indent:
                 out.push("{}")
                 return
             }
-            out.push("{\n")
+            out.push("{{\n")
             mut first = true
             for key in sorted_keys(map) {
                 if map.get(key)? as value {

@@ -243,6 +243,7 @@ FIX: Use all auto ({}, {}) or all explicit ({0}, {1}).
 | Missing arg for `{2}` | F2 | Compile-time error (when possible) or runtime panic |
 | Type without Displayable in `{}` | D4 | Compile-time error |
 | Error type in `{}` | D5 | Auto-bridges — calls `message()` |
+| Lone `{` or `}` in a string | F4 | Compile error: a brace that opens or closes no hole is a typo or text, and text is doubled |
 | `{{` in template | F4 | Literal `{` |
 | Empty template | F1 | Returns empty string |
 | `format("{:debug}", x)` on auto-derived type | G2 | Shows struct fields / enum variants |

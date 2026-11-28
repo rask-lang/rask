@@ -5635,7 +5635,8 @@ impl Parser {
                     if depth > 0 { i += 1; }
                 }
                 if depth != 0 {
-                    return None; // Unclosed brace
+                    self.lone_brace_error(s, positions, str_span, expr_start - 1, '{');
+                    return None;
                 }
                 let expr_str: String = chars[expr_start..i].iter().collect();
                 i += 1; // skip '}'
@@ -5775,6 +5776,9 @@ impl Parser {
                 literal.push('}');
                 escaped_any = true;
                 i += 2;
+            } else if chars[i] == '}' {
+                self.lone_brace_error(s, positions, str_span, i, '}');
+                return None;
             } else {
                 literal.push(chars[i]);
                 i += 1;
@@ -5792,6 +5796,24 @@ impl Parser {
         } else {
             None
         }
+    }
+
+    /// A `{` with no `}` after it, or a `}` that closes nothing. Either is a
+    /// typo or a brace meant as text, which is written doubled (fmt/F4).
+    fn lone_brace_error(&mut self, s: &str, positions: &StrPositions, str_span: Span, char_index: usize, brace: char) {
+        let byte = s.char_indices().nth(char_index).map(|(pos, _)| pos).unwrap_or(0);
+        let at = str_span.start + positions.source_offset(byte);
+        let (message, why) = if brace == '{' {
+            ("unclosed `{` in string", "a `{` in a string starts an interpolation, which a `}` has to close")
+        } else {
+            ("`}` in string closes nothing", "braces in strings belong to interpolations, so a brace meant as text is doubled")
+        };
+        self.errors.push(ParseError {
+            span: self.span(at, at + 1),
+            message: message.to_string(),
+            hint: Some(format!("write `{brace}{brace}` for a literal `{brace}`")),
+            why: Some(why.to_string()),
+        });
     }
 
     fn parse_pattern(&mut self) -> Result<Pattern, ParseError> {
