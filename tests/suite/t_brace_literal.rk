@@ -50,4 +50,7 @@ test "type.strings — a hole is code, quotes and all" {
     let m = Map.from([("k", 3)])
     assert "{m.get("k") ?? 0}" == "3"
     assert "{"\{".len()}" == "1"
+    let path = "a\\b"
+    assert "{path.replace(r"\", "/")}" == "a/b"
+    assert "{r#"x"y"#.len()}" == "3"
 }
