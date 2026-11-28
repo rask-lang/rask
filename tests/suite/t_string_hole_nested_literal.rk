@@ -4,7 +4,7 @@
 // An interpolation hole holds a real expression, and expressions contain string
 // literals, so `"{name ?? "unknown"}"` is one string — not three tokens with the
 // middle parsed as code. The lexer only reads a `"` that way inside a `{ }`
-// hole; doubled braces (a JSON writer's `"{{\n"`) are text and open no hole.
+// hole; escaped braces (a JSON writer's `"\{\n"`) are text and open no hole.
 
 func tag(s: string) -> string {
     return s
@@ -25,13 +25,13 @@ test "std.fmt/F1 — a call in the hole can take a string argument" {
 }
 
 test "std.fmt/F1 — braces inside a nested literal are that literal's text" {
-    assert "{tag("a{{b}}c")}" == "a{OPEN}b{CLOSE}c"
+    assert "{tag("a\{b\}c")}" == "a{OPEN}b{CLOSE}c"
 }
 
 // The hole ends at the `}` that closes it, not at one quoted inside it.
 test "std.fmt/F1 — a quoted brace doesn't close the hole" {
-    assert "{tag("}}")}" == CLOSE
-    assert "{tag("{{")}" == OPEN
+    assert "{tag("\}")}" == CLOSE
+    assert "{tag("\{")}" == OPEN
 }
 
 test "std.fmt/F1 — an escaped brace is plain text" {

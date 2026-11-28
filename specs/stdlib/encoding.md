@@ -141,13 +141,13 @@ Port implements Encode {
 struct Config { ports: Vec<Port> }
 
 func main() {
-    let good = json.decode<Config>("\{\"ports\": [80, 8080]\}") catch e => {
+    let good = json.decode<Config>(r#"{"ports": [80, 8080]}"#) catch e => {
         println(e.message())
         return
     }
     println("{good.ports.len()} ports")
     println(json.encode(good))
-    let bad = json.decode<Config>("\{\"ports\": [80, 0]\}") catch e => {
+    let bad = json.decode<Config>(r#"{"ports": [80, 0]}"#) catch e => {
         println(e.message())
         return
     }
@@ -764,7 +764,7 @@ func main() -> void or Error {
     // → {"server_host": "localhost", "port": 3000}
 
     // Decode (port defaults to 8080 if missing)
-    let loaded = try json.decode<Config>("\{\"server_host\": \"example.com\"\}")
+    let loaded = try json.decode<Config>(r#"{"server_host": "example.com"}"#)
     // → Config { host: "example.com", port: 8080, cached_at: 0 }
 }
 ```

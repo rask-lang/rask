@@ -6,7 +6,7 @@
 // expression to evaluate, handing the raw text on; desugar's fallback scanner
 // had no escape rule at all; and the interpreter re-scanned every plain string
 // at runtime, so even a correctly desugared `{braces}` got read back as an
-// interpolation. `println("literal {{braces}} here")` failed to compile.
+// interpolation. `println("literal \{braces\} here")` failed to compile.
 
 test "a string of only escapes is literal text" {
     let text = "literal \{braces\} here"

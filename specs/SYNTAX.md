@@ -215,7 +215,7 @@ func compute() -> i32 {
 // Strings
 "hello"             // string literal
 "line 1\nline 2"    // Escape sequences; "…" and r"…" end on their line
-"hi {name}"         // Interpolation: a hole holds an expression
+"hi {name}"         // Interpolation (std.fmt)
 "\{ \}"             // Literal braces are escaped
 r"C:\{dir}"         // Raw: no escapes, no holes, text as written
 """

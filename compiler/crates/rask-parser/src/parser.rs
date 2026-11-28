@@ -5592,6 +5592,9 @@ impl Parser {
     /// Returns None for a raw string, a string with no braces, or an error.
     fn parse_string_interpolation(&mut self, s: &str, positions: &StrPositions, str_span: Span) -> Option<Vec<StringSegment>> {
         if !positions.interpolates() {
+            if self.in_message_template && (s.contains('{') || s.contains('}')) {
+                self.raw_template_error(str_span, "an `@message` template");
+            }
             return None;
         }
         let mut segments = Vec::new();
@@ -5644,6 +5647,12 @@ impl Parser {
                             '\\' if in_string => escaped = true,
                             '"' => in_string = !in_string,
                             _ if in_string => {}
+                            'r' => {
+                                if let Some(after) = rask_lexer::skip_raw_string(s.as_bytes(), bytes[i]) {
+                                    // Land on the raw literal's last char.
+                                    i = bytes.partition_point(|b| *b < after) - 1;
+                                }
+                            }
                             '\'' => {
                                 if let Some(close) = char_literal_end(&chars, i) {
                                     i = close;
@@ -5882,6 +5891,10 @@ impl Parser {
     /// a literal brace doubled. The escape the source spells `\\{` has no
     /// other way to survive into plain text.
     fn format_template(&mut self, s: &str, positions: &StrPositions, str_span: Span) -> String {
+        if !positions.interpolates() {
+            self.raw_template_error(str_span, "a `format` template");
+            return s.to_string();
+        }
         let mut out = String::with_capacity(s.len());
         let mut depth = 0usize;
         let mut chars = s.char_indices().peekable();
@@ -5915,6 +5928,17 @@ impl Parser {
             out.push(c);
         }
         out
+    }
+
+    /// A raw string has no placeholders, so as a template it would print
+    /// `{}` as text and drop every argument.
+    fn raw_template_error(&mut self, str_span: Span, what: &str) {
+        self.errors.push(ParseError {
+            span: str_span,
+            message: format!("a raw string can't be {what}"),
+            hint: Some("write it as `\"…\"`, with `\\{` for a literal brace".to_string()),
+            why: Some("a raw string is text as written, so its `{}` would never be filled in".to_string()),
+        });
     }
 
     /// A `{` with no `}` after it, or a `}` that closes nothing. Either is a

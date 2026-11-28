@@ -507,6 +507,13 @@ fn scan_hole_aware(bytes: &[u8]) -> Option<usize> {
             b'}' => {
                 holes.pop();
             }
+            // A raw literal in a hole: its backslashes and braces are text.
+            b'r' if !holes.is_empty() => {
+                if let Some(after) = skip_raw_string(bytes, pos) {
+                    pos = after;
+                    continue;
+                }
+            }
             // A char literal in a hole holds its brace: `{c == '{'}`.
             b'\'' if !holes.is_empty() => {
                 if let Some(after) = skip_char_literal(bytes, pos) {
@@ -545,6 +552,31 @@ fn scan_hole_aware(bytes: &[u8]) -> Option<usize> {
         pos += 1;
     }
 
+    None
+}
+
+/// Step over a raw string `r"…"` or `r#"…"#` whose `r` is at `pos`; the
+/// result is the byte just past it. `None` if `pos` isn't one, or a
+/// single-hash-free one runs past its line.
+pub fn skip_raw_string(bytes: &[u8], pos: usize) -> Option<usize> {
+    if pos > 0 && (bytes[pos - 1].is_ascii_alphanumeric() || bytes[pos - 1] == b'_') {
+        return None;
+    }
+    let hashes = bytes[pos + 1..].iter().take_while(|b| **b == b'#').count();
+    let mut p = pos + 1 + hashes;
+    if bytes.get(p) != Some(&b'"') {
+        return None;
+    }
+    p += 1;
+    while p < bytes.len() {
+        match bytes[p] {
+            b'"' if bytes[p + 1..].iter().take(hashes).filter(|b| **b == b'#').count() == hashes => {
+                return Some(p + 1 + hashes);
+            }
+            b'\n' if hashes == 0 => return None,
+            _ => p += 1,
+        }
+    }
     None
 }
 
@@ -1103,6 +1135,12 @@ fn hole_len(bytes: &[u8]) -> usize {
                 pos += 1;
                 while pos < bytes.len() && bytes[pos] != b'"' {
                     pos += if bytes[pos] == b'\\' { 2 } else { 1 };
+                }
+            }
+            b'r' => {
+                if let Some(after) = skip_raw_string(bytes, pos) {
+                    pos = after;
+                    continue;
                 }
             }
             b'\'' => {
