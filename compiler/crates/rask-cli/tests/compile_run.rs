@@ -6041,7 +6041,7 @@ func main() {
     let (tx, rx) = Channel<i64>.buffered(1)
     tx.close()!
     let got = select {
-        rx -> v: v,
+        rx -> v => v,
     }!
     println("{got}")
 }
@@ -7315,7 +7315,7 @@ fn reflect_through_a_generic_function_agrees_on_both_backends() {
 
 // An `if` expression handed to a call is in value position, whatever position
 // the call is in. `in_stmt_expr` — the flag that makes a statement's trailing
-// `if` answer void — reached the arguments, so `out.push(if b: "1" else: "0")`
+// `if` answer void — reached the arguments, so `out.push(if b { "1" } else { "0" })`
 // as a bare expression statement was "expected `string`, found `void`" while
 // `let s = out.push(…)` compiled. Found in examples/lsm_database.
 #[test]

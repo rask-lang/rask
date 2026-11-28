@@ -1,0 +1,63 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A bare variant still names the variant when a struct has the same name:
+// next to `struct Circle`, `Circle(c)` on a `Shape or Fail` is
+// `Shape.Circle(c)`. The struct isn't one of the value's branches, so it
+// can't be what the pattern means. The checker used to skip the variant
+// lookup for any name that was also a type, and native read the payload
+// from a binding with no type.
+
+struct Circle {
+    r: i64
+}
+
+struct Square {
+    side: i64
+}
+
+enum Shape {
+    Circle(Circle)
+    Square(Square)
+    Dot
+}
+
+enum Fail {
+    Gone
+}
+
+func make(n: i64) -> Shape or Fail {
+    if n == 0 { return Fail.Gone }
+    if n == 1 { return Shape.Circle(Circle(r: 5)) }
+    if n == 2 { return Shape.Square(Square(side: 7)) }
+    return Shape.Dot
+}
+
+func tested(n: i64) -> i64 {
+    let s = make(n)
+    if s is Circle(c) { return c.r }
+    if s is Square(q) { return q.side }
+    return -1
+}
+
+func matched(n: i64) -> i64 {
+    match make(n) {
+        Circle(c) => { return c.r + 100 }
+        Square(q) => { return q.side + 100 }
+        Dot => { return 0 }
+        Gone => { return -1 }
+    }
+}
+
+test "a bare variant beats a struct of the same name in an is test" {
+    assert tested(0) == -1
+    assert tested(1) == 5
+    assert tested(2) == 7
+    assert tested(3) == -1
+}
+
+test "a bare variant beats a struct of the same name in a match" {
+    assert matched(0) == -1
+    assert matched(1) == 105
+    assert matched(2) == 107
+    assert matched(3) == 0
+}

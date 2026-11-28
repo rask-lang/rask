@@ -12,7 +12,7 @@ This page is a budget. If it stops fitting on a page, the language got bigger �
 
 1. **Values are owned.** Assignment moves big values, copies small ones (≤16 bytes, all-Copy fields). Binding an element out of a collection (`let r = rows[i]`) gives a read-only view when it isn't Copy. Closures always move. `.clone()` keeps both — the visible cost. Use a moved value and the compiler names what moved and why.
 
-2. **`let` and `mut`.** Immutable and mutable bindings. Newlines end statements.
+2. **`let` and `mut`.** Immutable and mutable bindings. Newlines end statements. An `if`, `else`, loop or function body is a block in braces, on one line or several (`if x > 0 { return x }`). A match arm, a closure and `ensure` take an expression. A colon only joins a name to its type or value.
 
 3. **`func` and `extend`.** Functions; methods live in `extend Type` blocks. `public` is the only export marker.
 
@@ -28,7 +28,7 @@ This page is a budget. If it stops fitting on a page, the language got bigger �
 
 9. **`ensure`.** Cleanup that runs when the block exits — early return, error, or panic included. Written where the resource is made: `ensure file.close()`.
 
-10. **Pattern matching.** `match` for branches, `if x is Pattern` for one check.
+10. **Pattern matching.** `match` for branches, `if x is Pattern` for one check, `let Pattern = x else { return }` to leave when it fails. Names a test binds reach the rest of its `&&` chain and the body it guards, never across `||`.
 
 11. **Interfaces.** `Type implements Interface` declares conformance. `any Interface` holds mixed types — the cast allocates, and writing it is the marker.
 

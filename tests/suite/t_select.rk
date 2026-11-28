@@ -15,8 +15,8 @@ test "A1 — the ready receive arm fires, and its binding is the received value"
     let (tx2, rx2) = Channel<i64>.buffered(4)
     let _ = tx1.send(7)
     let got = select {
-        rx1 -> v: v * 2,
-        rx2 -> v: v + 1000,
+        rx1 -> v => v * 2,
+        rx2 -> v => v + 1000,
     }!
     assert got == 14
 }
@@ -26,8 +26,8 @@ test "A1 — a later arm fires when the earlier channel is empty" {
     let (tx2, rx2) = Channel<i64>.buffered(4)
     let _ = tx2.send(3)
     let got = select {
-        rx1 -> v: v,
-        rx2 -> v: v + 100,
+        rx1 -> v => v,
+        rx2 -> v => v + 100,
     }!
     assert got == 103
 }
@@ -35,8 +35,8 @@ test "A1 — a later arm fires when the earlier channel is empty" {
 test "A3 — the default arm fires when nothing is ready" {
     let (tx, rx) = Channel<i64>.buffered(4)
     let got = select {
-        rx -> v: v,
-        _: -1,
+        rx -> v => v,
+        _ => -1,
     }
     assert got == -1
 }
@@ -45,8 +45,8 @@ test "A3 — the default arm does not fire when something is ready" {
     let (tx, rx) = Channel<i64>.buffered(4)
     let _ = tx.send(42)
     let got = select {
-        rx -> v: v,
-        _: -1,
+        rx -> v => v,
+        _ => -1,
     }
     assert got == 42
 }
@@ -54,8 +54,8 @@ test "A3 — the default arm does not fire when something is ready" {
 test "A2 — a send arm fires when the channel has room" {
     let (tx, rx) = Channel<i64>.buffered(2)
     let got = select {
-        tx <- 9: 1,
-        _: 0,
+        tx <- 9 => 1,
+        _ => 0,
     }
     assert got == 1
     mut back = 0
@@ -70,8 +70,8 @@ test "select drains one value per evaluation" {
     mut total = 0
     for i in 0..2 {
         total += select {
-            rx -> v: v,
-            _: 0,
+            rx -> v => v,
+            _ => 0,
         }
     }
     assert total == 3
@@ -86,7 +86,7 @@ test "select blocks until a spawned producer sends" {
         }
         ensure h.detach()
         let got = select {
-            rx -> v: v,
+            rx -> v => v,
         }!
         assert got == 5
         h.join()!
@@ -99,8 +99,8 @@ test "CL2 — a closed channel is skipped, the others keep firing" {
     tx1.close()!
     let _ = tx2.send(42)
     let got = select {
-        rx1 -> v: v,
-        rx2 -> v: v,
+        rx1 -> v => v,
+        rx2 -> v => v,
     }!
     assert got == 42
 }
@@ -119,8 +119,8 @@ test "P1 — a plain select doesn't starve a permanently-ready arm" {
     mut arm2_count = 0
     for i in 0..120 {
         let got = select {
-            rx1 -> v: v,
-            rx2 -> v: v,
+            rx1 -> v => v,
+            rx2 -> v => v,
         }!
         if got >= 1000 { arm2_count = arm2_count + 1 }
     }
@@ -140,8 +140,8 @@ test "select_priority still starves a later arm behind a busy earlier one" {
     mut arm2_count = 0
     for i in 0..60 {
         let got = select_priority {
-            rx1 -> v: v,
-            rx2 -> v: v,
+            rx1 -> v => v,
+            rx2 -> v => v,
         }!
         if got >= 1000 { arm2_count = arm2_count + 1 }
     }
@@ -158,8 +158,8 @@ test "CL1 — every channel closed is an error, not a panic" {
     tx2.close()!
     mut what = ""
     match select {
-        rx1 -> v: v,
-        rx2 -> v: v,
+        rx1 -> v => v,
+        rx2 -> v => v,
     } {
         i64 as v => { what = "value {v}" }
         SelectError.Closed => { what = "closed" }
@@ -170,7 +170,7 @@ test "CL1 — every channel closed is an error, not a panic" {
 
 func wait_on(rx: Receiver<i64>) -> string {
     match select {
-        rx -> v: v,
+        rx -> v => v,
     } {
         i64 as v => { return "value {v}" }
         SelectError.Closed => { return "closed" }
@@ -211,7 +211,7 @@ test "select { … }! panics when every channel is closed" {
         tx.close()!
         let h = spawn {
             return select {
-                rx -> v: v,
+                rx -> v => v,
             }!
         }
         match h.join() {
@@ -229,7 +229,7 @@ test "a select checked before its channel's type is known" {
         let (tx, rx) = Channel<i64>.buffered(1)
         tx.send(5)!
         let got = select {
-            rx -> v: v,
+            rx -> v => v,
         }!
         assert got == 5
     }

@@ -120,6 +120,14 @@ impl ToDiagnostic for crate::ResolveError {
                     .with_why("each name in one pattern or parameter list holds one value; with two, the first could never be read")
             }
 
+            ReadInElse { name } => {
+                Diagnostic::error(format!("`{name}` is only bound where the test held"))
+                    .with_code("E0221")
+                    .with_primary(self.span, "read in the else branch")
+                    .with_fix(format!("read `{name}` in the then-branch, or match on the value to handle each case"))
+                    .with_why("the else branch runs when the test failed, so the name it would have bound has no value there")
+            }
+
             DuplicateTest { kind, name, previous } => {
                 Diagnostic::error(format!("two {kind}s named \"{name}\""))
                     .with_code("E0217")

@@ -130,7 +130,7 @@ test "modify — modify_with_default on a struct value" {
     })
     assert r == 1
     let stored = users.get("u")
-    if stored is Counter as c {
+    if stored? as c {
         assert c.hits == 1
     } else {
         assert false

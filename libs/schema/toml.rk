@@ -158,7 +158,7 @@ func check_dotted_tables(assigns: Vec<Assign>) -> void or TomlError {
                 continue
             }
             if starts_with_path(a.path, h.path) {
-                let line = if a.line > h.line: a.line else: h.line
+                let line = if a.line > h.line { a.line } else { h.line }
                 return TomlError(line, what: "table [{h.path.join(".")}] has a header on line {h.line} and dotted keys on line {a.line}; define it one way")
             }
         }
@@ -220,7 +220,7 @@ func build_table(assigns: Vec<Assign>, idx: Vec<usize>, depth: usize) -> Vec<Ent
             if other != li {
                 let lv = assigns[li].line
                 let lt = assigns[other].line
-                let line = if lv > lt: lv else: lt
+                let line = if lv > lt { lv } else { lt }
                 return TomlError(line, what: "`{assigns[li].path.join(".")}` is a value on line {lv} and a table on line {lt}")
             }
             out.push(Entry(key: k, value: assigns[li].value.clone()))
@@ -691,11 +691,11 @@ extend Reader {
 extend Value {
     public func kind(self) -> string {
         return match self {
-            Value.Str(_) => "a string",
-            Value.Int(_) => "an integer",
-            Value.Bool(_) => "a boolean",
-            Value.Array(_) => "an array",
-            Value.Table(_) => "a table",
+            Value.Str => "a string",
+            Value.Int => "an integer",
+            Value.Bool => "a boolean",
+            Value.Array => "an array",
+            Value.Table => "a table",
         }
     }
 
@@ -788,7 +788,7 @@ public func render_value(v: Value) -> string {
     match v {
         Value.Str(s) => return quote_string(s),
         Value.Int(n) => return "{n}",
-        Value.Bool(b) => return if b: "true" else: "false",
+        Value.Bool(b) => return if b { "true" } else { "false" },
         Value.Array(items) => {
             mut parts = Vec<string>.new()
             for item in items {
@@ -855,7 +855,7 @@ func quote_string(s: string) -> string {
             let cp = bidi_at(s, i)
             if cp != 0 {
                 esc = unicode_escape(cp)
-                width = if cp == 1564: 2 else: 3
+                width = if cp == 1564 { 2 } else { 3 }
             }
         }
         if esc.is_empty() {
@@ -891,7 +891,7 @@ func unicode_escape(cp: usize) -> string {
 public func render_document(entries: Vec<Entry>) -> string {
     mut out = StringBuilder.new()
     for e in entries {
-        if e.value is Table(_) {
+        if e.value is Table {
             continue
         }
         out.push("{render_key(e.key)} = {render_value(e.value)}\n")
@@ -943,7 +943,7 @@ func render_section(mutate out: StringBuilder, path: Vec<string>, entries: Vec<E
 
 func has_table(entries: Vec<Entry>) -> bool {
     for e in entries {
-        if e.value is Table(_) {
+        if e.value is Table {
             return true
         }
     }

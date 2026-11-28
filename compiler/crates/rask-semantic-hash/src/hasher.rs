@@ -475,11 +475,15 @@ impl Hasher {
                 }
                 self.hash_expr(init);
             }
-            StmtKind::LetStruct { pattern, init, is_mut } => {
+            StmtKind::LetPattern { pattern, init, is_mut, else_branch } => {
                 self.feed_tag(102);
                 self.feed_u32(*is_mut as u32);
                 self.hash_pattern(pattern);
                 self.hash_expr(init);
+                self.feed_bool(else_branch.is_some());
+                if let Some(e) = else_branch {
+                    self.hash_expr(e);
+                }
             }
             StmtKind::Assign { target, value, .. } => {
                 self.feed_tag(25);
@@ -723,19 +727,13 @@ impl Hasher {
                 self.feed_tag(54);
                 self.hash_stmts(stmts);
             }
-            ExprKind::If { cond, then_branch, else_branch, else_binding } => {
+            ExprKind::If { cond, then_branch, else_branch } => {
                 self.feed_tag(55);
                 self.hash_expr(cond);
                 self.hash_expr(then_branch);
                 if let Some(eb) = else_branch {
                     self.feed_bool(true);
                     self.hash_expr(eb);
-                } else {
-                    self.feed_bool(false);
-                }
-                if let Some(name) = else_binding {
-                    self.feed_bool(true);
-                    self.feed_str(name);
                 } else {
                     self.feed_bool(false);
                 }
@@ -751,12 +749,6 @@ impl Hasher {
                 } else {
                     self.feed_bool(false);
                 }
-            }
-            ExprKind::GuardPattern { expr, pattern, else_branch } => {
-                self.feed_tag(57);
-                self.hash_expr(expr);
-                self.hash_pattern(pattern);
-                self.hash_expr(else_branch);
             }
             ExprKind::IsPattern { expr, pattern } => {
                 self.feed_tag(58);

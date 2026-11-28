@@ -33,9 +33,9 @@ test "a one-expression closure" {
 
 test "a block-bodied closure" {
     let classify = |x| {
-        if x > 0: "pos"
-        else if x < 0: "neg"
-        else: "zero"
+        if x > 0 { "pos" }
+        else if x < 0 { "neg" }
+        else { "zero" }
     }
     assert classify(1) == "pos"
     assert classify(-1) == "neg"

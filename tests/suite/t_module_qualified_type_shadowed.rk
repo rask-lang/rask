@@ -72,7 +72,7 @@ test "a qualified type test means the module's type" {
     mut found = false
     if r is io.IoError as e {
         match e {
-            NotFound(_) => found = true
+            NotFound => found = true
             _ => found = false
         }
     }

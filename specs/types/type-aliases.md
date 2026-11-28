@@ -87,7 +87,6 @@ type alias Handler = func(i32) -> string
 | Rule | Description |
 |------|-------------|
 | **T14: Match on inner** | `if id is UserId(v)` destructures to underlying value |
-| **T15: Guard pattern** | `let v = id is UserId else { ... }` — same as enums |
 
 ## Edge Cases
 
@@ -206,7 +205,7 @@ type Email = string implements Equal, Hashable, Debug
 
 extend Email {
     func parse(raw: string) -> Email or ValidationError {
-        if !raw.contains("@"): return ValidationError.invalid("email", raw)
+        if !raw.contains("@") { return ValidationError.invalid("email", raw) }
         return Email(raw)
     }
 }

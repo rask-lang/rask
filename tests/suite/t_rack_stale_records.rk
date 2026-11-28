@@ -123,7 +123,7 @@ test "and a live field edge" {
     let a = s.insert(Node(value: 1, next: none, prev: none, kids: Vec.new()))
     let b = s.insert(Node(value: 2, next: none, prev: none, kids: Vec.new()))
     a.next = b
-    assert !(a.next is none)
+    assert a.next?
     s.delete(b)
     assert a.next is none
 }

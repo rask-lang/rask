@@ -64,7 +64,7 @@ test "and stays there when nothing replaces it" {
     mut s = Shape.Empty
     match s {
         Shape.Empty => assert true
-        Shape.Filled(_) => assert false
+        Shape.Filled => assert false
     }
 }
 

@@ -117,7 +117,7 @@ func found(r: void or Big) -> i64 {
         Big as b => {
             match b {
                 Big.Found(n) => return n
-                Big.Named(_) => return -1
+                Big.Named => return -1
             }
         }
         _ => return 0
@@ -138,7 +138,7 @@ test "an error carrying a string" {
         Big as b => {
             match b {
                 Big.Named(s) => assert s == "OVER 9"
-                Big.Found(_) => assert false
+                Big.Found => assert false
             }
         }
     }

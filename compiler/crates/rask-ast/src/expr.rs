@@ -102,14 +102,11 @@ pub enum ExprKind {
     },
     /// Block expression
     Block(Vec<super::stmt::Stmt>),
-    /// If expression. `else_binding` (ER22) is the optional `as e` on the else
-    /// clause that binds the error value from a `IsPresent` cond on a Result.
-    /// `if r? { … } else as e { use(e) }`.
+    /// If expression. `if x is P` parses to `IfLet` instead.
     If {
         cond: Box<Expr>,
         then_branch: Box<Expr>,
         else_branch: Option<Box<Expr>>,
-        else_binding: Option<String>,
     },
     /// If-is pattern matching expression (if expr is Pattern { })
     IfLet {
@@ -120,12 +117,6 @@ pub enum ExprKind {
         /// ER22: `else as e` binds the complement branch. A binding, not a
         /// narrow — the scrutinee keeps its own type throughout.
         else_binding: Option<String>,
-    },
-    /// Guard pattern (const v = expr is Pattern else { diverge })
-    GuardPattern {
-        expr: Box<Expr>,
-        pattern: Pattern,
-        else_branch: Box<Expr>,
     },
     /// Pattern test expression (expr is Pattern) — evaluates to bool
     IsPattern {
@@ -663,6 +654,21 @@ pub enum PatternKind {
 }
 
 impl Pattern {
+    /// `x as px` inside `Point(…)`: field `x`, bound as `px`.
+    ///
+    /// It parses as a type pattern because in a positional variant
+    /// `Value(string as s)` is one. Whoever knows the variant takes its fields
+    /// by name reads it as a field rename instead.
+    pub fn as_field_rename(&self) -> Option<(&str, &str)> {
+        match &self.kind {
+            PatternKind::TypePat {
+                ty: crate::ty::TypeExpr::Named { path, args },
+                binding: Some(binding),
+            } if path.len() == 1 && args.is_empty() => Some((path[0].as_str(), binding.as_str())),
+            _ => None,
+        }
+    }
+
     /// Every name this pattern binds, in the order they appear.
     ///
     /// A `_` binds nothing, and so does a literal or a range; a `Type as name`
@@ -790,7 +796,6 @@ pub fn expr_kind_name(kind: &ExprKind) -> &'static str {
         ExprKind::Block { .. } => "Block",
         ExprKind::If { .. } => "If",
         ExprKind::IfLet { .. } => "IfLet",
-        ExprKind::GuardPattern { .. } => "GuardPattern",
         ExprKind::IsPattern { .. } => "IsPattern",
         ExprKind::Match { .. } => "Match",
         ExprKind::Try { .. } => "Try",

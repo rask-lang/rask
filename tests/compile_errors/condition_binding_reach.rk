@@ -1,0 +1,37 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: a name bound by a condition read where the test may not have held
+// Rejects: a binding on one side of `||` or under `!`, and a binding in a plain
+// expression nothing after reads (E0220). The else-branch read is in
+// `else_reads_condition_binding.rk`: it's a resolve error, which stops the
+// checker before these.
+//
+// A binding from `x is P(v)` or `x? as v` reaches the rest of its `&&` chain
+// and the branch the chain guards. `||` passed the checker and failed late;
+// `let ok = a? as v` dropped `v` without a word.
+
+enum Shape {
+    Circle(f64)
+    Square(f64)
+}
+
+func lookup(k: i64) -> i64? {
+    if k > 0 { return k }
+    return none
+}
+
+func or_side(s: Shape, d: bool) -> f64 {
+    // ERROR: E0220 bound on one side of `||`
+    if s is Circle(r) || d { return 1.0 }
+    return 0.0
+}
+
+func under_not(s: Shape) -> bool {
+    // ERROR: E0220 bound under `!`
+    return !(s is Circle(r))
+}
+
+func dead_let() -> bool {
+    // ERROR: E0220 nothing after this reads `v`
+    let ok = lookup(3)? as v
+    return ok
+}

@@ -262,11 +262,11 @@ impl Desugarer {
     fn scan_error_message_types(&mut self, decls: &[Decl], stdlib: &[Decl]) {
         let has_message = |methods: &[FnDecl]| methods.iter().any(|m| m.name == "message");
 
-        // Every stdlib enum has one (ER6 derives it where the stdlib didn't
-        // write it), and so does a struct with a `message` method.
+        // Every stdlib enum with variants has one (ER6 derives it where the
+        // stdlib didn't write it), and so does a struct with a `message` method.
         for decl in stdlib {
             let named = match &decl.kind {
-                DeclKind::Enum(e) => Some(e.name.clone()),
+                DeclKind::Enum(e) if !e.variants.is_empty() => Some(e.name.clone()),
                 DeclKind::Struct(s) if has_message(&s.methods) => Some(s.name.clone()),
                 DeclKind::Impl(i) if has_message(&i.methods) => i.target_ty.name(),
                 _ => None,
@@ -318,19 +318,6 @@ impl Desugarer {
         }
     }
 
-    /// Should ER6's derive run for this enum?
-    ///
-    /// Every enum, is the answer — ER6 doesn't condition it on anything. It
-    /// used to run only for enums some signature named as the error side of a
-    /// `T or E`, which made a method the type either has or hasn't depend on an
-    /// unrelated function elsewhere in the file: constructing an error to log
-    /// it or to test it compiled or didn't depending on whether a never-called
-    /// function mentioned the type (#1249).
-    ///
-    /// One way out: a hand-written `message()` is the override, so the derive
-    /// stands aside rather than shadowing it. An enum carrying a `@resource` is
-    /// no exception — the derived method borrows `self`, so what its arms bind
-    /// are views the body doesn't owe anything for.
     /// Does this payload type have a `message()` (ER37)? The program's own
     /// declaration of the name answers first; otherwise a qualified
     /// `io.IoError` is the stdlib's `IoError`, or a dependency's type.
@@ -343,8 +330,24 @@ impl Desugarer {
         })
     }
 
+    /// Should ER6's derive run for this enum?
+    ///
+    /// Every enum, is the answer — ER6 doesn't condition it on anything. It
+    /// used to run only for enums some signature named as the error side of a
+    /// `T or E`, which made a method the type either has or hasn't depend on an
+    /// unrelated function elsewhere in the file: constructing an error to log
+    /// it or to test it compiled or didn't depending on whether a never-called
+    /// function mentioned the type (#1249).
+    ///
+    /// Two ways out. A hand-written `message()` is the override, so the derive
+    /// stands aside rather than shadowing it. And an enum with no variants has
+    /// no values to describe: the stdlib's `Option` and `Result` declarations
+    /// are such, only there to carry docs, and a `message` on them was a match
+    /// with no arms against the variants the checker gives them. An enum
+    /// carrying a `@resource` is no exception — the derived method borrows
+    /// `self`, so what its arms bind are views the body doesn't owe anything for.
     fn derives_message(&self, e: &EnumDecl) -> bool {
-        !self.hand_written_message.contains(&e.name)
+        !e.variants.is_empty() && !self.hand_written_message.contains(&e.name)
     }
 
     fn fresh_id(&mut self) -> NodeId {
@@ -649,7 +652,12 @@ impl Desugarer {
             StmtKind::Let { init, .. } => self.desugar_expr(init),
             StmtKind::MutTuple { init, .. } => self.desugar_expr(init),
             StmtKind::LetTuple { init, .. } => self.desugar_expr(init),
-            StmtKind::LetStruct { init, .. } => self.desugar_expr(init),
+            StmtKind::LetPattern { init, else_branch, .. } => {
+                self.desugar_expr(init);
+                if let Some(e) = else_branch {
+                    self.desugar_expr(e);
+                }
+            }
             StmtKind::Assign { target, value, .. } => {
                 self.desugar_expr(target);
                 self.desugar_expr(value);
@@ -918,14 +926,6 @@ impl Desugarer {
             }
             ExprKind::IsPresent { expr: e, .. } => self.desugar_expr(e),
             ExprKind::Unwrap { expr: e, .. } => self.desugar_expr(e),
-            ExprKind::GuardPattern {
-                expr,
-                else_branch,
-                ..
-            } => {
-                self.desugar_expr(expr);
-                self.desugar_expr(else_branch);
-            }
             ExprKind::IsPattern { expr, .. } => {
                 self.desugar_expr(expr);
             }

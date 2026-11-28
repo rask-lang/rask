@@ -306,14 +306,10 @@ impl<'a> MirLowerer<'a> {
             }
 
             if let Some(guard_expr) = &arm.guard {
-                // A failed guard carries on down the chain.
-                let (guard_val, _) = self.lower_expr(guard_expr)?;
+                // A failed guard carries on down the chain. Its own bindings
+                // reach the arm body.
                 let guard_pass = self.builder.create_block();
-                self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
-                    cond: guard_val,
-                    then_block: guard_pass,
-                    else_block: next,
-                }));
+                self.lower_cond_to(guard_expr, guard_pass, next)?;
                 self.builder.switch_to_block(guard_pass);
             }
 
@@ -704,14 +700,9 @@ impl<'a> MirLowerer<'a> {
             self.retain_pattern_copies(&arm.pattern, scrutinee, &scrutinee_ty);
 
             if let Some(guard_expr) = &arm.guard {
-                let (guard_val, _) = self.lower_expr(guard_expr)?;
                 let guard_fail_block = redispatch(self, last_row_of_arm + 1);
                 let guard_pass_block = self.builder.create_block();
-                self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
-                    cond: guard_val,
-                    then_block: guard_pass_block,
-                    else_block: guard_fail_block,
-                }));
+                self.lower_cond_to(guard_expr, guard_pass_block, guard_fail_block)?;
                 self.builder.switch_to_block(guard_pass_block);
             }
 
@@ -993,23 +984,21 @@ impl<'a> MirLowerer<'a> {
         }
     }
 
-    /// `scrutinee is A | B(x)` as a bool: one test per alternative, the first
-    /// that passes binds its names (into one set of locals, as an or-pattern
-    /// arm's alternatives do) and answers true. On the failed path a string
-    /// binding is emptied, as `lower_is_pattern_binding` does, so releasing it
-    /// after an `&&` chain is harmless.
-    pub(super) fn lower_is_or_pattern(
+    /// `scrutinee is A | B(x)` as jumps: one test per alternative, and the
+    /// first that passes binds its names (into one set of locals, as an
+    /// or-pattern arm's alternatives do) and goes on to `on_true`.
+    pub(super) fn lower_is_or_pattern_to(
         &mut self,
         scrutinee: &Expr,
         val: MirOperand,
         val_ty: MirType,
         pattern: &Pattern,
-    ) -> Result<TypedOperand, LoweringError> {
+        on_true: BlockId,
+        on_false: BlockId,
+    ) -> Result<(), LoweringError> {
         let niche = self.option_niche(scrutinee, &val_ty);
         let is_niche = niche.is_some();
         let payload_ty = self.payload_type_of_niche(scrutinee, &val_ty, is_niche);
-        let result = self.builder.alloc_temp(MirType::Bool);
-        let merge_block = self.builder.create_block();
         let mut merged: Vec<(String, crate::LocalId, MirType)> = Vec::new();
         for alt in expand_or(pattern) {
             let test = self.emit_is_test(scrutinee, &val, &val_ty, niche, &alt)?;
@@ -1026,29 +1015,12 @@ impl<'a> MirLowerer<'a> {
                 &test, &alt, scrutinee, val.clone(), payload_ty.clone(), is_niche, &val_ty,
             );
             self.merge_alt_bindings(&snapshot, &mut merged);
-            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                dst: result,
-                rvalue: MirRValue::Use(MirOperand::Constant(MirConst::Bool(true))),
-            }));
-            self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: merge_block }));
+            self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: on_true }));
             self.builder.switch_to_block(next);
         }
-        for (_, local, ty) in &merged {
-            if *ty == MirType::Buffer {
-                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                    dst: *local,
-                    rvalue: MirRValue::Use(MirOperand::Constant(MirConst::String(String::new()))),
-                }));
-            }
-        }
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-            dst: result,
-            rvalue: MirRValue::Use(MirOperand::Constant(MirConst::Bool(false))),
-        }));
-        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: merge_block }));
-        self.builder.switch_to_block(merge_block);
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: on_false }));
         self.install_merged(&merged);
-        Ok((MirOperand::Local(result), MirType::Bool))
+        Ok(())
     }
 
     /// Lower match on strings: emit chain of string_eq comparisons.
@@ -1488,17 +1460,9 @@ impl<'a> MirLowerer<'a> {
     /// to `fail` at the first that does. Carries on in the block where they
     /// all passed. A field that only binds, or is `_`, has nothing to test.
     fn emit_field_tests(&mut self, reads: &[FieldRead], fail: BlockId) -> Result<(), LoweringError> {
-        use rask_ast::expr::PatternKind;
         for read in reads {
-            let pattern = read.pattern;
             let value = MirOperand::Local(read.local);
-            if self.field_pattern_tests_type(pattern) {
-                self.emit_field_type_test(&value, &read.ty, Some(&read.checked), pattern, fail)?;
-            } else if !matches!(&pattern.kind, PatternKind::Ident(_) | PatternKind::Wildcard) {
-                let pass = self.builder.create_block();
-                self.emit_pattern_test(&value, pattern, pass, fail)?;
-                self.builder.switch_to_block(pass);
-            }
+            self.emit_subpattern_test(&value, &read.ty, Some(&read.checked), read.pattern, fail)?;
         }
         Ok(())
     }
@@ -1517,28 +1481,32 @@ impl<'a> MirLowerer<'a> {
                         &MirOperand::Local(read.local), &read.ty, Some(&read.checked), read.pattern,
                     );
                 }
+                PatternKind::Constructor { .. } | PatternKind::Struct { .. } | PatternKind::Tuple(_) => {
+                    self.bind_pattern_fields(
+                        read.pattern, MirOperand::Local(read.local), None, false, &read.ty, Some(&read.checked),
+                    );
+                }
                 _ => {}
             }
         }
     }
 
-    /// `p is Point(x: 0, y)` on a plain struct, as a bool: read each field the
-    /// pattern names, test the ones that can fail, bind the rest. The
-    /// bindings stay in scope past the test — an `&&` chain reads them — so
-    /// on the failed path a string binding is emptied, the way
-    /// `lower_is_pattern_binding` does, and releasing it is harmless.
-    pub(super) fn lower_struct_is(
+    /// `p is Point(x: 0, y)` on a plain struct, as jumps: read each field
+    /// the pattern names, test the ones that can fail (a failure goes to
+    /// `on_false`), bind the rest and go on to `on_true`.
+    pub(super) fn lower_struct_is_to(
         &mut self,
         scrutinee: &Expr,
         val: MirOperand,
         val_ty: MirType,
         pattern: &rask_ast::expr::Pattern,
-    ) -> Result<TypedOperand, LoweringError> {
-        use rask_ast::expr::{Pattern, PatternKind};
+        on_true: BlockId,
+        on_false: BlockId,
+    ) -> Result<(), LoweringError> {
+        use rask_ast::expr::PatternKind;
         let PatternKind::Struct { fields, .. } = &pattern.kind else {
-            unreachable!("lower_struct_is takes a struct pattern");
+            unreachable!("lower_struct_is_to takes a struct pattern");
         };
-        let result = self.builder.alloc_temp(MirType::Bool);
         let mut reads: Vec<FieldRead> = Vec::new();
         for (field_name, field_pat) in fields {
             let Some((field_idx, field_layout)) = self.struct_field(&val_ty, field_name) else {
@@ -1555,38 +1523,11 @@ impl<'a> MirLowerer<'a> {
             reads.push(FieldRead { local, ty: field_ty, checked: fl.ty.clone(), pattern: field_pat });
         }
 
-        let pass_block = self.builder.create_block();
-        let fail_block = self.builder.create_block();
-        let merge_block = self.builder.create_block();
-        self.emit_field_tests(&reads, fail_block)?;
+        self.emit_field_tests(&reads, on_false)?;
         self.bind_field_reads(&reads);
-        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: pass_block }));
-
-        self.builder.switch_to_block(pass_block);
         self.retain_pattern_copies(pattern, scrutinee, &val_ty);
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-            dst: result,
-            rvalue: MirRValue::Use(MirOperand::Constant(MirConst::Int(1))),
-        }));
-        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: merge_block }));
-
-        self.builder.switch_to_block(fail_block);
-        for read in &reads {
-            if matches!(&read.pattern.kind, PatternKind::Ident(_)) && read.ty == MirType::Buffer {
-                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                    dst: read.local,
-                    rvalue: MirRValue::Use(MirOperand::Constant(MirConst::String(String::new()))),
-                }));
-            }
-        }
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-            dst: result,
-            rvalue: MirRValue::Use(MirOperand::Constant(MirConst::Int(0))),
-        }));
-        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: merge_block }));
-
-        self.builder.switch_to_block(merge_block);
-        Ok((MirOperand::Local(result), MirType::Bool))
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: on_true }));
+        Ok(())
     }
 
     /// A struct field's index and layout by name.

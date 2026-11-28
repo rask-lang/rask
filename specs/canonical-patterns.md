@@ -383,8 +383,8 @@ for item in items {
 let result = sb.build()
 
 // Searching
-if line.contains("error"): handle_error(line)
-if path.starts_with("/"): treat_as_absolute(path)
+if line.contains("error") { handle_error(line) }
+if path.starts_with("/") { treat_as_absolute(path) }
 
 // Splitting — returns sequences, to_vec() for random access
 let parts = line.split(",").to_strings()

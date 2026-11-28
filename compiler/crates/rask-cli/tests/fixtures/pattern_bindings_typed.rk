@@ -215,7 +215,8 @@ func stepped(n: i64) -> i64 {
     return evens[0]
 }
 
-// The `as q` of a guard: only the `let`'s own name was ever given a type.
+// The `as q` of a type test. The guard this came from typed only the `let`'s
+// own name and never `q`.
 enum Fault {
     Mine
 }
@@ -239,8 +240,8 @@ func spot_or(n: i64) -> Spot or Fault {
 
 func guarded(n: i64) -> i64 {
     let r = spot_or(n)
-    let p = r is Spot as q else { return -1 }
-    return q.x + p.x
+    if r is Spot as q { return q.x + q.x }
+    return -1
 }
 
 // A match on a boxed enum: the box has to come off before the variant is

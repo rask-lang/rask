@@ -232,9 +232,12 @@ pub fn rewrite_stmt(stmt: &mut Stmt, r: &mut impl Rewrite) {
             rewrite_expr(init, r);
         }
         StmtKind::MutTuple { init, .. } | StmtKind::LetTuple { init, .. } => rewrite_expr(init, r),
-        StmtKind::LetStruct { pattern, init, .. } => {
+        StmtKind::LetPattern { pattern, init, else_branch, .. } => {
             rewrite_pattern(pattern, r);
             rewrite_expr(init, r);
+            if let Some(e) = else_branch {
+                rewrite_expr(e, r);
+            }
         }
 
         StmtKind::Assign { target, value, .. } => {
@@ -357,11 +360,6 @@ pub fn rewrite_expr(expr: &mut Expr, r: &mut impl Rewrite) {
             if let Some(e) = else_branch {
                 rewrite_expr(e, r);
             }
-        }
-        ExprKind::GuardPattern { expr: scrutinee, pattern, else_branch } => {
-            rewrite_expr(scrutinee, r);
-            rewrite_pattern(pattern, r);
-            rewrite_expr(else_branch, r);
         }
         ExprKind::IsPattern { expr: scrutinee, pattern } => {
             rewrite_expr(scrutinee, r);

@@ -626,6 +626,60 @@ fn er43_top_level_wildcard_on_linear_enum_errors() {
 }
 
 #[test]
+fn er43_bare_variant_on_linear_payload_errors() {
+    // ER43: a variant's bare name tests the tag and names no payload, so a
+    // linear one is dropped. Ownership took the bare `ReadFailed` for a
+    // binding called `ReadFailed`, and the qualified one for nothing at all.
+    let path = tmp_rk(r#"
+        @resource
+        struct File { path: string }
+        extend File { func close(take self) {} }
+
+        enum FileError {
+            ReadFailed(string, File),
+            Other,
+        }
+
+        func bare(take e: FileError) {
+            match e {
+                ReadFailed => {},
+                Other => {}
+            }
+        }
+
+        func qualified(take e: FileError) {
+            match e {
+                FileError.ReadFailed => {},
+                FileError.Other => {}
+            }
+        }
+
+        func tested(take e: FileError) {
+            if e is ReadFailed { }
+            match e {
+                ReadFailed(_, f) => f.close(),
+                Other => {}
+            }
+        }
+
+        func main() {}
+    "#);
+    let output = check_file(path.to_str().unwrap(), &default_config());
+    let dropped: Vec<_> = output.diagnostics.iter().filter(|d| {
+        d.code.as_ref().map_or(false, |c| c.0 == "E0816") && d.message.contains("`ReadFailed`")
+    }).collect();
+    assert_eq!(dropped.len(), 2,
+        "expected E0816 for the bare and the qualified arm, not for the `is` test, got: {:?}",
+        output.diagnostics.iter().map(|d| (&d.code, &d.message)).collect::<Vec<_>>()
+    );
+    assert!(!output.diagnostics.iter().any(|d| d.message.contains("resource `ReadFailed`") || d.message.contains("resource `Other`")),
+        "a variant's name is not a binding: {:?}",
+        output.diagnostics.iter().map(|d| (&d.code, &d.message)).collect::<Vec<_>>()
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
 fn er43_field_wildcard_on_linear_payload_errors() {
     // ER43: a `_` inside a constructor pattern at a linear field position
     // drops that payload silently. Compile error.
@@ -641,7 +695,7 @@ fn er43_field_wildcard_on_linear_payload_errors() {
 
         func bad(take e: FileError) {
             match e {
-                FileError.ReadFailed(_, _) => {},
+                FileError.ReadFailed(_, why) => {},
                 FileError.Other => {}
             }
         }

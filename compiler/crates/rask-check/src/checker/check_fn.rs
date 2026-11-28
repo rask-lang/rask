@@ -710,8 +710,10 @@ impl TypeChecker {
             | SK::Mut { init: e, .. }
             | SK::LetTuple { init: e, .. }
             | SK::MutTuple { init: e, .. }
-            | SK::LetStruct { init: e, .. }
             | SK::Assign { value: e, .. } => Self::expr_returns_a_value(e),
+            SK::LetPattern { init, else_branch, .. } => {
+                Self::expr_returns_a_value(init) || else_branch.as_deref().is_some_and(Self::expr_returns_a_value)
+            }
             SK::Break { value, .. } => value.as_ref().is_some_and(Self::expr_returns_a_value),
             SK::While { cond, body, .. } => {
                 Self::expr_returns_a_value(cond) || Self::body_returns_a_value(body)
@@ -760,9 +762,6 @@ impl TypeChecker {
             }
             EK::NullCoalesce { value, default } => {
                 Self::expr_returns_a_value(value) || Self::expr_returns_a_value(default)
-            }
-            EK::GuardPattern { expr: inner, else_branch, .. } => {
-                Self::expr_returns_a_value(inner) || Self::expr_returns_a_value(else_branch)
             }
             _ => false,
         }
@@ -973,6 +972,10 @@ impl TypeChecker {
             StmtKind::LetTuple { init, .. } | StmtKind::MutTuple { init, .. } => {
                 Self::expr_writes_self(init, conservative)
             }
+            StmtKind::LetPattern { init, else_branch, .. } => {
+                Self::expr_writes_self(init, conservative)
+                    || else_branch.as_ref().is_some_and(|e| Self::expr_writes_self(e, conservative))
+            }
             StmtKind::Return(Some(e)) => Self::expr_writes_self(e, conservative),
             StmtKind::Break { value: Some(v), .. } => Self::expr_writes_self(v, conservative),
             StmtKind::While { body, .. } | StmtKind::For { body, .. }
@@ -1014,9 +1017,6 @@ impl TypeChecker {
             | ExprKind::IfLet { then_branch, else_branch, .. } => {
                 Self::expr_writes_self(then_branch, conservative)
                     || else_branch.as_ref().map_or(false, |e| Self::expr_writes_self(e, conservative))
-            }
-            ExprKind::GuardPattern { else_branch, .. } => {
-                Self::expr_writes_self(else_branch, conservative)
             }
             ExprKind::Match { arms, .. } => {
                 arms.iter().any(|arm| Self::expr_writes_self(&arm.body, conservative))

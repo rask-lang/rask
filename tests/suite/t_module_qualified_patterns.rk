@@ -20,7 +20,7 @@ func describe(e: bits.BinaryParseError) -> string {
 
 func aliased(e: bt.BinaryParseError) -> string {
     match e {
-        bt.BinaryParseError.UnexpectedEnd(expected: want, ..) => return "want {want}"
+        bt.BinaryParseError.UnexpectedEnd(expected as want, ..) => return "want {want}"
         bt.BinaryParseError.InvalidData(message) => return message
     }
 }

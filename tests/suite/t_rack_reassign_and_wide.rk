@@ -42,7 +42,7 @@ func link_id(l: Link<Leaf>?) -> i32 {
 
 func note_id(n: Note) -> i32 {
     match n {
-        Note.Plain(_) => return -2,
+        Note.Plain => return -2,
         Note.Linked(_, l) => return link_id(l),
     }
 }

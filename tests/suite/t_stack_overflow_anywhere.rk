@@ -28,7 +28,7 @@ func alloc_down(n: i64) -> i64 {
 func panicked(r: i64 or JoinError) -> bool {
     match r {
         i64 as _ => { return false },
-        JoinError.Panicked(_) => { return true },
+        JoinError.Panicked => { return true },
         JoinError as _ => { return false },
     }
 }

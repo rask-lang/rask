@@ -388,14 +388,14 @@ test "chained catch — all succeed" {
 
 test "chained catch — first fails" {
     let result = chained(-1)
-    assert result is ChainError.Step1(_)
+    assert result is ChainError.Step1
 }
 
 test "chained catch — second fails" {
     let result = chained(99)
     let result2 = chained(200)
     assert result is i32
-    assert result2 is ChainError.Step2(_)
+    assert result2 is ChainError.Step2
 }
 
 // ─── HTTP types (Response constructors, Request.path) ───────────
@@ -441,7 +441,7 @@ test "fs write and read round-trip" {
     let path = "/tmp/rask_test_litmus.txt"
     let content = "hello from rask\nsecond line\n"
     fs.write_text(path, content)!
-    let read_back = fs.read_text(path) is string as data else {
+    let read_back = fs.read_text(path) catch _ => {
         assert false, "failed to read back"
         return
     }

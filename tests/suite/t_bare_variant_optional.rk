@@ -1,0 +1,45 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A bare variant tested against an optional enum names a variant of that
+// enum: `o is Idle` on a `State?` is `o is State.Idle`, and it is false for
+// `none`. It used to bind `Idle` as a new name on the interpreter, which
+// matched everything.
+
+enum State {
+    Idle
+    Busy(i64)
+}
+
+func get(n: i64) -> State? {
+    if n == 0 { return none }
+    if n == 1 { return State.Idle }
+    return State.Busy(n)
+}
+
+func tested(n: i64) -> string {
+    let o = get(n)
+    mut out = ""
+    if o is Idle { out = "{out}i" }
+    if o is State.Idle { out = "{out}I" }
+    if o is Busy { out = "{out}b" }
+    return out
+}
+
+func busy(n: i64) -> i64 {
+    let o = get(n)
+    mut k = 0
+    if o is Busy(x) { k = x }
+    return k
+}
+
+test "a bare unit variant on an optional tests the enum" {
+    assert tested(0) == ""
+    assert tested(1) == "iI"
+    assert tested(2) == "b"
+}
+
+test "a bare payload variant on an optional binds the payload" {
+    assert busy(0) == 0
+    assert busy(1) == 0
+    assert busy(4) == 4
+}

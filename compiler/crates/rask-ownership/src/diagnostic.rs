@@ -1797,9 +1797,32 @@ impl ToDiagnostic for crate::OwnershipError {
                 .with_why("for-mutate borrows elements in place — taking ownership would leave a hole in the collection")
             }
 
+            ResourceBoundMidChain { name, type_name, next_test } => {
+                Diagnostic::error(format!("`{}` holds a `{}` that leaks if a later test fails", name, type_name))
+                    .with_code("E0858")
+                    .with_primary(self.span, format!("`{}` is bound here", name))
+                    .with_secondary(*next_test, format!("when this is false, nothing can reach `{}` to consume it", name))
+                    .with_help(format!(
+                        "bind `{n}` in a test of its own and put the rest inside, where both outcomes can consume it: `if … as {n} {{ if … {{ … }} else {{ … }} }}`",
+                        n = name
+                    ))
+                    .with_why("a resource is consumed exactly once on every path, and the else of a chain can't see what the chain bound [ctrl.flow/CF35, CF37]")
+            }
+
+            LinearWildcardDiscard { position: crate::LinearDiscardPosition::Unnamed { variant, index, arity }, type_name } => {
+                let fields: Vec<&str> = (0..*arity).map(|i| if i == *index { "v" } else { "_" }).collect();
+                let fix = format!("{}({})", variant, fields.join(", "));
+                Diagnostic::error(format!("`{}` would silently drop the linear `{}` it carries", variant, type_name))
+                    .with_code("E0816")
+                    .with_primary(self.span, "a bare variant name tests the tag and leaves the payload unnamed")
+                    .with_help(format!("name the payload and consume it: `{}`", fix))
+                    .with_why("linear values must be consumed exactly once — a payload nobody names would leak [ER42/ER43]")
+            }
+
             LinearWildcardDiscard { position, type_name } => {
                 use crate::LinearDiscardPosition;
                 let (label, help) = match position {
+                    LinearDiscardPosition::Unnamed { .. } => unreachable!("handled above"),
                     LinearDiscardPosition::Scrutinee => (
                         format!("`_` would silently drop linear value of type `{}`", type_name),
                         "name the value with `name` (or `Type as name`) and consume it on every arm".to_string(),

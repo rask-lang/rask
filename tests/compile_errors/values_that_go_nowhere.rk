@@ -16,7 +16,7 @@ func g(x: i32) -> i32 {
 func main() {
     let ready = false
     // ERROR: no `else`, so the `if` has nothing to be when `ready` is false [E0947]
-    let a = if ready: 1
+    let a = if ready { 1 }
     let p = Point(x: 1)
     // ERROR: `?.` is for optionals [E0369]
     let v: i32? = p?.x
@@ -30,7 +30,7 @@ func main() {
     discard items
 
     // FIX
-    let b = if ready: 1 else: 0
+    let b = if ready { 1 } else { 0 }
     let w: i32? = p.x
     println("{a} {v ?? 0} {z.len()} {n} {b} {w ?? 0}")
 }

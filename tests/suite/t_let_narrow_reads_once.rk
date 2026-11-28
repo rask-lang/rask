@@ -27,9 +27,7 @@ func listing(n: i64) -> Vec<string> or ListError {
 
 func count_sst(n: i64) -> i64 {
     mut found = 0
-    let files = listing(n) is Vec<string> as f else {
-        return -1
-    }
+    let files = listing(n) catch _ => return -1
     for file in files {
         if file.ends_with(".sst") {
             found += 1

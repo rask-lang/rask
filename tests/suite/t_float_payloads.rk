@@ -46,7 +46,7 @@ func f32_optional() -> f32? {
 
 test "type.optionals — an f64 payload survives an optional local" {
     let a: f64? = 2.5
-    assert a is f64
+    assert a?
     if a? as v {
         assert v == 2.5
     } else {

@@ -881,7 +881,7 @@ func next_held(held: Shared<Vec<u8>, Local>, at: Shared<usize, Local>) -> u8? {
             b = h[from]
         }
     }
-    if b is u8 {
+    if b? {
         with at.write() as a {
             a = from + 1
         }

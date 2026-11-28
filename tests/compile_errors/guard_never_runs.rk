@@ -1,0 +1,47 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: a guard whose `else` can't run, and a `let` that names a variant
+// Rejects: `let n = find() else`, `let Point(x, y) = p else` (E0225), and
+// `let Dot = s` with no `else` (E0987)
+//
+// A lowercase name binds any value and a plain struct pattern covers every
+// value of its struct, so the else is dead code. On an optional or a result
+// the guard that was meant is `??` or `catch`. `let n = … else` used to be a
+// parse error that only said a newline was expected.
+//
+// A capital never binds (type.enums/PM8), so `let Dot = s` is the pattern
+// `Dot`, which a `Circle` gets past. It used to bind a variable named `Dot`.
+
+enum Shape {
+    Circle(i64)
+    Dot
+}
+
+struct Point {
+    x: i64
+    y: i64
+}
+
+func find(ok: bool) -> i64? {
+    if ok { return 3 }
+    return none
+}
+
+func lowercase_name() -> i64 {
+    // ERROR: E0225 `n` takes the `none` too; write `let n = find(true) ?? return 0`
+    let n = find(true) else { return 0 }
+    return n
+}
+
+func whole_struct(p: Point) -> i64 {
+    // ERROR: E0225 every `Point` matches
+    let Point(x, y) = p else { return 0 }
+    return x + y
+}
+
+func variant_without_else(s: Shape) -> i64 {
+    // ERROR: E0987 `Dot` is a pattern, and a `Circle` gets past it
+    let Dot = s
+    return 0
+}
+
+func main() {}

@@ -57,7 +57,7 @@ enum Event {
 }
 ```
 
-**Pattern matching follows the variant form.** Inside `match`, the compiler infers the enum type from the subject, so variant names are unqualified. Qualified names (`Token.Plus`) also work but are unnecessary when the type is known from context. When a struct shares a bare variant's name, the matched value decides: `Pair(a, b)` takes a `Pair` struct apart, and the `Pair` variant of the value's enum otherwise.
+**Pattern matching follows the variant form.** Inside `match`, the compiler infers the enum type from the subject, so variant names are unqualified. On a `T or E` or `T?` a bare variant is looked up in the enums the value can hold: `Gone` on a `State or Fail` is `Fail.Gone`. Qualified names (`Token.Plus`) also work, and are needed when two of those enums have the variant. When a struct shares a bare variant's name, the matched value decides: `Pair(a, b)` takes a `Pair` struct apart, and the `Pair` variant of the value's enum otherwise.
 
 ```rask
 match token {
@@ -108,6 +108,7 @@ One keyword: `match`. The compiler infers binding modes from usage.
 | **PM3: Pattern guards** | Guarded variant must have unguarded fallback arm or wildcard after |
 | **PM4: Or-patterns** | Multiple patterns share an arm with `\|`; all must bind same names with compatible types |
 | **PM7: No dead arms** | An arm after a catch-all (`_`, or a bare name that binds), or a second unguarded test of the same variant, is a compile error |
+| **PM8: Capitals never bind** | A capitalised bare name in a pattern tests a variant or a type. One that names neither is an error, never a binding. A bare variant is looked up in the value's enum, and on a `T or E` or `T?` in the enums the value can hold; when two have it, the pattern names the enum: `IoError.Missing` |
 
 **Binding mode summary:**
 
@@ -154,10 +155,16 @@ match msg {                         // IDE ghost: [takes]
 | Missing variant, no wildcard | Error: "non-exhaustive match, missing `VariantName`" |
 | Wildcard `_` present | Valid |
 | Unreachable pattern | Error: "unreachable match arm" (PM7) |
+| Literal or nested pattern in a payload | Covers only what it matches: `Retry(0)` leaves `Retry(_)` missing |
+| Struct, tuple or `bool` scrutinee | Taken apart field by field: `Point(x: 0, y)` leaves `Point(x: _, y: _)` missing; `(true, _)` and `(false, true)` leave `(false, false)` |
+| `let` pattern without `else` | Held to the same check: `let Circle(r) = s` on a `Shape` with `Square` is an error; add `else` (`ctrl.flow/CF13`) |
+| Integer, float, string, char | No set of arms lists every value, so a wildcard is required |
 
-Compiler reports which specific variants are unhandled.
+Compiler reports which specific variants are unhandled, with a value it misses for each.
 
-**PM7 is an error, not a warning.** A bare name that isn't a variant binds, so a misspelt variant (`Sqare => …`) is a catch-all and every arm below it never runs. As a warning, that scrolls past in a build log. An arm that can never run has no legitimate use, so I'd rather it stop the build; the cost is moving a temporary `_ =>` while editing.
+**PM8 closes the hole PM7 guards.** A misspelt variant (`Sqare => …`) used to bind, so it was a catch-all and every arm below it never ran. In a field it was worse: `let Job(mode: Fsat, n) = j else { … }` always matched and the else never ran. A binding starts lowercase, so a capitalised name that names nothing is a typo, and it's reported as one with the closest variant.
+
+**PM7 is an error, not a warning.** A bare lowercase name binds, so `shape => …` is a catch-all and every arm below it never runs. As a warning, that scrolls past in a build log. An arm that can never run has no legitimate use, so I'd rather it stop the build; the cost is moving a temporary `_ =>` while editing.
 
 ## Pattern Guards
 
@@ -174,7 +181,7 @@ match response {
 | Guard Condition | Enforcement |
 |-----------------|-------------|
 | Guard on variant V | Must have unguarded V arm OR wildcard after |
-| No catch-all for guarded variant | Error: "pattern `V(_)` may not match when guard fails" |
+| No catch-all for guarded variant | Error: "pattern `V` may not match when guard fails" |
 
 ```rask
 // ❌ INVALID: guard may fail with no fallback
@@ -238,12 +245,12 @@ match file_result {                      // IDE ghost: [consumes]
     Failed(e) => return e
 }
 
-// ❌ INVALID: wildcard discards linear File
+// ❌ INVALID: the bare variant drops the linear File
 match file_result {
-    Opened(_) => {},
+    Opened => {},
     Failed(e) => {}
 }
-// Error: "wildcard pattern discards linear resource `File`"
+// Error: "`Opened` would silently drop the linear `File` it carries"
 
 // ❌ INVALID: read-only usage of linear resource
 match file_result {
@@ -267,15 +274,15 @@ match file_result {
 ```rask
 // ✅ VALID: guard with linear resource — both arms consume
 match file_result {
-    Opened(file) if file.size() > 1000: process(file),  // Large files: process
+    Opened(file) if file.size() > 1000 => process(file), // Large files: process
     Opened(file) => try file.close(),                    // Small files: still must close
     Failed(e) => log(e)
 }
 
 // ❌ INVALID: wildcard catch-all discards linear resource
 match file_result {
-    Opened(file) if file.size() > 1000: process(file),
-    Opened(_) => {},                                     // Error: discards linear File
+    Opened(file) if file.size() > 1000 => process(file),
+    Opened => {},                                        // Error: drops the linear File
     Failed(e) => log(e)
 }
 ```
@@ -329,7 +336,7 @@ extend Maybe<T> {
     // Default: borrows self (compiler infers read vs mutate)
     func has_value(self) -> bool {
         match self {               // IDE ghost: [reads] (inferred from wildcard-only usage)
-            Present(_) => true,
+            Present => true,
             Missing => false
         }
     }
@@ -574,7 +581,7 @@ extend Connection {
             Idle => Connecting(resolve_address()),
             Connecting(addr) => {
                 let attempt = try_connect(addr)
-                if attempt? as sock { Connected(sock) } else as e { Failed(e) }
+                if attempt is Socket as sock { Connected(sock) } else as e { Failed(e) }
             },
             Connected(sock) => {
                 sock.send(heartbeat())!
@@ -586,7 +593,7 @@ extend Connection {
 
     func is_connected(self) -> bool {
         match self {                    // IDE ghost: [reads]
-            Connected(_) => true,
+            Connected => true,
             _ => false
         }
     }

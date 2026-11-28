@@ -46,7 +46,7 @@ test "type.enums — a fieldless variant takes written type arguments" {
     let e = Holder<i64>.Empty
     assert held(e) == 0 - 1
     match e {
-        Holder.Full(_) => assert false
+        Holder.Full => assert false
         Holder.Empty => assert true
     }
 }
@@ -55,14 +55,14 @@ test "type.enums — two parameters, and the one that names neither" {
     let l = Two<i64, string>.Left(3)
     match l {
         Two.Left(x) => assert x == 3
-        Two.Right(_) => assert false
+        Two.Right => assert false
         Two.Neither => assert false
     }
 
     let n = Two<i64, string>.Neither
     match n {
-        Two.Left(_) => assert false
-        Two.Right(_) => assert false
+        Two.Left => assert false
+        Two.Right => assert false
         Two.Neither => assert true
     }
 }

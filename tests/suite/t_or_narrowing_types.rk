@@ -85,7 +85,7 @@ test "or-narrowing — the error branch still wins when it should" {
 
 test "or-narrowing — an optional payload of a nominal type" {
     let maybe: Duration? = Duration.seconds(2)
-    if maybe is Duration as span {
+    if maybe? as span {
         assert span.as_seconds() == 2
     } else {
         assert(false)

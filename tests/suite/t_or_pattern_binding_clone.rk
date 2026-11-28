@@ -1,0 +1,59 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A binding from an or-pattern, `A(v) | B(v)`, comes from whichever
+// alternative matched. Cloning it makes a copy, even though `v` itself
+// is never read again: the value still belongs to the scrutinee. Native
+// used to turn `v.clone()` into a move here, so the "copy" and the
+// original were one Vec and both got freed.
+
+enum Msg {
+    A(Vec<string>)
+    B(Vec<string>)
+    Quit
+}
+
+func first(m: Msg) -> Vec<string> {
+    if m is Msg.A(v) | Msg.B(v) {
+        return v.clone()
+    }
+    return []
+}
+
+func size(m: Msg) -> usize {
+    let Msg.A(v) | Msg.B(v) = m else { return 0 }
+    return v.len()
+}
+
+test "a cloned or-pattern binding is a copy of a parameter's payload" {
+    let m = Msg.A(["a string long enough to live on the heap"])
+    mut x = first(m)
+    x.push("pushed onto the copy, also long enough for the heap")
+    assert x.len() == 2
+    assert first(m).len() == 1
+}
+
+test "a cloned or-pattern binding is a copy of a loop item's payload" {
+    let msgs: Vec<Msg> = [
+        Msg.A(["first string, long enough to live on the heap"]),
+        Msg.B(["second string, long enough to live on the heap"]),
+    ]
+    mut out: Vec<Vec<string>> = []
+    for m in msgs {
+        if m is Msg.A(v) | Msg.B(v) {
+            out.push(v.clone())
+        }
+    }
+    out[0].push("pushed onto the copy, also long enough for the heap")
+    mut lens = ""
+    for m in msgs {
+        if m is Msg.A(v) | Msg.B(v) { lens = "{lens}{v.len()}" }
+    }
+    assert lens == "11"
+    assert out[0].len() == 2
+}
+
+test "let else takes an or-pattern" {
+    assert size(Msg.A(["x", "y"])) == 2
+    assert size(Msg.B(["z"])) == 1
+    assert size(Msg.Quit) == 0
+}

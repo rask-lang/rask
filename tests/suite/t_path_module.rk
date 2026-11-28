@@ -71,7 +71,7 @@ test "std.path — the pieces of a path" {
 test "std.path — parent" {
     let f = p("/a/b/c.txt")
     let up = f.parent()
-    if up is Path as v {
+    if up? as v {
         assert v.as_string() == "/a/b"
     } else {
         assert "parent was none" == ""

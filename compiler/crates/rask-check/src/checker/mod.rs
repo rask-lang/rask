@@ -42,7 +42,7 @@ pub use type_defs::{CContext, Callee, ConformanceCall, LiteralConversion, Litera
 pub use type_table::{primitive_spelling, CustomDecode, CustomEncode, TaskBound, TypeTable, WireHook};
 pub use operators::{operator_interface, OperatorTarget};
 pub use inference::{TypeConstraint, InferenceContext};
-pub use errors::{ArgProblem, WireHookProblem, TypeError, TypeArgSite, MapKeyFix, InvalidCastClass, IndexErrorKind, InterfaceBoundContext, KeptBy};
+pub use errors::{ArgProblem, WireHookProblem, TypeError, TypeArgSite, MapKeyFix, InvalidCastClass, IndexErrorKind, InterfaceBoundContext, KeptBy, TwoBranch};
 pub use parse_type::resolve_type_expr;
 
 pub use generics::{bind_header_pattern, bind_header_patterns};
@@ -410,6 +410,10 @@ pub struct TypeChecker {
     /// Whether we're inferring an expression in statement position (value discarded).
     /// Suppresses branch-type agreement for if/else and match.
     pub(super) in_stmt_expr: bool,
+    /// Where the next expression's `is`/`? as` bindings can be read. Set by
+    /// the parent just before inferring a condition operand; every other
+    /// expression starts at "nowhere".
+    pub(super) binding_reach: BindingReach,
     /// GC1/GC2: Pre-created type vars for functions with inferred params/return.
     /// Key is function name, value is (param_type_vars, return_type_var).
     pub(super) inferred_fn_types: HashMap<String, (Vec<(String, Type)>, Type)>,
@@ -783,6 +787,7 @@ impl TypeChecker {
             inferred_fn_types: HashMap::new(),
             in_assign_target: false,
             in_stmt_expr: false,
+            binding_reach: BindingReach::Nowhere(DeadBinding::NotACondition),
             interface_coercions: HashMap::new(),
             erased_try_errors: HashMap::new(),
             arm_widenings: HashMap::new(),
@@ -1744,3 +1749,15 @@ pub fn typecheck(
     typed.attach_derived(decls);
     (typed, errors)
 }
+
+/// Where the names an `is` or `? as` test binds can be read.
+#[derive(Clone, Copy, Debug)]
+pub(super) enum BindingReach {
+    /// The rest of the `&&` chain, and the branch the chain guards: the
+    /// then-branch of an `if`, a `while` body, the arm under a match guard.
+    Onward,
+    /// Nowhere, for the reason given.
+    Nowhere(DeadBinding),
+}
+
+pub use errors::DeadBinding;

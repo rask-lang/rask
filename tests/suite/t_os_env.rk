@@ -28,7 +28,7 @@ test "std.os — setting, reading and removing a variable" {
 test "std.os — an empty value is set, not unset" {
     os.set_env("RASK_TEST_ENV_EMPTY", "")
     assert os.env("RASK_TEST_ENV_EMPTY") ?? "-" == ""
-    assert(!(os.env("RASK_TEST_ENV_EMPTY") is none))
+    assert(os.env("RASK_TEST_ENV_EMPTY")?)
     os.remove_env("RASK_TEST_ENV_EMPTY")
 }
 

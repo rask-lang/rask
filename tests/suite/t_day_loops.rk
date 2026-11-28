@@ -19,13 +19,13 @@ test "while counts down" {
 
 test "while with an inline body" {
     mut n = 0
-    while n < 3: n = n + 1
+    while n < 3 { n = n + 1 }
     assert n == 3
 }
 
 test "a while whose condition starts false never runs" {
     mut hit = 0
-    while false: hit = 1
+    while false { hit = 1 }
     assert hit == 0
 }
 
@@ -75,7 +75,7 @@ test "for over a Vec" {
 test "break leaves the loop early" {
     mut last = 0
     for i in 0..100 {
-        if i == 5: break
+        if i == 5 { break }
         last = i
     }
     assert last == 4
@@ -84,7 +84,7 @@ test "break leaves the loop early" {
 test "continue skips the rest of the body" {
     mut total = 0
     for i in 0..10 {
-        if i % 2 == 1: continue
+        if i % 2 == 1 { continue }
         total = total + i
     }
     assert total == 20
@@ -94,7 +94,7 @@ test "loop with break value" {
     mut n = 0
     let found = loop {
         n = n + 1
-        if n * n > 50: break n
+        if n * n > 50 { break n }
     }
     assert found == 8
 }
@@ -104,7 +104,7 @@ test "a labelled break leaves the outer loop" {
     outer: for i in 0..5 {
         for j in 0..5 {
             hits = hits + 1
-            if i == 2 && j == 2: break outer
+            if i == 2 && j == 2 { break outer }
         }
     }
     assert hits == 13
@@ -114,7 +114,7 @@ test "nested loops without a label" {
     mut pairs = 0
     for i in 0..3 {
         for j in 0..3 {
-            if j > i: continue
+            if j > i { continue }
             pairs = pairs + 1
         }
     }

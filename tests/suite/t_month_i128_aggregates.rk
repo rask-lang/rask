@@ -136,7 +136,7 @@ test "type.primitives — an i128 enum payload" {
     let a = Amount9.Wide(18446744073709551618)
     match a {
         Amount9.Wide(v) => assert v == 18446744073709551618
-        Amount9.Narrow(_) => assert false
+        Amount9.Narrow => assert false
     }
 }
 

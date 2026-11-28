@@ -22,6 +22,28 @@ use rask_ast::ty::ParamMode;
 /// compared, never stored or looked up, so it needs no id of its own.
 static WILDCARD: Pattern = Pattern { id: rask_ast::NodeId::DUMMY, kind: PatternKind::Wildcard, span: Span::new(0, 0) };
 
+/// How one pattern bears on one branch of a `T or E` column.
+enum LeafTest {
+    Whole,
+    Inside,
+    Elsewhere,
+}
+
+/// What a matched value splits into for the coverage check.
+enum Columns {
+    Tuple(Vec<Type>),
+    /// The struct's name and its fields in declared order.
+    Struct(String, Vec<(String, Type)>),
+    /// Each variant and its payload.
+    Enum(Vec<(String, Vec<Type>)>),
+    Bool,
+    /// The branches of a `T or E` in a field or payload: a type test picks
+    /// one, a variant pattern tests inside an enum branch.
+    Leaves(Vec<Type>),
+    /// Values that can't be listed.
+    Opaque,
+}
+
 impl TypeChecker {
     /// Walk a block body and return the type it produces.
     ///
@@ -552,13 +574,33 @@ impl TypeChecker {
             self.types.stdlib_mode = false;
             return ty;
         }
-        let ty = self.infer_expr_kind(expr);
+        let reach = std::mem::replace(
+            &mut self.binding_reach,
+            super::BindingReach::Nowhere(super::DeadBinding::NotACondition),
+        );
+        let ty = self.infer_expr_kind(expr, reach);
         self.node_types.insert(expr.id, ty.clone());
         self.note_node_origin(expr);
         ty
     }
 
-    fn infer_expr_kind(&mut self, expr: &Expr) -> Type {
+    /// Infer a condition operand whose `is`/`? as` bindings reach `reach`.
+    pub(super) fn infer_cond(&mut self, expr: &Expr, reach: super::BindingReach) -> Type {
+        self.binding_reach = reach;
+        self.infer_expr(expr)
+    }
+
+    /// Report an `is`/`? as` binding that nothing can read. The names are
+    /// defined all the same, so a read of one isn't reported twice.
+    fn note_dead_binding(&mut self, reach: super::BindingReach, names: Vec<String>, span: Span) {
+        if let super::BindingReach::Nowhere(why) = reach {
+            if !names.is_empty() {
+                self.errors.push(TypeError::BindingReachesNothing { names, why, span });
+            }
+        }
+    }
+
+    fn infer_expr_kind(&mut self, expr: &Expr, reach: super::BindingReach) -> Type {
         let ty = match &expr.kind {
             // Literals
             ExprKind::Int(value, suffix) => {
@@ -684,12 +726,40 @@ impl TypeChecker {
                 }
             }
 
+            // `&&` carries its left side's bindings to its right side and, when
+            // the whole chain is a condition, on to the branch it guards. `||`
+            // carries nothing: the side that held may not be the one that bound.
+            ExprKind::Binary { op: BinOp::And, left, right } => {
+                use super::BindingReach::*;
+                let own_scope = matches!(reach, Nowhere(_));
+                if own_scope {
+                    self.push_scope();
+                }
+                let left_ty = self.infer_cond(left, Onward);
+                let right_ty = self.infer_cond(right, reach);
+                if own_scope {
+                    self.pop_scope();
+                }
+                self.logical_operands(left_ty, right_ty, expr.span)
+            }
+            ExprKind::Binary { op: BinOp::Or, left, right } => {
+                let dead = super::BindingReach::Nowhere(super::DeadBinding::EitherSideOfOr);
+                let left_ty = self.infer_cond(left, dead);
+                let right_ty = self.infer_cond(right, dead);
+                self.logical_operands(left_ty, right_ty, expr.span)
+            }
             ExprKind::Binary { op, left, right } => {
                 self.check_binary(*op, left, right, expr.span)
             }
 
             ExprKind::Unary { op, operand } => {
-                let operand_ty = self.infer_expr(operand);
+                let operand_ty = if matches!(op, rask_ast::expr::UnaryOp::Not) {
+                    let ty = self.infer_cond(operand, super::BindingReach::Nowhere(super::DeadBinding::UnderNot));
+                    self.reject_negated_absence_test(operand, expr.span);
+                    ty
+                } else {
+                    self.infer_expr(operand)
+                };
                 match op {
                     // `&x` is `x`'s address, a `*T`. Only storage has one: a
                     // variable, or a field or element inside one.
@@ -961,62 +1031,23 @@ impl TypeChecker {
                 cond,
                 then_branch,
                 else_branch,
-                else_binding,
             } => {
                 // Capture and clear the statement-position flag so it doesn't
                 // leak into nested expressions (e.g. const x = if ... { ... }).
                 let is_stmt = self.in_stmt_expr;
                 self.in_stmt_expr = false;
 
-                let cond_ty = self.infer_expr(cond);
+                // The condition's bindings reach the then-branch and no
+                // further: the else runs when a test failed.
+                self.push_scope();
+                let cond_ty = self.infer_cond(cond, super::BindingReach::Onward);
                 self.ctx
                     .add_constraint(TypeConstraint::Equal(Type::Bool, cond_ty, expr.span));
-
-                // OPT19: `if x? as v` binds the payload in the then-branch.
-                // The test itself narrows nothing — there is no flow typing.
-                let presence_binding = self.extract_presence_binding(cond);
-
-                if let Some((ref name, ref payload_ty, _)) = presence_binding {
-                    self.push_scope();
-                    self.define_local_bound(
-                        name.clone(),
-                        payload_ty.clone(),
-                        super::BoundFrom::Payload,
-                    );
-                }
                 let then_ty = self.infer_expr(then_branch);
-                if presence_binding.is_some() {
-                    self.pop_scope();
-                }
-
-                // ER22: `else as e` needs a scrutinee with a branch to bind.
-                if let Some(name) = else_binding {
-                    let has_err = matches!(presence_binding, Some((_, _, Some(_))));
-                    if !has_err {
-                        self.errors.push(TypeError::ElseBindingNotResult {
-                            name: name.clone(),
-                            span: expr.span,
-                        });
-                    }
-                }
+                self.pop_scope();
 
                 if let Some(else_branch) = else_branch {
-                    // ER22: `else as e` binds the complement. A binding, not a
-                    // narrow — the scrutinee's own type never changes.
-                    let else_narrow = match (else_binding, &presence_binding) {
-                        (Some(e_name), Some((_, _, Some(err_ty)))) => {
-                            Some((e_name.clone(), err_ty.clone()))
-                        }
-                        _ => None,
-                    };
-                    if let Some((ref name, ref err_ty)) = else_narrow {
-                        self.push_scope();
-                        self.define_local(name.clone(), err_ty.clone());
-                    }
                     let else_ty = self.infer_expr(else_branch);
-                    if else_narrow.is_some() {
-                        self.pop_scope();
-                    }
                     let resolved_then = self.ctx.apply(&then_ty);
                     let resolved_else = self.ctx.apply(&else_ty);
                     // Never coerces to any type (CF32) — don't constrain
@@ -1036,7 +1067,7 @@ impl TypeChecker {
                     }
                 } else {
                     // CF7: with no `else`, the `if` is `void`, so a value from
-                    // the then-branch has nowhere to go. `let a = if c: 1`
+                    // the then-branch has nowhere to go. `let a = if c { 1 }`
                     // printed `()` on the interpreter and 0 natively.
                     if !is_stmt {
                         let then_resolved = self.ctx.apply(&then_ty);
@@ -1064,6 +1095,7 @@ impl TypeChecker {
                 self.push_scope();
                 let bindings = self.check_pattern(pattern, &value_ty, expr.span);
                 self.reject_irrefutable_test(pattern, &bindings, &value_ty, expr.span);
+                self.reject_type_test_on_optional(value, pattern, &value_ty, false);
                 for (name, ty) in bindings {
                     if !name.is_empty() {
                         self.define_local_bound(name, ty, super::BoundFrom::Payload);
@@ -1100,70 +1132,17 @@ impl TypeChecker {
                 then_ty
             }
 
-            ExprKind::GuardPattern {
-                expr: value,
-                pattern,
-                else_branch,
-            } => {
-                let value_ty = self.infer_expr(value);
-
-                // Check that else branch diverges (returns Never)
-                let else_ty = self.infer_expr(else_branch);
-                let resolved_else = self.ctx.apply(&else_ty);
-                if !matches!(resolved_else, Type::Never) {
-                    self.errors.push(TypeError::GuardElseMustDiverge {
-                        found: resolved_else,
-                        span: else_branch.span,
-                    });
-                }
-
-                // A bare type test is checked as the `as` form it means, so
-                // its binding carries the narrowed type.
-                let as_bound = self.guard_type_test_as_binding(pattern, &value_ty);
-                let bindings =
-                    self.check_pattern(as_bound.as_ref().unwrap_or(pattern), &value_ty, expr.span);
-                self.reject_irrefutable_test(pattern, &bindings, &value_ty, expr.span);
-                // The pattern's own names live past the guard, like the `let`'s:
-                // `let p = r is Point as q else { … }` binds both. Only the
-                // `let`'s name was ever given a type — the statement handler
-                // defines that one — so `q` reached the rest of the function as
-                // a name the resolver knew and the checker had nothing for, and
-                // `q.x` was an open type all the way to MIR (#1026).
-                for (name, ty) in &bindings {
-                    self.define_local_bound(name.clone(), ty.clone(), super::BoundFrom::Payload);
-                }
-
-                // For a guard pattern like `const v = opt is Some else { return }`,
-                // the expression itself evaluates to the inner type
-                // The pattern binding happens at the statement level
-                if let Some((_, inner_ty)) = bindings.first() {
-                    inner_ty.clone()
-                } else {
-                    // If no explicit bindings, extract inner type from Option/Result
-                    // This handles patterns like `Some` or `Ok` without explicit field binding
-                    let resolved_value_ty = self.ctx.apply(&value_ty);
-                    match resolved_value_ty.as_option() {
-                        Some(inner) => inner.clone(),
-                        None => match &resolved_value_ty {
-                            Type::Result { ok, .. } => *ok.clone(),
-                            _ => Type::Unit,
-                        },
-                    }
-                }
-            }
-
             ExprKind::IsPattern { expr: value, pattern } => {
                 let value_ty = self.infer_expr(value);
-                // #256: a binding from an `is` test reaches the rest of the
-                // condition and the branch body — `m is Msg.Text(t) && t.len() > 1`.
-                // The resolver already puts the name in the enclosing scope, and
-                // the checker was throwing the *type* away, so `t` resolved to a
-                // name with nothing behind it. The program still compiled, because
-                // MIR guessed the receiver's type from the variable's tracked
-                // prefix — the last of the nine dispatch fallbacks, and this was
-                // the gap holding it up (#425).
+                // A binding reaches the rest of the `&&` chain and the branch it
+                // guards: `m is Msg.Text(t) && t.len() > 1`. The caller has
+                // pushed the scope that covers them; MIR reads the type from
+                // here rather than guessing it (#256, #425).
                 let bindings = self.check_pattern(pattern, &value_ty, expr.span);
                 self.reject_irrefutable_test(pattern, &bindings, &value_ty, expr.span);
+                self.reject_type_test_on_optional(value, pattern, &value_ty, false);
+                let names = bindings.iter().map(|(n, _)| n.clone()).filter(|n| !n.is_empty()).collect();
+                self.note_dead_binding(reach, names, pattern.span);
                 for (name, ty) in bindings {
                     self.define_local_bound(name, ty, super::BoundFrom::Payload);
                 }
@@ -1181,6 +1160,7 @@ impl TypeChecker {
                 for arm in arms {
                     self.push_scope();
                     let bindings = self.check_pattern(&arm.pattern, &scrutinee_ty, expr.span);
+                    self.reject_type_test_on_optional(scrutinee, &arm.pattern, &scrutinee_ty, true);
                     // One name bound twice by an arm's pattern: `(a, a)`. Asked
                     // here and not in the resolver, because only the checker
                     // knows that `Red` in `(Red, Red)` tests a variant and
@@ -1201,7 +1181,7 @@ impl TypeChecker {
                         self.define_local_bound(name, ty, super::BoundFrom::Payload);
                     }
                     if let Some(guard) = &arm.guard {
-                        let guard_ty = self.infer_expr(guard);
+                        let guard_ty = self.infer_cond(guard, super::BindingReach::Onward);
                         self.ctx.add_constraint(TypeConstraint::Equal(
                             Type::Bool,
                             guard_ty,
@@ -2031,9 +2011,16 @@ impl TypeChecker {
 
             // OPT9: postfix `?` is the presence test — a plain bool. It
             // narrows nothing; the payload comes from the `as v` bind.
-            ExprKind::IsPresent { expr: inner, .. } => {
+            ExprKind::IsPresent { expr: inner, binding } => {
                 let inner_ty = self.infer_expr(inner);
                 let resolved = self.settle_number(&inner_ty);
+                // OPT19: `x? as v` binds the payload. A binding, not a
+                // narrow: `x` keeps its own type everywhere.
+                if let Some(name) = binding {
+                    let payload = self.presence_payload(&resolved, expr.span);
+                    self.note_dead_binding(reach, vec![name.clone()], expr.span);
+                    self.define_local_bound(name.clone(), payload, super::BoundFrom::Payload);
+                }
                 match &resolved {
                     // ER12: `?` marks absence. A result's other branch is an
                     // error, which is tested with `is` and handled with `catch`.
@@ -5868,10 +5855,89 @@ impl TypeChecker {
     /// => … }` through the checker, to stop at runtime with "no matching arm"
     /// (#1402).
     fn check_match_exhaustiveness(&mut self, scrutinee_ty: &Type, arms: &[MatchArm], span: Span) {
-        let resolved = self.ctx.apply(scrutinee_ty);
         let guarded = arms.iter().any(|a| a.guard.is_some());
-        let unguarded: Vec<&MatchArm> = arms.iter().filter(|a| a.guard.is_none()).collect();
-        let arms = unguarded;
+        let unguarded: Vec<&Pattern> = arms.iter().filter(|a| a.guard.is_none()).map(|a| &a.pattern).collect();
+        if let Some(gap) = self.exhaustiveness_gap(scrutinee_ty, &unguarded, guarded, span) {
+            self.errors.push(gap);
+        }
+    }
+
+    /// A `let` pattern with no `else` that some value of `init_ty` gets past:
+    /// `let Circle(r) = shape` on a `Shape` that also has `Square`.
+    pub(super) fn reject_refutable_let(&mut self, pattern: &Pattern, init_ty: &Type, span: Span) {
+        if matches!(self.ctx.apply(init_ty), Type::Var(_)) {
+            self.solve_constraints();
+        }
+        if matches!(self.ctx.apply(init_ty), Type::Var(_) | Type::Error) {
+            return;
+        }
+        let Some(gap) = self.exhaustiveness_gap(init_ty, &[pattern], false, span) else { return };
+        let missing = match gap {
+            TypeError::NonExhaustiveMatch { missing, .. } => missing,
+            TypeError::MatchNeedsWildcard { ty, .. } => vec![format!("another `{}`", ty)],
+            other => return self.errors.push(other),
+        };
+        self.errors.push(TypeError::LetPatternCanFail { missing, span });
+    }
+
+    /// A guard whose `else` can't run, or that picks a branch of an optional
+    /// or a result: `??` and `catch` handle those inline, with the exit
+    /// written out and the payload bound (ctrl.flow/CF14).
+    pub(super) fn reject_needless_guard(&mut self, pattern: &Pattern, init_ty: &Type, else_span: Span, span: Span) {
+        if matches!(self.ctx.apply(init_ty), Type::Var(_)) {
+            self.solve_constraints();
+        }
+        let ty = self.ctx.apply(init_ty);
+        if matches!(ty, Type::Var(_) | Type::Error) {
+            return;
+        }
+        let (named, binding) = match &pattern.kind {
+            PatternKind::TypePat { ty: TypeExpr::NoneType, binding } => (Some(Type::None), binding.clone()),
+            PatternKind::TypePat { ty, binding } => (resolve_type_expr(ty, &self.types).ok(), binding.clone()),
+            PatternKind::Ident(name) if self.type_test_patterns.contains(&(span, name.clone())) => {
+                (self.pattern_type_name(name), None)
+            }
+            _ => (None, None),
+        };
+        if let (Some(named), Type::Result { ok, err }) = (named, &ty) {
+            let optional = matches!(**err, Type::None);
+            let ok = super::check_pattern::normalize_type(&self.ctx.apply(ok), &self.types);
+            let picks_value = super::check_pattern::normalize_type(&named, &self.types) == ok;
+            self.errors.push(TypeError::GuardPicksBranch {
+                ty: named,
+                binding,
+                optional,
+                picks_value,
+                span: pattern.span,
+            });
+            return;
+        }
+        if self.exhaustiveness_gap(init_ty, &[pattern], false, span).is_some() {
+            return;
+        }
+        let binding = match &pattern.kind {
+            PatternKind::Ident(n) if n.starts_with(|c: char| c.is_ascii_lowercase() || c == '_') => Some(n.clone()),
+            _ => None,
+        };
+        let shape = match &ty {
+            Type::Result { err, .. } if matches!(**err, Type::None) => super::errors::TwoBranch::Optional,
+            Type::Result { .. } => super::errors::TwoBranch::Result,
+            _ => super::errors::TwoBranch::Neither,
+        };
+        self.errors.push(TypeError::GuardNeverFails { binding, shape, else_span });
+    }
+
+    /// The error for `patterns` leaving some value of `scrutinee_ty` unmatched,
+    /// or `None` when they cover it. `guarded` says arms were left out for
+    /// having a guard, which the message mentions.
+    fn exhaustiveness_gap(
+        &mut self,
+        scrutinee_ty: &Type,
+        patterns: &[&Pattern],
+        guarded: bool,
+        span: Span,
+    ) -> Option<TypeError> {
+        let resolved = self.ctx.apply(scrutinee_ty);
 
         // ER30: exhaustiveness check for `T or E` result matches.
         // Collect required coverage: ok type + all error leaf types.
@@ -5894,14 +5960,14 @@ impl TypeChecker {
                 rask_types::TypeId,
                 std::collections::HashSet<String>,
             > = std::collections::HashMap::new();
-            for arm in &arms {
+            for pattern in patterns {
                 self.collect_result_covered(
-                    &arm.pattern, &leaves, &mut covered, &mut variants_hit, &mut has_wildcard,
+                    pattern, &leaves, &mut covered, &mut variants_hit, &mut has_wildcard,
                 );
             }
 
             if has_wildcard {
-                return;
+                return None;
             }
 
             // An error enum is covered by an arm per variant as well as by
@@ -5924,9 +5990,9 @@ impl TypeChecker {
                 .collect();
 
             if !missing.is_empty() {
-                self.errors.push(TypeError::NonExhaustiveMatch { missing, guarded, span });
+                return Some(TypeError::NonExhaustiveMatch { missing, guarded, span });
             }
-            return;
+            return None;
         }
 
         // A scrutinee whose values can't be listed — an integer, a float, a
@@ -5942,112 +6008,49 @@ impl TypeChecker {
         //               interp: panic, exit 101
         if Self::match_needs_wildcard(&resolved) || matches!(resolved, Type::Var(_)) {
             let mut has_wildcard = false;
-            for arm in &arms {
-                Self::collect_open_pattern(&arm.pattern, &mut has_wildcard);
+            for pattern in patterns {
+                Self::collect_open_pattern(pattern, &mut has_wildcard);
             }
             if has_wildcard {
-                return;
+                return None;
             }
             // An unsuffixed literal scrutinee — `let x = 5` — has no type until
             // defaults land, and that is the case this check is for. Ask again
             // after solving rather than guessing now.
             if matches!(resolved, Type::Var(_)) {
                 self.pending_match_wildcards.push((resolved, guarded, span));
-                return;
+                return None;
             }
-            self.errors.push(TypeError::MatchNeedsWildcard {
+            return Some(TypeError::MatchNeedsWildcard {
                 ty: self.fmt_ty(&resolved),
                 guarded,
                 span,
             });
-            return;
         }
 
-        // A tuple is covered when every combination of its parts is.
-        if let Type::Tuple(parts) = &resolved {
-            let rows: Vec<Vec<&Pattern>> = arms
+        // A tuple, a struct, an enum and a bool are taken apart: each arm is
+        // a row of patterns, one per part, and the gap is a value no row
+        // matches. A part's own parts are columns too, so `Point(x: 0, y)`
+        // tests `x` and doesn't cover every `Point`.
+        let rows: Vec<Vec<&Pattern>> = patterns.iter().map(|p| vec![*p]).collect();
+        let resolved = self.resolve_named(&resolved);
+        let missing: Vec<String> = match self.columns_of(&resolved) {
+            Columns::Opaque => return None,
+            // Every variant left out, not only the first.
+            Columns::Enum(variants) => variants
                 .iter()
-                .flat_map(|a| match &a.pattern.kind {
-                    PatternKind::Or(alts) => alts.iter().collect::<Vec<_>>(),
-                    _ => vec![&a.pattern],
-                })
-                .filter_map(|p| match &p.kind {
-                    PatternKind::Tuple(ps) if ps.len() == parts.len() => Some(ps.iter().collect()),
-                    PatternKind::Wildcard | PatternKind::Ident(_) if !matches!(&p.kind, PatternKind::Ident(n) if n.contains('.')) => {
-                        Some(vec![&WILDCARD; parts.len()])
-                    }
-                    _ => None,
-                })
-                .collect();
-            let parts: Vec<Type> = parts.iter().map(|t| self.resolve_named(&self.ctx.apply(t))).collect();
-            if let Some(witness) = self.tuple_gap(&rows, &parts) {
-                self.errors.push(TypeError::NonExhaustiveMatch {
-                    missing: vec![format!("({})", witness.join(", "))],
-                    guarded,
-                    span,
-                });
-            }
-            return;
-        }
-
-        // A bool has two values, so `true` and `false` close the match
-        // without a wildcard, and one of them alone doesn't.
-        if matches!(resolved, Type::Bool) {
-            let mut has_wildcard = false;
-            let mut seen = [false; 2];
-            for arm in &arms {
-                Self::collect_bool_pattern(&arm.pattern, &mut seen, &mut has_wildcard);
-            }
-            if has_wildcard {
-                return;
-            }
-            let missing: Vec<String> = [(false, "false"), (true, "true")]
-                .iter()
-                .filter(|(b, _)| !seen[*b as usize])
-                .map(|(_, name)| name.to_string())
-                .collect();
-            if !missing.is_empty() {
-                self.errors.push(TypeError::NonExhaustiveMatch { missing, guarded, span });
-            }
-            return;
-        }
-
-        // Only check enums for the Named case
-        let type_id = match &resolved {
-            Type::Named(id) => *id,
-            _ => return,
+                .filter_map(|(v, payload)| self.variant_gap(&rows, &resolved, v, payload, &[]))
+                .map(|mut witness| witness.remove(0))
+                .collect(),
+            _ => self
+                .rows_gap(&rows, std::slice::from_ref(&resolved))
+                .map(|mut witness| vec![witness.remove(0)])
+                .unwrap_or_default(),
         };
-
-        let all_variants: Vec<String> = match self.types.get(type_id) {
-            Some(TypeDef::Enum { variants, .. }) => {
-                variants.iter().map(|(name, _)| name.clone()).collect()
-            }
-            _ => return,
-        };
-
-        // Collect covered variant names from patterns
-        let mut has_wildcard = false;
-        let mut covered = std::collections::HashSet::new();
-        for arm in &arms {
-            self.collect_covered_variants(&arm.pattern, &mut covered, &mut has_wildcard, &all_variants);
+        if missing.is_empty() {
+            return None;
         }
-
-        if has_wildcard {
-            return;
-        }
-
-        let missing: Vec<String> = all_variants
-            .into_iter()
-            .filter(|v| !covered.contains(v))
-            .collect();
-
-        if !missing.is_empty() {
-            self.errors.push(TypeError::NonExhaustiveMatch {
-                missing,
-                guarded,
-                span,
-            });
-        }
+        Some(TypeError::NonExhaustiveMatch { missing, guarded, span })
     }
 
     /// `b.(comptime { … })` blocks, once their value has a type.
@@ -6169,6 +6172,57 @@ impl TypeChecker {
         });
     }
 
+    /// `!(x is none)` on a plain `T?`, which `x?` spells. On a flat
+    /// `T? or E` it says "a value or an error", which `x?` doesn't.
+    fn reject_negated_absence_test(&mut self, operand: &Expr, span: Span) {
+        let ExprKind::IsPattern { expr: tested, pattern } = &operand.kind else { return };
+        if !matches!(pattern.kind, PatternKind::TypePat { ty: TypeExpr::NoneType, .. }) {
+            return;
+        }
+        let Some(ty) = self.node_types.get(&tested.id).cloned() else { return };
+        if !self.ctx.apply(&ty).is_option() {
+            return;
+        }
+        let shown = match &tested.kind {
+            ExprKind::Ident(n) => n.clone(),
+            _ => "x".to_string(),
+        };
+        self.errors.push(TypeError::NegatedAbsenceTest { shown, span });
+    }
+
+    /// `x is T as v` and bare `x is T` on a plain `T?` are `x? as v` and
+    /// `x?` spelled a second way. On a result the type test is the only
+    /// spelling, so it stays.
+    fn reject_type_test_on_optional(&mut self, value: &Expr, pattern: &Pattern, value_ty: &Type, arm: bool) {
+        let (named, binding) = match &pattern.kind {
+            PatternKind::TypePat { ty: TypeExpr::NoneType, .. } => return,
+            PatternKind::TypePat { ty, binding } => {
+                let Ok(named) = resolve_type_expr(ty, &self.types) else { return };
+                (named, binding.clone())
+            }
+            PatternKind::Ident(name) if !name.contains('.') => {
+                let Some(named) = self.pattern_type_name(name) else { return };
+                (named, None)
+            }
+            _ => return,
+        };
+        let Type::Result { ok, err } = self.ctx.apply(value_ty) else { return };
+        if !matches!(*err, Type::None) {
+            return;
+        }
+        let payload = self.ctx.apply(&ok);
+        if super::check_pattern::normalize_type(&named, &self.types)
+            != super::check_pattern::normalize_type(&payload, &self.types)
+        {
+            return;
+        }
+        let shown = match &value.kind {
+            ExprKind::Ident(n) => n.clone(),
+            _ => "x".to_string(),
+        };
+        self.errors.push(TypeError::TypeTestOnOptional { shown, binding, arm, span: pattern.span });
+    }
+
     /// Reject `arm` when the arms before it already take every value it
     /// could match (type.enums/PM7). Only two shapes are judged: a
     /// catch-all, and a payload-free test of a variant an earlier unguarded
@@ -6197,94 +6251,278 @@ impl TypeChecker {
         }
     }
 
-    /// A combination of tuple parts no row matches, written out, or `None`
-    /// when the rows cover them all. A part whose values can be listed (a
-    /// `bool`, a fieldless or any enum by variant) is split per value;
-    /// anything else is covered only by a row that doesn't test it. A row that
-    /// tests a payload covers less than its variant, so it counts for none.
-    fn tuple_gap(&self, rows: &[Vec<&Pattern>], parts: &[Type]) -> Option<Vec<String>> {
-        let Some((first, rest)) = parts.split_first() else {
+    /// A value no row matches, one entry per column, or `None` when the rows
+    /// cover every value. A tuple or struct column is split into a column per
+    /// part, an enum column into one matrix per variant with its payload as
+    /// columns, a bool column into `true` and `false`. Anything else (an
+    /// integer, a string, an optional) can't be listed, so only a row that
+    /// doesn't test that column counts there.
+    fn rows_gap<'p>(&self, rows: &[Vec<&'p Pattern>], cols: &[Type]) -> Option<Vec<String>> {
+        let Some((first, rest)) = cols.split_first() else {
             return if rows.is_empty() { Some(Vec::new()) } else { None };
         };
-        // A struct taken apart into plain names can't fail, so it covers the
-        // part the same as `_` does: `(Pt(x, y), true)`.
-        let is_struct = matches!(first, Type::Named(id) | Type::Generic { base: id, .. }
-            if matches!(self.types.get(*id), Some(TypeDef::Struct { .. })));
-        let binds_only = |p: &Pattern| matches!(&p.kind, PatternKind::Wildcard)
-            || matches!(&p.kind, PatternKind::Ident(n) if !n.contains('.'));
-        let wild = |p: &Pattern| match &p.kind {
-            PatternKind::Wildcard => true,
-            PatternKind::Ident(n) => !n.contains('.') && !self.names_variant_of(first, n),
-            PatternKind::Constructor { fields, .. } if is_struct => fields.iter().all(binds_only),
-            PatternKind::Struct { fields, .. } if is_struct => fields.iter().all(|(_, f)| binds_only(f)),
-            _ => false,
+        let rows = Self::expand_or(rows);
+        if rows.is_empty() {
+            return Some(vec!["_".to_string(); cols.len()]);
+        }
+        let first = self.resolve_named(&self.ctx.apply(first));
+        let wild = |p: &Pattern| self.is_wild(p, &first);
+        let tails = |keep: &dyn Fn(&Pattern) -> bool| -> Vec<Vec<&'p Pattern>> {
+            rows.iter().filter(|r| keep(r[0])).map(|r| r[1..].to_vec()).collect()
         };
-        // A nested tuple's parts are columns of their own, so `((true, _), _)`
-        // and `((false, _), _)` cover a `((bool, bool), bool)`.
-        if let Type::Tuple(inner) = first {
-            let n = inner.len();
-            let expanded: Vec<Vec<&Pattern>> = rows
-                .iter()
-                .filter_map(|r| match &r[0].kind {
-                    PatternKind::Tuple(ps) if ps.len() == n => Some(ps.iter().chain(r[1..].iter().copied()).collect()),
-                    _ if wild(r[0]) => Some(
-                        std::iter::repeat(&WILDCARD).take(n).chain(r[1..].iter().copied()).collect(),
+        // Nothing tests this column, so splitting it can't find a gap. Also
+        // what stops a recursive type from being split forever.
+        if rows.iter().all(|r| wild(r[0])) {
+            let mut gap = self.rows_gap(&tails(&|_| true), rest)?;
+            gap.insert(0, "_".to_string());
+            return Some(gap);
+        }
+        // Each row with its head replaced by `n` patterns, one per part;
+        // `None` drops a row whose head can't match.
+        let split = |n: usize, parts: &dyn Fn(&'p Pattern) -> Option<Vec<&'p Pattern>>| -> Vec<Vec<&'p Pattern>> {
+            rows.iter()
+                .filter_map(|r| {
+                    let head = if wild(r[0]) { vec![&WILDCARD; n] } else { parts(r[0])? };
+                    Some(head.into_iter().chain(r[1..].iter().copied()).collect())
+                })
+                .collect()
+        };
+        let then = |parts: Vec<Type>| -> Vec<Type> { parts.into_iter().chain(rest.iter().cloned()).collect() };
+        match self.columns_of(&first) {
+            Columns::Tuple(parts) => {
+                let n = parts.len();
+                let rows = split(n, &|p| match &p.kind {
+                    PatternKind::Tuple(ps) if ps.len() == n => Some(ps.iter().collect()),
+                    _ => None,
+                });
+                let gap = self.rows_gap(&rows, &then(parts))?;
+                let (head, tail) = gap.split_at(n);
+                Some(std::iter::once(format!("({})", head.join(", "))).chain(tail.iter().cloned()).collect())
+            }
+            Columns::Struct(name, fields) => {
+                let n = fields.len();
+                let rows = split(n, &|p| match &p.kind {
+                    // `Point(x, y)` and `Point(x as px)` only bind.
+                    PatternKind::Constructor { .. } => Some(vec![&WILDCARD; n]),
+                    PatternKind::Struct { fields: given, .. } => Some(
+                        fields
+                            .iter()
+                            .map(|(f, _)| given.iter().find(|(g, _)| g == f).map_or(&WILDCARD, |(_, p)| p))
+                            .collect(),
                     ),
                     _ => None,
-                })
-                .collect();
-            let columns: Vec<Type> = inner
-                .iter()
-                .map(|t| self.resolve_named(&self.ctx.apply(t)))
-                .chain(rest.iter().cloned())
-                .collect();
-            let gap = self.tuple_gap(&expanded, &columns)?;
-            let (head, tail) = gap.split_at(n);
-            let mut out = vec![format!("({})", head.join(", "))];
-            out.extend(tail.iter().cloned());
-            return Some(out);
-        }
-        let values: Option<Vec<String>> = match first {
-            Type::Bool => Some(vec!["true".to_string(), "false".to_string()]),
-            Type::Named(id) | Type::Generic { base: id, .. } => match self.types.get(*id) {
-                Some(TypeDef::Enum { variants, .. }) => Some(variants.iter().map(|(v, _)| v.clone()).collect()),
-                _ => None,
-            },
-            _ => None,
-        };
-        let tests = |p: &Pattern, value: &str| -> bool {
-            match &p.kind {
-                PatternKind::Literal(e) => matches!(e.kind, ExprKind::Bool(b) if b.to_string() == value),
-                PatternKind::Ident(n) => n.rsplit('.').next() == Some(value),
-                PatternKind::Constructor { name, fields } => {
-                    name.rsplit('.').next() == Some(value)
-                        && fields.iter().all(|f| matches!(&f.kind, PatternKind::Wildcard) || matches!(&f.kind, PatternKind::Ident(n) if !n.contains('.')))
-                }
-                _ => false,
+                });
+                let gap = self.rows_gap(&rows, &then(fields.iter().map(|(_, t)| t.clone()).collect()))?;
+                let (head, tail) = gap.split_at(n);
+                let shown: Vec<String> = fields.iter().zip(head).map(|((f, _), w)| format!("{f}: {w}")).collect();
+                Some(std::iter::once(format!("{name}({})", shown.join(", "))).chain(tail.iter().cloned()).collect())
             }
-        };
-        match values {
-            Some(values) => {
-                for value in values {
-                    let sub: Vec<Vec<&Pattern>> = rows
-                        .iter()
-                        .filter(|r| wild(r[0]) || tests(r[0], &value))
-                        .map(|r| r[1..].to_vec())
-                        .collect();
-                    if let Some(mut gap) = self.tuple_gap(&sub, rest) {
-                        gap.insert(0, value);
-                        return Some(gap);
-                    }
-                }
-                None
+            Columns::Enum(variants) => {
+                variants.iter().find_map(|(v, payload)| self.variant_gap(&rows, &first, v, payload, rest))
             }
-            None => {
-                let sub: Vec<Vec<&Pattern>> =
-                    rows.iter().filter(|r| wild(r[0])).map(|r| r[1..].to_vec()).collect();
-                let mut gap = self.tuple_gap(&sub, rest)?;
+            Columns::Bool => ["true", "false"].into_iter().find_map(|value| {
+                let tests = |p: &Pattern| matches!(&p.kind, PatternKind::Literal(e)
+                    if matches!(e.kind, ExprKind::Bool(b) if b.to_string() == value));
+                let mut gap = self.rows_gap(&tails(&|p| wild(p) || tests(p)), rest)?;
+                gap.insert(0, value.to_string());
+                Some(gap)
+            }),
+            Columns::Leaves(leaves) => leaves.iter().enumerate().find_map(|(i, leaf)| {
+                let rows: Vec<Vec<&'p Pattern>> = rows
+                    .iter()
+                    .filter_map(|r| {
+                        let head: &'p Pattern = match self.leaf_test(r[0], &leaves, i) {
+                            LeafTest::Whole => &WILDCARD,
+                            LeafTest::Inside => r[0],
+                            LeafTest::Elsewhere => return None,
+                        };
+                        Some(std::iter::once(head).chain(r[1..].iter().copied()).collect())
+                    })
+                    .collect();
+                let mut gap = self.rows_gap(&rows, &then(vec![leaf.clone()]))?;
+                gap[0] = if gap[0] == "_" {
+                    self.fmt_ty(leaf)
+                } else if matches!(self.columns_of(leaf), Columns::Enum(_)) {
+                    // A branch's variant is written with its enum (PM8).
+                    format!("{}.{}", self.fmt_ty(leaf), gap[0])
+                } else {
+                    gap[0].clone()
+                };
+                Some(gap)
+            }),
+            Columns::Opaque => {
+                let mut gap = self.rows_gap(&tails(&wild), rest)?;
                 gap.insert(0, "_".to_string());
                 Some(gap)
             }
+        }
+    }
+
+    /// How a pattern against a `T or E` column bears on branch `i`: it takes
+    /// the whole branch (a binding, `_`, or a type test naming it), tests
+    /// inside it (a variant of an enum branch, a literal), or is about another
+    /// branch.
+    fn leaf_test(&self, p: &Pattern, leaves: &[Type], i: usize) -> LeafTest {
+        let inside_enum = |name: &str| {
+            let variant = name.rsplit('.').next().unwrap_or(name);
+            let same_enum = match (name.rsplit_once('.'), &leaves[i]) {
+                (Some((prefix, _)), Type::Named(id) | Type::Generic { base: id, .. }) => {
+                    self.types.get_type_id(prefix) == Some(*id)
+                }
+                (Some(_), _) => false,
+                (None, _) => true,
+            };
+            same_enum && self.names_variant_of(&leaves[i], variant)
+        };
+        let picks = |found: Option<usize>| match found {
+            Some(j) if j == i => LeafTest::Whole,
+            _ => LeafTest::Elsewhere,
+        };
+        match &p.kind {
+            PatternKind::Wildcard => LeafTest::Whole,
+            PatternKind::Ident(name) if name.contains('.') => {
+                if inside_enum(name) { LeafTest::Inside } else { LeafTest::Elsewhere }
+            }
+            PatternKind::Ident(name) => match self.branch_named(&TypeExpr::named(name.as_str()), leaves) {
+                Some(j) => picks(Some(j)),
+                None if inside_enum(name) => LeafTest::Inside,
+                None if leaves.iter().any(|l| self.names_variant_of(l, name)) => LeafTest::Elsewhere,
+                None => LeafTest::Whole,
+            },
+            PatternKind::TypePat { ty, .. } => picks(self.branch_named(ty, leaves)),
+            PatternKind::Constructor { name, .. } | PatternKind::Struct { name, .. } => {
+                if inside_enum(name) { LeafTest::Inside } else { LeafTest::Elsewhere }
+            }
+            _ => LeafTest::Inside,
+        }
+    }
+
+    /// The rows that can match `variant` of `enum_ty`, its payload as columns
+    /// ahead of `rest`, and a value of that variant none of them matches. A
+    /// bare variant name matches any payload. The variant is written bare when
+    /// no row names it, with the payload that gets through when some do.
+    fn variant_gap<'p>(
+        &self,
+        rows: &[Vec<&'p Pattern>],
+        enum_ty: &Type,
+        variant: &str,
+        payload: &[Type],
+        rest: &[Type],
+    ) -> Option<Vec<String>> {
+        let n = payload.len();
+        let names = |name: &str| name.rsplit('.').next() == Some(variant);
+        let sub: Vec<Vec<&'p Pattern>> = Self::expand_or(rows)
+            .into_iter()
+            .filter_map(|r| {
+                let head: &'p Pattern = r[0];
+                let parts: Vec<&'p Pattern> = match &head.kind {
+                    _ if self.is_wild(head, enum_ty) => vec![&WILDCARD; n],
+                    PatternKind::Ident(name) if names(name) => vec![&WILDCARD; n],
+                    PatternKind::Constructor { name, fields } if names(name) && fields.len() == n => {
+                        fields.iter().collect()
+                    }
+                    // A wrong count is reported where the pattern is checked.
+                    PatternKind::Constructor { name, .. } if names(name) => vec![&WILDCARD; n],
+                    PatternKind::Struct { name, fields: given, .. } if names(name) => {
+                        let declared = match enum_ty {
+                            Type::Named(id) | Type::Generic { base: id, .. } => {
+                                self.types.variant_field_names(*id, variant).map(<[String]>::to_vec)
+                            }
+                            _ => None,
+                        };
+                        match declared {
+                            Some(declared) if declared.len() == n => declared
+                                .iter()
+                                .map(|f| given.iter().find(|(g, _)| g == f).map_or(&WILDCARD, |(_, p)| p))
+                                .collect(),
+                            _ => vec![&WILDCARD; n],
+                        }
+                    }
+                    _ => return None,
+                };
+                Some(parts.into_iter().chain(r[1..].iter().copied()).collect())
+            })
+            .collect();
+        let named = !sub.is_empty();
+        let cols: Vec<Type> = payload.iter().cloned().chain(rest.iter().cloned()).collect();
+        let gap = self.rows_gap(&sub, &cols)?;
+        let (head, tail) = gap.split_at(n);
+        let shown = if n == 0 || !named { variant.to_string() } else { format!("{variant}({})", head.join(", ")) };
+        Some(std::iter::once(shown).chain(tail.iter().cloned()).collect())
+    }
+
+    /// Matches any value of `col` without testing it: `_` or a plain name.
+    /// A branch's type name tests a `T or E` column (`result: IoError`).
+    fn is_wild(&self, p: &Pattern, col: &Type) -> bool {
+        match &p.kind {
+            PatternKind::Wildcard => true,
+            PatternKind::Ident(n) if n.contains('.') => false,
+            PatternKind::Ident(n) => match self.columns_of(col) {
+                Columns::Leaves(leaves) => {
+                    self.branch_named(&TypeExpr::named(n.as_str()), &leaves).is_none()
+                        && !leaves.iter().any(|l| self.names_variant_of(l, n))
+                }
+                _ => !self.names_variant_of(col, n),
+            },
+            _ => false,
+        }
+    }
+
+    /// Rows whose head is `a | b` become a row per alternative.
+    fn expand_or<'p>(rows: &[Vec<&'p Pattern>]) -> Vec<Vec<&'p Pattern>> {
+        let mut out = Vec::new();
+        for r in rows {
+            let head: &'p Pattern = r[0];
+            match &head.kind {
+                PatternKind::Or(alts) => {
+                    let split: Vec<Vec<&'p Pattern>> =
+                        alts.iter().map(|a| std::iter::once(a).chain(r[1..].iter().copied()).collect()).collect();
+                    out.extend(Self::expand_or(&split));
+                }
+                _ => out.push(r.clone()),
+            }
+        }
+        out
+    }
+
+    /// What a value of `ty` is matched apart into, a generic type's arguments
+    /// put in.
+    fn columns_of(&self, ty: &Type) -> Columns {
+        let ty = self.resolve_named(&self.ctx.apply(ty));
+        let (id, args) = match &ty {
+            Type::Result { .. } => {
+                return Columns::Leaves(super::check_pattern::two_branch_leaves(&self.ctx, &self.types, &ty));
+            }
+            Type::Tuple(parts) => {
+                return Columns::Tuple(parts.iter().map(|t| self.resolve_named(&self.ctx.apply(t))).collect());
+            }
+            Type::Bool => return Columns::Bool,
+            Type::Named(id) => (*id, Vec::new()),
+            Type::Generic { base, args } => {
+                (*base, args.iter().map(|GenericArg::Type(t)| (**t).clone()).collect::<Vec<_>>())
+            }
+            _ => return Columns::Opaque,
+        };
+        let put_in = |params: &[String], t: &Type| -> Type {
+            if params.is_empty() || params.len() != args.len() {
+                return t.clone();
+            }
+            let subst: std::collections::HashMap<&str, Type> =
+                params.iter().map(String::as_str).zip(args.iter().cloned()).collect();
+            Self::substitute_type_params(t, &subst)
+        };
+        match self.types.get(id) {
+            Some(TypeDef::Struct { name, type_params, fields, .. }) => Columns::Struct(
+                name.clone(),
+                fields.iter().map(|(f, t)| (f.clone(), put_in(type_params, t))).collect(),
+            ),
+            Some(TypeDef::Enum { type_params, variants, .. }) => Columns::Enum(
+                variants
+                    .iter()
+                    .map(|(v, payload)| (v.clone(), payload.iter().map(|t| put_in(type_params, t)).collect()))
+                    .collect(),
+            ),
+            _ => Columns::Opaque,
         }
     }
 
@@ -6297,23 +6535,6 @@ impl TypeChecker {
                 Some(TypeDef::Enum { variants, .. }) if variants.iter().any(|(v, _)| v == name)
             ),
             _ => false,
-        }
-    }
-
-    fn collect_bool_pattern(pattern: &Pattern, seen: &mut [bool; 2], has_wildcard: &mut bool) {
-        match &pattern.kind {
-            PatternKind::Wildcard | PatternKind::Ident(_) => *has_wildcard = true,
-            PatternKind::Literal(expr) => {
-                if let ExprKind::Bool(b) = expr.kind {
-                    seen[b as usize] = true;
-                }
-            }
-            PatternKind::Or(alts) => {
-                for alt in alts {
-                    Self::collect_bool_pattern(alt, seen, has_wildcard);
-                }
-            }
-            _ => {}
         }
     }
 
@@ -6356,48 +6577,6 @@ impl TypeChecker {
             PatternKind::Or(alts) => {
                 for alt in alts {
                     self.collect_result_covered(alt, leaves, covered, variants_hit, has_wildcard);
-                }
-            }
-            _ => {}
-        }
-    }
-
-    fn collect_covered_variants(
-        &self,
-        pattern: &Pattern,
-        covered: &mut std::collections::HashSet<String>,
-        has_wildcard: &mut bool,
-        enum_variants: &[String],
-    ) {
-        match &pattern.kind {
-            PatternKind::Wildcard => *has_wildcard = true,
-            PatternKind::Ident(name) => {
-                // Bare identifier matching an enum variant name is a variant match,
-                // not a catch-all binding
-                if enum_variants.contains(name) {
-                    covered.insert(name.clone());
-                } else if let Some((_, variant)) = name.rsplit_once('.') {
-                    // `Color.Red` tests a tag and binds nothing. Whether it
-                    // names this enum at all is the pattern check's job.
-                    covered.insert(variant.to_string());
-                } else {
-                    *has_wildcard = true;
-                }
-            }
-            PatternKind::Constructor { name, .. } => {
-                // Qualified names like "Enum.Variant" — extract the variant part
-                let variant = name.rsplit('.').next().unwrap_or(name);
-                covered.insert(variant.to_string());
-            }
-            // Struct-style variant pattern `Enum.Variant { field, .. }` —
-            // same coverage semantics as Constructor.
-            PatternKind::Struct { name, .. } => {
-                let variant = name.rsplit('.').next().unwrap_or(name);
-                covered.insert(variant.to_string());
-            }
-            PatternKind::Or(patterns) => {
-                for p in patterns {
-                    self.collect_covered_variants(p, covered, has_wildcard, enum_variants);
                 }
             }
             _ => {}
@@ -6469,49 +6648,33 @@ impl TypeChecker {
         }
     }
 
-    /// OPT19/ER23: the `as v` bind on a presence test — `if x? as v`. Returns
-    /// the name, the type `v` gets, and (when the scrutinee can fail) the type
-    /// an `else as e` would bind.
-    ///
-    /// This is a *binding*, not a narrow: the scrutinee keeps its own type
-    /// everywhere. Without the `as`, there's nothing to introduce.
-    ///
-    /// Must run after the cond has been inferred, so the scrutinee's type is
-    /// in `node_types`.
-    pub(super) fn extract_presence_binding(
-        &mut self,
-        cond: &Expr,
-    ) -> Option<(String, Type, Option<Type>)> {
-        let ExprKind::IsPresent { expr: inner, binding } = &cond.kind else {
-            return None;
-        };
-        let name = binding.clone()?;
-
-        let scrutinee_ty = self.node_types.get(&inner.id).cloned()?;
-        let resolved = self.ctx.apply(&scrutinee_ty);
-
-        // An unsolved scrutinee (a `Map.get` whose V is only fixed by later
-        // inserts) gets constrained to a two-branch shape now, so the payload
-        // var is available. The fresh error var defers the optional-vs-result
-        // question to constraint solving.
+    /// The payload `x? as v` binds: `T` for a `T?`. An unsolved scrutinee
+    /// (a `Map.get` whose value type is fixed by later inserts) is tied to a
+    /// two-branch shape now so the payload has a variable to stand on; whether
+    /// it's an optional is settled with the rest of the constraints.
+    fn presence_payload(&mut self, scrutinee: &Type, span: Span) -> Type {
+        let resolved = self.ctx.apply(scrutinee);
         let resolved = if let Type::Var(_) = resolved {
-            let ok = self.ctx.fresh_var();
-            let err = self.ctx.fresh_var();
             let target = Type::Result {
-                ok: Box::new(ok),
-                err: Box::new(err),
+                ok: Box::new(self.ctx.fresh_var()),
+                err: Box::new(self.ctx.fresh_var()),
             };
-            let _ = self.unify(&resolved, &target, cond.span);
+            let _ = self.unify(&resolved, &target, span);
             self.ctx.apply(&resolved)
         } else {
             resolved
         };
-
         match resolved {
-            Type::Result { ok, err } if *err == Type::None => Some((name, *ok, None)),
-            Type::Result { ok, err } => Some((name, *ok, Some(*err))),
-            _ => None,
+            Type::Result { ok, .. } => *ok,
+            _ => Type::Error,
         }
+    }
+
+    /// `&&` and `||`: both sides are bools, and so is the result.
+    fn logical_operands(&mut self, left: Type, right: Type, span: Span) -> Type {
+        self.ctx.add_constraint(TypeConstraint::Equal(Type::Bool, left, span));
+        self.ctx.add_constraint(TypeConstraint::Equal(Type::Bool, right, span));
+        Type::Bool
     }
 
     /// ER47: bare `try` on an optional needs a return with an absent branch.

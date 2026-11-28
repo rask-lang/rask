@@ -18,8 +18,8 @@ test "f64 stays in [0, 1) and isn't stuck" {
     for _ in 0..200 {
         let x = unit()
         assert x >= 0.0 && x < 1.0
-        if x < lo: lo = x
-        if x > hi: hi = x
+        if x < lo { lo = x }
+        if x > hi { hi = x }
     }
     assert lo < 0.25
     assert hi > 0.75
@@ -28,7 +28,7 @@ test "f64 stays in [0, 1) and isn't stuck" {
 test "bool gives both answers" {
     mut heads = 0
     for _ in 0..200 {
-        if coin(): heads += 1
+        if coin() { heads += 1 }
     }
     assert heads > 20
     assert heads < 180
@@ -41,9 +41,9 @@ test "i64 draws differ and cover both signs" {
     mut all_same = true
     for _ in 0..64 {
         let n = any_int()
-        if n != first: all_same = false
-        if n < 0: neg = true
-        if n > 0: pos = true
+        if n != first { all_same = false }
+        if n < 0 { neg = true }
+        if n > 0 { pos = true }
     }
     assert !all_same
     assert neg
@@ -60,7 +60,7 @@ test "Random.f64 is in [0, 1) and repeats for a seed" {
         let x = a.f64()
         assert x >= 0.0 && x < 1.0
         assert x == b.f64()
-        if x != first: distinct = true
+        if x != first { distinct = true }
     }
     assert distinct
 }

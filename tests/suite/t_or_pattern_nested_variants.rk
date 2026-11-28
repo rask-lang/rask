@@ -11,7 +11,7 @@ enum Cmd { Go(i64), Back(i64), Stop, Wait }
 func wrap(w: Wrap) -> string {
     return match w {
         Inner(Blue) | Inner(Red) => "inner br",
-        Inner(_) => "inner other",
+        Inner => "inner other",
         Nothing => "nothing",
     }
 }

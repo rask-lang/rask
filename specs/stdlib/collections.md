@@ -308,7 +308,7 @@ with vec[i] as v {
 }
 
 // One-liner shorthand
-with vec[i] as v: v.count += 1
+with vec[i] as v { v.count += 1 }
 
 // Expression context — produces a value
 let name = with vec[i] as v { v.name.clone() }

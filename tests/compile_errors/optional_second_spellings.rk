@@ -1,0 +1,27 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: second spellings of the presence test on an optional
+// Rejects: `a is i64`, `a is i64 as n` and an `i64 as n` match arm (E0222),
+// and `!(a is none)` (E0224), on a plain `i64?`
+//
+// `a?` tests presence and `a? as n` names the payload. A flat `T? or E` keeps
+// both forms, where they mean something `?` doesn't.
+
+func find(ok: bool) -> i64? {
+    if ok { return 3 }
+    return none
+}
+
+func main() {
+    let a = find(true)
+    // ERROR: E0222 write `a?`
+    if a is i64 { println("yes") }
+    // ERROR: E0222 write `a? as n`
+    if a is i64 as n { println("{n}") }
+    // ERROR: E0224 write `a?`
+    if !(a is none) { println("yes") }
+    match a {
+        // ERROR: E0222 an arm takes the value by name: `n => …`
+        i64 as n => println("{n}"),
+        none => println("none"),
+    }
+}

@@ -3270,23 +3270,96 @@ impl Parser {
         }
     }
 
-    /// `let Point(x, y) = p` / `mut Point(x, ..) = p`, if that's what comes
-    /// next. `None` otherwise, so the ordinary name path takes over.
+    /// A let whose left side is a pattern: `let Point(x, y) = p`, and the guard
+    /// `let Shape.Circle(r) = s else { return }` or `let Point as p = r else { … }`.
+    /// `None` when it's a plain name, so the ordinary binding path takes over.
     ///
-    /// A type name followed by `(` is the whole test: `mut x = Point(…)` has the
-    /// `=` first, and `mut x: Point = …` has the `:`. A lowercase name falls
-    /// through on purpose — it can't be a struct, so the error it gets is the one
-    /// about a missing `=`.
-    fn try_parse_struct_binding(&mut self, is_mut: bool) -> Result<Option<StmtKind>, ParseError> {
+    /// A binding is followed by `=` or `:`, so a type name followed by `(`, `.`
+    /// or `<` starts a pattern, and so does any name followed by `as`
+    /// (`let string as s = v`). A lowercase name before `(` falls through on
+    /// purpose: it can't be a struct, and the error it gets is the one about a
+    /// missing `=`.
+    fn try_parse_pattern_binding(&mut self, is_mut: bool) -> Result<Option<StmtKind>, ParseError> {
         let TokenKind::Ident(name) = &self.current().kind else { return Ok(None) };
-        if !Self::is_type_name(name) || !matches!(self.peek(1), TokenKind::LParen) {
+        let starts_pattern = match self.peek(1) {
+            TokenKind::As => true,
+            TokenKind::LParen | TokenKind::Dot | TokenKind::Lt => Self::is_type_name(name),
+            _ => false,
+        };
+        if !starts_pattern {
             return Ok(None);
         }
         let pattern = self.parse_pattern()?;
         self.expect(&TokenKind::Eq)?;
         let init = self.parse_expr()?;
+        let else_start = self.current().span.start;
+        let else_branch = if self.match_token(&TokenKind::Else) {
+            Some(Box::new(self.parse_body(else_start)?))
+        } else {
+            None
+        };
         self.expect_terminator()?;
-        Ok(Some(StmtKind::LetStruct { pattern, init, is_mut }))
+        Ok(Some(StmtKind::LetPattern { pattern, init, is_mut, else_branch }))
+    }
+
+    /// `let sock = state is Connected else { … }` was the guard before the
+    /// pattern moved to the left of `=`. Reported with the spelling that
+    /// replaced it, and read as that spelling so the rest of the file parses.
+    fn reject_right_side_guard(&mut self, name: String, is_mut: bool, init: Expr) -> Result<StmtKind, ParseError> {
+        let ExprKind::IsPattern { expr, pattern } = init.kind else {
+            unreachable!("caller checked for `is … else`")
+        };
+        let kw = if is_mut { "mut" } else { "let" };
+        let fixed = match &pattern.kind {
+            PatternKind::Ident(v) => format!("{kw} {v}({name}) = … else {{ … }}"),
+            PatternKind::Constructor { name: v, fields } if fields.is_empty() => {
+                format!("{kw} {v}({name}) = … else {{ … }}")
+            }
+            PatternKind::TypePat { ty, binding } => {
+                format!("{kw} {ty} as {} = … else {{ … }}", binding.as_deref().unwrap_or(&name))
+            }
+            _ => format!("{kw} <pattern> = … else {{ … }}"),
+        };
+        self.record_error(ParseError {
+            span: init.span,
+            message: "a guard's pattern goes on the left of `=`".to_string(),
+            hint: Some(format!("`{fixed}`")),
+            why: Some("the pattern names what it binds, as in `if s is Circle(r)`".to_string()),
+        });
+        let else_start = self.current().span.start;
+        self.expect(&TokenKind::Else)?;
+        let else_branch = self.parse_body(else_start)?;
+        self.expect_terminator()?;
+        Ok(StmtKind::LetPattern { pattern, init: *expr, is_mut, else_branch: Some(Box::new(else_branch)) })
+    }
+
+    /// `let Dot = s else { … }`: a guard whose pattern is a bare name. A
+    /// capital tests a variant; a lowercase name binds anything, and the
+    /// checker reports that its `else` never runs, with the `??` or `catch`
+    /// that fits the value's type.
+    fn parse_name_guard(&mut self, name: String, name_span: Span, is_mut: bool, init: Expr) -> Result<StmtKind, ParseError> {
+        let pattern = Pattern::new(self.next_id(), PatternKind::Ident(name), name_span);
+        let else_start = self.current().span.start;
+        self.expect(&TokenKind::Else)?;
+        let else_branch = self.parse_body(else_start)?;
+        self.expect_terminator()?;
+        Ok(StmtKind::LetPattern { pattern, init, is_mut, else_branch: Some(Box::new(else_branch)) })
+    }
+
+    /// `let x: i64 = e else { … }` and `let (a, b) = pair else { … }`: the
+    /// left side takes every value, so the `else` can't run. Reported, and the
+    /// `else` is read and dropped so the rest of the file parses.
+    fn reject_typed_guard(&mut self) -> Result<(), ParseError> {
+        let start = self.current().span.start;
+        self.expect(&TokenKind::Else)?;
+        let body = self.parse_body(start)?;
+        self.record_error(ParseError {
+            span: body.span,
+            message: "this `let` always matches, so its `else` never runs".to_string(),
+            hint: Some("drop the `else`; to leave on a missing value, `let x = … ?? return`".to_string()),
+            why: Some("a typed name or a tuple takes every value; a guard's pattern has to be able to miss [ctrl.flow/CF14]".to_string()),
+        });
+        Ok(())
     }
 
     fn parse_mut_stmt(&mut self) -> Result<StmtKind, ParseError> {
@@ -3301,11 +3374,14 @@ impl Parser {
             self.expect(&TokenKind::RParen)?;
             self.expect(&TokenKind::Eq)?;
             let init = self.parse_expr()?;
+            if self.check(&TokenKind::Else) {
+                self.reject_typed_guard()?;
+            }
             self.expect_terminator()?;
             return Ok(StmtKind::MutTuple { patterns, init });
         }
 
-        if let Some(stmt) = self.try_parse_struct_binding(true)? {
+        if let Some(stmt) = self.try_parse_pattern_binding(true)? {
             return Ok(stmt);
         }
 
@@ -3313,35 +3389,16 @@ impl Parser {
         let name = self.expect_ident()?;
         let ty = if self.match_token(&TokenKind::Colon) { Some(self.parse_type_name()?) } else { None };
         self.expect(&TokenKind::Eq)?;
-        let mut init = self.parse_expr()?;
-
-        // Check for guard pattern: mut v = expr is Pattern else { ... }
+        let init = self.parse_expr()?;
         if matches!(init.kind, ExprKind::IsPattern { .. }) && self.check(&TokenKind::Else) {
-            let ExprKind::IsPattern { expr, pattern } = init.kind else { unreachable!() };
-            let guard_start = expr.span.start;
-            self.expect(&TokenKind::Else)?;
-
-            let else_branch = if self.match_token(&TokenKind::Colon) {
-                self.parse_inline_block(guard_start)?
-            } else {
-                self.skip_newlines();
-                let stmts = self.parse_block_body()?;
-                let end = self.tokens[self.pos - 1].span.end;
-                Expr { id: self.next_id(), kind: ExprKind::Block(stmts), span: self.span(guard_start, end) }
-            };
-
-            let end = else_branch.span.end;
-            init = Expr {
-                id: self.next_id(),
-                kind: ExprKind::GuardPattern {
-                    expr,
-                    pattern,
-                    else_branch: Box::new(else_branch),
-                },
-                span: self.span(guard_start, end),
-            };
+            return self.reject_right_side_guard(name, true, init);
         }
-
+        if self.check(&TokenKind::Else) {
+            if ty.is_none() {
+                return self.parse_name_guard(name, name_span, true, init);
+            }
+            self.reject_typed_guard()?;
+        }
         self.expect_terminator()?;
         Ok(StmtKind::Mut { name, name_span, ty, init })
     }
@@ -3378,11 +3435,14 @@ impl Parser {
             self.expect(&TokenKind::RParen)?;
             self.expect(&TokenKind::Eq)?;
             let init = self.parse_expr()?;
+            if self.check(&TokenKind::Else) {
+                self.reject_typed_guard()?;
+            }
             self.expect_terminator()?;
             return Ok(StmtKind::LetTuple { patterns, init });
         }
 
-        if let Some(stmt) = self.try_parse_struct_binding(false)? {
+        if let Some(stmt) = self.try_parse_pattern_binding(false)? {
             return Ok(stmt);
         }
 
@@ -3390,35 +3450,16 @@ impl Parser {
         let name = self.expect_ident()?;
         let ty = if self.match_token(&TokenKind::Colon) { Some(self.parse_type_name()?) } else { None };
         self.expect(&TokenKind::Eq)?;
-        let mut init = self.parse_expr()?;
-
-        // Check for guard pattern: let v = expr is Pattern else { ... }
+        let init = self.parse_expr()?;
         if matches!(init.kind, ExprKind::IsPattern { .. }) && self.check(&TokenKind::Else) {
-            let ExprKind::IsPattern { expr, pattern } = init.kind else { unreachable!() };
-            let guard_start = expr.span.start;
-            self.expect(&TokenKind::Else)?;
-
-            let else_branch = if self.match_token(&TokenKind::Colon) {
-                self.parse_inline_block(guard_start)?
-            } else {
-                self.skip_newlines();
-                let stmts = self.parse_block_body()?;
-                let end = self.tokens[self.pos - 1].span.end;
-                Expr { id: self.next_id(), kind: ExprKind::Block(stmts), span: self.span(guard_start, end) }
-            };
-
-            let end = else_branch.span.end;
-            init = Expr {
-                id: self.next_id(),
-                kind: ExprKind::GuardPattern {
-                    expr,
-                    pattern,
-                    else_branch: Box::new(else_branch),
-                },
-                span: self.span(guard_start, end),
-            };
+            return self.reject_right_side_guard(name, false, init);
         }
-
+        if self.check(&TokenKind::Else) {
+            if ty.is_none() {
+                return self.parse_name_guard(name, name_span, false, init);
+            }
+            self.reject_typed_guard()?;
+        }
         self.expect_terminator()?;
         Ok(StmtKind::Let { name, name_span, ty, init })
     }
@@ -3463,7 +3504,7 @@ impl Parser {
     }
 
     /// Parse everything after the `break` keyword. Does not consume the
-    /// terminator — the inline-block form (`if c: break x`) can't.
+    /// terminator — a match arm (`Done => break x,`) ends at the comma.
     ///
     /// ```text
     /// break              → no label, no value
@@ -3511,12 +3552,7 @@ impl Parser {
         if let Some(l) = label {
             self.loop_labels.push(l.clone());
         }
-        let body = if self.match_token(&TokenKind::Colon) {
-            self.parse_stmt().map(|s| vec![s])
-        } else {
-            self.skip_newlines();
-            self.parse_block_body()
-        };
+        let body = self.parse_body_stmts();
         if label.is_some() {
             self.loop_labels.pop();
         }
@@ -3663,12 +3699,7 @@ impl Parser {
             };
             self.expect(&TokenKind::In)?;
             let iter = self.parse_expr_no_braces()?;
-            let body = if self.match_token(&TokenKind::Colon) {
-                vec![self.parse_stmt()?]
-            } else {
-                self.skip_newlines();
-                self.parse_block_body()?
-            };
+            let body = self.parse_body_stmts()?;
             return Ok(StmtKind::ComptimeFor { binding, iter, body });
         }
 
@@ -4260,8 +4291,7 @@ impl Parser {
                 // literal's source text, printed exactly that (#805).
                 let end = self.tokens[self.pos - 1].span.end;
                 // OPT17/ER26: `!x?` is forbidden — prefix `!` with suffix `?`
-                // fights the parse. Suggest `x == none` (Option) or `x is E`
-                // (Result) instead. `!` on a plain bool is still fine.
+                // fights the parse. `!` on a plain bool is still fine.
                 if matches!(operand.kind, ExprKind::IsPresent { .. }) {
                     return Err(ParseError {
                         span: self.span(start, end),
@@ -5075,104 +5105,143 @@ impl Parser {
         self.expect(&TokenKind::If)?;
 
         let cond = self.parse_expr_no_braces()?;
-
-        if let ExprKind::IsPattern { expr: scrutinee, pattern } = cond.kind {
-            let then_branch = if self.match_token(&TokenKind::Colon) {
-                self.parse_inline_block(start)?
-            } else {
-                self.skip_newlines();
-                let stmts = self.parse_block_body()?;
-                let end = self.tokens[self.pos - 1].span.end;
-                Expr { id: self.next_id(), kind: ExprKind::Block(stmts), span: self.span(start, end) }
-            };
-
-            let (else_branch, else_binding) = if self.check(&TokenKind::Else) ||
-                (self.check(&TokenKind::Newline) && self.peek_past_newlines_is_else()) {
-                if self.check(&TokenKind::Newline) {
-                    self.skip_newlines();
-                }
-                self.expect(&TokenKind::Else)?;
-                // ER22: `else as e { … }` binds the branch the test ruled out.
-                let binding = if self.check(&TokenKind::As)
-                    && matches!(self.peek(1), TokenKind::Ident(_))
-                {
-                    self.advance();
-                    Some(self.expect_ident()?)
-                } else {
-                    None
-                };
-                let body = if self.check(&TokenKind::If) {
-                    Box::new(self.parse_if_expr()?)
-                } else if self.match_token(&TokenKind::Colon) {
-                    Box::new(self.parse_inline_block(start)?)
-                } else {
-                    self.skip_newlines();
-                    let stmts = self.parse_block_body()?;
-                    let end = self.tokens[self.pos - 1].span.end;
-                    Box::new(Expr { id: self.next_id(), kind: ExprKind::Block(stmts), span: self.span(start, end) })
-                };
-                (Some(body), binding)
-            } else {
-                (None, None)
-            };
-
-            let end = self.tokens[self.pos - 1].span.end;
-            return Ok(Expr {
-                id: self.next_id(),
-                kind: ExprKind::IfLet { expr: scrutinee, pattern, then_branch: Box::new(then_branch), else_branch, else_binding },
-                span: self.span(start, end),
-            });
-        }
-
-        let then_branch = if self.match_token(&TokenKind::Colon) {
-            self.parse_inline_block(start)?
-        } else {
-            self.skip_newlines();
-            let stmts = self.parse_block_body()?;
-            let end = self.tokens[self.pos - 1].span.end;
-            Expr { id: self.next_id(), kind: ExprKind::Block(stmts), span: self.span(start, end) }
-        };
-
-        let (else_branch, else_binding) = if self.check(&TokenKind::Else) ||
-            (self.check(&TokenKind::Newline) && self.peek_past_newlines_is_else()) {
-            if self.check(&TokenKind::Newline) {
-                self.skip_newlines();
-            }
-            self.expect(&TokenKind::Else)?;
-            // ER22: `else as e { … }` binds the error from a Result cond.
-            let binding = if self.check(&TokenKind::As)
-                && matches!(self.peek(1), TokenKind::Ident(_))
-            {
-                self.advance();
-                Some(self.expect_ident()?)
-            } else {
-                None
-            };
-            let body = if self.check(&TokenKind::If) {
-                Box::new(self.parse_if_expr()?)
-            } else if self.match_token(&TokenKind::Colon) {
-                Box::new(self.parse_inline_block(start)?)
-            } else {
-                self.skip_newlines();
-                let stmts = self.parse_block_body()?;
-                let end = self.tokens[self.pos - 1].span.end;
-                Box::new(Expr { id: self.next_id(), kind: ExprKind::Block(stmts), span: self.span(start, end) })
-            };
-            (Some(body), binding)
-        } else {
-            (None, None)
-        };
-
+        let then_branch = Box::new(self.parse_body(start)?);
+        let (else_branch, else_binding) = self.parse_else(start)?;
         let end = self.tokens[self.pos - 1].span.end;
-        Ok(Expr {
-            id: self.next_id(),
-            kind: ExprKind::If { cond: Box::new(cond), then_branch: Box::new(then_branch), else_branch, else_binding },
-            span: self.span(start, end),
-        })
+
+        let kind = match cond.kind {
+            ExprKind::IsPattern { expr: scrutinee, pattern } => {
+                ExprKind::IfLet { expr: scrutinee, pattern, then_branch, else_branch, else_binding: else_binding.map(|(name, _)| name) }
+            }
+            kind => {
+                // ER22: `else as e` binds what an `is` test ruled out. A plain
+                // condition rules nothing out that has a value. In an `&&`
+                // chain the else also runs when a later test fails, and then
+                // the value held what the test asked for: no error to bind.
+                if let Some((name, span)) = else_binding {
+                    let chained = matches!(&kind, ExprKind::Binary { op: BinOp::And, .. });
+                    return Err(if chained {
+                        ParseError {
+                            span,
+                            message: format!("`else as {name}` needs the condition to be one `is` test"),
+                            hint: Some(format!("test the rest inside: `if r is T as v {{ if v > 5 {{ … }} }} else as {name} {{ … }}`")),
+                            why: Some("with `&&`, the else also runs when a later test fails, and then there's no ruled-out value to bind [type.errors/ER22]".to_string()),
+                        }
+                    } else {
+                        ParseError {
+                            span,
+                            message: format!("`else as {name}` needs an `is` test"),
+                            hint: Some(format!("test the type: `if r is T as v {{ … }} else as {name} {{ … }}`")),
+                            why: Some("the else branch binds what the test ruled out, and only an `is` test rules out part of a value [type.errors/ER22]".to_string()),
+                        }
+                    });
+                }
+                let cond = Expr { kind, ..cond };
+                ExprKind::If { cond: Box::new(cond), then_branch, else_branch }
+            }
+        };
+        Ok(Expr { id: self.next_id(), kind, span: self.span(start, end) })
     }
 
-    /// Parse inline block after colon (doesn't consume terminator).
+    /// An optional `else [as e] { … }` or `else if …` after an `if` body. The
+    /// binding comes back with its span so a plain `if` can reject it.
+    fn parse_else(&mut self, start: usize) -> Result<(Option<Box<Expr>>, Option<(String, Span)>), ParseError> {
+        if !(self.check(&TokenKind::Else)
+            || (self.check(&TokenKind::Newline) && self.peek_past_newlines_is_else()))
+        {
+            return Ok((None, None));
+        }
+        if self.check(&TokenKind::Newline) {
+            self.skip_newlines();
+        }
+        self.expect(&TokenKind::Else)?;
+        let binding = if self.check(&TokenKind::As) && matches!(self.peek(1), TokenKind::Ident(_)) {
+            let as_start = self.current().span.start;
+            self.advance();
+            let name = self.expect_ident()?;
+            let as_end = self.tokens[self.pos - 1].span.end;
+            Some((name, self.span(as_start, as_end)))
+        } else {
+            None
+        };
+        let body = if self.check(&TokenKind::If) {
+            Box::new(self.parse_if_expr()?)
+        } else {
+            Box::new(self.parse_body(start)?)
+        };
+        Ok((Some(body), binding))
+    }
+
+    /// The braced body of `if`, `else`, a loop, `with`, or a guard's `else`.
+    ///
+    /// A colon body (`if x: y`) is gone so the colon does one job: joining a
+    /// name to its type or value. It's reported, and the statement after it is
+    /// read as the braced body it meant, so one mistake is one error.
+    fn parse_body_stmts(&mut self) -> Result<Vec<Stmt>, ParseError> {
+        if self.check(&TokenKind::Colon) {
+            self.record_error(ParseError {
+                span: self.current().span,
+                message: "a body goes in braces, not after a colon".to_string(),
+                hint: Some("braces fit on one line: `if x > 0 { return x } else { return 0 }`".to_string()),
+                why: Some("the colon only joins a name to its type or value: `x: i64`, `f(name: v)`".to_string()),
+            });
+            self.advance();
+            return Ok(vec![self.parse_inline_stmt()?]);
+        }
+        let line_broke = self.check(&TokenKind::Newline);
+        self.skip_newlines();
+        // `if total⏎ > limit {`: the newline ended the condition, because a
+        // line starting with one of these could be a value or a type of its
+        // own. Say where the operator goes rather than "expected `{`".
+        if line_broke {
+            let op = match self.current_kind() {
+                TokenKind::Plus => Some("+"),
+                TokenKind::Minus => Some("-"),
+                TokenKind::Star => Some("*"),
+                TokenKind::Lt => Some("<"),
+                TokenKind::Gt => Some(">"),
+                TokenKind::DotDot => Some(".."),
+                TokenKind::DotDotEq => Some("..="),
+                _ => None,
+            };
+            if let Some(op) = op {
+                self.record_error(ParseError {
+                    span: self.current().span,
+                    message: format!("a line starts with `{op}`, but the line above already ended"),
+                    hint: Some(format!("to continue the line above, end it with `{op}`")),
+                    why: Some(
+                        "a line continues the one above only when it starts with an operator nothing else starts with, like `&&`, `||`, `==` or `.`"
+                            .to_string(),
+                    ),
+                });
+                // Read past the rest of the line to the body's `{`, which may
+                // sit on a line of its own, so the one misplaced operator is
+                // one error.
+                while !matches!(self.current_kind(), TokenKind::LBrace | TokenKind::Newline | TokenKind::Eof) {
+                    self.advance();
+                }
+                self.skip_newlines();
+            }
+        }
+        self.parse_block_body()
+    }
+
+    /// `parse_body_stmts` as a block expression spanning from `start`.
+    fn parse_body(&mut self, start: usize) -> Result<Expr, ParseError> {
+        let stmts = self.parse_body_stmts()?;
+        let end = self.tokens[self.pos - 1].span.end;
+        Ok(Expr { id: self.next_id(), kind: ExprKind::Block(stmts), span: self.span(start, end) })
+    }
+
+    /// One statement as a block: a match arm's body or a diverging `??`
+    /// fallback (doesn't consume the terminator).
     fn parse_inline_block(&mut self, start: usize) -> Result<Expr, ParseError> {
+        let stmt = self.parse_inline_stmt()?;
+        let end = stmt.span.end;
+        Ok(Expr { id: self.next_id(), kind: ExprKind::Block(vec![stmt]), span: self.span(start, end) })
+    }
+
+    fn parse_inline_stmt(&mut self) -> Result<Stmt, ParseError> {
         let stmt_start = self.current().span.start;
 
         let kind = match self.current_kind().clone() {
@@ -5220,8 +5289,7 @@ impl Parser {
         };
 
         let end = self.tokens.get(self.pos.saturating_sub(1)).map(|t| t.span.end).unwrap_or(stmt_start);
-        let stmt = Stmt { id: self.next_id(), kind, span: self.span(stmt_start, end) };
-        Ok(Expr { id: self.next_id(), kind: ExprKind::Block(vec![stmt]), span: self.span(start, end) })
+        Ok(Stmt { id: self.next_id(), kind, span: self.span(stmt_start, end) })
     }
 
     fn parse_match_expr(&mut self) -> Result<Expr, ParseError> {
@@ -5382,20 +5450,7 @@ impl Parser {
             });
         }
 
-        let body = if self.match_token(&TokenKind::Colon) {
-            let inline = self.parse_inline_block(start)?;
-            match inline.kind {
-                ExprKind::Block(stmts) => stmts,
-                _ => vec![Stmt {
-                    id: self.next_id(),
-                    kind: StmtKind::Expr(inline.clone()),
-                    span: inline.span,
-                }],
-            }
-        } else {
-            self.skip_newlines();
-            self.parse_block_body()?
-        };
+        let body = self.parse_body_stmts()?;
         let end = self.tokens[self.pos - 1].span.end;
         Ok(Expr {
             id: self.next_id(),
@@ -5526,12 +5581,30 @@ impl Parser {
         })
     }
 
+    /// The `=>` between a select arm and its body, as a match arm has. A colon
+    /// there is recorded with its fix and read as the arrow.
+    fn expect_select_arrow(&mut self) -> Result<(), ParseError> {
+        if self.check(&TokenKind::Colon) {
+            let span = self.current().span;
+            self.advance();
+            self.record_error(ParseError {
+                span,
+                message: "a select arm's body follows `=>`".to_string(),
+                hint: Some("write `=>` in place of `:`".to_string()),
+                why: Some("arms of `select` and `match` are written alike; a colon only ever introduces a type".to_string()),
+            });
+            return Ok(());
+        }
+        self.expect(&TokenKind::FatArrow)?;
+        Ok(())
+    }
+
     fn parse_select_arm(&mut self) -> Result<SelectArm, ParseError> {
-        // Default arm: `_: body`
+        // Default arm: `_ => body`
         if let TokenKind::Ident(ref name) = self.current_kind().clone() {
             if name == "_" {
                 self.advance();
-                self.expect(&TokenKind::Colon)?;
+                self.expect_select_arrow()?;
                 self.skip_newlines();
                 let body = self.parse_expr()?;
                 return Ok(SelectArm {
@@ -5548,9 +5621,9 @@ impl Parser {
         self.allow_brace_expr = old;
 
         if self.match_token(&TokenKind::Arrow) {
-            // Recv arm: `channel -> binding: body`
+            // Recv arm: `channel -> binding => body`
             let binding = self.expect_ident()?;
-            self.expect(&TokenKind::Colon)?;
+            self.expect_select_arrow()?;
             self.skip_newlines();
             let body = self.parse_expr()?;
             Ok(SelectArm {
@@ -5558,12 +5631,12 @@ impl Parser {
                 body: Box::new(body),
             })
         } else if self.check(&TokenKind::Lt) {
-            // Send arm: `channel <- value: body`
+            // Send arm: `channel <- value => body`
             // `<` then `-` as two tokens to avoid breaking `x < -y` elsewhere
             self.advance(); // consume `<`
             self.expect(&TokenKind::Minus)?;
             let value = self.parse_expr_no_braces()?;
-            self.expect(&TokenKind::Colon)?;
+            self.expect_select_arrow()?;
             self.skip_newlines();
             let body = self.parse_expr()?;
             Ok(SelectArm {
@@ -5836,6 +5909,7 @@ impl Parser {
                 Ok(PatternKind::TypePat { ty: TypeExpr::NoneType, binding: None })
             }
             TokenKind::Ident(name) => {
+                let name_start = self.current().span.start;
                 self.advance();
 
                 // Qualified paths: `Enum.Variant`, and through a module,
@@ -5870,9 +5944,9 @@ impl Parser {
                 let name = written.to_string();
 
                 if self.match_token(&TokenKind::LParen) {
-                    // `Circle(r)`, `Point(x: 0, y)`, `Vertex(x, ..)`. By
-                    // position or by name is the declaration's call: with a
-                    // label or `..` written it's by name here; otherwise
+                    // `Circle(r)`, `Point(x: 0, y)`, `Vertex(x as vx, ..)`.
+                    // By position or by name is the declaration's call: with
+                    // a label or `..` written it's by name here; otherwise
                     // desugar decides from what `name` declares.
                     self.skip_newlines();
                     let mut items: Vec<(Option<String>, Pattern)> = Vec::new();
@@ -5881,7 +5955,23 @@ impl Parser {
                         if self.match_token(&TokenKind::DotDot) {
                             rest = true;
                         } else if let Some(label) = self.take_label() {
-                            items.push((Some(label), self.parse_pattern()?));
+                            let pattern = self.parse_pattern()?;
+                            // `x: px` used to rename; a field's `:` now only
+                            // tests, and `as` names, as everywhere else. A
+                            // lowercase name in a pattern binds, unless it is
+                            // a builtin type (`found: string`).
+                            if let PatternKind::Ident(b) = &pattern.kind {
+                                if !Self::is_type_name(b) && !rask_ast::primitives::is_builtin_value_type(b) {
+                                    let fix = if *b == label { label.clone() } else { format!("{label} as {b}") };
+                                    self.record_error(ParseError {
+                                        span: pattern.span,
+                                        message: format!("`{label}: {b}` in a pattern doesn't rename the field"),
+                                        hint: Some(format!("write `{fix}`")),
+                                        why: Some("`field: pattern` tests the field; `as` gives a value a name".to_string()),
+                                    });
+                                }
+                            }
+                            items.push((Some(label), pattern));
                         } else {
                             items.push((None, self.parse_pattern()?));
                         }
@@ -5890,11 +5980,33 @@ impl Parser {
                     self.skip_newlines();
                     self.expect(&TokenKind::RParen)?;
                     if !rest && items.iter().all(|(l, _)| l.is_none()) {
-                        let fields = items.into_iter().map(|(_, p)| p).collect();
+                        let fields: Vec<Pattern> = items.into_iter().map(|(_, p)| p).collect();
+                        // `Dot()` and `Circle(_)` test what bare `Dot` and
+                        // `Circle` test. One spelling: the bare name.
+                        let all_wild = fields.iter().all(|p| matches!(p.kind, PatternKind::Wildcard));
+                        if all_wild {
+                            let written = if fields.is_empty() {
+                                format!("{name}()")
+                            } else {
+                                format!("{name}({})", vec!["_"; fields.len()].join(", "))
+                            };
+                            let end = self.tokens[self.pos - 1].span.end;
+                            self.record_error(ParseError {
+                                span: self.span(name_start, end),
+                                message: format!("`{written}` is spelled `{name}`"),
+                                hint: Some(format!("write `{name}`")),
+                                why: Some("a variant's bare name tests the variant whatever its payload; parentheses are for binding or testing what's inside".to_string()),
+                            });
+                        }
                         return Ok(PatternKind::Constructor { name, fields });
                     }
                     let mut fields = Vec::new();
                     for (label, pattern) in items {
+                        if let (None, Some((field, binding))) = (&label, pattern.as_field_rename()) {
+                            let renamed = PatternKind::Ident(binding.to_string());
+                            fields.push((field.to_string(), Pattern::new(self.next_id(), renamed, pattern.span)));
+                            continue;
+                        }
                         match (label, pattern) {
                             (Some(l), p) => fields.push((l, p)),
                             // Shorthand: `x` is `x: x`.

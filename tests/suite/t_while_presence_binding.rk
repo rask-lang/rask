@@ -10,9 +10,9 @@
 // crash: resolve defines the binder in the loop scope, the checker gives it the
 // payload type, and both backends bind it per iteration.
 //
-// It lowers the way `while <expr> is <T> as v` already did — scrutinee read once
-// in the check block, payload bound at the top of the body — and shares the
-// payload-binding code with the `if` form so a loop reads it identically.
+// The loop condition goes through the same path as an `if` condition: the
+// scrutinee is read once per iteration in the check block, the payload is
+// bound there, and the binding reaches the body and ends with the loop.
 //
 // What's covered: a scalar payload, an aggregate one (string, struct), draining
 // a Vec through `pop()`, the `(try …)? as line` composite the canonical I/O

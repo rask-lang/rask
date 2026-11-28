@@ -88,11 +88,17 @@ impl Interpreter {
                 Ok(Value::Unit)
             }
 
-            // `let Point { x, .. } = p` — the same match a `match` arm does, then
-            // the bindings it produced go into the current scope.
-            StmtKind::LetStruct { pattern, init, .. } => {
+            // `let Point(x, ..) = p` and the guard `let Circle(r) = s else { … }`:
+            // the same match a `match` arm does, then the bindings it produced go
+            // into the current scope. On a miss the guard's else runs and
+            // diverges, so its control flow carries out of here.
+            StmtKind::LetPattern { pattern, init, else_branch, .. } => {
                 let value = self.eval_owned(init)?;
                 let Some(bindings) = self.match_pattern(pattern, &value) else {
+                    if let Some(else_branch) = else_branch {
+                        self.eval_expr(else_branch)?;
+                        return Ok(Value::Unit);
+                    }
                     return Err(RuntimeDiagnostic::new(
                         RuntimeError::TypeError(
                             "destructuring binding didn't match the value".to_string(),

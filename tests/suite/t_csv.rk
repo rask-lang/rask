@@ -70,7 +70,7 @@ func describe(e: csv.CsvError) -> string {
         csv.CsvError.ColumnCount(row, expected, found) => return "ColumnCount({row},{expected},{found})"
         csv.CsvError.BadValue(row, column, reason) => return "BadValue({row},{column}): {reason}"
         csv.CsvError.UnclosedQuote(row) => return "UnclosedQuote({row})"
-        csv.CsvError.Io(_) => return "Io"
+        csv.CsvError.Io => return "Io"
     }
 }
 

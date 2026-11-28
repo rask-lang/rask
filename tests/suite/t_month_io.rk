@@ -93,7 +93,7 @@ test "std.io — a handle closed inside a loop, one per iteration" {
         ensure f.close()
         let _ = f.write_text("body")
         let _ = f.close()
-        if fs.exists(p): written = written + 1
+        if fs.exists(p) { written = written + 1 }
         let _ = fs.remove_file(p)
     }
     assert written == 3

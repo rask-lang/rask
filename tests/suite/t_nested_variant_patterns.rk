@@ -2,7 +2,7 @@
 // A variant pattern inside another variant's field.
 //
 // Native tested only the outer tag and never bound the inner names, so
-// `Wrapped(Inner.Good(_))` took the first `Wrapped` arm whatever was inside,
+// `Wrapped(Inner.Good)` took the first `Wrapped` arm whatever was inside,
 // and `Wrapped(Inner.Bad(msg))` failed to compile with "unresolved variable
 // `msg`" (#1645). The interpreter had both right all along.
 
@@ -49,7 +49,7 @@ test "the inner variant picks the arm" {
 test "three levels deep" {
     let d = Deep.Layer(Outer.Wrapped(Inner.Good(42)))
     let got = match d {
-        Deep.Layer(Outer.Wrapped(Inner.Bad(_))) => "bad"
+        Deep.Layer(Outer.Wrapped(Inner.Bad)) => "bad"
         Deep.Layer(Outer.Wrapped(Inner.Good(n))) => "good {n}"
         _ => "else"
     }
@@ -59,7 +59,7 @@ test "three levels deep" {
 test "named fields nest too" {
     let s = Shape.Box(inner: Inner.Bad("worn"), label: "crate")
     let got = match s {
-        Shape.Box(inner: Inner.Good(_), label) => "good {label}"
+        Shape.Box(inner: Inner.Good, label) => "good {label}"
         Shape.Box(inner: Inner.Bad(why), label) => "bad {why} {label}"
         _ => "else"
     }
@@ -73,13 +73,13 @@ test "is tests and binds the nested variant" {
     } else {
         assert false, "expected Good"
     }
-    assert !(a is Outer.Wrapped(Inner.Bad(_)))
+    assert !(a is Outer.Wrapped(Inner.Bad))
 }
 
 test "a tuple element nests" {
     let t = (Outer.Wrapped(Inner.Good(9)), 1)
     let got = match t {
-        (Outer.Wrapped(Inner.Bad(_)), _) => "bad"
+        (Outer.Wrapped(Inner.Bad), _) => "bad"
         (Outer.Wrapped(Inner.Good(n)), k) => "good {n} {k}"
         _ => "else"
     }

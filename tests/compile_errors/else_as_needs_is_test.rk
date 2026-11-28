@@ -1,0 +1,19 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: `else as e` after a condition that isn't an `is` test
+// Rejects: `else as e` after a plain condition, and after an `&&` chain
+// (parse errors)
+//
+// `else as e` binds what an `is` test ruled out (ER22). A plain condition
+// rules nothing out that has a value. The parser kept the binding on every
+// `if` and left the checker to reject it. After `r is T as v && v > 0` the
+// else runs when either test fails, so nothing says what `e` would hold.
+
+func pick(k: i64) -> i64 {
+    // ERROR: `else as` needs an `is` test
+    if k > 0 { return k } else as e { return 0 }
+}
+
+func positive(r: i64 or string) -> i64 {
+    // ERROR: `else as` needs the condition to be one `is` test
+    if r is i64 as v && v > 0 { return v } else as e { return 0 }
+}

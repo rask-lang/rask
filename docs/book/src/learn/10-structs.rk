@@ -20,7 +20,7 @@ func distance_from_origin(p: Point) -> i32 {
 }
 
 func abs(n: i32) -> i32 {
-    return if n < 0: -n else: n
+    return if n < 0 { -n } else { n }
 }
 
 // Changing a struct in place comes later. For now, a function that "moves" a

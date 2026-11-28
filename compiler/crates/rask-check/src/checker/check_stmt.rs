@@ -176,6 +176,19 @@ impl TypeChecker {
                 } else {
                     (self.infer_expr(init), None)
                 };
+                // type.enums/PM8: a capital never binds, so `let Dot = s` on a
+                // `Shape` is the pattern `Dot`, which a `Circle` gets past.
+                if declared_ty.is_none()
+                    && name.starts_with(|c: char| c.is_ascii_uppercase())
+                    && self.variant_of_scrutinee(name, &init_ty).is_some()
+                {
+                    let pattern = rask_ast::expr::Pattern::new(
+                        rask_ast::NodeId::DUMMY,
+                        rask_ast::expr::PatternKind::Ident(name.clone()),
+                        *name_span,
+                    );
+                    self.reject_refutable_let(&pattern, &init_ty, stmt.span);
+                }
                 let binding_ty = if let Some(declared) = declared_ty {
                     // ER11/optionals: at binding position, only the optional
                     // shape (T or none) widens — same rule as Mut above.
@@ -371,16 +384,12 @@ impl TypeChecker {
                 self.clear_expression_borrows();
             }
             StmtKind::While { cond, body, label } => {
-                let cond_ty = self.infer_expr(cond);
+                // The condition's bindings reach the body, bound afresh on
+                // each iteration, and nothing after the loop.
+                self.push_scope();
+                let cond_ty = self.infer_cond(cond, super::BindingReach::Onward);
                 self.ctx
                     .add_constraint(TypeConstraint::Equal(Type::Bool, cond_ty, stmt.span));
-                self.push_scope();
-                // OPT19 on a loop: `while expr? as v` binds the payload for the
-                // body. The test narrows nothing — this is a binding, re-read
-                // once per iteration, exactly as in the `if` form.
-                if let Some((name, payload_ty, _)) = self.extract_presence_binding(cond) {
-                    self.define_local_bound(name, payload_ty, super::BoundFrom::Payload);
-                }
                 self.loop_forms.push(super::LoopFrame { form: "while", header: stmt.span, label: label.clone(), value: None });
                 for s in body {
                     self.check_stmt(s);
@@ -610,11 +619,28 @@ impl TypeChecker {
                 let init_ty = self.infer_expr(init);
                 self.bind_tuple_patterns(patterns, &init_ty, is_const, stmt.span);
             }
-            // `let Point { x, .. } = p` — the pattern types its own bindings, the
-            // same way a match arm's does.
-            StmtKind::LetStruct { pattern, init, is_mut } => {
+            // `let Point(x, y) = p` and the guard `let Circle(r) = s else { return }`.
+            // The pattern types its own bindings, as a match arm's does, and
+            // they live on after the statement. The `else` runs before any
+            // are bound, so it is checked first and can't see them.
+            StmtKind::LetPattern { pattern, init, is_mut, else_branch } => {
                 let init_ty = self.infer_expr(init);
+                if let Some(else_branch) = else_branch {
+                    let else_ty = self.infer_expr(else_branch);
+                    if !matches!(self.ctx.apply(&else_ty), Type::Never) {
+                        self.errors.push(TypeError::GuardElseMustDiverge { span: else_branch.span });
+                    }
+                }
+                let errors_before = self.errors.len();
                 let bindings = self.check_pattern(pattern, &init_ty, stmt.span);
+                // A pattern that is wrong in itself says so; what it would or
+                // wouldn't match is beside the point.
+                if self.errors.len() == errors_before {
+                    match else_branch {
+                        None => self.reject_refutable_let(pattern, &init_ty, stmt.span),
+                        Some(else_branch) => self.reject_needless_guard(pattern, &init_ty, else_branch.span, stmt.span),
+                    }
+                }
                 for (name, ty) in bindings {
                     if *is_mut {
                         self.define_local(name, ty);
@@ -1082,7 +1108,7 @@ impl TypeChecker {
             | SK::Mut { init: e, .. }
             | SK::LetTuple { init: e, .. }
             | SK::MutTuple { init: e, .. }
-            | SK::LetStruct { init: e, .. }
+            | SK::LetPattern { init: e, .. }
             | SK::Assign { value: e, .. } => Some(e),
             _ => None,
         }
@@ -1128,7 +1154,10 @@ impl TypeChecker {
         match &stmt.kind {
             SK::Let { init, .. } | SK::Mut { init, .. } => exprs.push(init),
             SK::LetTuple { init, .. } | SK::MutTuple { init, .. } => exprs.push(init),
-            SK::LetStruct { init, .. } => exprs.push(init),
+            SK::LetPattern { init, else_branch, .. } => {
+                exprs.push(init);
+                exprs.extend(else_branch.as_deref());
+            }
             SK::Expr(e) => exprs.push(e),
             SK::Return(Some(e)) => exprs.push(e),
             SK::Assign { target, value, .. } => {
@@ -1199,10 +1228,6 @@ impl TypeChecker {
             | EK::Cast { expr: inner, .. }
             | EK::Convert { expr: inner, .. }
             | EK::IsPattern { expr: inner, .. } => kids.push(inner),
-            EK::GuardPattern { expr: inner, else_branch, .. } => {
-                kids.push(inner);
-                kids.push(else_branch);
-            }
             EK::DynamicField { object, field_expr } => {
                 kids.push(object);
                 kids.push(field_expr);

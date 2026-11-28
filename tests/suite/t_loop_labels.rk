@@ -9,7 +9,7 @@ test "continue label skips the outer iteration" {
     mut count = 0
     outer: for i in 0..5 {
         for j in 0..5 {
-            if j == 2: continue outer
+            if j == 2 { continue outer }
             count += 1
         }
     }
@@ -22,7 +22,7 @@ test "break label exits the outer loop" {
     outer: for i in 0..5 {
         for j in 0..5 {
             seen += 1
-            if i == 1 && j == 1: break outer
+            if i == 1 && j == 1 { break outer }
         }
     }
     // 5 full inner rounds for i=0, then j=0 and j=1 for i=1
@@ -32,7 +32,7 @@ test "break label exits the outer loop" {
 test "break label carries a value out of a loop expression" {
     let found = search: loop {
         for i in 0..10 {
-            if i == 7: break search i
+            if i == 7 { break search i }
         }
         break search -1
     }
@@ -43,7 +43,7 @@ test "an unlabeled break still stops at the nearest loop" {
     mut count = 0
     outer: for i in 0..3 {
         for j in 0..3 {
-            if j == 1: break
+            if j == 1 { break }
             count += 1
         }
         count += 10
@@ -67,7 +67,7 @@ test "a labeled while is a real label" {
         mut j = 0
         while j < 5 {
             j += 1
-            if j == 2: continue outer
+            if j == 2 { continue outer }
             count += 1
         }
     }
@@ -81,7 +81,7 @@ test "a labeled while is a real label" {
         while b < 5 {
             b += 1
             hits += 1
-            if a == 2 && b == 2: break stop
+            if a == 2 && b == 2 { break stop }
         }
     }
     // 5 inner rounds for a=1, then b=1 and b=2 for a=2
@@ -93,7 +93,7 @@ test "labeled continue on a loop expression" {
     let done = spin: loop {
         ticks += 1
         for _ in 0..3 {
-            if ticks < 3: continue spin
+            if ticks < 3 { continue spin }
         }
         break spin ticks
     }

@@ -12,10 +12,10 @@ func abs(n: i32) -> i32 {
     return n
 }
 
-// `if` also gives a value. When each side is a single expression, write it
-// after a colon instead of a block:
+// `if` also gives a value: the last expression in each block. Short blocks
+// fit on one line:
 //
-//     let kind = if n % 2 == 0: "even" else: "odd"
+//     let kind = if n % 2 == 0 { "even" } else { "odd" }
 //
 // `%` is the remainder, so `9 % 3 == 0`.
 //

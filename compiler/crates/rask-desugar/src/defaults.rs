@@ -203,9 +203,14 @@ impl DefaultDesugarer {
             StmtKind::Expr(e) => self.desugar_expr(e),
             StmtKind::Mut { init, .. } | StmtKind::Let { init, .. } => self.desugar_expr(init),
             StmtKind::MutTuple { init, .. }
-            | StmtKind::LetTuple { init, .. }
-            | StmtKind::LetStruct { init, .. } => {
+            | StmtKind::LetTuple { init, .. } => {
                 self.desugar_expr(init);
+            }
+            StmtKind::LetPattern { init, else_branch, .. } => {
+                self.desugar_expr(init);
+                if let Some(e) = else_branch {
+                    self.desugar_expr(e);
+                }
             }
             StmtKind::Assign { target, value, .. } => {
                 self.desugar_expr(target);
@@ -310,10 +315,6 @@ impl DefaultDesugarer {
             ExprKind::NullCoalesce { value, default } => {
                 self.desugar_expr(value);
                 self.desugar_expr(default);
-            }
-            ExprKind::GuardPattern { expr, else_branch, .. } => {
-                self.desugar_expr(expr);
-                self.desugar_expr(else_branch);
             }
             ExprKind::IsPattern { expr, .. } => self.desugar_expr(expr),
             ExprKind::Range { start, end, .. } => {

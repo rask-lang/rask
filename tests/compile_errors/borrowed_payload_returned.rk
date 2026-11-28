@@ -44,7 +44,7 @@ func first_arr(v: Val) -> Vec<i64> {
             // ERROR: E0872
             return a
         }
-        Val.Num(_) => {
+        Val.Num => {
             return Vec.new()
         }
     }

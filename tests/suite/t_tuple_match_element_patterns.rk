@@ -11,7 +11,7 @@ enum Shape { Dot, Line(i64) }
 
 func points(a: Pt, b: Pt) -> string {
     return match (a, b) {
-        (Pt(x: 0, y), Pt(x: 0, y: y2)) => "both on the axis {y} {y2}",
+        (Pt(x: 0, y), Pt(x: 0, y as y2)) => "both on the axis {y} {y2}",
         (Pt(x, y: 0), _) => "first on the x axis {x}",
         _ => "other",
     }

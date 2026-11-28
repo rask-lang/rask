@@ -220,7 +220,7 @@ func edit_data_at(v: Value, at: Vec<Step>, depth: usize, c: Change, dir: Directi
 }
 
 func edit_entries(entries: Vec<Entry>, c: Change, dir: Direction, where_: string) -> Vec<Entry> or LoadError {
-    let place = if where_.is_empty(): "top level" else: where_
+    let place = if where_.is_empty() { "top level" } else { where_ }
     mut out = entries.clone()
     match c {
         Change.Add(field, ..) => {
@@ -229,7 +229,7 @@ func edit_entries(entries: Vec<Entry>, c: Change, dir: Direction, where_: string
             }
             let i = find_entry(entries, field.name) ?? return out
             let value = entries[i].value.clone()
-            let at_default = if field.default? as d: d.eq(value) else: false
+            let at_default = if field.default? as d { d.eq(value) } else { false }
             if at_default || field.ignorable {
                 out.remove(i.wrap<i64>())
                 return out
@@ -249,7 +249,7 @@ func edit_entries(entries: Vec<Entry>, c: Change, dir: Direction, where_: string
             return out
         }
         Change.Rename(from, to, ..) => {
-            let (old, new_) = if dir is Forward: (from, to) else: (to, from)
+            let (old, new_) = if dir is Forward { (from, to) } else { (to, from) }
             let i = find_entry(entries, old) ?? return out
             if find_entry(entries, new_)? {
                 return LoadError(what: "{place}: both `{old}` and `{new_}` are set; `{old}` was renamed to `{new_}`, so keep one")
@@ -261,7 +261,7 @@ func edit_entries(entries: Vec<Entry>, c: Change, dir: Direction, where_: string
             let i = find_entry(entries, name) ?? return out
             let value = entries[i].value.clone()
             for pair in mapping {
-                let (src, dst) = if dir is Forward: (pair.before.clone(), pair.after.clone()) else: (pair.after.clone(), pair.before.clone())
+                let (src, dst) = if dir is Forward { (pair.before.clone(), pair.after.clone()) } else { (pair.after.clone(), pair.before.clone()) }
                 if src.eq(value) {
                     out[i.wrap<i64>()] = Entry(key: name, value: dst)
                     return out
@@ -278,7 +278,7 @@ func edit_entries(entries: Vec<Entry>, c: Change, dir: Direction, where_: string
             }
             // An absent field meant the default of its own version; write
             // that out so it keeps meaning the same thing.
-            let meant = if dir is Forward: from.clone() else: to.clone()
+            let meant = if dir is Forward { from.clone() } else { to.clone() }
             out.push(Entry(key: name, value: meant))
             return out
         }

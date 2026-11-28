@@ -7,9 +7,9 @@
 // feeding into them.
 
 func classify(n: i32) -> string {
-    if n > 0: return "positive"
-    else if n < 0: return "negative"
-    else: return "zero"
+    if n > 0 { return "positive" }
+    else if n < 0 { return "negative" }
+    else { return "zero" }
 }
 
 // The side effect goes through a struct field: `mutate` on a bare primitive does
@@ -35,9 +35,9 @@ test "bool literals and negation" {
 
 test "if as a statement, both forms" {
     mut hit = 0
-    if true: hit = 1
+    if true { hit = 1 }
     assert hit == 1
-    if false: hit = 2
+    if false { hit = 2 }
     assert hit == 1
     if true {
         hit = 3
@@ -59,9 +59,9 @@ test "if/else" {
 
 test "if as an expression" {
     let x = 5
-    assert (if x > 0: "pos" else: "neg") == "pos"
+    assert (if x > 0 { "pos" } else { "neg" }) == "pos"
     let y = -5
-    assert (if y > 0: "pos" else: "neg") == "neg"
+    assert (if y > 0 { "pos" } else { "neg" }) == "neg"
 }
 
 test "else-if chain" {

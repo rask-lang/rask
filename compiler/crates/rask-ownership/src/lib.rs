@@ -28,7 +28,7 @@ pub use error::{
 use std::collections::{HashMap, HashSet};
 
 use rask_ast::decl::{Decl, DeclKind, FnDecl};
-use rask_ast::expr::{Expr, ExprKind, Pattern, PatternKind, UnaryOp};
+use rask_ast::expr::{BinOp, Expr, ExprKind, Pattern, PatternKind, UnaryOp};
 use rask_ast::stmt::{ForBinding, Stmt, StmtKind};
 use rask_ast::Span;
 use rask_ast::ty::TypeExpr;
@@ -723,6 +723,15 @@ struct PartOf {
     /// `first` and `["next"]`. While the part is live that place can't be
     /// given away or replaced, since the box would go with it.
     owner: Option<(String, Vec<String>)>,
+}
+
+/// How long a pattern's bindings view the place they were read from.
+#[derive(Debug, Clone, Copy)]
+enum ViewsLast {
+    /// The match arm or `if` branch the pattern guards.
+    Arm,
+    /// The rest of the block: `let Running(job) = self.state else { return }`.
+    Block,
 }
 
 /// A non-Copy field read, as the value it views.
@@ -2548,28 +2557,36 @@ impl<'a> OwnershipChecker<'a> {
         self.current_block = block_id;
     }
 
-    /// Collect the names a pattern binds (for loop per-iteration exclusion).
-    fn collect_pattern_binding_names(pattern: &Pattern, out: &mut Vec<String>) {
+    /// The names a pattern binds. A variant's bare name binds nothing.
+    fn collect_pattern_binding_names(&self, pattern: &Pattern, out: &mut Vec<String>) {
         match &pattern.kind {
-            PatternKind::Ident(name) if !name.contains('.') => out.push(name.clone()),
+            PatternKind::Ident(name) if !name.contains('.') && !self.names_variant(pattern) => {
+                out.push(name.clone())
+            }
             PatternKind::Tuple(pats) | PatternKind::Constructor { fields: pats, .. } => {
                 for p in pats {
-                    Self::collect_pattern_binding_names(p, out);
+                    self.collect_pattern_binding_names(p, out);
                 }
             }
             PatternKind::Struct { fields, .. } => {
                 for (_, p) in fields {
-                    Self::collect_pattern_binding_names(p, out);
+                    self.collect_pattern_binding_names(p, out);
                 }
             }
             PatternKind::Or(pats) => {
                 for p in pats {
-                    Self::collect_pattern_binding_names(p, out);
+                    self.collect_pattern_binding_names(p, out);
                 }
             }
             PatternKind::TypePat { binding: Some(name), .. } => out.push(name.clone()),
             _ => {}
         }
+    }
+
+    /// Whether the checker read `pattern` as a variant's name rather than a
+    /// binding: `Open` against a `Got`.
+    fn names_variant(&self, pattern: &Pattern) -> bool {
+        matches!(self.program.pattern_targets.get(&pattern.id), Some(rask_types::PatternTarget::Variant { .. }))
     }
 
     /// Check a loop body accounting for values carried across iterations.
@@ -3412,7 +3429,12 @@ impl<'a> OwnershipChecker<'a> {
     /// own what they got; a `Heap` payload belongs to the holder and is
     /// tracked as a part. Returns what each name was bound to before, for
     /// `end_pattern_views`.
-    fn record_pattern_views(&mut self, pattern: &Pattern, scrutinee: &Expr) -> Vec<(String, Option<FieldView>)> {
+    fn record_pattern_views(
+        &mut self,
+        pattern: &Pattern,
+        scrutinee: &Expr,
+        last: ViewsLast,
+    ) -> Vec<(String, Option<FieldView>)> {
         let (Some(root), fields) = Self::extract_root_and_fields(scrutinee) else {
             return Vec::new();
         };
@@ -3428,7 +3450,7 @@ impl<'a> OwnershipChecker<'a> {
         let path = replaces::render_steps(&root, &fields);
         let root_sym = self.root_symbol(scrutinee);
         let mut names = Vec::new();
-        Self::collect_pattern_binding_names(pattern, &mut names);
+        self.collect_pattern_binding_names(pattern, &mut names);
         let mut prior = Vec::new();
         for name in names {
             let Some(ty) = self.binding_types.get(&name).cloned() else { continue };
@@ -3441,8 +3463,15 @@ impl<'a> OwnershipChecker<'a> {
             }
             let outer = self.field_views.remove(&name);
             if let Some(outer) = &outer {
-                // Still reads its field while the arm hides it by name.
-                self.shadowed_views.push((self.current_block + 1, name.clone(), outer.clone()));
+                // Still reads its field while the arm, or the rest of an inner
+                // block, hides it by name.
+                match last {
+                    ViewsLast::Arm => self.shadowed_views.push((self.current_block + 1, name.clone(), outer.clone())),
+                    ViewsLast::Block if outer.block < self.current_block => {
+                        self.shadowed_views.push((self.current_block, name.clone(), outer.clone()))
+                    }
+                    ViewsLast::Block => {}
+                }
             }
             self.field_views.insert(
                 name.clone(),
@@ -3691,16 +3720,32 @@ impl<'a> OwnershipChecker<'a> {
                 }
                 self.track_owned_binding(name, init);
             }
-            // `let Point { x, .. } = p` — reading fields out of the source is a
+            // `let Point(x, y) = p`: reading fields out of the source is a
             // projection, so the source is borrowed rather than moved, exactly as
             // `let x = p.x` would be (F1). Moving the whole struct instead would
             // make one destructuring the last use of the value, which is not what
             // reading two of its fields means.
-            StmtKind::LetStruct { pattern, init, is_mut } => {
+            //
+            // Any other pattern, as in the guard `let Circle(r) = s else { return }`,
+            // reads its value as a `match` does, with the rest of the block as the
+            // arm: the bindings are parts of the value and last until the block
+            // ends. The `else` runs on the path where nothing was bound.
+            StmtKind::LetPattern { pattern, init, is_mut, else_branch } => {
                 self.check_expr(init);
-                if let (ExprKind::Ident(source), PatternKind::Struct { fields, .. }) =
-                    (&init.kind, &pattern.kind)
-                {
+                if let Some(else_branch) = else_branch {
+                    self.check_fallback(else_branch);
+                }
+                let PatternKind::Struct { fields, .. } = &pattern.kind else {
+                    let init_ty = self.node_ty(&init.id).cloned();
+                    let part_of = self.pattern_part_source(init);
+                    self.register_pattern_bindings_typed(pattern, init_ty.as_ref(), init.span, part_of.as_ref(), self.current_block);
+                    let mut bound = Vec::new();
+                    self.collect_pattern_binding_names(pattern, &mut bound);
+                    self.inherit_frame_limit(&bound, init, self.current_block);
+                    self.record_pattern_views(pattern, init, ViewsLast::Block);
+                    return;
+                };
+                if let ExprKind::Ident(source) = &init.kind {
                     let mode = if *is_mut {
                         BorrowMode::Exclusive
                     } else {
@@ -3723,22 +3768,20 @@ impl<'a> OwnershipChecker<'a> {
                 }
                 // SL1: a field bound by name takes the type the struct gives
                 // it, and with it any limit the struct carries.
-                if let PatternKind::Struct { fields, .. } = &pattern.kind {
-                    let declared = self.node_ty(&init.id).and_then(|t| self.struct_fields_for_type(t));
-                    let mut names = Vec::new();
-                    for (field_name, pat) in fields {
-                        if let PatternKind::Ident(n) = &pat.kind {
-                            if let Some((_, t)) = declared
-                                .as_ref()
-                                .and_then(|fs| fs.iter().find(|(f, _)| f == field_name))
-                            {
-                                self.binding_types.insert(n.clone(), t.clone());
-                            }
-                            names.push(n.clone());
+                let declared = self.node_ty(&init.id).and_then(|t| self.struct_fields_for_type(t));
+                let mut names = Vec::new();
+                for (field_name, pat) in fields {
+                    if let PatternKind::Ident(n) = &pat.kind {
+                        if let Some((_, t)) = declared
+                            .as_ref()
+                            .and_then(|fs| fs.iter().find(|(f, _)| f == field_name))
+                        {
+                            self.binding_types.insert(n.clone(), t.clone());
                         }
+                        names.push(n.clone());
                     }
-                    self.inherit_frame_limit(&names, init, self.current_block);
                 }
+                self.inherit_frame_limit(&names, init, self.current_block);
             }
             StmtKind::LetTuple { patterns, init } => {
                 self.check_expr(init);
@@ -4040,16 +4083,18 @@ impl<'a> OwnershipChecker<'a> {
                 // `while it? as v` binds `v` for the body, as `if` does.
                 let saved_parts = self.parts.clone();
                 let saved_decls = self.enter_scope();
+                let resources_before = self.resource_bindings.clone();
                 self.check_expr(cond);
+                self.check_chain_resources(cond, &resources_before);
                 // `v` is a new value each time round. Carried like a binding
                 // from before the loop, the first pass's move made every later
                 // pass's `v` maybe-moved (`while pool.pop()? as c { try
-                // c.close() }`). A resource is owed by the body that got it.
+                // c.close() }`). Every test of an `&&` chain binds afresh.
+                // A resource is owed by the body that got it.
                 let present_resource = self.optional_payload_resource(cond);
-                let fresh: Vec<String> = match &cond.kind {
-                    ExprKind::IsPresent { binding: Some(name), .. } => vec![name.clone()],
-                    _ => Vec::new(),
-                };
+                let mut clauses = Vec::new();
+                Self::and_clauses(cond, &mut clauses);
+                let fresh: Vec<String> = clauses.iter().flat_map(|c| self.clause_bound_names(c)).collect();
                 self.check_loop_body(body, &fresh, label.as_ref(), false);
                 if let Some(ref binding) = present_resource {
                     let span = body.last().map_or(stmt.span, |s| s.span);
@@ -4068,17 +4113,17 @@ impl<'a> OwnershipChecker<'a> {
                     pattern,
                     scrutinee_ty.as_ref(),
                     expr.span,
-                    part_of.as_ref(),
+                    part_of.as_ref(), self.current_block + 1,
                 );
                 // SL1: what the pattern binds takes over any limit the
                 // scrutinee carries.
                 {
                     let mut bound = Vec::new();
-                    Self::collect_pattern_binding_names(pattern, &mut bound);
+                    self.collect_pattern_binding_names(pattern, &mut bound);
                     self.inherit_frame_limit(&bound, expr, self.current_block);
                 }
                 let mut bound = Vec::new();
-                Self::collect_pattern_binding_names(pattern, &mut bound);
+                self.collect_pattern_binding_names(pattern, &mut bound);
                 self.check_loop_body(body, &bound, label.as_ref(), false);
                 self.parts = saved_parts;
                 self.leave_scope(saved_decls);
@@ -5358,7 +5403,9 @@ impl<'a> OwnershipChecker<'a> {
                 // A payload `cond` binds lives in the then-branch only.
                 let saved_parts = self.parts.clone();
                 let saved_decls = self.enter_scope();
+                let resources_before = self.resource_bindings.clone();
                 self.check_expr(cond);
+                self.check_chain_resources(cond, &resources_before);
                 // OPT19: `if x? as c` reads the payload out of `x`. For a linear
                 // payload "read out" can only mean moved — a resource can't be
                 // copied — so `c` carries the obligation from here and `x` no
@@ -5366,12 +5413,23 @@ impl<'a> OwnershipChecker<'a> {
                 // silently and the optional it came from was never registered at
                 // all (#827).
                 let present_resource = self.optional_payload_resource(cond);
+                // A resource the chain's last test binds is owed by the
+                // then-branch, as the single-test forms' are.
+                let chain_bound: Vec<String> = self
+                    .resource_bindings
+                    .difference(&resources_before)
+                    .filter(|name| present_resource.as_ref() != Some(*name))
+                    .cloned()
+                    .collect();
                 let pre_branch = self.bindings.clone();
                 self.check_expr(then_branch);
                 self.move_branch_value(then_branch);
                 self.parts = saved_parts;
                 self.leave_scope(saved_decls);
                 if let Some(ref binding) = present_resource {
+                    self.check_present_binding_consumed(binding, then_branch.span);
+                }
+                for binding in &chain_bound {
                     self.check_present_binding_consumed(binding, then_branch.span);
                 }
                 let then_terminal = Self::is_terminal_expr(then_branch);
@@ -5408,19 +5466,23 @@ impl<'a> OwnershipChecker<'a> {
                 let saved_decls = self.enter_scope();
                 let part_of = self.pattern_part_source(scrutinee);
                 let resources_before = self.resource_bindings.clone();
-                self.register_pattern_bindings_typed(
-                    pattern,
-                    scrutinee_ty.as_ref(),
-                    scrutinee.span,
-                    part_of.as_ref(),
-                );
+                let mut bound = Vec::new();
+                self.collect_pattern_binding_names(pattern, &mut bound);
+                // A test that binds nothing reads a place and leaves it whole:
+                // `if g is Open` takes nothing out of `g`, so it drops nothing.
+                // A temporary is gone after the test, and a linear payload
+                // nobody named goes with it.
+                if !bound.is_empty() || Self::place_path(scrutinee).is_none() {
+                    self.register_pattern_bindings_typed(
+                        pattern,
+                        scrutinee_ty.as_ref(),
+                        scrutinee.span,
+                        part_of.as_ref(), self.current_block + 1,
+                    );
+                }
                 // SL1: what the pattern binds takes over any limit the
                 // scrutinee carries.
-                {
-                    let mut bound = Vec::new();
-                    Self::collect_pattern_binding_names(pattern, &mut bound);
-                    self.inherit_frame_limit(&bound, scrutinee, self.current_block);
-                }
+                self.inherit_frame_limit(&bound, scrutinee, self.current_block);
                 // A resource the pattern binds lives in the then-branch only, as
                 // an `if x? as c` binding does. Left registered past the branch,
                 // `if m is Conn as c { return c }` reported `c` as leaked at the
@@ -5430,7 +5492,7 @@ impl<'a> OwnershipChecker<'a> {
                     .difference(&resources_before)
                     .cloned()
                     .collect();
-                let pattern_views = self.record_pattern_views(pattern, scrutinee);
+                let pattern_views = self.record_pattern_views(pattern, scrutinee, ViewsLast::Arm);
                 self.check_expr(then_branch);
                 self.end_pattern_views(pattern_views);
                 self.move_branch_value(then_branch);
@@ -5507,16 +5569,16 @@ impl<'a> OwnershipChecker<'a> {
                         &arm.pattern,
                         scrutinee_ty.as_ref(),
                         scrutinee.span,
-                        part_of.as_ref(),
+                        part_of.as_ref(), self.current_block + 1,
                     );
                     // SL1: what the arm binds takes over any limit the
                     // scrutinee carries.
                     {
                         let mut bound = Vec::new();
-                        Self::collect_pattern_binding_names(&arm.pattern, &mut bound);
+                        self.collect_pattern_binding_names(&arm.pattern, &mut bound);
                         self.inherit_frame_limit(&bound, scrutinee, self.current_block);
                     }
-                    let arm_views = self.record_pattern_views(&arm.pattern, scrutinee);
+                    let arm_views = self.record_pattern_views(&arm.pattern, scrutinee, ViewsLast::Arm);
                     // `x => out.push(x)` hands on what the scrutinee lent.
                     let saved_lent = self.lent_locals.clone();
                     for name in arm.pattern.bound_names() {
@@ -5526,7 +5588,9 @@ impl<'a> OwnershipChecker<'a> {
                         self.record_lent_binding(name, scrutinee);
                     }
                     if let Some(guard) = &arm.guard {
+                        let before_guard = self.resource_bindings.clone();
                         self.check_expr(guard);
+                        self.check_chain_resources(guard, &before_guard);
                     }
                     self.check_expr(&arm.body);
                     self.lent_locals = saved_lent;
@@ -5632,12 +5696,27 @@ impl<'a> OwnershipChecker<'a> {
             ExprKind::Unwrap { expr: inner, .. } => {
                 self.check_expr(inner);
             }
-            ExprKind::GuardPattern { expr, pattern: _, else_branch } => {
-                self.check_expr(expr);
-                self.check_fallback(else_branch);
-            }
-            ExprKind::IsPattern { expr, pattern: _ } => {
-                self.check_scrutinee(expr);
+            ExprKind::IsPattern { expr: scrutinee, pattern } => {
+                self.check_scrutinee(scrutinee);
+                // What a condition's `is` binds is registered as `if x is P`
+                // registers it (the IfLet arm): a resource payload is owed by
+                // the branch the chain guards, and a temporary's linear payload
+                // nobody named leaks with it. Skipped, `make() is Open(h) &&
+                // h.size() > 10 { }` dropped the handle without a word.
+                let mut bound = Vec::new();
+                self.collect_pattern_binding_names(pattern, &mut bound);
+                if !bound.is_empty() || Self::place_path(scrutinee).is_none() {
+                    let scrutinee_ty = self.node_ty(&scrutinee.id).cloned();
+                    let part_of = self.pattern_part_source(scrutinee);
+                    self.register_pattern_bindings_typed(
+                        pattern,
+                        scrutinee_ty.as_ref(),
+                        scrutinee.span,
+                        part_of.as_ref(),
+                        self.current_block + 1,
+                    );
+                    self.inherit_frame_limit(&bound, scrutinee, self.current_block);
+                }
             }
             ExprKind::NullCoalesce { value, default } => {
                 self.check_expr(value);
@@ -7842,6 +7921,24 @@ impl<'a> OwnershipChecker<'a> {
             .collect()
     }
 
+    /// The payload of `variant` of the enum `id`, with the type arguments the
+    /// scrutinee gives it. The scrutinee may be that enum or a `T or E` with
+    /// it as one branch.
+    fn variant_payload_by_id(
+        &self,
+        scrutinee_ty: Option<&Type>,
+        id: rask_types::TypeId,
+        variant: &str,
+    ) -> Option<Vec<Type>> {
+        match scrutinee_ty {
+            Some(Type::Generic { base, args }) if *base == id => self.generic_variant_payload(id, args, variant),
+            Some(Type::Result { ok, err }) => self
+                .variant_payload_by_id(Some(ok), id, variant)
+                .or_else(|| self.variant_payload_by_id(Some(err), id, variant)),
+            _ => self.variant_payload_in_def(id, variant),
+        }
+    }
+
     fn variant_payload_in_def(&self, id: rask_types::TypeId, variant: &str) -> Option<Vec<Type>> {
         match self.program.types.get(id)? {
             rask_types::TypeDef::Enum { variants, .. } => variants
@@ -7888,6 +7985,7 @@ impl<'a> OwnershipChecker<'a> {
         scrutinee_ty: Option<&Type>,
         pattern_span: Span,
         part_of: Option<&PartOf>,
+        scope: u32,
     ) {
         let owned = !part_of.is_some_and(|of| !of.held);
         match &pattern.kind {
@@ -7908,14 +8006,39 @@ impl<'a> OwnershipChecker<'a> {
                 }
             }
             PatternKind::Ident(name) => {
-                // Qualified path "Enum.Variant" without parens is a constructor
-                // pattern with zero fields, not a binding (parser rule).
+                // A variant's name, bare or qualified, tests the tag and binds
+                // nothing (the checker says which names are variants). Its
+                // payload goes unnamed, so a linear one is dropped. This used
+                // to go by the dot alone: a bare `Open` registered a resource
+                // binding called `Open`, and a qualified `Got.Open` dropped
+                // its `Conn` without a word.
+                if let Some(rask_types::PatternTarget::Variant { enum_id, variant }) =
+                    self.program.pattern_targets.get(&pattern.id)
+                {
+                    let payload = self.variant_payload_by_id(scrutinee_ty, *enum_id, variant).unwrap_or_default();
+                    for (i, ty) in payload.iter().enumerate() {
+                        if owned && self.type_is_resource(ty) && !self.pattern_payload_is_borrowed(ty) {
+                            self.errors.push(OwnershipError {
+                                kind: OwnershipErrorKind::LinearWildcardDiscard {
+                                    position: error::LinearDiscardPosition::Unnamed {
+                                        variant: variant.clone(),
+                                        index: i,
+                                        arity: payload.len(),
+                                    },
+                                    type_name: format!("{}", self.program.types.resolve_type_names(ty)),
+                                },
+                                span: pattern_span,
+                            });
+                        }
+                    }
+                    return;
+                }
+                // Unchecked: a dotted name can't be a binding.
                 if name.contains('.') {
                     return;
                 }
                 self.bindings.insert(name.clone(), BindingState::Owned);
-                // A pattern's names live in the arm or branch it guards.
-                self.declare(name.clone(), self.current_block + 1, false);
+                self.declare(name.clone(), scope, false);
                 let part = part_of.filter(|of| {
                     !of.held || scrutinee_ty.is_some_and(|ty| self.pattern_payload_is_borrowed(ty))
                 });
@@ -7945,7 +8068,7 @@ impl<'a> OwnershipChecker<'a> {
                 });
                 for (i, pat) in pats.iter().enumerate() {
                     let pos_ty = elem_tys.as_ref().and_then(|tys| tys.get(i));
-                    self.register_pattern_bindings_typed(pat, pos_ty, pattern_span, part_of);
+                    self.register_pattern_bindings_typed(pat, pos_ty, pattern_span, part_of, scope);
                 }
             }
             PatternKind::Struct { name, fields, rest } => {
@@ -7957,7 +8080,7 @@ impl<'a> OwnershipChecker<'a> {
                         .as_ref()
                         .and_then(|fs| fs.iter().find(|(n, _)| n == field_name))
                         .map(|(_, t)| t.clone());
-                    self.register_pattern_bindings_typed(pat, pos_ty.as_ref(), pattern_span, part_of);
+                    self.register_pattern_bindings_typed(pat, pos_ty.as_ref(), pattern_span, part_of, scope);
                 }
                 // ER43: `..` rest discards every unmentioned linear field.
                 if *rest {
@@ -8019,14 +8142,14 @@ impl<'a> OwnershipChecker<'a> {
                         }
                         continue;
                     }
-                    self.register_pattern_bindings_typed(pat, pos_ty, pattern_span, part_of);
+                    self.register_pattern_bindings_typed(pat, pos_ty, pattern_span, part_of, scope);
                 }
             }
             PatternKind::Or(pats) => {
                 // Each alternative binds the same names; let the typed walk
                 // mark resources on the first, then de-dup with the rest.
                 for pat in pats {
-                    self.register_pattern_bindings_typed(pat, scrutinee_ty, pattern_span, part_of);
+                    self.register_pattern_bindings_typed(pat, scrutinee_ty, pattern_span, part_of, scope);
                 }
             }
             PatternKind::TypePat { ty, binding } => {
@@ -8210,8 +8333,13 @@ impl<'a> OwnershipChecker<'a> {
                 self.mark_escaping(e, named);
             }
             StmtKind::Expr(e) => self.escapes_in_expr(e, named),
-            StmtKind::LetTuple { init, .. } | StmtKind::MutTuple { init, .. }
-            | StmtKind::LetStruct { init, .. } => self.escapes_in_expr(init, named),
+            StmtKind::LetTuple { init, .. } | StmtKind::MutTuple { init, .. } => self.escapes_in_expr(init, named),
+            StmtKind::LetPattern { init, else_branch, .. } => {
+                self.escapes_in_expr(init, named);
+                if let Some(e) = else_branch {
+                    self.escapes_in_expr(e, named);
+                }
+            }
             StmtKind::While { cond, body, .. } => {
                 self.escapes_in_expr(cond, named);
                 self.escapes_in_stmts(body, named);
@@ -8720,10 +8848,17 @@ impl<'a> OwnershipChecker<'a> {
             }
             StmtKind::Expr(e) => self.task_used_expr(e, locals, used_out, all_reads, lost),
             StmtKind::Mut { init, .. } | StmtKind::Let { init, .. }
-            | StmtKind::MutTuple { init, .. } | StmtKind::LetTuple { init, .. }
-            | StmtKind::LetStruct { init, .. } => {
+            | StmtKind::MutTuple { init, .. } | StmtKind::LetTuple { init, .. } => {
                 let mut used = used_out.clone();
                 used.extend(self.task_reads(init, locals));
+                used
+            }
+            StmtKind::LetPattern { init, else_branch, .. } => {
+                let mut used = used_out.clone();
+                used.extend(self.task_reads(init, locals));
+                if let Some(e) = else_branch {
+                    used.extend(self.task_reads(e, locals));
+                }
                 used
             }
             // A return leaves the task, so nothing after it runs and only what
@@ -8930,10 +9065,6 @@ impl<'a> OwnershipChecker<'a> {
                 self.collect_free_vars_inner(then_branch, locals, out, projections);
                 if let Some(e) = else_branch { self.collect_free_vars_inner(e, locals, out, projections); }
             }
-            ExprKind::GuardPattern { expr: scrutinee, else_branch, .. } => {
-                self.collect_free_vars_inner(scrutinee, locals, out, projections);
-                self.collect_free_vars_inner(else_branch, locals, out, projections);
-            }
             ExprKind::IsPattern { expr: scrutinee, .. } => {
                 self.collect_free_vars_inner(scrutinee, locals, out, projections);
             }
@@ -9029,7 +9160,7 @@ impl<'a> OwnershipChecker<'a> {
                     scope.insert(name.to_string());
                 }
             }
-            StmtKind::LetStruct { pattern, .. } => {
+            StmtKind::LetPattern { pattern, .. } => {
                 for name in pattern.bound_names() {
                     scope.insert(name.to_string());
                 }
@@ -9054,10 +9185,14 @@ impl<'a> OwnershipChecker<'a> {
             StmtKind::Mut { init, .. } | StmtKind::Let { init, .. } => {
                 self.collect_free_vars_inner(init, locals, out, projections);
             }
-            StmtKind::MutTuple { init, .. }
-            | StmtKind::LetTuple { init, .. }
-            | StmtKind::LetStruct { init, .. } => {
+            StmtKind::MutTuple { init, .. } | StmtKind::LetTuple { init, .. } => {
                 self.collect_free_vars_inner(init, locals, out, projections);
+            }
+            StmtKind::LetPattern { init, else_branch, .. } => {
+                self.collect_free_vars_inner(init, locals, out, projections);
+                if let Some(e) = else_branch {
+                    self.collect_free_vars_inner(e, locals, out, projections);
+                }
             }
             StmtKind::Assign { target, value, .. } => {
                 self.collect_free_vars_inner(target, locals, out, projections);
@@ -11281,7 +11416,7 @@ impl<'a> OwnershipChecker<'a> {
             | StmtKind::Mut { init, .. }
             | StmtKind::LetTuple { init, .. }
             | StmtKind::MutTuple { init, .. }
-            | StmtKind::LetStruct { init, .. } => Some(init),
+            | StmtKind::LetPattern { init, .. } => Some(init),
             StmtKind::Return(Some(e)) | StmtKind::Expr(e) => Some(e),
             StmtKind::Assign { value, .. } => Some(value),
             StmtKind::Break { value: Some(e), .. } => Some(e),
@@ -11677,6 +11812,62 @@ impl<'a> OwnershipChecker<'a> {
         self.binding_types.insert(name.clone(), payload);
         self.resource_bindings.insert(name.clone());
         Some(name.clone())
+    }
+
+    /// ctrl.flow/CF37: a resource bound by a test that has another test after
+    /// it in the `&&` chain. When the later test fails, the else can't see the
+    /// name (CF35), so nothing could consume what it holds.
+    fn check_chain_resources(&mut self, cond: &Expr, before: &HashSet<String>) {
+        let mut clauses = Vec::new();
+        Self::and_clauses(cond, &mut clauses);
+        for pair in clauses.windows(2) {
+            let (clause, next) = (pair[0], pair[1]);
+            for name in self.clause_bound_names(clause) {
+                if !self.resource_bindings.contains(&name) || before.contains(&name) {
+                    continue;
+                }
+                let type_name = self
+                    .binding_types
+                    .get(&name)
+                    .map(|ty| format!("{}", self.program.types.display_type_names(ty)))
+                    .unwrap_or_default();
+                self.errors.push(OwnershipError {
+                    kind: OwnershipErrorKind::ResourceBoundMidChain {
+                        name: name.clone(),
+                        type_name,
+                        next_test: next.span,
+                    },
+                    span: clause.span,
+                });
+                // Reported once: the leak check at the branch's end would
+                // say it again.
+                self.resource_bindings.remove(&name);
+            }
+        }
+    }
+
+    /// The tests of an `&&` chain, left to right.
+    fn and_clauses<'e>(expr: &'e Expr, out: &mut Vec<&'e Expr>) {
+        match &expr.kind {
+            ExprKind::Binary { op: BinOp::And, left, right } => {
+                Self::and_clauses(left, out);
+                Self::and_clauses(right, out);
+            }
+            _ => out.push(expr),
+        }
+    }
+
+    /// The names one test of a condition binds.
+    fn clause_bound_names(&self, clause: &Expr) -> Vec<String> {
+        match &clause.kind {
+            ExprKind::IsPresent { binding: Some(name), .. } => vec![name.clone()],
+            ExprKind::IsPattern { pattern, .. } => {
+                let mut names = Vec::new();
+                self.collect_pattern_binding_names(pattern, &mut names);
+                names
+            }
+            _ => Vec::new(),
+        }
     }
 
     /// The `? as` binding lives only inside the branch, so its obligation is

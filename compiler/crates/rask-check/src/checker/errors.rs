@@ -44,6 +44,14 @@ pub enum WireHookProblem {
 }
 
 
+/// What an always-matching guard's value is, for the fix it gets.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum TwoBranch {
+    Optional,
+    Result,
+    Neither,
+}
+
 /// A type error.
 #[derive(Debug, thiserror::Error)]
 pub enum TypeError {
@@ -563,9 +571,30 @@ pub enum TypeError {
         function_name: String,
         span: Span,
     },
-    #[error("guard pattern 'else' block must diverge (return, panic, etc), found {found}")]
+    #[error("this `let` pattern can fail to match; it needs an `else`")]
+    LetPatternCanFail {
+        /// Values the pattern doesn't take.
+        missing: Vec<String>,
+        span: Span,
+    },
+    #[error("a guard's `else` has to leave")]
     GuardElseMustDiverge {
-        found: Type,
+        span: Span,
+    },
+    /// ctrl.flow/CF14: `let x = e else { … }`, `let P(x, y) = p else { … }`.
+    #[error("this `let` always matches, so its `else` never runs")]
+    GuardNeverFails {
+        binding: Option<String>,
+        shape: TwoBranch,
+        else_span: Span,
+    },
+    /// ctrl.flow/CF14: `let i64 as n = load() else { … }`.
+    #[error("a guard doesn't pick a branch of an optional or a result")]
+    GuardPicksBranch {
+        ty: Type,
+        binding: Option<String>,
+        optional: bool,
+        picks_value: bool,
         span: Span,
     },
     #[error("unexpected `{annotation}` annotation for parameter `{param_name}`")]
@@ -1001,7 +1030,7 @@ pub enum TypeError {
         span: Span,
     },
 
-    #[error("non-exhaustive match: missing variants {missing:?}")]
+    #[error("non-exhaustive match: missing {missing:?}")]
     NonExhaustiveMatch {
         missing: Vec<String>,
         /// The match has guarded arms, which don't count toward coverage.
@@ -1370,8 +1399,41 @@ pub enum TypeError {
         span: Span,
     },
 
-    /// ER22: `else as e` requires a `T or E` condition to bind the error
-    #[error("`else as {name}` requires an `if r?` condition on a Result (`T or E`)")]
+    /// `a is i64 as n` on a plain optional, which `a? as n` spells; in a
+    /// `match` arm, a name below the `none` arm.
+    #[error("a type test on an optional is spelled with `?`")]
+    TypeTestOnOptional {
+        shown: String,
+        binding: Option<String>,
+        arm: bool,
+        span: Span,
+    },
+
+    /// A capitalised bare name in a pattern that names no variant of the
+    /// value's enum and no type. A binding starts lowercase, so this is a
+    /// misspelled or foreign variant, never a name to bind.
+    #[error("`{name}` in a pattern names no variant or type")]
+    PatternNameNotVariant {
+        name: String,
+        /// The value's enum, when it is one.
+        enum_name: Option<String>,
+        variants: Vec<String>,
+        suggestion: Option<String>,
+        /// `State.Gone`, `Fail.Gone`: the branches of the value's `T or E`
+        /// that are enums with this variant, when more than one is.
+        qualified: Vec<String>,
+        span: Span,
+    },
+
+    /// `!(x is none)` on a plain optional, which `x?` spells.
+    #[error("`!({shown} is none)` is spelled `{shown}?`")]
+    NegatedAbsenceTest {
+        shown: String,
+        span: Span,
+    },
+
+    /// ER22: `else as e` after an `is` test that leaves nothing behind
+    #[error("`else as {name}` has nothing to bind")]
     ElseBindingNotResult {
         name: String,
         span: Span,
@@ -1437,6 +1499,15 @@ pub enum TypeError {
     #[error("`{name}` is bound twice")]
     RepeatedBinding {
         name: String,
+        span: Span,
+    },
+
+    /// An `is` or `? as` test binds names nothing can read:
+    /// `if a? as x || b?`, `!(s is Circle(r))`, `let ok = a? as v`.
+    #[error("{} bound but nothing can read {}", quote_names(names), if names.len() == 1 { "it" } else { "them" })]
+    BindingReachesNothing {
+        names: Vec<String>,
+        why: DeadBinding,
         span: Span,
     },
 
@@ -1970,6 +2041,7 @@ impl TypeError {
         use TypeError::*;
         match self {
             DiscardCopyType { ty, .. }
+            | GuardPicksBranch { ty, .. }
             | DiscardResourceType { ty, .. }
             | ErrorInterfaceMissing { ty, .. }
             | InfiniteType { ty, .. }
@@ -1999,7 +2071,6 @@ impl TypeError {
             | CoalesceOnNonOptional { found, .. }
             | CoalesceOnResult { found, .. }
             | ForceUnwrapOnNonOptional { found, .. }
-            | GuardElseMustDiverge { found, .. }
             | NotIterable { found, .. }
             | ForMutateReadOnlySource { found, .. }
             | NotOnOptional { found, .. }
@@ -2104,6 +2175,8 @@ impl TypeError {
             // Carry no types.
             Undefined(..)
             | DynamicFieldNameNotComptime { .. }
+            | GuardElseMustDiverge { .. }
+            | GuardNeverFails { .. }
             | ReflectItemNotUnrolled { .. }
             | DuplicateConformance { .. }
             | ForeignCoreConformance { .. }
@@ -2192,6 +2265,7 @@ impl TypeError {
             | PublicDuckInterface { .. }
             | PublicInferredError { .. }
             | NonExhaustiveMatch { .. }
+            | LetPatternCanFail { .. }
             | UndefinedName { .. }
             | FieldPatternExactType { .. }
             | NameNotBoundByTypePattern { .. }
@@ -2233,6 +2307,9 @@ impl TypeError {
             | TagOnUnnamedPayload { .. }
             | TagCollidesWithField { .. }
             | ElseBindingNotResult { .. }
+            | TypeTestOnOptional { .. }
+            | PatternNameNotVariant { .. }
+            | NegatedAbsenceTest { .. }
             | TryInEnsure { .. }
             | LegacyWrapperConstructor { .. }
             | LegacyWrapperPattern { .. }
@@ -2249,7 +2326,8 @@ impl TypeError {
             | ExitInEnsure { .. }
             | StaticCallOnValue { .. }
             | InstanceCallOnType { .. }
-            | RepeatedBinding { .. } => {}
+            | RepeatedBinding { .. }
+            | BindingReachesNothing { .. } => {}
         }
     }
 }
@@ -2268,4 +2346,26 @@ pub enum ArgProblem {
     /// Labels that place fine, on a kind of call the checker matches by
     /// position only. A compiler gap, reported rather than miscompiled.
     NotReordered,
+}
+
+/// Why a test's binding reaches nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeadBinding {
+    /// One side of `||`: when the other side held, the name has no value.
+    EitherSideOfOr,
+    /// Under `!`: the code that runs is the code where the test failed.
+    UnderNot,
+    /// Not in an `if`/`while` condition or match guard, or last in an `&&`
+    /// chain nothing follows.
+    NotACondition,
+}
+
+/// "`a` is" / "`a` and `b` are" / "`a`, `b` and `c` are".
+fn quote_names(names: &[String]) -> String {
+    let quoted: Vec<String> = names.iter().map(|n| format!("`{n}`")).collect();
+    match quoted.as_slice() {
+        [one] => format!("{one} is"),
+        [init @ .., last] => format!("{} and {last} are", init.join(", ")),
+        [] => "a name is".to_string(),
+    }
 }

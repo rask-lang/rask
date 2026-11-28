@@ -64,7 +64,7 @@ test "a returned none fills the outer layer" {
 }
 
 test "a returned absent inner value is present" {
-    assert !(inner_none() is none)
+    assert inner_none()?
     assert inner_none()! is none
 }
 
@@ -80,10 +80,10 @@ test "an absent inner argument is present" {
 test "a binding and an assignment keep the inner none" {
     let a: i64? = none
     let x: i64?? = a
-    assert !(x is none)
+    assert x?
     mut m: i64?? = 3
     m = a
-    assert !(m is none)
+    assert m?
     m = none
     assert m is none
     let n: i64?? = none
@@ -93,7 +93,7 @@ test "a binding and an assignment keep the inner none" {
 test "a generic optional of an optional adds its layer" {
     let a: i64? = none
     let w = wrap(a)
-    assert !(w is none)
+    assert w?
     assert w! is none
     let three: i64? = 3
     assert wrap(three)!! == 3
@@ -102,14 +102,14 @@ test "a generic optional of an optional adds its layer" {
 test "a generic struct field adds its layer" {
     let a: i64? = none
     let s = Slot<i64?>(v: a)
-    assert !(s.v is none)
+    assert s.v?
     let t = Slot<i64?>(v: none)
     assert t.v is none
 }
 
 test "the first item of a list of optionals" {
     let xs: Vec<i64?> = [none, 2]
-    assert !(first_item(xs) is none)
+    assert first_item(xs)?
     assert first_item(xs)! is none
     let empty: Vec<i64?> = []
     assert first_item(empty) is none
@@ -144,7 +144,7 @@ test "pushing none into a list of nested optionals" {
     v.push(a)
     v.push(none)
     v.push(4)
-    assert !(v[0] is none)
+    assert v[0]?
     assert v[1] is none
     assert v[2]!! == 4
 }
@@ -188,9 +188,9 @@ test "a generic branch widens to the type its parameter took" {
     // `none` arm came back as an absent inner value (#2044).
     let a: i64? = none
     assert gen_if(false, a) is none
-    assert !(gen_if(true, a) is none)
+    assert gen_if(true, a)?
     assert gen_match(0, a) is none
-    assert !(gen_match(1, a) is none)
+    assert gen_match(1, a)?
     let b: i64? = 5
     assert gen_if(true, b)!! == 5
 }
@@ -200,7 +200,7 @@ test "a generic push widens to the type its parameter took" {
     // `x` as the outer `none`.
     let a: i64? = none
     let v = push_gen(a)
-    assert !(v[0] is none)
+    assert v[0]?
     assert v[1] is none
 }
 
@@ -210,7 +210,7 @@ test "a list literal's none is the element type's outer none" {
     let a: i64? = none
     let v: Vec<i64??> = [none, a, 3]
     assert v[0] is none
-    assert !(v[1] is none)
+    assert v[1]?
     assert v[2]!! == 3
 }
 
@@ -233,7 +233,7 @@ test "a return widens through both layers of an optional success side" {
     let n = two_layers_or_bad(0) catch _ => { return }
     assert n is none
     let sn = two_layers_or_bad(1) catch _ => { return }
-    assert !(sn is none)
+    assert sn?
     assert sn! is none
     let s = two_layers_or_bad(2) catch _ => { return }
     assert s!! == 5
@@ -259,7 +259,7 @@ test "a catch handler widens into an optional success side" {
     assert c is none
     let inner: i64? = none
     let d = two_layers_or_bad(3) catch _ => inner
-    assert !(d is none)
+    assert d?
     assert d! is none
     let e = two_layers_or_bad(3) catch _ => 3
     assert e!! == 3
@@ -269,7 +269,7 @@ test "an if arm one layer short is the other arm's present branch" {
     let inner: i64? = none
     let deep: i64?? = none
     let z = if inner? { deep } else { inner }
-    assert !(z is none)
+    assert z?
     assert z! is none
     let other: i64?? = none
     let w = if inner? { inner } else { other }
@@ -280,9 +280,9 @@ test "get on a present none element is present" {
     mut opts = Vec<f32?>.new()
     opts.push(1.5)
     opts.push(none)
-    assert !(opts.get(1) is none)
+    assert opts.get(1)?
     let g = opts.get(1)
-    assert !(g is none)
+    assert g?
     assert g! is none
     mut seen = false
     if opts.get(1)? as inner {

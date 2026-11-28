@@ -210,10 +210,6 @@ pub fn visit_expr<'a>(expr: &'a Expr, v: &mut impl Visit<'a>) {
                 visit_expr(e, v);
             }
         }
-        ExprKind::GuardPattern { expr: scrutinee, else_branch, .. } => {
-            visit_expr(scrutinee, v);
-            visit_expr(else_branch, v);
-        }
         ExprKind::IsPattern { expr: scrutinee, .. } => visit_expr(scrutinee, v),
 
         ExprKind::Match { scrutinee, arms } => {
@@ -339,8 +335,13 @@ pub fn visit_stmt<'a>(stmt: &'a Stmt, v: &mut impl Visit<'a>) {
         | StmtKind::Mut { init: e, .. }
         | StmtKind::MutTuple { init: e, .. }
         | StmtKind::Let { init: e, .. }
-        | StmtKind::LetTuple { init: e, .. }
-        | StmtKind::LetStruct { init: e, .. } => visit_expr(e, v),
+        | StmtKind::LetTuple { init: e, .. } => visit_expr(e, v),
+        StmtKind::LetPattern { init, else_branch, .. } => {
+            visit_expr(init, v);
+            if let Some(e) = else_branch {
+                visit_expr(e, v);
+            }
+        }
 
         StmtKind::Assign { target, value, .. } => {
             visit_expr(target, v);
@@ -495,7 +496,6 @@ mod tests {
             cond: Box::new(call("f", "a")),
             then_branch: Box::new(call("g", "b")),
             else_branch: Some(Box::new(call("h", "c"))),
-            else_binding: None,
         });
         assert_eq!(names(&cond), vec!["f", "a", "g", "b", "h", "c"]);
     }

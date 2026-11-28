@@ -17,7 +17,7 @@ enum Tree {
 func total(t: Tree) -> f64 {
     match t {
         Leaf(v) => return v,
-        Node(left: l, right: r) => {
+        Node(left as l, right as r) => {
             let a = total(l)
             let b = total(r)
             return a + b
@@ -28,7 +28,7 @@ func total(t: Tree) -> f64 {
 func depth(t: Tree) -> i64 {
     match t {
         Leaf(_v) => return 1,
-        Node(left: l, right: r) => {
+        Node(left as l, right as r) => {
             let a = depth(l)
             let b = depth(r)
             if a > b {

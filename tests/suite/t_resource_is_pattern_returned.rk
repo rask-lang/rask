@@ -26,7 +26,7 @@ func maybe_conn(n: i64) -> Conn? {
 }
 
 func first_or(n: i64, fallback: i64) -> Conn {
-    if maybe_conn(n) is Conn as c {
+    if maybe_conn(n)? as c {
         return c
     }
     return Conn(id: fallback)

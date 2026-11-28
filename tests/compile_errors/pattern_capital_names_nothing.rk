@@ -1,0 +1,61 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: a capitalised pattern name that is no variant and no type
+// Rejects: a misspelt variant in a match arm and in a field, and a bare
+// variant that two branches of a `T or E` both have (E0223)
+//
+// A capital never binds (type.enums/PM8). It used to: a misspelt arm caught
+// every value the arms above it missed, and a misspelt field test inside
+// `let … else` always matched, so its else never ran.
+//
+// A bare variant is looked up among the enums the value can hold, so on a
+// `Mode or IoError` `Denied` is `IoError.Denied`. When both enums have the
+// name, the pattern has to say which.
+
+enum Shape {
+    Circle(i64)
+    Square(i64)
+}
+
+struct Holder {
+    shape: Shape
+}
+
+enum IoError {
+    Missing
+    Denied
+}
+
+enum Mode {
+    Open
+    Missing
+}
+
+extend IoError {
+    func message(self) -> string { return "io" }
+}
+
+func area(s: Shape) -> i64 {
+    match s {
+        Square(x) => { return x * x }
+        // ERROR: E0223 `Circel` is not a variant of `Shape`; did you mean `Circle`?
+        Circel => { return 0 }
+    }
+}
+
+func held(h: Holder) -> i64 {
+    // ERROR: E0223 `Sqare` is not a variant of `Shape`
+    let Holder(shape: Sqare) = h else { return 0 }
+    return 1
+}
+
+func read(r: Mode or IoError) -> i64 {
+    match r {
+        Open => { return 1 }
+        // ERROR: E0223 `Missing` is in both: write `Mode.Missing` or `IoError.Missing`
+        Missing => { return -1 }
+        Denied => { return -2 }
+        _ => { return 0 }
+    }
+}
+
+func main() {}

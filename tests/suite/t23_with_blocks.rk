@@ -124,7 +124,7 @@ test "read other elements during with" {
 test "with one-liner" {
     mut v = Vec.new()
     v.push(5)
-    with v[0] as item: item = item * 3
+    with v[0] as item { item = item * 3 }
     assert v[0] == 15
 }
 

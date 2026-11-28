@@ -85,7 +85,8 @@ fn elide_clones_with(func: &mut MirFunction, own: &HashSet<String>) {
 /// here is not the value's death and a clone of it can't become a move.
 ///
 /// Three ways to hold such a value, each followed back through plain copies
-/// (`_33 = _32`), since lowering puts a binding in between more often than not:
+/// (`_33 = _32`) and phis, since lowering puts a binding in between more often
+/// than not:
 ///
 /// - Reading through something else: a struct field, an array element, a
 ///   dereference. `r.values.clone()` read the field into a temp that was never
@@ -123,6 +124,15 @@ fn source_is_borrowed(func: &MirFunction, source: LocalId, own: &HashSet<String>
                     MirRValue::Use(MirOperand::Local(from)) => frontier.push(*from),
                     _ => {}
                 },
+                // `A(v) | B(v)` binds `v` from whichever alternative matched,
+                // so `v` is a phi over the payload reads. Stopping there let
+                // `v.clone()` of a parameter's payload become a move.
+                MirStmtKind::Phi { dst, args } if *dst == local => {
+                    frontier.extend(args.iter().filter_map(|(_, op)| match op {
+                        MirOperand::Local(from) => Some(*from),
+                        _ => None,
+                    }));
+                }
                 MirStmtKind::Call { dst: Some(dst), func: fref, .. }
                     if *dst == local && crate::own_names::returns_a_view(fref, own) =>
                 {

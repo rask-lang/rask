@@ -10,9 +10,9 @@
 // `Shared`, which lets one task at a time change it.
 //
 // `with total.write() as n { ... }` waits its turn, then gives you the value
-// for the block. A block of one line can follow a colon instead, `with
-// total.write() as n: n += 1`. `.read()` instead of `.write()` only looks,
-// and lets several readers in together. Each task gets its own `.clone()` of
+// for the block, which can sit on one line: `with total.write() as n { n +=
+// 1 }`. `.read()` instead of `.write()` only looks, and lets several readers
+// in together. Each task gets its own `.clone()` of
 // the Shared: a second way to reach the same value, not a copy of it.
 //
 // `total.get()` copies a small value out. Anything bigger you clone out of a
@@ -28,12 +28,12 @@ func count_both(times: i32) -> i32 {
         let theirs = total.clone()
         let a = spawn {
             for _ in 0..times {
-                with mine.write() as n: n += 1
+                with mine.write() as n { n += 1 }
             }
         }
         let b = spawn {
             for _ in 0..times {
-                with theirs.write() as n: n += 1
+                with theirs.write() as n { n += 1 }
             }
         }
         a.join()!

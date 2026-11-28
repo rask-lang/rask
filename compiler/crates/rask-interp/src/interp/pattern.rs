@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use rask_ast::ty::TypeExpr;
 use rask_ast::expr::{Expr, ExprKind, Pattern, PatternKind};
+use rask_types::PatternTarget;
 
 use crate::value::{IntKind, Value};
 
@@ -70,26 +71,6 @@ impl Interpreter {
         }
     }
 
-    /// The value a bare type test in a guard narrows to — `let p = x is
-    /// Point else …` — read off its `as` form. `None` when the pattern isn't
-    /// a type test against a two-branch value, or already binds.
-    pub(super) fn guard_type_test_value(&self, pattern: &Pattern, value: &Value) -> Option<Value> {
-        const GUARD: &str = "<guard>";
-        if !matches!(value, Value::Enum { name, .. } if name == "Result") {
-            return None;
-        }
-        let ty = match &pattern.kind {
-            PatternKind::TypePat { ty: TypeExpr::NoneType, .. } => return None,
-            PatternKind::TypePat { ty, binding: None } => ty.clone(),
-            PatternKind::Ident(name) if !name.contains('.') && self.is_known_type_name(name) => {
-                TypeExpr::named(name.as_str())
-            }
-            _ => return None,
-        };
-        let as_form = Pattern::new(pattern.id, PatternKind::TypePat { ty, binding: Some(GUARD.to_string()) }, pattern.span);
-        self.match_pattern(&as_form, value)?.remove(GUARD)
-    }
-
     /// Does a pattern's enum spelling name the enum a value carries? Under a
     /// transparent `type alias HB = Holder<Big>` the pattern says `HB` while
     /// the value was built as `Holder`.
@@ -97,43 +78,46 @@ impl Interpreter {
         spelled == enum_name || self.resolve_transparent_alias(spelled) == enum_name
     }
 
+    /// Does `value` hold variant `pat_variant` of enum `pat_enum`? Against a
+    /// `T or E` or `T?` the variant names a branch's own enum, so the walk
+    /// goes into the payload (ER28); a flat `T? or E` wears an `Option`
+    /// inside the `Ok` (`Ok(Some(Light.Red))`), so it goes through both
+    /// layers (#1849).
+    fn match_variant_tag(&self, pat_enum: &str, pat_variant: &str, value: &Value) -> Option<HashMap<String, Value>> {
+        match value {
+            Value::Enum { name: en, variant, .. } if self.names_enum(pat_enum, en) && variant == pat_variant => {
+                Some(HashMap::new())
+            }
+            Value::Enum { name: en, variant, fields, .. } if wraps_payload(en, variant) => {
+                self.match_variant_tag(pat_enum, pat_variant, fields.first()?)
+            }
+            _ => None,
+        }
+    }
+
     pub(super) fn match_pattern(&self, pattern: &Pattern, value: &Value) -> Option<HashMap<String, Value>> {
         match &pattern.kind {
             PatternKind::Wildcard => Some(HashMap::new()),
 
             PatternKind::Ident(name) => {
+                // A bare name the checker resolved to a variant tests that
+                // variant: `o is Idle` against a `State?` is `State.Idle`.
+                // The value can't say which enum was meant (`none` holds no
+                // enum at all), so the checker's answer is the one used.
+                if let Some(PatternTarget::Variant { enum_id, variant }) = self.pattern_targets.get(&pattern.id) {
+                    if !name.contains('.') {
+                        return self.match_variant_tag(&self.types.type_name(*enum_id), variant, value);
+                    }
+                }
                 // Qualified name: "Message.Quit" → match enum "Message" variant "Quit"
-                if let Some(dot) = name.find('.') {
-                    let (pat_enum, pat_variant) = (&name[..dot], &name[dot + 1..]);
-                    return match value {
-                        Value::Enum { name: en, variant, .. }
-                            if self.names_enum(pat_enum, en) && variant == pat_variant =>
-                        {
-                            Some(HashMap::new())
-                        }
-                        // ER28: for a Result scrutinee, descend into Ok/Err
-                        // and retry against the payload (so arms like
-                        // `IoError.NotFound` work against `r: T or IoError`).
-                        // A flat `T? or E` wears an `Option` inside the `Ok`
-                        // (`Ok(Some(Light.Red))`), so the walk goes through
-                        // both layers (#1849).
-                        Value::Enum { name: en, variant, fields, .. } if wraps_payload(en, variant) => {
-                            if let Some(inner) = fields.first() {
-                                return self.match_pattern(pattern, inner);
-                            }
-                            None
-                        }
+                if let Some((path, pat_variant)) = name.rsplit_once('.') {
+                    let pat_enum = path.rsplit('.').next().unwrap_or(path);
+                    if let Value::Struct(ref s) = value {
                         // Unit struct variant with no fields
-                        Value::Struct(ref s) => {
-                            let guard = s.lock().unwrap();
-                            if guard.name == *name && guard.fields.is_empty() {
-                                Some(HashMap::new())
-                            } else {
-                                None
-                            }
-                        }
-                        _ => None,
-                    };
+                        let guard = s.lock().unwrap();
+                        return (guard.name == *name && guard.fields.is_empty()).then(HashMap::new);
+                    }
+                    return self.match_variant_tag(pat_enum, pat_variant, value);
                 }
                 // A variant of the scrutinee's own enum — match on the tag.
                 //

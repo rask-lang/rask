@@ -134,7 +134,7 @@ func package_json(p: Package) -> JsonValue {
     if p.vendor_dir? as v {
         metadata.push(pair("vendor_dir", JsonValue.String(v)))
     }
-    metadata.push(pair("sandbox", JsonValue.String(if p.sandbox: "true" else: "false")))
+    metadata.push(pair("sandbox", JsonValue.String(if p.sandbox { "true" } else { "false" })))
     m.insert("metadata", JsonValue.Array(metadata))
 
     mut lists = Vec<JsonValue>.new()
@@ -186,9 +186,9 @@ func package_json(p: Package) -> JsonValue {
         mut rev = JsonValue.Null
         mut branch = JsonValue.Null
         match c.source {
-            DepSource.Registry(_) => {}
+            DepSource.Registry => {}
             DepSource.Path(p) => path = JsonValue.String(p),
-            DepSource.Git(url, rev: r, branch: b) => {
+            DepSource.Git(url, rev as r, branch as b) => {
                 git = JsonValue.String(url)
                 rev = opt(r)
                 branch = opt(b)
@@ -216,7 +216,7 @@ func push_deps(mutate out: Vec<JsonValue>, deps: Vec<Dep>, scope_name: string?) 
         match d.source {
             DepSource.Registry(req) => version = JsonValue.String(req),
             DepSource.Path(p) => path = JsonValue.String(p),
-            DepSource.Git(url, rev: r, branch: b) => {
+            DepSource.Git(url, rev as r, branch as b) => {
                 git = JsonValue.String(url)
                 rev = opt(r)
                 branch = opt(b)

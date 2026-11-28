@@ -146,7 +146,7 @@ test "an inlined match result is released" {
     let e = Edit.Remove(at: 1, text: text)
     let inv = e.inverse()
     match inv {
-        Insert(at, text: t) => assert t.len() > 0
-        Remove(at, text: t) => assert false
+        Insert(at, text as t) => assert t.len() > 0
+        Remove(at, text as t) => assert false
     }
 }

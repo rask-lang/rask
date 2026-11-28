@@ -1564,9 +1564,18 @@ impl<'a> MirLowerer<'a> {
                 }
             }
 
-            // Struct destructuring binding: `let Point { x, .. } = p`.
-            StmtKind::LetStruct { pattern, init, .. } => {
+            // `let Point(x, y) = p` reads each field into its name. Any other
+            // pattern, one with an `else`, or one with a pattern inside a
+            // field (`Line(a: Point(x, y), b)`), is lowered the way `is`
+            // lowers it; without an `else` the checker proved it can't fail.
+            StmtKind::LetPattern { pattern, init, else_branch: None, .. }
+                if matches!(&pattern.kind, PatternKind::Struct { fields, .. }
+                    if fields.iter().all(|(_, p)| matches!(p.kind, PatternKind::Ident(_)))) =>
+            {
                 self.lower_struct_destructure(pattern, init)
+            }
+            StmtKind::LetPattern { pattern, init, else_branch, .. } => {
+                self.lower_let_pattern(pattern, init, else_branch.as_deref())
             }
 
             // While-let pattern loop
@@ -2505,9 +2514,8 @@ impl<'a> MirLowerer<'a> {
     ///
     /// One read per field the pattern names, which is what the source says: the
     /// alternative, binding the whole struct and projecting later, would make the
-    /// bindings views into `p` rather than values of their own. Nested patterns
-    /// don't reach here — a destructuring *binding* can't fail, so the parser only
-    /// accepts names and `..` inside one.
+    /// bindings views into `p` rather than values of their own. Only a pattern
+    /// whose fields are all names reaches here.
     fn lower_struct_destructure(
         &mut self,
         pattern: &Pattern,
@@ -2719,56 +2727,14 @@ impl<'a> MirLowerer<'a> {
             target: check_block,
         }));
 
-        // OPT19 on a loop: `while <expr>? as v` reads the scrutinee once per
-        // iteration in the check block and rebinds the payload at the top of the
-        // body — the same two-part shape `while <expr> is <T> as v` lowers to.
-        // A bare `while <expr>?` with no binder needs none of this; the plain
-        // path already lowers the test to a bool.
-        let presence = match &cond.kind {
-            ExprKind::IsPresent { expr: inner, binding: Some(name) } => Some((inner, name.clone())),
-            _ => None,
-        };
-
+        // The condition runs once per iteration in the check block. Its
+        // bindings (`while next()? as v && v > 0`) reach the body and end with
+        // the loop.
+        let saved_locals = self.locals.clone();
         self.builder.switch_to_block(check_block);
-        let bind_in_body = match presence {
-            Some((inner, name)) => {
-                let (val, scrutinee_ty) = self.lower_expr(inner)?;
-                let niche = self.option_niche(inner, &scrutinee_ty);
-                let is_niche = niche.is_some();
-                let tag = self.emit_option_tag(&val, niche);
-                // Tag 0 is present (Some/Ok); anything else ends the loop.
-                let is_present = self.builder.alloc_temp(MirType::Bool);
-                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                    dst: is_present,
-                    rvalue: MirRValue::BinaryOp {
-                        op: BinOp::Eq,
-                        left: MirOperand::Local(tag),
-                        right: MirOperand::Constant(MirConst::Int(0)),
-                    },
-                }));
-                self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
-                    cond: MirOperand::Local(is_present),
-                    then_block: body_block,
-                    else_block: exit_block,
-                }));
-                let payload_ty = self.presence_payload_type(inner, &scrutinee_ty);
-                Some((name, inner, val, payload_ty, is_niche))
-            }
-            None => {
-                let (cond_op, _) = self.lower_expr(cond)?;
-                self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
-                    cond: cond_op,
-                    then_block: body_block,
-                    else_block: exit_block,
-                }));
-                None
-            }
-        };
+        self.lower_cond_to(cond, body_block, exit_block)?;
 
         self.builder.switch_to_block(body_block);
-        if let Some((name, inner, val, payload_ty, is_niche)) = bind_in_body {
-            self.bind_presence_payload(&name, inner, &val, &payload_ty, is_niche);
-        }
         let ensure_depth = self.ensure_stack.len();
         self.loop_stack.push(LoopContext {
             label: label.map(|s| s.to_string()),
@@ -2783,6 +2749,7 @@ impl<'a> MirLowerer<'a> {
 
         self.loop_stack.pop();
         self.ensure_stack.truncate(ensure_depth);
+        self.locals = saved_locals;
         self.builder.switch_to_block(exit_block);
         Ok(())
     }
@@ -4010,14 +3977,11 @@ impl MirLowerer<'_> {
             Some(Expr { id: branch.id, span: branch.span, kind: ExprKind::Block(out) })
         };
         let kind = match &value.kind {
-            ExprKind::If { cond, then_branch, else_branch: Some(else_branch), else_binding: None }
-                if !matches!(cond.kind, ExprKind::IsPresent { .. }) =>
-            {
+            ExprKind::If { cond, then_branch, else_branch: Some(else_branch) } => {
                 ExprKind::If {
                     cond: cond.clone(),
                     then_branch: Box::new(arm(then_branch)?),
                     else_branch: Some(Box::new(arm(else_branch)?)),
-                    else_binding: None,
                 }
             }
             ExprKind::Match { scrutinee, arms } => {

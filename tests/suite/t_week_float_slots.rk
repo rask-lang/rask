@@ -80,7 +80,7 @@ test "mem.abi — a concrete enum's float payloads" {
     let small = Concrete.HasSmall(1.5)
     let sv: f32 = match small {
         HasSmall(v) => v,
-        HasWide(_) => 0.0,
+        HasWide => 0.0,
         Nothing => 0.0,
     }
     assert sv == 1.5
@@ -88,7 +88,7 @@ test "mem.abi — a concrete enum's float payloads" {
     let wide = Concrete.HasWide(2.5)
     let wv = match wide {
         HasWide(v) => v,
-        HasSmall(_) => 0.0,
+        HasSmall => 0.0,
         Nothing => 0.0,
     }
     assert wv == 2.5

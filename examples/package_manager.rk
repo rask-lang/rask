@@ -37,13 +37,13 @@ extend Version {
             return VersionError.InvalidFormat("expected MAJOR.MINOR.PATCH, got: {s}")
         }
 
-        let major = parts[0].trim().parse<i64>() is i64 as v else {
+        let major = parts[0].trim().parse<i64>() catch _ => {
             return VersionError.InvalidFormat("bad major version in: {s}")
         }
-        let minor = parts[1].trim().parse<i64>() is i64 as v else {
+        let minor = parts[1].trim().parse<i64>() catch _ => {
             return VersionError.InvalidFormat("bad minor version in: {s}")
         }
-        let patch = parts[2].trim().parse<i64>() is i64 as v else {
+        let patch = parts[2].trim().parse<i64>() catch _ => {
             return VersionError.InvalidFormat("bad patch version in: {s}")
         }
 
@@ -345,7 +345,7 @@ func parse_manifest(content: string) -> Manifest or ManifestError {
         return ManifestError.MissingField("package name")
     }
 
-    let version = Version.parse(version_str) is Version as v else {
+    let version = Version.parse(version_str) catch _ => {
         return ManifestError.InvalidConstraint("bad package version: {version_str}")
     }
 
@@ -384,7 +384,7 @@ func parse_package_line(line: string, line_num: i32) -> (string, string) or Mani
 func parse_dep_line(line: string, line_num: i32) -> Dependency or ManifestError {
     let name = try extract_nth_quoted(line, 0, line_num, "dep name")
     let constraint_str = try extract_nth_quoted(line, 1, line_num, "constraint")
-    let constraint = Constraint.parse(constraint_str) is Constraint as c else {
+    let constraint = Constraint.parse(constraint_str) catch _ => {
         return ManifestError.InvalidConstraint(constraint_str)
     }
     return Dependency(name, constraint)
@@ -430,11 +430,11 @@ LocalRegistry implements Registry {
 func local_available(root: string, name: string) -> Vec<PackageMeta> or RegistryError {
     // Read index file listing available versions
     let index_path = "{root}/{name}/index.json"
-    let index_content = fs.read_text(index_path) is string as c else {
+    let index_content = fs.read_text(index_path) catch _ => {
         return RegistryError.PackageNotFound(name)
     }
 
-    let parsed = json.decode<JsonValue>(index_content) is JsonValue as v else {
+    let parsed = json.decode<JsonValue>(index_content) catch _ => {
         return RegistryError.IoError("invalid JSON in {index_path}")
     }
     let version_list = parsed.as_array() ?? {
@@ -447,9 +447,7 @@ func local_available(root: string, name: string) -> Vec<PackageMeta> or Registry
             continue
         }
         let meta_path = "{root}/{name}/{ver_str}/meta.json"
-        let meta = load_package_meta(meta_path) is PackageMeta as m else {
-            continue
-        }
+        let meta = load_package_meta(meta_path) catch _ => continue
         versions.push(meta)
     }
 
@@ -471,10 +469,8 @@ func local_fetch(root: string, name: string, version: Version) -> string or Regi
 // ─── Package Meta Loader ────────────────────────────────────────────
 
 func load_package_meta(path: string) -> PackageMeta or RegistryError {
-    let content = fs.read_text(path) is string as c else {
-        return RegistryError.IoError("cannot read {path}")
-    }
-    let parsed = json.decode<JsonValue>(content) is JsonValue as v else {
+    let content = fs.read_text(path) catch _ => return RegistryError.IoError("cannot read {path}")
+    let parsed = json.decode<JsonValue>(content) catch _ => {
         return RegistryError.IoError("invalid JSON in {path}")
     }
     return parse_meta_from_json(parsed, path)
@@ -495,9 +491,7 @@ func parse_dep(entry: JsonValue) -> Dependency? {
         let dn = json_str_field(d, "name") ?? ""
         let dc = json_str_field(d, "constraint") ?? ""
         if dn.is_empty() || dc.is_empty() { return none }
-        let constraint = Constraint.parse(dc) is Constraint as c else {
-            return none
-        }
+        let constraint = Constraint.parse(dc) catch _ => return none
         return Dependency(name: dn, constraint)
     }
     return none
@@ -520,7 +514,7 @@ func parse_meta_fields(m: Map<string, JsonValue>, source: string) -> PackageMeta
         return RegistryError.IoError("missing 'version' in {source}")
     }
     let checksum = json_str_field(m, "checksum") ?? ""
-    let version = Version.parse(ver_str) is Version as v else {
+    let version = Version.parse(ver_str) catch _ => {
         return RegistryError.IoError("bad version in {source}: {ver_str}")
     }
 
@@ -566,9 +560,7 @@ HttpRegistry implements Registry {
 
 func http_available(base_url: string, name: string) -> Vec<PackageMeta> or RegistryError {
     let url = "{base_url}/packages/{name}"
-    let resp = http.get(url) is Response as r else {
-        return RegistryError.NetworkError("failed to fetch {url}")
-    }
+    let resp = http.get(url) catch _ => return RegistryError.NetworkError("failed to fetch {url}")
 
     if resp.status == 404 {
         return RegistryError.PackageNotFound(name)
@@ -577,7 +569,7 @@ func http_available(base_url: string, name: string) -> Vec<PackageMeta> or Regis
         return RegistryError.NetworkError("registry returned {resp.status} for {name}")
     }
 
-    let parsed = json.decode<JsonValue>(resp.body) is JsonValue as v else {
+    let parsed = json.decode<JsonValue>(resp.body) catch _ => {
         return RegistryError.NetworkError("invalid JSON from registry for {name}")
     }
     let arr = parsed.as_array() ?? {
@@ -586,9 +578,7 @@ func http_available(base_url: string, name: string) -> Vec<PackageMeta> or Regis
 
     mut versions = Vec.new()
     for entry in arr {
-        let meta = parse_meta_from_json(entry, name) is PackageMeta as m else {
-            continue
-        }
+        let meta = parse_meta_from_json(entry, name) catch _ => continue
         versions.push(meta)
     }
 
@@ -601,7 +591,7 @@ func http_available(base_url: string, name: string) -> Vec<PackageMeta> or Regis
 func http_fetch(base_url: string, name: string, version: Version) -> string or RegistryError {
     let ver_str = version.to_string()
     let url = "{base_url}/packages/{name}/{ver_str}/download"
-    let resp = http.get(url) is Response as r else {
+    let resp = http.get(url) catch _ => {
         return RegistryError.NetworkError("failed to download {name}@{ver_str}")
     }
 
@@ -849,7 +839,7 @@ func fetch_one(item: FetchItem, registry: any Registry) -> string or FetchError 
 
     // Verify checksum if present
     if !item.checksum.is_empty() {
-        let content = fs.read_text("{pkg_path}/meta.json") is string as c else {
+        let content = fs.read_text("{pkg_path}/meta.json") catch _ => {
             return "fetch   {item.name}@{item.version.to_string()}"
         }
         verify_checksum(content, item.checksum, item.name) catch e => {
@@ -915,7 +905,7 @@ func write_lockfile(graph: DepGraph, path: string) -> void or FetchError {
 func read_lockfile(path: string) -> Map<string, LockedPackage> or FetchError {
     mut packages = Map.new()
 
-    let content = fs.read_text(path) is string as c else {
+    let content = fs.read_text(path) catch _ => {
         // No lock file yet — that's fine
         return packages
     }

@@ -75,10 +75,10 @@ test "binding from a block expression" {
 
 test "binding from an if expression" {
     let x = 7
-    let sign = if x > 0: "+" else: "-"
+    let sign = if x > 0 { "+" } else { "-" }
     assert sign == "+"
     let y = -7
-    let sign2 = if y > 0: "+" else: "-"
+    let sign2 = if y > 0 { "+" } else { "-" }
     assert sign2 == "-"
 }
 

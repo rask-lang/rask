@@ -26,7 +26,7 @@ test "a link option field through a parameter" {
     mut leaves: Rack<Leaf> = Rack.new()
     let a = leaves.insert(Leaf(id: 3))
     let e = Edge(to: a, n: 5)
-    assert !(e.to is none)
+    assert e.to?
     let f = Edge(to: e.to, n: 6)
     assert f.to!.id == 3
     assert f.n == 6

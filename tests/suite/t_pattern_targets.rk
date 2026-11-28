@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 //
-// What a pattern means is the checker's answer, not its spelling. A bare
-// capitalised name in an arm on a `T or E` is still a binding when the
-// checker says so, and a variant of one member of a union error side is
-// tested through the side, the member and the variant.
+// What a pattern means is the checker's answer, not its spelling. A type
+// test on the error side of a `T or E` picks that side, and a variant of one
+// member of a union error side is tested through the side, the member and
+// the variant.
 
 enum Bad {
     Oops
@@ -35,15 +35,15 @@ func both(a: i64) -> i64 or (DivError | Other) {
     return a
 }
 
-test "a capitalised binding on a T or E binds" {
+test "type tests pick either side of a T or E" {
     let n = match f(3) {
         Bad as b => 0,
-        V => 1,
+        i64 as v => v,
     }
-    assert n == 1
+    assert n == 3
     let m = match f(0) {
         Bad as b => 0,
-        V => 1,
+        i64 as v => v,
     }
     assert m == 0
 }

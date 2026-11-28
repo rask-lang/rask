@@ -34,7 +34,7 @@ test "handles in a Vec and a Map are freed with it" {
 
 test "a handle in an optional or a tuple is freed with it" {
     let r = maybe_rng(7)
-    assert r is Random
+    assert r?
     let (a, n) = counter_pair(4)
     assert a.load(MemoryOrder.SeqCst) == 4
     assert n == 8

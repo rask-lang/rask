@@ -114,7 +114,7 @@ extend Lexer {
     // Look at the current character without consuming it.
     // Returns none if we're at the end of source.
     func peek(self) -> char? {
-        if self.pos >= self.source.len(): return none
+        if self.pos >= self.source.len() { return none }
         return self.source.char_at(self.pos)
     }
 
@@ -123,7 +123,7 @@ extend Lexer {
     // width — not 1. Advancing by 1 walked into the middle of any multi-byte
     // character and read the rest as garbage.
     func advance(self) -> char? {
-        if self.pos >= self.source.len(): return none
+        if self.pos >= self.source.len() { return none }
         let c = self.source.char_at(self.pos)
         if c? as ch {
             // `pos` is signed here; the width is 1-4, so the conversion can't
@@ -167,7 +167,7 @@ extend Lexer {
                     if next == '/' {
                         // Line comment — skip to end of line
                         while self.peek()? as ch {
-                            if ch == '\n': break
+                            if ch == '\n' { break }
                             self.advance()
                         }
                     } else if next == '*' {

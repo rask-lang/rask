@@ -109,7 +109,7 @@ test "nested generics — read a generic struct back out of a Map" {
     mut m: Map<string, Wrap<i64>> = Map.new()
     m.insert("k", Wrap(value: 55))
     let got = m.get("k")
-    if got is Wrap<i64> as w {
+    if got? as w {
         assert w.value == 55
     } else {
         assert false
