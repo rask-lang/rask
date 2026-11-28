@@ -4050,35 +4050,11 @@ impl<'a> MirLowerer<'a> {
     /// stay in scope for the rest of the block. Without an `else` the checker
     /// proved the test can't fail.
     pub(super) fn lower_let_pattern(&mut self, pattern: &Pattern, init: &Expr, else_branch: Option<&Expr>) -> Result<(), LoweringError> {
-        let (val, val_ty) = self.lower_expr(init)?;
+        // The `else` sees the names the pattern shadows as they were before.
         let outer = self.save_names(pattern.bound_names());
-        if matches!(val_ty, MirType::Struct(_)) && matches!(&pattern.kind, PatternKind::Struct { .. }) {
-            // A struct's fields are read, and bound, as they're tested.
-            let ok_block = self.builder.create_block();
-            let else_block = self.builder.create_block();
-            self.lower_struct_is_to(init, val, val_ty, pattern, ok_block, else_block)?;
-            return self.guard_else(ok_block, else_block, else_branch, pattern, outer);
-        }
-        let niche = self.option_niche(init, &val_ty);
-        let is_niche = niche.is_some();
-        let test = self.emit_is_test(init, &val, &val_ty, niche, pattern)?;
-        self.leave_unless(MirOperand::Local(test.matches), else_branch, pattern, outer)?;
-        let bind_ty = self.tested_bind_type(init, pattern, &val_ty, is_niche)?;
-        self.bind_tested_pattern(&test, pattern, init, val, bind_ty, is_niche, &val_ty);
-        Ok(())
-    }
-
-    /// Branch on `matched`: run the guard's `else` when it's false and carry
-    /// on in a fresh block when it's true. The `else` sees the names the
-    /// pattern shadows as they were before it (`outer`).
-    fn leave_unless(&mut self, matched: MirOperand, else_branch: Option<&Expr>, pattern: &Pattern, outer: Vec<super::SavedName>) -> Result<(), LoweringError> {
         let ok_block = self.builder.create_block();
         let else_block = self.builder.create_block();
-        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
-            cond: matched,
-            then_block: ok_block,
-            else_block,
-        }));
+        self.lower_is_pattern_to(init, pattern, ok_block, else_block)?;
         self.guard_else(ok_block, else_block, else_branch, pattern, outer)
     }
 
@@ -11061,7 +11037,7 @@ impl<'a> MirLowerer<'a> {
         }));
 
         self.builder.switch_to_block(bind_block);
-        let payload_ty = self.payload_type_of_niche(scrutinee, &val_ty, is_niche);
+        let payload_ty = self.tested_bind_type(scrutinee, pattern, &val_ty, is_niche)?;
         self.bind_tested_pattern(&test, pattern, scrutinee, val, payload_ty, is_niche, &val_ty);
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: on_true }));
         Ok(())
