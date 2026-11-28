@@ -1119,11 +1119,20 @@ fn parse_string(s: &str, pos: usize, delimiter_len: usize) -> Result<(String, St
 /// Bytes of a hole's body after its `{`, up to and including the `}` that
 /// closes it, or all of `bytes` if none does. Nested string and char literals
 /// keep their braces.
+///
+/// A backslash is never code, so it and the byte after it are stepped over the
+/// way [`scan_hole_aware`] steps over them: `"{\"x\":1}"` is one hole holding
+/// `\"x\":1`, which the parser rejects by name, not a quote that opens a
+/// nested string and leaves the hole unclosed.
 fn hole_len(bytes: &[u8]) -> usize {
     let mut depth = 1;
     let mut pos = 0;
     while pos < bytes.len() {
         match bytes[pos] {
+            b'\\' => {
+                pos += 2;
+                continue;
+            }
             b'{' => depth += 1,
             b'}' => {
                 depth -= 1;

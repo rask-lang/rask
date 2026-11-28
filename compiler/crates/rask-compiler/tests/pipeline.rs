@@ -218,7 +218,7 @@ fn a_program_type_shadows_the_stdlib_one_of_the_same_name() {
         func main() {
             mut h = Headers.new()
             h.set("Host", "localhost")
-            println("{h.get(\"Host\") ?? \"MISSING\"}")
+            println("{h.get("Host") ?? "MISSING"}")
         }
     "#);
     let out = check_file(path.to_str().unwrap(), &default_config());

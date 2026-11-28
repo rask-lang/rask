@@ -5636,7 +5636,9 @@ impl Parser {
                 let mut depth = 1;
                 // Braces inside a nested literal are text, not nesting —
                 // `{tag("}")}` used to end the hole at the quoted brace, and
-                // `{c == '{'}` never closed.
+                // `{c == '{'}` never closed. A backslash outside a literal
+                // isn't code either; stepping over it as the lexer does keeps
+                // `"{\"x\":1}"` one hole the expression parser rejects by name.
                 let mut in_string = false;
                 let mut escaped = false;
                 while i < chars.len() && depth > 0 {
@@ -5644,7 +5646,7 @@ impl Parser {
                         escaped = false;
                     } else {
                         match chars[i] {
-                            '\\' if in_string => escaped = true,
+                            '\\' => escaped = true,
                             '"' => in_string = !in_string,
                             _ if in_string => {}
                             'r' => {
