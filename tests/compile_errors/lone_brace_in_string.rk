@@ -5,6 +5,18 @@
 // as text is escaped: `\{` and `\}`. A lone one used to be kept as text
 // without a word, so `"{name"` printed `{name` when `{name}` was meant.
 
+// ERROR: a test name is fixed text too [E0100]
+test "lone { brace" {
+    assert true
+}
+
+@message
+enum Fault {
+    // ERROR: a raw string is no template, braces or not [E0100]
+    @message(r"plain")
+    Plain
+}
+
 func main() {
     let name = "Ada"
     // ERROR: a `{` that nothing closes [E0100]

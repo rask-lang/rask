@@ -1871,8 +1871,8 @@ mod tests {
         let src = concat!(
             "func main() {\n",
             "    println(\"a\\tb {f(|| { return zz })}\")\n",
-            "    println(\"\\\"q\\\" {g(\\\"k\\\", yy)}\")\n",
-            "    println(r\"raw {xx}\")\n",
+            "    println(\"\\\"q\\\" {g(\"k\", yy)}\")\n",
+            "    println(\"\\u{e9}\\{ {xx}\")\n",
             "    println(\"\"\"tri {ww}\"\"\")\n",
             "}\n",
         );

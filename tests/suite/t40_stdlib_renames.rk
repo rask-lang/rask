@@ -54,7 +54,7 @@ test "Random.range stays in bounds" {
 
 // --- {:debug} format (was {:?}) ---
 
-test "{x:debug} interpolation" {
+test "\{x:debug\} interpolation" {
     let n = 7
     assert "{n:debug}" == "7"
     let answer = 42

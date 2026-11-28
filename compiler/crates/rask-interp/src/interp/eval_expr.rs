@@ -1214,6 +1214,14 @@ impl Interpreter {
                                 None => out.push_str(&display),
                             }
                         }
+                        // Only a `format` template holds one, and the desugar
+                        // always rewrites `format`.
+                        StringSegment::Placeholder { span, .. } => {
+                            return Err(RuntimeDiagnostic::new(
+                                RuntimeError::TypeError("a `format` placeholder outside a `format` call".into()),
+                                *span,
+                            ));
+                        }
                     }
                 }
                 Ok(Value::String(Arc::new(Mutex::new(out))))

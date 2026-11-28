@@ -328,6 +328,7 @@ go down.
 | [unknown_escape.rk](unknown_escape.rk) | `"\q"`, an escape the language doesn't have (E0003) |
 | [closure_calls_itself_with_itself.rk](closure_calls_itself_with_itself.rk) | `\|x\| x(x)`: a type that would contain itself (E0314), with no "couldn't work out the type" after it |
 | [no_alloc_allocates.rk](no_alloc_allocates.rk) | `Vec.new()` inside a `@no_alloc` function (E0324) |
+| [format_template_arguments.rk](format_template_arguments.rk) | `format("{} and {}", name)`, `{1}` with one argument, and `{}` mixed with `{0}` (E0338); a hole's own string holds no placeholders |
 | [format_template_not_literal.rk](format_template_not_literal.rk) | `format(t, 1)` with the template in a variable (E0338); placeholders are matched to arguments while compiling |
 | [c_callback_wrong_function.rk](c_callback_wrong_function.rk) | A Rask function (E0935) and a capturing closure (E0936) passed where C expects a function pointer |
 | [variadic_struct_arg.rk](variadic_struct_arg.rk) | A struct passed through C's `...` (E0937). The message used to name the type `<type#N>` |
@@ -336,7 +337,7 @@ go down.
 | [type_test_not_in_error_union.rk](type_test_not_in_error_union.rk) | `r is NetFailed` on an `i64 or (ParseFailed \| DiskFailed)` (E0398). A union error side used to get a code of its own (E0347) for the same mistake, and the type printed without its parentheses |
 | [type_contains_itself.rk](type_contains_itself.rk) | A `type alias` that names itself anywhere, even inside `Vec<…>` (E0395), and a nominal `type` that wraps itself inline (E0890). The aliases overflowed the compiler's stack; the nominal ones were accepted |
 | [pattern_names_nothing.rk](pattern_names_nothing.rk) | `p is some(v)` on an `i64?`, `n is bogus(x)` on an `i64` (E0954). The name is no variant of anything; these type-checked, and the two backends disagreed on whether the test held |
-| [lone_brace_in_string.rk](lone_brace_in_string.rk) | `"hello {name"`, `"'}'"`, `"hello {}"` outside `format`, a hole in a match pattern or an `x! "…"` message (E0100). `{{`, which is not the escape, in a string or a `format` template; a raw string as a `format` template. A brace that belongs to no interpolation; literal braces are written `\{` and `\}`, and raw strings do not interpolate. These used to pass through as text |
+| [lone_brace_in_string.rk](lone_brace_in_string.rk) | `"hello {name"`, `"'}'"`, `"hello {}"` outside `format`, a hole in a match pattern or an `x! "…"` message (E0100). `{{`, which is not the escape, in a string or a `format` template; a raw string as a `format` or `@message` template; a test name with a lone brace. A brace that belongs to no interpolation; literal braces are written `\{` and `\}`, and raw strings do not interpolate. These used to pass through as text |
 | [closure_reads_mutated_receiver.rk](closure_reads_mutated_receiver.rk) | `v.remove_where(\|x\| x < v.len())`: the closure reads `v` while the call has it lent for writing (E0320) |
 | [destructure_read_then_write.rk](destructure_read_then_write.rk) | `mut Person(name: other, ..) = p` while an earlier `let` destructuring still reads `p` (E0801) |
 | [closure_carries_uncloneable.rk](closure_carries_uncloneable.rk) | A returned closure carrying an `any Displayable` (E0976); cloning the closure would have to clone it |

@@ -24,7 +24,7 @@ pub use defaults::is_valid_default_expr;
 
 use rask_ast::ty::TypeExpr;
 use rask_ast::decl::{Decl, DeclKind, FnDecl, Param, StructDecl, EnumDecl, InterfaceDecl, ImplDecl};
-use rask_ast::expr::{ArgMode, BinOp, CallArg, ConvertKind, Expr, ExprKind, MatchArm, Pattern, PatternKind, UnaryOp};
+use rask_ast::expr::{ArgMode, BinOp, CallArg, ConvertKind, Expr, ExprKind, MatchArm, Pattern, PatternKind, StringSegment, UnaryOp};
 use rask_ast::stmt::{Stmt, StmtKind};
 use rask_ast::{NodeId, Span};
 
@@ -178,15 +178,6 @@ fn desugar_inner_from(
     annotation_defaults::fill_annotation_defaults(decls);
 
     output
-}
-
-/// One piece of a parsed `format` template.
-enum TemplatePiece {
-    Literal(String),
-    /// `{}` or `{N}` — the argument at this index, with its spec.
-    Positional(usize, Option<rask_ast::fmt_spec::FormatSpec>),
-    /// `{name}` — an expression captured from the enclosing scope (F3).
-    Named(Expr, Option<rask_ast::fmt_spec::FormatSpec>),
 }
 
 /// The desugaring context.
@@ -790,7 +781,7 @@ impl Desugarer {
             expr.id = self.fresh_id();
         }
 
-        // `format(template, args…)` is rewritten from its raw template before
+        // `format(template, args…)` is rewritten from its template before
         // anything walks into it — the template is compile-time input, and the
         // rewrite desugars the argument expressions itself (std.fmt/CM2, CM5).
         if self.desugar_format_call(expr) {
@@ -1161,11 +1152,11 @@ impl Desugarer {
     /// `format(template, args…)` → the string-building code the template
     /// describes (std.fmt/CM2, CM5). Returns true when it rewrote `expr`.
     ///
-    /// The template is read here, not at runtime, so `{0}`, `{{`, and `{:spec}`
-    /// all mean what the spec says they mean. Before this the template went
-    /// through ordinary interpolation first: `{0}` came out as the integer
-    /// zero, `{{x}}` turned back into a placeholder for a variable `x`, and
-    /// nothing reached native codegen at all.
+    /// The template is read here, not at runtime, so `{0}`, `\\{`, and `{:spec}`
+    /// all mean what the spec says they mean. The parser marks `{}` and `{0}`
+    /// as placeholders; before that the template went through ordinary
+    /// interpolation, `{0}` came out as the integer zero, and nothing reached
+    /// native codegen at all.
     fn desugar_format_call(&mut self, expr: &mut Expr) -> bool {
         let span = expr.span;
         let ExprKind::Call { func, args } = &expr.kind else { return false };
@@ -1176,12 +1167,16 @@ impl Desugarer {
         if first.name.is_some() {
             return false;
         }
-        let ExprKind::String(template) = &first.expr.kind else {
-            // CM2: the template is read while compiling. A template that only
-            // exists at run time has nothing to read, and native had no
-            // runtime formatter to fall back on — it failed in codegen while
-            // the interpreter parsed the string as it ran.
-            if !matches!(first.expr.kind, ExprKind::StringInterp(_)) {
+        // The parser hands the template down as pieces: text, holes, and
+        // the `{}`/`{0}` placeholders only a template has.
+        let segments: Vec<StringSegment> = match &first.expr.kind {
+            ExprKind::String(text) => vec![StringSegment::Literal(text.clone())],
+            ExprKind::StringInterp(segments) => segments.clone(),
+            _ => {
+                // CM2: the template is read while compiling. A template that
+                // only exists at run time has nothing to read, and native had
+                // no runtime formatter to fall back on — it failed in codegen
+                // while the interpreter parsed the string as it ran.
                 self.errors.push(DesugarError {
                     code: "E0338",
                     label: "not a string literal".to_string(),
@@ -1191,41 +1186,75 @@ impl Desugarer {
                         .to_string(),
                     span: first.expr.span,
                 });
+                return false;
             }
-            return false;
         };
-
-        let template = template.clone();
         let template_span = first.expr.span;
         let value_args: Vec<Expr> = args[1..].iter().map(|a| a.expr.clone()).collect();
 
-        let Some(pieces) = self.parse_template(&template, template_span, value_args.len()) else {
-            return false;
-        };
+        // F2: auto (`{}`) and explicit (`{0}`) indexing can't be mixed, and
+        // every placeholder needs an argument. Checked before anything is
+        // rewritten, so a bad call is left as written.
+        let mut next_auto = 0usize;
+        let mut saw_explicit = false;
+        for seg in &segments {
+            let StringSegment::Placeholder { index, span: at, .. } = seg else { continue };
+            let wanted = match index {
+                Some(i) => {
+                    saw_explicit = true;
+                    *i
+                }
+                None => {
+                    next_auto += 1;
+                    next_auto - 1
+                }
+            };
+            if next_auto > 0 && saw_explicit {
+                self.errors.push(DesugarError {
+                    code: "E0338",
+                    label: "in this format template".to_string(),
+                    message: "format template mixes `{}` with `{0}` — pick one and use it throughout"
+                        .to_string(),
+                    span: template_span,
+                });
+                return false;
+            }
+            if wanted >= value_args.len() {
+                self.errors.push(DesugarError {
+                    code: "E0338",
+                    label: "this placeholder has no argument".to_string(),
+                    message: {
+                        let passed = match value_args.len() {
+                            1 => "1 argument was passed".to_string(),
+                            n => format!("{n} arguments were passed"),
+                        };
+                        match index {
+                            Some(i) => format!("`{{{i}}}` has no argument: they count from `{{0}}`, and {passed}"),
+                            None => format!("format template has more `{{}}` placeholders than arguments: {passed}"),
+                        }
+                    },
+                    span: *at,
+                });
+                return false;
+            }
+        }
 
         let mut parts: Vec<Expr> = Vec::new();
-        for piece in pieces {
-            match piece {
-                TemplatePiece::Literal(text) => parts.push(self.string_lit(text, span)),
-                TemplatePiece::Positional(idx, spec) => {
-                    let Some(arg) = value_args.get(idx) else {
-                        self.errors.push(DesugarError {
-                            code: "E0338",
-                            label: "in this format template".to_string(),
-                            message: format!(
-                                "format template wants argument {} but only {} were passed",
-                                idx,
-                                value_args.len()
-                            ),
-                            span: template_span,
-                        });
-                        return false;
-                    };
-                    let mut inner = arg.clone();
+        let mut next_auto = 0usize;
+        for seg in segments {
+            match seg {
+                StringSegment::Literal(text) => parts.push(self.string_lit(text, span)),
+                StringSegment::Expr(inner, spec) => {
+                    let mut inner = *inner;
                     self.desugar_expr(&mut inner);
                     parts.push(self.render_expr(inner, spec));
                 }
-                TemplatePiece::Named(mut inner, spec) => {
+                StringSegment::Placeholder { index, spec, .. } => {
+                    let idx = index.unwrap_or_else(|| {
+                        next_auto += 1;
+                        next_auto - 1
+                    });
+                    let mut inner = value_args[idx].clone();
                     self.desugar_expr(&mut inner);
                     parts.push(self.render_expr(inner, spec));
                 }
@@ -1241,175 +1270,8 @@ impl Desugarer {
         true
     }
 
-    /// Split a format template into literal text and placeholders (CM2).
-    /// `None` means an error was recorded and the call should be left alone.
-    fn parse_template(
-        &mut self,
-        template: &str,
-        span: rask_ast::Span,
-        arg_count: usize,
-    ) -> Option<Vec<TemplatePiece>> {
-        let chars: Vec<char> = template.chars().collect();
-        let mut pieces = Vec::new();
-        let mut literal = String::new();
-        let mut i = 0;
-        let mut next_auto = 0usize;
-        // F2: auto (`{}`) and explicit (`{0}`) indexing can't be mixed.
-        let mut saw_auto = false;
-        let mut saw_explicit = false;
-
-        while i < chars.len() {
-            match chars[i] {
-                // F4
-                '{' if chars.get(i + 1) == Some(&'{') => {
-                    literal.push('{');
-                    i += 2;
-                }
-                '}' if chars.get(i + 1) == Some(&'}') => {
-                    literal.push('}');
-                    i += 2;
-                }
-                '{' => {
-                    let mut depth = 1;
-                    let mut j = i + 1;
-                    while j < chars.len() && depth > 0 {
-                        match chars[j] {
-                            '{' => depth += 1,
-                            '}' => depth -= 1,
-                            _ => {}
-                        }
-                        if depth > 0 {
-                            j += 1;
-                        }
-                    }
-                    if depth != 0 {
-                        self.errors.push(DesugarError {
-                            code: "E0338",
-                            label: "in this format template".to_string(),
-                            message: "unclosed `{` in format template — write `\\{` for a literal brace".to_string(),
-                            span,
-                        });
-                        return None;
-                    }
-                    let inner: String = chars[i + 1..j].iter().collect();
-                    i = j + 1;
-
-                    let (arg_part, spec_text) = match rask_ast::fmt_spec::split_spec(&inner) {
-                        Some(pos) => (inner[..pos].to_string(), Some(inner[pos + 1..].to_string())),
-                        None => (inner.clone(), None),
-                    };
-                    let spec = match spec_text {
-                        Some(text) => match rask_ast::fmt_spec::parse_spec(&text) {
-                            Some(s) => Some(s),
-                            None => {
-                                self.errors.push(DesugarError {
-                                    code: "E0338",
-                                    label: "in this format template".to_string(),
-                                    message: format!("`{}` is not a format spec", text),
-                                    span,
-                                });
-                                return None;
-                            }
-                        },
-                        None => None,
-                    };
-
-                    if !literal.is_empty() {
-                        pieces.push(TemplatePiece::Literal(std::mem::take(&mut literal)));
-                    }
-
-                    let trimmed = arg_part.trim();
-                    if trimmed.is_empty() {
-                        saw_auto = true;
-                        pieces.push(TemplatePiece::Positional(next_auto, spec));
-                        next_auto += 1;
-                    } else if let Ok(idx) = trimmed.parse::<usize>() {
-                        saw_explicit = true;
-                        pieces.push(TemplatePiece::Positional(idx, spec));
-                    } else {
-                        // F3: a name (or field path, or expression) captured
-                        // from the enclosing scope.
-                        let parsed = self.parse_placeholder_expr(trimmed, span)?;
-                        pieces.push(TemplatePiece::Named(parsed, spec));
-                    }
-                }
-                c => {
-                    literal.push(c);
-                    i += 1;
-                }
-            }
-        }
-        if !literal.is_empty() {
-            pieces.push(TemplatePiece::Literal(literal));
-        }
-
-        if saw_auto && saw_explicit {
-            self.errors.push(DesugarError {
-                code: "E0338",
-                label: "in this format template".to_string(),
-                message: "format template mixes `{}` with `{0}` — pick one and use it throughout"
-                    .to_string(),
-                span,
-            });
-            return None;
-        }
-        if saw_auto && next_auto > arg_count {
-            self.errors.push(DesugarError {
-                code: "E0338",
-                label: "in this format template".to_string(),
-                message: format!(
-                    "format template has {} placeholders but {} arguments were passed",
-                    next_auto, arg_count
-                ),
-                span,
-            });
-            return None;
-        }
-
-        Some(pieces)
-    }
-
-    /// Parse the expression text inside a `{…}` placeholder.
-    fn parse_placeholder_expr(&mut self, text: &str, span: rask_ast::Span) -> Option<Expr> {
-        // The placeholder body is re-lexed, so its tokens need the enclosing
-        // file stamped on them — the parser lifts token spans directly for
-        // names, and without this everything inside a `"{…}"` claimed file 0.
-        let lex = rask_lexer::Lexer::new_with_file_id(text, span.file_id).tokenize();
-        if !lex.errors.is_empty() {
-            self.errors.push(DesugarError {
-                code: "E0338",
-                label: "in this format template".to_string(),
-                message: format!("`{{{}}}` in the format template isn't an expression", text),
-                span,
-            });
-            return None;
-        }
-        let mut parser = rask_parser::Parser::new_with_file_id(lex.tokens, 0, span.file_id);
-        match parser.parse_expr() {
-            Ok(mut parsed) => {
-                // The parser numbers from zero, so every placeholder came out
-                // with the same ids and the checker's answer for one landed on
-                // all of them: `format("{count} {name}")` typed `name` as `i64`.
-                rask_ast::rewrite::rewrite_expr(&mut parsed, &mut FreshIds(&mut self.next_id));
-                offset_expr_spans(&mut parsed, span.start);
-                parsed.span = span;
-                Some(parsed)
-            }
-            Err(_) => {
-                self.errors.push(DesugarError {
-                    code: "E0338",
-                    label: "in this format template".to_string(),
-                    message: format!("`{{{}}}` in the format template isn't an expression", text),
-                    span,
-                });
-                None
-            }
-        }
-    }
-
     /// Desugar pre-parsed StringInterp segments into a concat chain.
-    fn desugar_string_interp(&mut self, segments: &[rask_ast::expr::StringSegment], span: rask_ast::Span) -> Option<ExprKind> {
-        use rask_ast::expr::StringSegment;
+    fn desugar_string_interp(&mut self, segments: &[StringSegment], span: rask_ast::Span) -> Option<ExprKind> {
 
         let mut exprs: Vec<Expr> = Vec::new();
         for seg in segments {
@@ -1423,6 +1285,9 @@ impl Desugarer {
                     self.desugar_expr(&mut inner);
                     exprs.push(self.render_expr(inner, *spec));
                 }
+                // Left only in a `format` call the rewrite refused, which
+                // has already said why.
+                StringSegment::Placeholder { .. } => {}
             }
         }
 
@@ -1601,10 +1466,10 @@ impl Desugarer {
         if fields.is_empty() {
             return Expr { id: self.fresh_id(), kind: ExprKind::String(base), span };
         }
-        let mut segments = vec![rask_ast::expr::StringSegment::Literal(format!("{}: ", base))];
+        let mut segments = vec![StringSegment::Literal(format!("{}: ", base))];
         for (i, f) in fields.iter().enumerate() {
             if i > 0 {
-                segments.push(rask_ast::expr::StringSegment::Literal(", ".to_string()));
+                segments.push(StringSegment::Literal(", ".to_string()));
             }
             // Anything without `to_string` goes through `:debug`, which every
             // type has (std.fmt/G2).
@@ -1614,7 +1479,7 @@ impl Desugarer {
                 rask_ast::fmt_spec::parse_spec("debug")
             };
             let payload = Expr { id: self.fresh_id(), kind: ExprKind::Ident(f.name.clone()), span };
-            segments.push(rask_ast::expr::StringSegment::Expr(Box::new(payload), spec));
+            segments.push(StringSegment::Expr(Box::new(payload), spec));
         }
         Expr { id: self.fresh_id(), kind: ExprKind::StringInterp(segments), span }
     }
@@ -1683,52 +1548,6 @@ fn binary_op_method(op: BinOp) -> Option<&'static str> {
 /// Map unary operators to method names (if they should be desugared).
 fn unary_op_method(op: UnaryOp) -> Option<&'static str> {
     rask_ast::expr::unary_op_method(op)
-}
-
-/// Shift all spans in an expression tree by `offset` bytes.
-fn offset_expr_spans(expr: &mut Expr, offset: usize) {
-    expr.span.start += offset;
-    expr.span.end += offset;
-    match &mut expr.kind {
-        ExprKind::Binary { left, right, .. } => {
-            offset_expr_spans(left, offset);
-            offset_expr_spans(right, offset);
-        }
-        ExprKind::Unary { operand, .. } => offset_expr_spans(operand, offset),
-        ExprKind::Call { func, args } => {
-            offset_expr_spans(func, offset);
-            for arg in args { offset_expr_spans(&mut arg.expr, offset); }
-        }
-        ExprKind::MethodCall { object, args, .. } => {
-            offset_expr_spans(object, offset);
-            for arg in args { offset_expr_spans(&mut arg.expr, offset); }
-        }
-        ExprKind::Field { object, .. } | ExprKind::OptionalField { object, .. } => {
-            offset_expr_spans(object, offset);
-        }
-        ExprKind::Index { object, index } => {
-            offset_expr_spans(object, offset);
-            offset_expr_spans(index, offset);
-        }
-        ExprKind::Try { expr } => offset_expr_spans(expr, offset),
-        ExprKind::Take { place } => offset_expr_spans(place, offset),
-        ExprKind::Catch { value, clause } => {
-            offset_expr_spans(value, offset);
-            offset_expr_spans(&mut clause.body, offset);
-        }
-        ExprKind::IsPresent { expr, .. } => offset_expr_spans(expr, offset),
-        ExprKind::Unwrap { expr, .. } => offset_expr_spans(expr, offset),
-        ExprKind::Cast { expr, .. } | ExprKind::Convert { expr, .. } => offset_expr_spans(expr, offset),
-        ExprKind::NullCoalesce { value, default } => {
-            offset_expr_spans(value, offset);
-            offset_expr_spans(default, offset);
-        }
-        ExprKind::Array(exprs) | ExprKind::Tuple(exprs) => {
-            for e in exprs { offset_expr_spans(e, offset); }
-        }
-        // Leaf nodes and complex variants unlikely in interpolation — no nested Exprs to fix
-        _ => {}
-    }
 }
 
 /// The types a conversion can target (type.primitives/CV11–CV16).

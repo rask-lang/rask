@@ -54,3 +54,40 @@ test "type.strings — a hole is code, quotes and all" {
     assert "{path.replace(r"\", "/")}" == "a/b"
     assert "{r#"x"y"#.len()}" == "3"
 }
+
+test "type.strings — a brace made by a \\u escape is text" {
+    let x = 42
+    assert "\u{7b}x\u{7d}" == "\{x\}"
+    assert "\u{7b}".len() == 1
+}
+
+test "type.strings — a triple-quoted string can end in an escaped quote" {
+    let s = """say \"hi\""""
+    assert s == "say \"hi\""
+}
+
+func tag(s: string) -> string {
+    return s
+}
+
+test "type.strings — a colon in a hole's literal doesn't start a spec" {
+    let c = ':'
+    assert "{c == ':'}" == "true"
+    assert "{r#"a"b:c"#.len()}" == "5"
+    assert "[{tag(r"a\"):>3}]" == "[ a\\]"
+}
+
+test "std.fmt — a template's holes read as any string's do" {
+    let c = '{'
+    assert format("{tag("\}")}") == "\}"
+    assert format("{tag(r"}")}") == "\}"
+    assert format("{c == '}'}") == "false"
+    assert format("x {tag("\{")} y") == "x \{ y"
+    assert format("{tag("{c}")} {}", 1) == "\{ 1"
+    let s = format(
+        "{} and \{\} {}",
+        1,
+        2,
+    )
+    assert s == "1 and \{\} 2"
+}

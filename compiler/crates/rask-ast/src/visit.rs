@@ -154,7 +154,7 @@ pub fn visit_expr<'a>(expr: &'a Expr, v: &mut impl Visit<'a>) {
         ExprKind::StringInterp(segments) => {
             for seg in segments {
                 match seg {
-                    StringSegment::Literal(_) => {}
+                    StringSegment::Literal(_) | StringSegment::Placeholder { .. } => {}
                     StringSegment::Expr(e, _) => visit_expr(e, v),
                 }
             }

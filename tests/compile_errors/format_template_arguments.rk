@@ -1,0 +1,19 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: `format` placeholders that don't match the arguments
+//
+// `{}` takes the next argument and `{0}` the one at that index; the template
+// is read while compiling, so a placeholder with no argument behind it, or a
+// template that mixes the two styles, is caught at the call.
+
+func main() {
+    let name = "Ada"
+    // ERROR: two placeholders, one argument [E0338]
+    println(format("{} and {}", name))
+    // ERROR: index past the arguments [E0338]
+    println(format("{0} {1}", name))
+    // ERROR: auto and explicit indexing mixed [E0338]
+    println(format("{} {0}", name))
+    // A hole's own string is not part of the template: `{}` in it is text
+    // of that string's making, so this one has no placeholder at all.
+    println(format("{name.replace("\{\}", "")}"))
+}

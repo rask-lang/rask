@@ -425,11 +425,16 @@ fn double_quoted_string(lexer: &mut logos::Lexer<RawToken>) -> Result<(), RawErr
     }
 }
 
-/// `"""..."""` — raw text up to the next triple quote. Two of the three opening
-/// quotes are in `bytes`; the third was consumed as the token start.
+/// `"""..."""` — up to the next unescaped triple quote. Two of the three
+/// opening quotes are in `bytes`; the third was consumed as the token start.
+/// The body processes escapes, so `"""say \"hi\""""` ends after the escaped quote.
 fn scan_multi_line(bytes: &[u8]) -> Option<usize> {
     let mut pos = 2;
     while pos + 3 <= bytes.len() {
+        if bytes[pos] == b'\\' {
+            pos += 2;
+            continue;
+        }
         if &bytes[pos..pos + 3] == b"\"\"\"" {
             return Some(pos + 3);
         }
@@ -1096,10 +1101,13 @@ fn parse_string(s: &str, pos: usize, delimiter_len: usize) -> Result<(String, St
     while let Some(c) = chars.next() {
         match c {
             '\\' => {
-                if matches!(chars.clone().next(), Some('{' | '}')) {
+                // Any escape that yields a brace is text: `\{`, and `\u{7b}`
+                // too, which once became a hole.
+                let ch = parse_escape(&mut chars, pos)?;
+                if ch == '{' || ch == '}' {
                     positions.literal_brace(result.len());
                 }
-                result.push(parse_escape(&mut chars, pos)?);
+                result.push(ch);
                 positions.anchor(result.len(), delimiter_len + s.len() - chars.as_str().len());
             }
             '{' => {
@@ -1306,7 +1314,7 @@ impl LexError {
         Self {
             span: Span::new(pos, pos + 1),
             message: "invalid escape sequence".to_string(),
-            hint: Some("valid escapes: \\n \\r \\t \\\\ \\0 \\' \\\" \\u{...}".to_string()),
+            hint: Some("valid escapes: \\n \\r \\t \\\\ \\0 \\' \\\" \\{ \\} \\u{...}".to_string()),
             code: "E0003",
             label: "not a valid escape",
             why: "a backslash in a string starts an escape, so every backslash has to name one",
