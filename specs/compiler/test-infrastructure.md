@@ -129,7 +129,7 @@ Example from spec:
       if n <= 1 { return 1 }
       return n * factorial(n - 1)
   }
-  println("{}", factorial(5))
+  println(factorial(5))
   ```
 ```
 

@@ -54,8 +54,8 @@ test "stdlib.encoding — integer fields alongside floats" {
 test "stdlib.encoding — encode returns a usable string" {
     let j = json.encode(make())
     assert j.len() > 0
-    assert j.starts_with("{")
-    assert j.ends_with("}")
+    assert j.starts_with("{{")
+    assert j.ends_with("}}")
 }
 
 test "stdlib.encoding — a nested struct keeps its float too" {

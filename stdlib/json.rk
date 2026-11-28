@@ -698,7 +698,7 @@ func stringify_pretty_inner(value: JsonValue, mutate out: StringBuilder, indent:
         }
         JsonValue.Object(map) => {
             if map.is_empty() {
-                out.push("{}")
+                out.push("{{}}")
                 return
             }
             out.push("{{\n")

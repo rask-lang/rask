@@ -91,7 +91,7 @@ test "std.encoding/E12b — a float or bool wire reaches decode as itself" {
         return
     }
     assert f.on
-    let r = json.decode<Reading>("{{\"t\": -3.5, \"s\": 0.5, \"f\": false}") catch e => {
+    let r = json.decode<Reading>("{{\"t\": -3.5, \"s\": 0.5, \"f\": false}}") catch e => {
         assert false
         return
     }
@@ -107,7 +107,7 @@ test "std.encoding/E12b — a float or bool wire is written as a float or bool" 
     assert json.encode(Flag(on: true)) == "true"
     assert json.encode(Flag(on: false)) == "false"
     let r = Reading(t: Temp(c: 21.5), s: Small(c: 0.5), f: Flag(on: true))
-    assert json.encode(r) == "{{\"t\":21.5,\"s\":0.5,\"f\":true}"
+    assert json.encode(r) == "{{\"t\":21.5,\"s\":0.5,\"f\":true}}"
     let back = json.decode<Reading>(json.encode(r)) catch e => {
         assert false
         return

@@ -389,7 +389,7 @@ WHY: Handlers run during scope exit—there's nowhere to propagate errors.
 
 FIX: Use infallible operations in the catch handler:
 
-  ensure file.close() catch e => println("Failed: {}", e)
+  ensure file.close() catch e => println("Failed: {e}")
 ```
 
 **Linear resource not consumed [L2]:**
@@ -450,7 +450,7 @@ WHY: Ensure errors are silently ignored by default.
 
 FIX: Add a catch clause to handle errors:
 
-  ensure file.close() catch e => log("Close failed: {}", e)
+  ensure file.close() catch e => log("Close failed: {e}")
 
   // Or explicitly handle errors without ensure
   try file.close()

@@ -412,9 +412,9 @@ test "Response.not_found creates 404" {
 }
 
 test "Response.json sets content type" {
-    let resp = Response.json("{}")
+    let resp = Response.json("{{}}")
     assert resp.status == 200
-    assert resp.body == "{}"
+    assert resp.body == "{{}}"
 }
 
 test "Response.with_status changes status" {
