@@ -1,0 +1,27 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: a condition's next line starts with `>` or `-`
+// Rejects: `if total⏎ > limit {` and `while n⏎ - 1 > 0 {` (parse errors)
+//
+// A condition can run over several lines, but a newline ends it unless the
+// next line starts with an operator nothing else starts with (`&&`, `||`,
+// `==`, `.`). `-x` is a value of its own, so the operator goes at the end of
+// the line above. This used to say only "Expected '{' to start block".
+
+func over(total: i64, limit: i64) -> bool {
+    if total
+        // ERROR: a line starts with `>`: end the line above with it
+        > limit {
+        return true
+    }
+    return false
+}
+
+func count(n: i64) -> i64 {
+    mut k = n
+    while k
+        // ERROR: a line starts with `-`: end the line above with it
+        - 1 > 0 {
+        k -= 1
+    }
+    return k
+}

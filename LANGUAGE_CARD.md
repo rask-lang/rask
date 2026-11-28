@@ -17,7 +17,7 @@ func main() {
     mut counter = 0          // rebindable binding (never "let mut" — one keyword each)
     counter = counter + 1
 
-    let sign = if x > 0 { "+" } else { "-" }    // inline block: `: expr`
+    let sign = if x > 0 { "+" } else { "-" }    // `if` is an expression; bodies are always braced
     let label = match x {
         0 => "zero",
         n if n > 0 => "positive",         // guard arms use => like all arms
@@ -26,8 +26,8 @@ func main() {
 }
 ```
 
-- Newlines terminate statements; `;` only for multiple per line. Braces for multi-statement blocks, `: expr` for single-expression blocks.
-- Brackets: `( )` holds values, `[ ]` lists and indexes, `{ }` code and declaration bodies. A struct is built like a call, by field name in any order: `Point(x: 1.0, y: 2.0)`, `Point(y: 2.0, x)` (bare `x` is `x: x`), `Point(y: 0.0, ..p)`. A pattern reads the same way: `let Point(x, y) = p`.
+- Newlines terminate statements; `;` only for multiple per line. Every `if`, `else`, loop and function body is braced, even a one-liner: `if x > 0 { return x }`. `:` means a type or a label, nothing else.
+- Brackets: `( )` holds values, `[ ]` lists and indexes, `{ }` code and declaration bodies. A struct is built like a call, by field name in any order: `Point(x: 1.0, y: 2.0)`, `Point(y: 2.0, x)` (bare `x` is `x: x`), `Point(y: 0.0, ..p)`. A pattern reads the same way: `let Point(x, y) = p`, and `Point(x as px, y)` binds field `x` as `px`.
 - Inside `( )` and `[ ]` a newline separates items, so a list written one per line needs no commas. A line can't start with `-` or `*` to continue the one above; end the line with the operator instead.
 - Blocks in expression context produce their last expression; functions always `return` (`ctrl.flow`).
 - Static access uses `.`: `Token.Plus`, `Point.origin()`, `Vec.new()` — there is no `::`.
@@ -294,7 +294,7 @@ Operator surface — three words, three jobs: `try` means something **leaves**, 
 | `try f() ?? <expr>` | the flat-shape composite (`T? or E` callee): error up, absence here |
 | `r!` / `r! "msg"` | extract or panic |
 | `if r is IoError as e { }` | error-side type test and bind |
-| `let v = x is Pattern else { return }` | pattern guard, enum patterns only |
+| `let Circle(r) = s else { return }` | pattern guard: a pattern that can miss, and the way out when it does |
 
 **Every exit is written where it happens.** Bare `try` leaves to the caller — one keyword, one meaning. Everything else that leaves does so with a visible `return`/`break`/`continue`/`panic` on the fallback's right side. And a *discarded error* is always visible too: `catch _ =>` is the loud, greppable spelling of "an error dies here" — the fallbacks are split per shape precisely because dropping a `none` loses nothing while dropping an `E` loses information.
 
@@ -375,7 +375,7 @@ func main() -> void or Error {
 - A spawned closure carries what it captured: the task outlives the block that made it, so captures move in rather than borrow, and the outer name is gone. Nothing to write — the compiler works it out. Two tasks that both need the same `Shared` each get a `.clone()` of it.
 - Every spawn form returns `Handle<T>`. `h.join()` → `T or JoinError` (`JoinError.Panicked(msg)` is the only failure); `h.cancel()` raises the flag the body polls with `cancelled()` and returns what the body returned; `Handles<T>` holds a run-time count (`add`, `join_all`, `detach`); dropping a handle unconsumed is a compile error.
 - Channels transfer ownership: `mut (tx, rx) = Channel<Msg>.buffered(100)`; `try tx.send(m)`, `rx.receive()` (not `recv`), non-blocking `try_send`/`try_receive`.
-- `select { rx1 -> v: handle(v), tx <- msg: sent(), _: fallback() }` — random among ready arms; `select_priority` for ordered; `Timer.after(d)` for timeouts. Without a `_:` arm it waits and gives `T or SelectError` (`Closed`: every channel closed, `Cancelled`: task cancelled), so write `select { … }!` when neither should happen.
+- `select { rx1 -> v => handle(v), tx <- msg => sent(), _ => fallback() }` — random among ready arms; `select_priority` for ordered; `Timer.after(d)` for timeouts. Without a `_` arm it waits and gives `T or SelectError` (`Closed`: every channel closed, `Cancelled`: task cancelled), so write `select { … }!` when neither should happen.
 - Shared state crosses tasks only through a `Shared` — there is no shared mutable memory otherwise. One type, with the synchronisation as a strategy (`mem.shared-rack-heap/BX1`): `Shared<T>` is readers-XOR-writer (the default, built with `Shared.new`), `Shared<T, Mutex>` a plain lock (`Shared.mutex`), `Shared<T, Local>` no lock at all (`Shared.local`). `Cell<T>` and `Mutex<T>` are not types.
 - Access is scoped, never a guard you can store: `config.read().timeout` and `queue.write().push(x)` inline, `with config.write() as c { … }` for several statements, `get`/`set` for a Copy value. `return`, `try`, `break` and `continue` all work through a `with` block, which is why it's a block and not a closure. `Atomic*` for counters and flags. Locks release at expression or block end; they cannot leak out.
 - Closures capture by value at field granularity; a closure capturing borrowed data can't leave its scope.

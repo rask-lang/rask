@@ -399,6 +399,8 @@ if player_ent.target is Link<Entity> as t { … }        // same test, spelled o
 
 So test-and-bind is the one row where the two shapes don't share a construct, and that's the honest outcome rather than a gap: `is` needs a branch name where branches are open, and can't use one where there are only two.
 
+The same goes for a `match` on a `T?`: the arms are `none => …` and a name, `v => …`, and a `T as v` arm is E0222 (`type.errors/ER27`).
+
 **OPT16 (`!x?` forbidden).** `!x?` parses right-to-left but reads left-to-right as "not present" — the directions fight. `x is none` is unambiguous. The rule is specific to `!` directly applied to a `?`-suffixed expression; other uses of `!` on booleans stay normal.
 
 **OPT27 (match is a lint, not an error).** Hard errors should enforce safety or correctness, not style. Match on a two-arm union is perfectly safe; it's just verbose. A lint catches the common case.

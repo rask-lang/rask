@@ -1399,11 +1399,13 @@ pub enum TypeError {
         span: Span,
     },
 
-    /// `a is i64 as n` on a plain optional, which `a? as n` spells.
+    /// `a is i64 as n` on a plain optional, which `a? as n` spells; in a
+    /// `match` arm, a name below the `none` arm.
     #[error("a type test on an optional is spelled with `?`")]
     TypeTestOnOptional {
         shown: String,
         binding: Option<String>,
+        arm: bool,
         span: Span,
     },
 
@@ -1417,9 +1419,9 @@ pub enum TypeError {
         enum_name: Option<String>,
         variants: Vec<String>,
         suggestion: Option<String>,
-        /// `IoError.Missing`, when a branch of the value's `T or E` is an
-        /// enum with this variant.
-        qualified: Option<String>,
+        /// `State.Gone`, `Fail.Gone`: the branches of the value's `T or E`
+        /// that are enums with this variant, when more than one is.
+        qualified: Vec<String>,
         span: Span,
     },
 

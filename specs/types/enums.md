@@ -57,7 +57,7 @@ enum Event {
 }
 ```
 
-**Pattern matching follows the variant form.** Inside `match`, the compiler infers the enum type from the subject, so variant names are unqualified. Qualified names (`Token.Plus`) also work but are unnecessary when the type is known from context. When a struct shares a bare variant's name, the matched value decides: `Pair(a, b)` takes a `Pair` struct apart, and the `Pair` variant of the value's enum otherwise.
+**Pattern matching follows the variant form.** Inside `match`, the compiler infers the enum type from the subject, so variant names are unqualified. On a `T or E` or `T?` a bare variant is looked up in the enums the value can hold: `Gone` on a `State or Fail` is `Fail.Gone`. Qualified names (`Token.Plus`) also work, and are needed when two of those enums have the variant. When a struct shares a bare variant's name, the matched value decides: `Pair(a, b)` takes a `Pair` struct apart, and the `Pair` variant of the value's enum otherwise.
 
 ```rask
 match token {
@@ -108,7 +108,7 @@ One keyword: `match`. The compiler infers binding modes from usage.
 | **PM3: Pattern guards** | Guarded variant must have unguarded fallback arm or wildcard after |
 | **PM4: Or-patterns** | Multiple patterns share an arm with `\|`; all must bind same names with compatible types |
 | **PM7: No dead arms** | An arm after a catch-all (`_`, or a bare name that binds), or a second unguarded test of the same variant, is a compile error |
-| **PM8: Capitals never bind** | A capitalised bare name in a pattern tests a variant of the value's enum or a type. One that names neither is an error, never a binding. On a `T or E`, a branch's variant is written with its enum: `IoError.Missing` |
+| **PM8: Capitals never bind** | A capitalised bare name in a pattern tests a variant or a type. One that names neither is an error, never a binding. A bare variant is looked up in the value's enum, and on a `T or E` or `T?` in the enums the value can hold; when two have it, the pattern names the enum: `IoError.Missing` |
 
 **Binding mode summary:**
 
@@ -581,7 +581,7 @@ extend Connection {
             Idle => Connecting(resolve_address()),
             Connecting(addr) => {
                 let attempt = try_connect(addr)
-                if attempt? as sock { Connected(sock) } else as e { Failed(e) }
+                if attempt is Socket as sock { Connected(sock) } else as e { Failed(e) }
             },
             Connected(sock) => {
                 sock.send(heartbeat())!

@@ -181,7 +181,8 @@ impl TypeChecker {
     ///
     /// An already-qualified name is left alone. A bare one is looked up in the
     /// scrutinee's own enum, which is the only thing that can say which enum a
-    /// bare `Completed { at }` belongs to.
+    /// bare `Completed { at }` belongs to; on a `T or E` or `T?`, in the one
+    /// branch enum that has it.
     fn qualify_variant_name(&mut self, name: &str, scrutinee_ty: &Type) -> String {
         if name.contains('.') {
             return name.to_string();
@@ -190,6 +191,12 @@ impl TypeChecker {
         let id = match resolved {
             Type::Named(id) => id,
             Type::Generic { base, .. } => base,
+            Type::Result { .. } => {
+                return match self.branch_variants(name, &resolved).as_slice() {
+                    [(qualified, _)] => qualified.clone(),
+                    _ => name.to_string(),
+                };
+            }
             _ => return name.to_string(),
         };
         let Some(TypeDef::Enum { variants, .. }) = self.types.get(id) else {
@@ -339,6 +346,22 @@ impl TypeChecker {
         Some((format!("{}.{}", self.types.type_name(id), variant), arity))
     }
 
+    /// Each branch enum of a two-branch value that has a variant `name`, as
+    /// the qualified variant and its payload count.
+    fn branch_variants(&mut self, name: &str, resolved: &Type) -> Vec<(String, usize)> {
+        let mut found: Vec<(String, usize)> = Vec::new();
+        for leaf in two_branch_leaves(&self.ctx, &self.types, resolved) {
+            let (Type::Named(id) | Type::Generic { base: id, .. }) = leaf else { continue };
+            let Some(TypeDef::Enum { variants, .. }) = self.types.get(id) else { continue };
+            let Some((_, payload)) = variants.iter().find(|(v, _)| v == name) else { continue };
+            let qualified = format!("{}.{name}", self.types.type_name(id));
+            if !found.iter().any(|(q, _)| *q == qualified) {
+                found.push((qualified, payload.len()));
+            }
+        }
+        found
+    }
+
     /// E0223: `name` is capitalised but names no variant of the value's enum
     /// and no type.
     fn report_unknown_pattern_name(&mut self, name: &str, resolved: &Type, span: Span) {
@@ -358,15 +381,16 @@ impl TypeChecker {
         };
         let candidates: Vec<&str> = variants.iter().map(String::as_str).collect();
         let suggestion = rask_diagnostics::suggestions::closest(name, candidates.iter().copied());
-        let qualified = match resolved {
-            Type::Result { .. } => two_branch_leaves(&self.ctx, &self.types, resolved).iter().find_map(|leaf| {
-                let (Type::Named(id) | Type::Generic { base: id, .. }) = leaf else { return None };
-                let Some(TypeDef::Enum { variants, .. }) = self.types.get(*id) else { return None };
-                variants.iter().any(|(v, _)| v == name).then(|| {
-                    format!("{}.{name}", self.types.written_name(&self.types.type_name(*id)))
+        let qualified: Vec<String> = match resolved {
+            Type::Result { .. } => self
+                .branch_variants(name, resolved)
+                .into_iter()
+                .map(|(q, _)| {
+                    let (enum_name, variant) = q.rsplit_once('.').unwrap_or((q.as_str(), name));
+                    format!("{}.{variant}", self.types.written_name(enum_name))
                 })
-            }),
-            _ => None,
+                .collect(),
+            _ => Vec::new(),
         };
         self.errors.push(TypeError::PatternNameNotVariant {
             name: name.to_string(),
@@ -456,6 +480,23 @@ impl TypeChecker {
                             span,
                         });
                         return vec![];
+                    }
+                }
+                // A bare variant of a branch's enum: `o is Idle` on a `State?`,
+                // `r is Gone` on a `State or Fail`. It's found among the enums
+                // the value can hold, as `Busy(k)` is, so whether the variant
+                // carries a payload doesn't decide whether the bare name works.
+                // Two branches with the variant need the enum written; that's
+                // reported below.
+                if !name.contains('.') && self.pattern_type_name(name).is_none() {
+                    let applied = self.ctx.apply(scrutinee_ty);
+                    if matches!(applied, Type::Result { .. }) {
+                        let found = self.branch_variants(name, &applied);
+                        if let [(qualified, arity)] = found.as_slice() {
+                            let fields = vec![Pattern::new(rask_ast::NodeId::DUMMY, PatternKind::Wildcard, Span::new(0, 0)); *arity];
+                            let qualified = qualified.clone();
+                            return self.check_constructor_pattern(pattern.id, &qualified, &fields, scrutinee_ty, span);
+                        }
                     }
                 }
                 // ER27: a bare `Type` against a two-branch scrutinee is a type
@@ -1209,6 +1250,22 @@ impl TypeChecker {
                 }
             }
             _ => {}
+        }
+
+        // A bare variant against a `T or E` or `T?` names a variant of one of
+        // the enums the value can hold (PM8): `Code(c)` on a `State or Fail`
+        // is `Fail.Code(c)`. Without this the payload bound to a variable
+        // nothing solved, and native couldn't lower a use of it.
+        if !name.contains('.')
+            && matches!(resolved_scrutinee, Type::Result { .. })
+            && self.pattern_type_name(name).is_none()
+        {
+            if let [(qualified, _)] = self.branch_variants(name, &resolved_scrutinee).as_slice() {
+                let qualified = qualified.clone();
+                return self.check_constructor_pattern(pat_id, &qualified, fields, scrutinee_ty, span);
+            }
+            self.report_unknown_pattern_name(name, &resolved_scrutinee, span);
+            return vec![];
         }
 
         // Qualified `Enum.Variant` patterns: the variant lookup needs the

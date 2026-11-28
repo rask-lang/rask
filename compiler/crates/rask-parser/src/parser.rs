@@ -5115,13 +5115,25 @@ impl Parser {
             }
             kind => {
                 // ER22: `else as e` binds what an `is` test ruled out. A plain
-                // condition rules nothing out that has a value.
+                // condition rules nothing out that has a value. In an `&&`
+                // chain the else also runs when a later test fails, and then
+                // the value held what the test asked for: no error to bind.
                 if let Some((name, span)) = else_binding {
-                    return Err(ParseError {
-                        span,
-                        message: format!("`else as {name}` needs an `is` test"),
-                        hint: Some(format!("test the type: `if r is T as v {{ … }} else as {name} {{ … }}`")),
-                        why: Some("the else branch binds what the test ruled out, and only an `is` test rules out part of a value [type.errors/ER22]".to_string()),
+                    let chained = matches!(&kind, ExprKind::Binary { op: BinOp::And, .. });
+                    return Err(if chained {
+                        ParseError {
+                            span,
+                            message: format!("`else as {name}` needs the condition to be one `is` test"),
+                            hint: Some(format!("test the rest inside: `if r is T as v {{ if v > 5 {{ … }} }} else as {name} {{ … }}`")),
+                            why: Some("with `&&`, the else also runs when a later test fails, and then there's no ruled-out value to bind [type.errors/ER22]".to_string()),
+                        }
+                    } else {
+                        ParseError {
+                            span,
+                            message: format!("`else as {name}` needs an `is` test"),
+                            hint: Some(format!("test the type: `if r is T as v {{ … }} else as {name} {{ … }}`")),
+                            why: Some("the else branch binds what the test ruled out, and only an `is` test rules out part of a value [type.errors/ER22]".to_string()),
+                        }
                     });
                 }
                 let cond = Expr { kind, ..cond };
@@ -5176,7 +5188,39 @@ impl Parser {
             self.advance();
             return Ok(vec![self.parse_inline_stmt()?]);
         }
+        let line_broke = self.check(&TokenKind::Newline);
         self.skip_newlines();
+        // `if total⏎ > limit {`: the newline ended the condition, because a
+        // line starting with one of these could be a value or a type of its
+        // own. Say where the operator goes rather than "expected `{`".
+        if line_broke {
+            let op = match self.current_kind() {
+                TokenKind::Plus => Some("+"),
+                TokenKind::Minus => Some("-"),
+                TokenKind::Star => Some("*"),
+                TokenKind::Lt => Some("<"),
+                TokenKind::Gt => Some(">"),
+                TokenKind::DotDot => Some(".."),
+                TokenKind::DotDotEq => Some("..="),
+                _ => None,
+            };
+            if let Some(op) = op {
+                self.record_error(ParseError {
+                    span: self.current().span,
+                    message: format!("a line starts with `{op}`, but the line above already ended"),
+                    hint: Some(format!("to continue the line above, end it with `{op}`")),
+                    why: Some(
+                        "a line continues the one above only when it starts with an operator nothing else starts with, like `&&`, `||`, `==` or `.`"
+                            .to_string(),
+                    ),
+                });
+                // Read past the rest of the line to the body's `{`, so the one
+                // misplaced operator is one error.
+                while !matches!(self.current_kind(), TokenKind::LBrace | TokenKind::Newline | TokenKind::Eof) {
+                    self.advance();
+                }
+            }
+        }
         self.parse_block_body()
     }
 

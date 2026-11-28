@@ -3075,7 +3075,15 @@ impl ToDiagnostic for crate::TypeError {
                     .with_fix("remove `try`")
                     .with_why("cleanup runs at scope exit, after the function has already decided what it returns — an error raised there has nowhere to go, so ensure ignores it by default and `else |e|` is how you see it [ctrl.ensure/ER3-ER4]")
             }
-            TypeTestOnOptional { shown, binding, span } => {
+            TypeTestOnOptional { shown, binding, arm: true, span } => {
+                let name = binding.clone().unwrap_or_else(|| "_".to_string());
+                Diagnostic::error(format!("`{shown}` is optional: an arm takes its value by name"))
+                    .with_code("E0222")
+                    .with_primary(*span, "a type test on an optional")
+                    .with_fix(format!("write `{name} => …` below the `none => …` arm"))
+                    .with_why("an optional holds its payload or nothing: after the `none` arm, what's left is the payload, so a name takes it; a type test is for picking one member of a `T or E` [type.optionals/OPT19]")
+            }
+            TypeTestOnOptional { shown, binding, arm: false, span } => {
                 let fix = match binding {
                     Some(n) => format!("{shown}? as {n}"),
                     None => format!("{shown}?"),
@@ -3095,12 +3103,13 @@ impl ToDiagnostic for crate::TypeError {
             }
             PatternNameNotVariant { name, enum_name, variants, suggestion, qualified, span } => {
                 let why = "a capitalised name in a pattern tests a variant or a type; a name that binds starts lowercase [type.enums/PM8]";
-                if let Some(q) = qualified {
-                    return Diagnostic::error(format!("`{name}` is a variant of a branch here: write `{q}`"))
+                if !qualified.is_empty() {
+                    let spelled = qualified.iter().map(|q| format!("`{q}`")).collect::<Vec<_>>().join(" or ");
+                    return Diagnostic::error(format!("`{name}` is a variant of more than one branch"))
                         .with_code("E0223")
-                        .with_primary(*span, "the value is a `T or E`, not this variant's enum")
-                        .with_fix(format!("write `{q}`"))
-                        .with_why("a bare variant name tests the value's own enum; a branch's variant is named with its enum [type.enums/PM8]");
+                        .with_primary(*span, "more than one enum this value can hold has this variant")
+                        .with_fix(format!("write {spelled}"))
+                        .with_why("a bare variant name is looked up in the enums the value can hold; when two have it, the enum says which [type.enums/PM8]");
                 }
                 match enum_name {
                     Some(enum_name) => {

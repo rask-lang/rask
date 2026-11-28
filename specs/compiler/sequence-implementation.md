@@ -382,7 +382,7 @@ Each stage is independently shippable and testable.
       public func filter(take self, pred: |T| -> bool) -> Sequence<T> {
           return |yield| {
               self(|item| {
-                  if pred(item): return yield(item)
+                  if pred(item) { return yield(item) }
                   return true
               })
           }
@@ -408,8 +408,8 @@ Each stage is independently shippable and testable.
       public func stream(take self) -> Sequence<T> {
           return |yield| {
               loop {
-                  let r = self.receive()
-                  if r? as msg { if not yield(msg): break } else { break }
+                  let msg = self.receive() catch _ => break
+                  if !yield(msg) { break }
               }
           }
       }

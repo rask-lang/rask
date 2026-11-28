@@ -1095,7 +1095,7 @@ impl TypeChecker {
                 self.push_scope();
                 let bindings = self.check_pattern(pattern, &value_ty, expr.span);
                 self.reject_irrefutable_test(pattern, &bindings, &value_ty, expr.span);
-                self.reject_type_test_on_optional(value, pattern, &value_ty);
+                self.reject_type_test_on_optional(value, pattern, &value_ty, false);
                 for (name, ty) in bindings {
                     if !name.is_empty() {
                         self.define_local_bound(name, ty, super::BoundFrom::Payload);
@@ -1140,7 +1140,7 @@ impl TypeChecker {
                 // here rather than guessing it (#256, #425).
                 let bindings = self.check_pattern(pattern, &value_ty, expr.span);
                 self.reject_irrefutable_test(pattern, &bindings, &value_ty, expr.span);
-                self.reject_type_test_on_optional(value, pattern, &value_ty);
+                self.reject_type_test_on_optional(value, pattern, &value_ty, false);
                 let names = bindings.iter().map(|(n, _)| n.clone()).filter(|n| !n.is_empty()).collect();
                 self.note_dead_binding(reach, names, pattern.span);
                 for (name, ty) in bindings {
@@ -1160,6 +1160,7 @@ impl TypeChecker {
                 for arm in arms {
                     self.push_scope();
                     let bindings = self.check_pattern(&arm.pattern, &scrutinee_ty, expr.span);
+                    self.reject_type_test_on_optional(scrutinee, &arm.pattern, &scrutinee_ty, true);
                     // One name bound twice by an arm's pattern: `(a, a)`. Asked
                     // here and not in the resolver, because only the checker
                     // knows that `Red` in `(Red, Red)` tests a variant and
@@ -6192,7 +6193,7 @@ impl TypeChecker {
     /// `x is T as v` and bare `x is T` on a plain `T?` are `x? as v` and
     /// `x?` spelled a second way. On a result the type test is the only
     /// spelling, so it stays.
-    fn reject_type_test_on_optional(&mut self, value: &Expr, pattern: &Pattern, value_ty: &Type) {
+    fn reject_type_test_on_optional(&mut self, value: &Expr, pattern: &Pattern, value_ty: &Type, arm: bool) {
         let (named, binding) = match &pattern.kind {
             PatternKind::TypePat { ty: TypeExpr::NoneType, .. } => return,
             PatternKind::TypePat { ty, binding } => {
@@ -6219,7 +6220,7 @@ impl TypeChecker {
             ExprKind::Ident(n) => n.clone(),
             _ => "x".to_string(),
         };
-        self.errors.push(TypeError::TypeTestOnOptional { shown, binding, span: pattern.span });
+        self.errors.push(TypeError::TypeTestOnOptional { shown, binding, arm, span: pattern.span });
     }
 
     /// Reject `arm` when the arms before it already take every value it

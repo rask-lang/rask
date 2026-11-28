@@ -322,7 +322,7 @@ There is **no flow typing anywhere in the language**. An `is` test is a plain bo
 | Rule | Description |
 |------|-------------|
 | **ER23: Type pattern test and bind** | `if r is ErrType as e { … }` tests and binds `e` when `r`'s error side is (or contains) `ErrType`. Works for widened unions: `if r is IoError as io { … }`. `if r is T as v` tests the success side the same way. Without `as`, it's a bare bool. `r` itself is unchanged everywhere |
-| **ER22: Bind in else** | `if r is Config as c { … } else as e { … }` binds the complement in the `else` branch: `r` without the leaf the test named, as the type the leaves left over make. On a flat `T? or E`, testing `T` binds `e: E?`, testing `none` binds `e: T or E`, testing `E` binds `e: T?`. Testing one member of a union error leaves a result over the other members |
+| **ER22: Bind in else** | `if r is Config as c { … } else as e { … }` binds the complement in the `else` branch: `r` without the leaf the test named, as the type the leaves left over make. On a flat `T? or E`, testing `T` binds `e: E?`, testing `none` binds `e: T or E`, testing `E` binds `e: T?`. Testing one member of a union error leaves a result over the other members. The condition is one `is` test: after `r is T as v && v > 0` the else also runs when `v > 0` fails, so `else as e` there is a parse error; nest the rest inside |
 | **ER21, ER24, ER25 deleted** | Scrutinee narrowing is gone: the else-narrow (ER21) and the early-exit fall-through narrow (ER24) let non-canonical error handling type-check — machinery maintained solely for forms the canon says not to write ([canonical-patterns.md](../canonical-patterns.md)). With them cut, `if r is E as e { return e }; use(r)` simply fails to type-check (`r` is still `T or E`), and the fix the compiler suggests is the guard: `let v = r catch e => return e`. No lint needed — the shape routes itself. ER25 (compounds don't narrow) is vacuously true now and retired |
 
 <!-- test: skip -->
@@ -345,7 +345,7 @@ Match arms dispatch on type and narrow the scrutinee in the arm. Two pattern fam
 
 | Rule | Description |
 |------|-------------|
-| **ER27: Type patterns** | `Type => …` tests which branch the value holds; the scrutinee keeps its type. `Type as name => …` binds that branch's value. In an `is` test on a plain `T?`, the test is `x?` and the bind `x? as v`: `x is T` and `x is T as v` there are E0222. A type pattern is never a guard's whole pattern (E0226, `ctrl.flow/CF14`): `catch` and `??` are the guard |
+| **ER27: Type patterns** | `Type => …` tests which branch the value holds; the scrutinee keeps its type. `Type as name => …` binds that branch's value. On a plain `T?` the test is `x?` and the bind `x? as v`: `x is T` and `x is T as v` are E0222, and so is a `T as v =>` arm, since an arm below `none =>` takes the value by name (`v =>`). A field of type `T?` inside a larger pattern has no `?` to reach for, so a type pattern there stays. A type pattern is never a guard's whole pattern (E0226, `ctrl.flow/CF14`): `catch` and `??` are the guard |
 | **ER28: Variant patterns** | Enum variants use normal variant destructure (`IoError.NotFound(p)`, `ParseError.Syntax(line, col)`) — tests and destructures |
 | **ER29: Wildcard** | `_ => …` matches anything not covered |
 | **ER30: Exhaustiveness** | Match on `T or E` must cover T and every variant of E (or use `_`) |
@@ -913,11 +913,11 @@ That rule was sound on its own terms and it died of its consequences. It forced 
 
 Kotlin (`?: return`) and Zig (`orelse return`) are the precedent for a diverging fallback, and Swift/Rust's counter-camp (`guard let`/`let-else`) exists to serve the same pattern with an extra construct. Rask was briefly in the second camp; it's now in the first, with the construct deleted rather than added.
 
-The value-argument against divergence — "the right side exists to supply the value being bound, and `return` abandons the binding" — was this file's own strongest case for ER48. What it missed is that the same words describe the pattern guard (`const t = event is Ready else { break }`, CF13), which the language already accepts: a binding form whose other branch refuses to bind and says so in plain control flow. `Never` coercion is how the type system spells "this branch doesn't produce the value", and using it here is no more a contradiction than in an `if`/`else` where one arm returns.
+The value-argument against divergence — "the right side exists to supply the value being bound, and `return` abandons the binding" — was this file's own strongest case for ER48. What it missed is that the same words describe the pattern guard (`let Ready(t) = event else { break }`, CF13), which the language already accepts: a binding form whose other branch refuses to bind and says so in plain control flow. `Never` coercion is how the type system spells "this branch doesn't produce the value", and using it here is no more a contradiction than in an `if`/`else` where one arm returns.
 
 **Rejected alternatives for the bail-out form** (kept for the record; the list's outcome changed):
 
-1. **`else` for all of it** — `const v = x else { return }`. Still dead: `else` is the if-expression word *and* the CF13 pattern-guard word, in the same `const x = … else …` slot, with contradictory divergence rules.
+1. **`else` for all of it** — `let v = x else { return }`. Still dead: `else` is the if-expression word *and* the CF13 pattern-guard word, in the same `let x = … else …` slot, with contradictory divergence rules.
 2. **A presence guard construct** — still dead; same objection plus restating CF13 for more scrutinee shapes.
 3. **A diverging right side on the fallback** — rejected then as `r or return E`, **adopted now** as a diverging fallback body (`x ?? return E`, `r catch _ => return E`). What changed: `try` no longer has a clause, so there's exactly one propagation form and the exits live on the fallbacks — the "two spellings for leaving" objection was an artifact of `try … else` existing alongside it.
 4. **`expr? else return X`** — still dead, and the stated reason was wrong: "one token, two result types" already describes `x?` (bool) beside `x?.f` (optional). The real reason is item 1: `else` is taken.

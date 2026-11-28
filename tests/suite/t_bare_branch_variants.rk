@@ -1,0 +1,67 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A bare variant name in a pattern is looked up among the enums the value
+// can hold. On a `State or Fail`, `Gone` is `Fail.Gone` and `Idle` is
+// `State.Idle`, with or without a payload, in `is` and in `match`.
+
+enum State {
+    Idle
+    Busy(i64)
+}
+
+enum Fail {
+    Gone
+    Code(i64)
+}
+
+func res(n: i64) -> State or Fail {
+    if n == 0 { return Fail.Gone }
+    if n == 1 { return Fail.Code(9) }
+    if n == 2 { return State.Idle }
+    return State.Busy(n)
+}
+
+func tested(n: i64) -> string {
+    let r = res(n)
+    mut out = ""
+    if r is Gone { out = "{out}g" }
+    if r is Idle { out = "{out}i" }
+    if r is Code { out = "{out}c" }
+    if r is Busy { out = "{out}b" }
+    return out
+}
+
+func matched(n: i64) -> i64 {
+    match res(n) {
+        Gone => { return -1 }
+        Code(c) => { return c }
+        Idle => { return 0 }
+        Busy(k) => { return k }
+    }
+}
+
+func code_of(n: i64) -> i64 {
+    let r = res(n)
+    mut c = 0
+    if r is Code(x) { c = x }
+    return c
+}
+
+test "a bare unit variant tests the branch's enum" {
+    assert tested(0) == "g"
+    assert tested(1) == "c"
+    assert tested(2) == "i"
+    assert tested(3) == "b"
+}
+
+test "bare variants name every branch in a match" {
+    assert matched(0) == -1
+    assert matched(1) == 9
+    assert matched(2) == 0
+    assert matched(5) == 5
+}
+
+test "a bare payload variant binds through the branch" {
+    assert code_of(1) == 9
+    assert code_of(3) == 0
+}

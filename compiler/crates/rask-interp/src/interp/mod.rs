@@ -280,6 +280,9 @@ pub struct Interpreter {
     /// runs the `f64 implements Mul<Meters>` body instead of asking the float
     /// layer to multiply a struct.
     pub(crate) operator_targets: HashMap<rask_ast::NodeId, rask_check::OperatorTarget>,
+    /// What the checker resolved each pattern to. A bare `Idle` tested
+    /// against a `State?` names `State.Idle`; only the checker knows that.
+    pub(crate) pattern_targets: Arc<HashMap<rask_ast::NodeId, rask_types::PatternTarget>>,
     /// type.primitives/L9: literals their type builds (`TypedProgram::literal_conversions`).
     pub(crate) literal_conversions: HashMap<rask_ast::NodeId, rask_check::LiteralConversion>,
     /// type.generics/GT7: calls through a bound naming a generic interface.
@@ -593,6 +596,7 @@ impl Interpreter {
             conformance_interfaces: HashMap::new(),
             package_stack: Vec::new(),
             operator_targets: HashMap::new(),
+            pattern_targets: Arc::new(HashMap::new()),
             literal_conversions: HashMap::new(),
             conformance_calls: HashMap::new(),
             call_depth: 0,
@@ -652,6 +656,7 @@ impl Interpreter {
             conformance_interfaces: HashMap::new(),
             package_stack: Vec::new(),
             operator_targets: HashMap::new(),
+            pattern_targets: Arc::new(HashMap::new()),
             literal_conversions: HashMap::new(),
             conformance_calls: HashMap::new(),
             call_depth: 0,
@@ -717,6 +722,7 @@ impl Interpreter {
             conformance_interfaces: HashMap::new(),
             package_stack: Vec::new(),
             operator_targets: HashMap::new(),
+            pattern_targets: Arc::new(HashMap::new()),
             literal_conversions: HashMap::new(),
             conformance_calls: HashMap::new(),
             call_depth: 0,
@@ -832,6 +838,7 @@ impl Interpreter {
         self.err_returns = typed.err_returns.clone();
         self.c_macro_calls = typed.c_macro_calls.clone();
         self.operator_targets = typed.operator_targets.clone();
+        self.pattern_targets = Arc::new(typed.pattern_targets.clone());
         self.literal_conversions = typed.literal_conversions.clone();
         self.conformance_calls = typed.conformance_calls.clone();
         self.escaping_closures = typed.escaping_closures.clone();
@@ -1194,6 +1201,7 @@ impl Interpreter {
         child.call_type_args = self.call_type_args.clone();
         child.extend_header_patterns = self.extend_header_patterns.clone();
         child.operator_targets = self.operator_targets.clone();
+        child.pattern_targets = Arc::clone(&self.pattern_targets);
         child.literal_conversions = self.literal_conversions.clone();
         child.conformance_calls = self.conformance_calls.clone();
         child.error_wraps = self.error_wraps.clone();

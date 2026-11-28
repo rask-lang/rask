@@ -84,7 +84,7 @@ if error {
 | **CF10: `&&` carries, `\|\|` and `!` don't** | `s is Circle(r) && r > 1.0` reads `r`. A name bound on one side of `\|\|` or under `!` has no value where it could be read, so binding it is an error (E0220). One pattern can bind across alternatives: `s is Circle(r) \| Square(r)` |
 | **CF11: Linear resources** | Non-Copy values moved into pattern; must handle both match/no-match paths |
 | **CF12: A bare variant tests** | `x is Variant` or `x is Enum.Variant` with no payload pattern tests the tag and binds nothing, whatever the variant carries. A payload is named by writing it: `x is Variant(v)`. `Variant(_)` and `Variant()` are errors whose fix is the bare name |
-| **CF35: The else reads none of them** | The `else` of an `if` runs when the test failed, so it can't read a name the condition bound (E0221) |
+| **CF35: The else reads none of them** | The `else` of an `if` runs when the test failed, so it can't read a name the condition bound (E0221). `else as e` (`type.errors/ER22`) needs the whole condition to be one `is` test: after an `&&` chain the else also runs when a later test fails, and then nothing was ruled out |
 | **CF36: A binding needs a reader** | A test that binds where nothing follows is an error (E0220): `let ok = a? as v` drops `v`. Keep the test without the name (`let ok = a?`), or bind in an `if` |
 | **CF37: A resource ends its chain** | A test that binds a resource (`@resource`) is the last test of its `&&` chain (E0858). When a later test fails, the else runs, and the else can't see the name (CF35), so nothing could consume it. Bind it alone and test inside the body |
 
@@ -136,13 +136,17 @@ if s is Circle(r) { … } else { use(r) }     // ❌ E0221: the else runs when i
 let ok = a? as v                            // ❌ E0220: nothing reads `v`; write `a?`
 ```
 
-A condition can run over several lines without parens. The `{` that opens the body ends it:
+A condition can run over several lines without parens. A line that ends with an operator continues on the next. A line can also start with `&&`, `||`, `==` or another operator that can't start a value; `+`, `-`, `*`, `<`, `>` and `..` can, so a line starting with one of them is an error that says to move the operator up:
 
 ```rask
 if s is Circle(r)
     && r > 1.0
     && r < 10.0 {
     use(r)
+}
+if total >
+    limit {                // ✅ the operator ends the line
+    flush()
 }
 ```
 

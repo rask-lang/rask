@@ -1354,7 +1354,7 @@ println("{sum}")
 | Match | `match x { ... }` | Expression with `=>` arms |
 | Pattern condition | `if x is Pattern` | Non-exhaustive, binds `v` |
 | Guard extraction | `let P(v) = x else { }` | A pattern that can miss; binds for the rest of the block. Optionals and results use `??` and `catch` |
-| Loops | `for x in xs: ...` | Inline or braced |
+| Loops | `for x in xs { ... }` | Always braced, like every body |
 | Loop value | `break expr` | Exit loop with value |
 | Attributes | `@name` | Familiar from Python/Java |
 | Omitted types | `func f(x) { x + 1 }` | Private functions only; see [gradual constraints](types/gradual-constraints.md) |

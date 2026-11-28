@@ -87,7 +87,6 @@ type alias Handler = func(i32) -> string
 | Rule | Description |
 |------|-------------|
 | **T14: Match on inner** | `if id is UserId(v)` destructures to underlying value |
-| **T15: Guard pattern** | `let v = id is UserId else { ... }` — same as enums |
 
 ## Edge Cases
 
