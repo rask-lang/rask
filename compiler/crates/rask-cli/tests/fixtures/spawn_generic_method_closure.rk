@@ -2,7 +2,7 @@
 // A closure built in a method of a generic type. Its capture has the `extend`
 // block's `T`, which the receiver's type decides: `Box<i64>`'s closure
 // crosses, `Box<Vec<Link<Node>>>`'s doesn't, however empty the vector (#1382).
-import memory.{Rack, Link}
+import memory.Link
 
 struct Node {
     id: i64

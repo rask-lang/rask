@@ -5,7 +5,6 @@
 //
 // The edge cases are the ones the three versions differed on: a root path, a
 // trailing slash, a leading-dot name, a trailing dot, an empty path.
-import path
 import path.Path
 
 func opt(v: string?) -> string {
@@ -33,8 +32,8 @@ func main() {
   probe(".bashrc")
   probe("/a/b/")
   probe("a.")
-  println("with_ext: {Path.from(\"/x/y.txt\").with_extension(\"md\").as_string()}")
-  println("with_ext none: {Path.from(\"/x/y\").with_extension(\"md\").as_string()}")
-  println("with_name: {Path.from(\"/x/y.txt\").with_file_name(\"z.md\").as_string()}")
-  println("div abs: {(Path.from(\"/x\") / \"/abs\").as_string()}")
+  println("with_ext: {Path.from("/x/y.txt").with_extension("md").as_string()}")
+  println("with_ext none: {Path.from("/x/y").with_extension("md").as_string()}")
+  println("with_name: {Path.from("/x/y.txt").with_file_name("z.md").as_string()}")
+  println("div abs: {(Path.from("/x") / "/abs").as_string()}")
 }

@@ -329,18 +329,6 @@ pub enum OwnershipErrorKind {
         borrow_span: Span,
     },
 
-    /// Trying to store a reference from a collection (Vec, Map).
-    #[error("cannot store reference from {source_type} - use inline or copy out the value")]
-    InstantBorrowEscapes {
-        source_type: String,
-    },
-
-    /// Trying to return or store a reference that would become invalid.
-    #[error("`{name}` would become invalid after this point")]
-    BorrowEscapes {
-        name: String,
-    },
-
     /// S5: `p.f` written over while `name`, a view of it, is still in scope.
     #[error("`{path}` written over while `{name}` views it")]
     ViewOutlivedReplace {
@@ -361,24 +349,6 @@ pub enum OwnershipErrorKind {
         name: String,
         /// The read that moved it out.
         taken_at: Span,
-    },
-
-    /// #804: a `mutate` parameter was consumed and nothing put back, so the caller
-    /// is left holding a value that moved out from under it.
-    #[error("`{name}` was consumed and not replaced before returning")]
-    MutateParamNotReplaced {
-        name: String,
-        ty: String,
-        consumed_at: Span,
-    },
-
-    /// #804: a plain (borrowed) parameter was consumed — passed to a `take`
-    /// parameter, or had a `take self` method called on it. The caller still owns
-    /// it, so this is a second consumption of one value.
-    #[error("`{name}` is borrowed from the caller and can't be given away")]
-    ConsumedBorrowedParam {
-        name: String,
-        ty: String,
     },
 
     /// conc.sync/SH7: a task-local `Shared` captured by a task block.
@@ -697,19 +667,6 @@ pub enum OwnershipErrorKind {
         consumed_at: Span,
     },
 
-    /// Trying to move a value out of a borrowed parameter.
-    #[error("cannot move `{name}` — parameter is borrowed, not owned")]
-    MoveFromBorrowedParam {
-        name: String,
-    },
-
-    /// Resource consumed more than once.
-    #[error("resource `{name}` already consumed")]
-    ResourceAlreadyConsumed {
-        name: String,
-        consumed_at: Span,
-    },
-
 
     /// Structural mutation inside `with` block on non-pool collection (W2).
     #[error("cannot {operation} `{collection}` inside `with` block — {collection} can reallocate")]
@@ -787,12 +744,6 @@ pub enum OwnershipErrorKind {
     UseAfterDiscard {
         name: String,
         discarded_at: Span,
-    },
-
-    /// D3: discard on @resource type
-    #[error("cannot discard resource `{name}` — use its consuming method")]
-    DiscardResource {
-        name: String,
     },
 
     /// SL2 / MC3: a closure that points at what it captured outlives one of

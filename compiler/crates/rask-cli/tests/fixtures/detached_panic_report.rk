@@ -11,7 +11,6 @@ func main() {
     using Multitasking {
         let h = Thread.spawn {
             panic("detached boom")
-            return 0
         }
         h.detach()
     }

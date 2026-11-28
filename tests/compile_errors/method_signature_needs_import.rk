@@ -16,7 +16,7 @@
 struct Clock {
     n: i64,
 
-    // ERROR: `Duration` is not in scope
+    // ERROR: `Duration` is not in scope [E0210]
     func span(self, d: Duration) -> i64 {
         return self.n
     }
@@ -26,17 +26,17 @@ enum Light {
     On,
     Off,
 
-    // ERROR: `Instant` is not in scope
+    // ERROR: `Instant` is not in scope [E0210]
     func since(self) -> Instant {
         return todo()
     }
 }
 
 interface Clocked {
-    // ERROR: `SystemTime` is not in scope
+    // ERROR: `SystemTime` is not in scope [E0210]
     func stamp(self) -> SystemTime
 
-    // ERROR: `File` is not in scope
+    // ERROR: `File` is not in scope [E0210]
     func open_log(self, f: File) -> i64 {
         return 0
     }
@@ -51,14 +51,14 @@ Wall implements Clocked {
         return todo()
     }
 
-    // ERROR: `Buffer` is not in scope
+    // ERROR: `Buffer` is not in scope [E0210]
     func dump(self, b: Buffer) -> i64 {
         return self.n
     }
 }
 
 func main() {
-    // ERROR: `Shared` is not in scope
+    // ERROR: `Shared` is not in scope [E0210]
     let f = |s: Shared<i64, Local>| 1
     let c = Clock(n: 2)
     println(c.n)

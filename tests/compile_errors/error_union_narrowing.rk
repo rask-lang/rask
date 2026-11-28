@@ -37,9 +37,9 @@ func narrow_arg(r: i64 or Fault) -> bool {
 }
 
 func main() {
-    let narrow: i64 or Fault = wide()  // ERROR: can fail with `Other`
+    let narrow: i64 or Fault = wide()  // ERROR: can fail with `Other` [E0415]
     mut v: Vec<i64 or Fault> = Vec.new()
-    v.push(wide())  // ERROR: can fail with `Other`
-    let ok = narrow_arg(wide())  // ERROR: can fail with `Other`
+    v.push(wide())  // ERROR: can fail with `Other` [E0415]
+    let ok = narrow_arg(wide())  // ERROR: can fail with `Other` [E0415]
     println("{narrow is Fault} {v.len()} {ok}")
 }

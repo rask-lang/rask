@@ -44,7 +44,6 @@ test "O1: a panicking task surfaces as JoinError.Panicked at the join" {
     using Multitasking {
         let h = Thread.spawn {
             panic("worker boom")
-            return 0
         }
         match h.join() {
             i64 as v => { outcome = RETURNED },
@@ -63,7 +62,6 @@ test "O1: the message names what went wrong" {
     using Multitasking {
         let h = Thread.spawn {
             panic("shelf gave out")
-            return 0
         }
         match h.join() {
             i64 as v => { note = "returned" },
@@ -79,7 +77,6 @@ test "P2: the survivor keeps running and joins a healthy task after" {
     using Multitasking {
         let dead = Thread.spawn {
             panic("first one dies")
-            return 0
         }
         match dead.join() {
             i64 as v => { first = RETURNED },
@@ -152,7 +149,6 @@ test "O2: a dying sender's buffer drains, then the receiver sees closed" {
             tx.send(1)!
             tx.send(2)!
             panic("died after sending")
-            return 0
         }
         match h.join() {
             i64 as v => { outcome = RETURNED },

@@ -43,16 +43,16 @@ test "interpolation — a literal argument later in the expression" {
 // still isn't — a `{` in a string always starts one, so a literal brace is
 // written `{{`, and that's what a JSON body has to use.
 test "interpolation — a brace-quote-colon body is not an expression" {
-    let pair = "{{\"k\": 1}}"
+    let pair = "\{\"k\": 1\}"
     assert pair.len() == 8
-    assert(pair.starts_with("{"))
-    assert(pair.ends_with("}"))
+    assert(pair.starts_with("\{"))
+    assert(pair.ends_with("\}"))
     assert(pair.contains(": 1"))
 }
 
-test "interpolation — an empty placeholder and a lone brace are unchanged" {
-    assert "{}".len() == 2
-    assert "{".len() == 1
+test "interpolation — escaped braces are text" {
+    assert "\{\}".len() == 2
+    assert "\{".len() == 1
 }
 
 func main() {}

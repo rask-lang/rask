@@ -34,7 +34,9 @@ mod arg_labels;
 mod method_visibility;
 mod reads_as;
 mod temporary;
+mod unreachable;
 pub use reads_as::ReadsAs;
+pub use unreachable::Leaves;
 pub use derive::WrapperFns;
 pub(crate) mod resolved_types;
 
@@ -42,7 +44,7 @@ pub use type_defs::{CContext, Callee, ConformanceCall, LiteralConversion, Litera
 pub use type_table::{primitive_spelling, CustomDecode, CustomEncode, TaskBound, TypeTable, WireHook};
 pub use operators::{operator_interface, OperatorTarget};
 pub use inference::{TypeConstraint, InferenceContext};
-pub use errors::{ArgProblem, WireHookProblem, TypeError, TypeArgSite, MapKeyFix, InvalidCastClass, IndexErrorKind, InterfaceBoundContext, KeptBy};
+pub use errors::{ArgProblem, HoldsItself, WireHookProblem, TypeError, TypeArgSite, MapKeyFix, InvalidCastClass, IndexErrorKind, InterfaceBoundContext, KeptBy};
 pub use parse_type::resolve_type_expr;
 
 pub use generics::{bind_header_pattern, bind_header_patterns};
@@ -510,8 +512,6 @@ pub struct TypeChecker {
     /// Each checked function's signature, by `FnDecl::id`, with inference
     /// variables still in it until the program is finished.
     pub(super) fn_sigs: HashMap<NodeId, rask_types::FnSignature>,
-    /// D1: Bindings invalidated by `discard`. Maps name → discard span.
-    pub(super) discarded_bindings: HashMap<String, rask_ast::Span>,
     /// CV1–CV10: cast/convert sites validated after literal defaults resolve
     /// their source types. Deferred so `1 as bool` sees `i32`, not a fresh var.
     pub(super) pending_casts: Vec<check_expr::PendingCast>,
@@ -816,7 +816,6 @@ impl TypeChecker {
             mutate_self_fns: std::collections::HashSet::new(),
             fn_sigs: HashMap::new(),
             accumulate_errors: false,
-            discarded_bindings: HashMap::new(),
             pending_casts: Vec::new(),
             pending_transmutes: Vec::new(),
             pending_for_mutate: Vec::new(),
@@ -975,6 +974,7 @@ impl TypeChecker {
         self.pop_scope();
 
         self.solve_constraints();
+        self.check_unreachable_code(decls);
 
         // ER31a: `try` sites whose source error type only became concrete here
         // (a method call's signature, say) pick widen-or-wrap now.

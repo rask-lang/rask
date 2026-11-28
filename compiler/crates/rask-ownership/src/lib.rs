@@ -4248,19 +4248,36 @@ impl<'a> OwnershipChecker<'a> {
                 self.check_expr(iter);
                 self.check_block(body);
             }
-            StmtKind::Discard { name, .. } => {
-                // D3: resource types cannot be discarded
-                if self.resource_bindings.contains(name) {
-                    self.errors.push(OwnershipError {
-                        kind: OwnershipErrorKind::DiscardResource {
-                            name: name.clone(),
-                        },
-                        span: stmt.span,
-                    });
-                } else {
-                    // Mark the binding as discarded — subsequent uses are errors
-                    self.bindings.insert(name.clone(), BindingState::Discarded { at: stmt.span });
+            StmtKind::Discard { name, name_span } => {
+                // A binding already gone can't be discarded again (D1).
+                match self.bindings.get(name) {
+                    Some(BindingState::Discarded { at }) => {
+                        self.errors.push(OwnershipError {
+                            kind: OwnershipErrorKind::UseAfterDiscard { name: name.clone(), discarded_at: *at },
+                            span: *name_span,
+                        });
+                    }
+                    Some(BindingState::Moved { at }) => {
+                        let reason = self.move_reason_for_at(name, *at);
+                        self.errors.push(OwnershipError {
+                            kind: OwnershipErrorKind::UseAfterMove { name: name.clone(), moved_at: *at, reason },
+                            span: *name_span,
+                        });
+                    }
+                    Some(BindingState::MaybeMoved { at }) => {
+                        let reason = self.move_reason_for_at(name, *at);
+                        self.errors.push(OwnershipError {
+                            kind: OwnershipErrorKind::UseAfterMaybeMove { name: name.clone(), moved_at: *at, reason },
+                            span: *name_span,
+                        });
+                    }
+                    _ => {}
                 }
+                // D3, a resource can't be discarded, is the checker's: it
+                // knows the type. Here the binding just ends, so a rejected
+                // `discard` isn't also reported as a resource never consumed.
+                self.resource_bindings.remove(name);
+                self.bindings.insert(name.clone(), BindingState::Discarded { at: stmt.span });
             }
         }
     }

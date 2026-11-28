@@ -5,6 +5,8 @@
 
 import net.{tcp_listen, tcp_connect, udp_bind}
 import io.IoError
+import net.TcpConnection
+import net.TcpListener
 
 test "a connection's remote address is the other end's address" {
     mut listener = tcp_listen("127.0.0.1:0")!

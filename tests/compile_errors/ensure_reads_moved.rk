@@ -64,7 +64,7 @@ func receiver_cleans_up() {
     tag.push("tag")
     let c = Conn(id: 1)
     ensure c.close("{tag.len()}")
-    // ERROR: `tag` is read by the ensure above and given away here
+    // ERROR: `tag` is read by the ensure above and given away here [E0977]
     sink(tag)
 }
 
@@ -73,7 +73,7 @@ func receiver_only_reads() -> i64 {
     mut log = Log(seen: Vec.new())
     let latch = Conn(id: 2)
     ensure log.record(latch.release())
-    // ERROR: giving `log` away would leave `latch` unreleased
+    // ERROR: giving `log` away would leave `latch` unreleased [E0977]
     return keep(log)
 }
 
@@ -83,7 +83,7 @@ func argument_cleans_up() {
     why.push("why")
     let c = Conn(id: 3)
     ensure close_with(c, why)
-    // ERROR: `why` is read by the cleanup
+    // ERROR: `why` is read by the cleanup [E0977]
     sink(why)
 }
 
@@ -92,7 +92,7 @@ func nothing_cleaned_up() {
     mut v: Vec<string> = Vec.new()
     v.push("a heap string long enough to allocate here 1")
     ensure println("done with {v.len()} items")
-    // ERROR: the ensure still prints `v.len()`
+    // ERROR: the ensure still prints `v.len()` [E0977]
     sink(v)
 }
 
@@ -102,7 +102,7 @@ func returned_under_ensure(n: i64) -> Vec<string> {
     ensure {
         v = Vec.new()
     }
-    // ERROR: the ensure still writes `v`
+    // ERROR: the ensure still writes `v` [E0977]
     return v
 }
 
@@ -110,7 +110,7 @@ func returned_under_ensure(n: i64) -> Vec<string> {
 func part_of_what_is_cleaned_up() {
     let p = Pair(a: Conn(id: 4), b: Conn(id: 5))
     ensure p.close()
-    // ERROR: `p.a` is part of what the ensure closes
+    // ERROR: `p.a` is part of what the ensure closes [E0977]
     eat(p.a)
 }
 
@@ -125,7 +125,7 @@ func two_in_one() {
         a.close("a")
         b.close("b")
     }
-    // ERROR: cancelling the ensure would leave `b` open
+    // ERROR: cancelling the ensure would leave `b` open [E0977]
     eat(a)
 }
 

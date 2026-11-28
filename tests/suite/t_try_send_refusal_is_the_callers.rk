@@ -6,8 +6,6 @@
 // type counted the error as a view into the sender, so nothing released it and
 // every refused string or struct leaked (leak_gate and memcheck_gate see it).
 
-import async.Sender
-
 struct Msg {
     name: string
     id: i64

@@ -56,7 +56,7 @@ test "a Map shows its entries, sorted by key" {
     m.insert("gamma", 3)
     m.insert("alpha", 1)
     m.insert("beta", 2)
-    assert "{m:debug}" == "Map {{ \"alpha\": 1, \"beta\": 2, \"gamma\": 3 }}"
+    assert "{m:debug}" == "Map \{ \"alpha\": 1, \"beta\": 2, \"gamma\": 3 \}"
 }
 
 test "an integer key sorts as a number, not as its text" {
@@ -64,19 +64,19 @@ test "an integer key sorts as a number, not as its text" {
     m.insert(10, "ten")
     m.insert(2, "two")
     m.insert(1, "one")
-    assert "{m:debug}" == "Map {{ 1: \"one\", 2: \"two\", 10: \"ten\" }}"
+    assert "{m:debug}" == "Map \{ 1: \"one\", 2: \"two\", 10: \"ten\" \}"
 }
 
 test "an empty Map has no space inside its braces" {
     let m: Map<string, i64> = Map.new()
-    assert "{m:debug}" == "Map {{}}"
+    assert "{m:debug}" == "Map \{\}"
 }
 
 test "a Map of aggregates renders them" {
     mut m: Map<string, Point> = Map.new()
     m.insert("b", Point(x: 3, y: 4))
     m.insert("a", Point(x: 1, y: 2))
-    assert "{m:debug}" == "Map {{ \"a\": Point(x: 1, y: 2), \"b\": Point(x: 3, y: 4) }}"
+    assert "{m:debug}" == "Map \{ \"a\": Point(x: 1, y: 2), \"b\": Point(x: 3, y: 4) \}"
 }
 
 test "a tuple renders positionally" {

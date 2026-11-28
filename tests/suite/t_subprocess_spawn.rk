@@ -17,6 +17,8 @@
 
 import os
 import os.Stdio
+import os.Process
+import io.IoError
 
 test "std.os/C3 — a spawned child runs, and wait collects its output" {
     let p = os.Command.new("sh")

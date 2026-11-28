@@ -1,0 +1,20 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: `( … )` after a value that isn't a function
+//
+// A number or a string has no body to run. These used to slip past the
+// checker with an unsolved result type and fail somewhere later.
+
+func main() {
+    let n: i64 = 5
+    // ERROR: `n` is an `i64` [E0311]
+    println(n(3))
+    let s = "text"
+    // ERROR: `s` is a `string` [E0311]
+    s()
+    let count = 5
+    // ERROR: `count` is a number even before its type settles [E0311]
+    count(1)
+    let ratio = 0.5
+    // ERROR: the same for a float literal [E0311]
+    ratio()
+}

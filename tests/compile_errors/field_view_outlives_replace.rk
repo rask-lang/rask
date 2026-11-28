@@ -84,7 +84,7 @@ struct Outer {
     cfg: Cfg
 }
 
-// ERROR: a struct field's view is a copy of it, and `wipe` replaces what
+// ERROR: a struct field's view is a copy of it, and `wipe` replaces what [E0958]
 // that copy holds [E0958]
 func wipe_under_view(mutate p: Outer) -> usize {
     let old = p.cfg
@@ -112,7 +112,7 @@ extend Bag<T> {
     }
 }
 
-// ERROR: a method on a type-parameter receiver has no body to read, so it
+// ERROR: a method on a type-parameter receiver has no body to read, so it [E0958]
 // replaces its receiver [E0958]
 func generic_under_view(mutate b: Bag<Regs>) -> usize {
     let old = b.item
@@ -124,7 +124,7 @@ func touch(mutate r: Regs) {
     r.regs = Vec.new()
 }
 
-// ERROR: the local closure `touch` isn't the top-level `touch`, and it
+// ERROR: the local closure `touch` isn't the top-level `touch`, and it [E0958]
 // replaces `log` [E0958]
 func closure_named_like_a_function(mutate r: Regs) -> usize {
     let touch = |mutate x: Regs| {
@@ -266,7 +266,7 @@ func call_it(f: func() -> usize) -> usize {
     return f()
 }
 
-// ERROR: a closure handed to a call between the move and the refill could
+// ERROR: a closure handed to a call between the move and the refill could [E0958]
 // read the empty field, so the read stays a view [E0958]
 func closure_passed_between(mutate h: Holder) -> usize {
     let n = || h.log.len()
@@ -294,7 +294,7 @@ func grow(mutate h: Holder) -> usize {
     return f.len()
 }
 
-// ERROR: an inner `let` reusing the view's name doesn't hide it from the
+// ERROR: an inner `let` reusing the view's name doesn't hide it from the [E0958]
 // write [E0958]
 func shadowed(mutate h: Holder) -> usize {
     let old = h.log
@@ -306,7 +306,7 @@ func shadowed(mutate h: Holder) -> usize {
     return old.len()
 }
 
-// ERROR: a closure called between the move and the refill could read the
+// ERROR: a closure called between the move and the refill could read the [E0958]
 // empty field, so the read stays a view [E0958]
 func closure_between(mutate h: Holder) -> usize {
     let n = || h.log.len()
@@ -352,7 +352,7 @@ func main() {
         i += 1
     }
 
-    // ERROR: a call given `h` to write through can replace the field under
+    // ERROR: a call given `h` to write through can replace the field under [E0958]
     // a view [E0958]
     let d = h.log
     reset_log(mutate h)

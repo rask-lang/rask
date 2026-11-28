@@ -19,7 +19,6 @@
 // interpreter only accepted the inline form under `Readers`, where
 // conc.sync/SH5 says all three strategies answer to both verbs.
 import sync.Shared
-import sync.Local
 
 struct Settings {
     public theme: string

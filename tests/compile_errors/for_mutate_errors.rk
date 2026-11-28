@@ -7,7 +7,7 @@ func test_structural_mutation() {
 
     for mutate item in items {
         item = "updated"
-        items.push("extra")    // ERROR LP14: structural mutation
+        items.push("extra")    // ERROR LP14: structural mutation [E0814]
     }
 }
 
@@ -28,7 +28,7 @@ func test_take_item() {
     rows.push(first)
 
     for mutate row in rows {
-        consume(row)       // ERROR LP16: take from borrowed element
+        consume(row)       // ERROR LP16: take from borrowed element [E0815]
     }
 }
 

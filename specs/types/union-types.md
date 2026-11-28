@@ -15,7 +15,7 @@ The outer `or` keyword forms a sum type (`T or E`). Optionals (`T?`) desugar to 
 |------|-------------|
 | **U1: `\|` restricted to error position** | The `\|` syntax for ad-hoc unions is valid only in the error position of `T or E` |
 | **U2: Anonymous enum** | `A \| B \| C` compiles to a compiler-generated anonymous enum |
-| **U3: Canonical ordering** | Union types normalized alphabetically; duplicates deduplicated |
+| **U3: Canonical ordering** | Union types normalized alphabetically, so `B \| A` and `A \| B` are the same type |
 | **U4: Equality** | Two union types equal if their canonical forms are equal |
 | **U5: Duplicate variants forbidden** | A sum type cannot contain the same payload variant twice. `(T or E) or E` and `A \| A` are compile errors. **Exception:** `none`. `T??` (= `(T or none) or none`) is a legal two-layer optional — `none` carries no payload and the layers are reached in order, so nothing is ambiguous. See [optionals.md](optionals.md) |
 | **U6: Disjointness for `T or E`** | The outer `T or E` sum requires T ≠ E using Rask's nominal-vs-alias distinction (see [type-aliases.md](type-aliases.md)). Checked where the type is written and again after generic substitution. Same rule as [error-types.md](error-types.md) ER3/ER3a |
@@ -73,8 +73,8 @@ func load() -> Config or (IoError | ParseError) {
 ```rask
 match result {
     Config as config            => use(config),
-    IoError.NotFound(p)         => println("not found: {}", p),
-    ParseError.Syntax(line, col) => println("syntax error at {}:{}", line, col),
+    IoError.NotFound(p)         => println("not found: {p}"),
+    ParseError.Syntax(line, col) => println("syntax error at {line}:{col}"),
     _                           => println("other error"),
 }
 ```
@@ -122,7 +122,7 @@ FIX: Add ParseError to the return type:
 
 | Case | Rule | Behavior |
 |------|------|----------|
-| Duplicate types in `\|` union | U3 | Deduplicated (`IoError \| IoError` = `IoError`) |
+| Duplicate types in `\|` union | U5 | Compile error (`IoError \| IoError`) |
 | Single type in `\|` union | U3 | Equivalent to bare error type |
 | Order differences | U3 | Normalized alphabetically |
 | `\|` union in non-error position | U1 | Compile error |

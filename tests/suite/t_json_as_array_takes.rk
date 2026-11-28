@@ -55,7 +55,7 @@ func deps_of(obj: JsonValue) -> Vec<Dep> {
     return Vec.new()
 }
 
-const META: string = "{{\"name\":\"alpha\",\"deps\":[{{\"name\":\"beta\",\"constraint\":\"^1.0.0\"}},{{\"name\":\"gamma\",\"constraint\":\"~2.1\"}},{{\"name\":\"\"}}]}}"
+const META: string = "\{\"name\":\"alpha\",\"deps\":[\{\"name\":\"beta\",\"constraint\":\"^1.0.0\"\},\{\"name\":\"gamma\",\"constraint\":\"~2.1\"\},\{\"name\":\"\"\}]\}"
 
 test "a dependency array read in place under a map lookup" {
     let v = json.decode<JsonValue>(META) catch e => {

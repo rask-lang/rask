@@ -40,7 +40,7 @@ func both<T>(take a: T, take b: T) {
 }
 
 func twice<T>(take x: T) {
-    // ERROR: `x` handed to two `take` parameters — already a move error for
+    // ERROR: `x` handed to two `take` parameters — already a move error for [E0800]
     // ERROR: any `T` that moves, and a double consume for a linear one
     both(x, x)
 }
@@ -79,29 +79,29 @@ struct Pair {
 }
 
 extend Pair {
-    // ERROR: `take self` lets `self.c` go unconsumed — no generics needed
+    // ERROR: `take self` lets `self.c` go unconsumed — no generics needed [E0805]
     func leak(take self) {
     }
 }
 
 func main() {
     let s = Sink(n: 1)
-    // ERROR: a generic method drops its `T`, here a `Conn`
+    // ERROR: a generic method drops its `T`, here a `Conn` [E0904]
     s.swallow(Conn(id: 4))
 
     let h = Holder(item: Conn(id: 5))
-    // ERROR: `Holder<T>.drop_it` drops `self.item`, which is a `Conn` here
+    // ERROR: `Holder<T>.drop_it` drops `self.item`, which is a `Conn` here [E0904]
     h.drop_it()
 
     Pair(c: Conn(id: 6)).leak()
 
-    // ERROR: `forget` drops its `T`, and here `T` is `Conn`
+    // ERROR: `forget` drops its `T`, and here `T` is `Conn` [E0904]
     forget(Conn(id: 1))
 
-    // ERROR: the issue's case — the payload matched out of `List<Conn>` is dropped
+    // ERROR: the issue's case — the payload matched out of `List<Conn>` is dropped [E0904]
     drop_first(List.More(Conn(id: 2), Heap(List.Empty)))
 
-    // ERROR: `lose` drops it two generic calls down; reported here, where `Conn` came in
+    // ERROR: `lose` drops it two generic calls down; reported here, where `Conn` came in [E0904]
     outer(Conn(id: 3))
 
     // Fine: an ordinary type argument

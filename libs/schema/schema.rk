@@ -154,13 +154,13 @@ public func describe(t: Ty) -> string {
         Ty.OneOf(options) => return "one of {quoted_list(options)}",
         Ty.List(item) => return "list of {describe(item[0].clone())}",
         Ty.MapOf(value) => return "map of {describe(value[0].clone())}",
-        Ty.Record(fields) => return "record {{ {describe_fields(fields)} }}",
+        Ty.Record(fields) => return "record \{ {describe_fields(fields)} \}",
         Ty.Variant(cases, shared) => {
             mut parts = Vec<string>.new()
             for c in cases {
-                parts.push("{c.name}: {describe(c.payload)} {{ {describe_fields(c.fields)} }}")
+                parts.push("{c.name}: {describe(c.payload)} \{ {describe_fields(c.fields)} \}")
             }
-            return "variant {{ {parts.join(" | ")} ; {describe_fields(shared)} }}"
+            return "variant \{ {parts.join(" | ")} ; {describe_fields(shared)} \}"
         }
     }
 }

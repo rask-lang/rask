@@ -4,7 +4,7 @@
 // Spec: type.enums (PM1-PM5), ctrl.flow (CF8-CF15)
 
 // --- non-exhaustive match (PM2) ---
-// ERROR: non-exhaustive match — missing variant 'Blue'
+// ERROR: non-exhaustive match — missing variant 'Blue' [E0340]
 enum Color { Red, Green, Blue }
 
 func test_nonexhaustive() {
@@ -34,7 +34,7 @@ func open_file() -> File or GuardError {
 
 func test_wildcard_linear() {
     let result = open_file()
-    // ERROR: the `File` arm discards a linear resource without consuming it
+    // ERROR: the `File` arm discards a linear resource without consuming it [E0805]
     match result {
         File => {},
         GuardError as e => {},
@@ -44,12 +44,12 @@ func test_wildcard_linear() {
 // --- guard pattern else doesn't diverge (CF13) ---
 func test_guard_no_diverge() {
     let opt: i32? = 42
-    mut value = opt is Some else { 0 }   // ERROR: 0 doesn't diverge
+    mut value = opt is Some else { 0 }   // ERROR: 0 doesn't diverge [E0304]
     // else must use return, break, panic, etc.
 }
 
 // --- or-pattern binding mismatch ---
-// ERROR: or-pattern branches bind different variables
+// ERROR: or-pattern branches bind different variables [E0308]
 enum Token { Number(i32), Ident(string), Plus, Minus }
 
 func test_or_pattern_mismatch() {

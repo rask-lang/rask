@@ -35,7 +35,7 @@ test "std.fmt/D3 — an Ordering renders through the Displayable that was writte
     assert "{1.5.compare(2.5)}" == "less"
     assert "{2.5.compare(1.5)}" == "greater"
     // The string path shifts the runtime's -1/0/1 onto the tags.
-    assert "{\"abc\".compare(\"abd\")}" == "less"
+    assert "{"abc".compare("abd")}" == "less"
 }
 
 // A narrow tag store left the rest of the slot undefined, and structural `==`

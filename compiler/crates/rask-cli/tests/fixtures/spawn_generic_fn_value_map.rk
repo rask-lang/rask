@@ -2,7 +2,7 @@
 // A generic function passed as a value to a stdlib adapter, which calls it
 // for each element. `launch` spawns a closure over its argument, so the spawn
 // is refused when `X` can hold a link (#1382).
-import memory.{Rack, Link}
+import memory.Link
 
 struct Node {
     id: i64

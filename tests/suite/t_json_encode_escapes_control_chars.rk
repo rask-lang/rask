@@ -11,7 +11,7 @@ struct Msg {
 
 test "control characters come out escaped" {
     let m = Msg(text: "a\u{1}b\u{8}c\u{c}d\u{1f}e")
-    assert json.encode(m) == "{{\"text\":\"a\\u0001b\\bc\\fd\\u001fe\"}}"
+    assert json.encode(m) == "\{\"text\":\"a\\u0001b\\bc\\fd\\u001fe\"\}"
 }
 
 test "escaped control characters decode back to the same string" {

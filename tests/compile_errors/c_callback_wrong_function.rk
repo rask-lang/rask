@@ -1,0 +1,17 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: what may be passed where C expects a function pointer
+
+extern "C" func atexit(f: *func()) -> i32
+
+func bye() {
+}
+
+func main() {
+    let n = 3
+    unsafe {
+        // ERROR: a Rask function isn't a C callback [E0935]
+        atexit(bye)
+        // ERROR: a capturing closure isn't a C callback [E0936]
+        atexit(|| println(n))
+    }
+}

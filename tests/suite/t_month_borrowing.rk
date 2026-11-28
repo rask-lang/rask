@@ -15,7 +15,6 @@
 // in `t_month_scoped_access.rk`.
 
 import sync.Shared
-import sync.Mutex
 
 struct Health {
     hp: i32

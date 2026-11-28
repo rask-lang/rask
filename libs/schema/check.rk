@@ -306,7 +306,7 @@ func is_prerelease_range(s: string) -> bool {
     return op != "=" && rest.contains("-") && is_version(rest)
 }
 
-const VERSION_REQ_PATTERN = "^([*]|(>=|[\\^]|~|=)?[0-9]+([.][0-9]+){{0,2}}|=[0-9]+[.][0-9]+[.][0-9]+-[A-Za-z0-9]+([.][A-Za-z0-9]+)*)$"
+const VERSION_REQ_PATTERN = "^([*]|(>=|[\\^]|~|=)?[0-9]+([.][0-9]+)\{0,2\}|=[0-9]+[.][0-9]+[.][0-9]+-[A-Za-z0-9]+([.][A-Za-z0-9]+)*)$"
 
 func is_version_req(s: string) -> bool {
     // Any version at all, which `rask add` writes when none is given.

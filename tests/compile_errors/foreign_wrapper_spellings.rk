@@ -1,0 +1,63 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: optional and result spellings from other languages
+//
+// Rask has no `Some`/`Ok`/`Err` wrappers. A `T?` is built by writing the value
+// or `none`, a `T or E` by returning either side, and both are taken apart
+// with `?`, `is`, `??` and `catch`. Each operator is for one of the two:
+// `??` supplies a value for an absence, `catch` handles an error.
+
+struct ParseError {
+    at: i64
+}
+
+extend ParseError {
+    func message(self) -> string {
+        return "parse error at {self.at}"
+    }
+}
+
+func parse(text: string) -> i64 or ParseError {
+    if text == "" {
+        return ParseError(at: 0)
+    }
+    return 1
+}
+
+func find(k: i64) -> string? {
+    if k > 0 {
+        return "found"
+    }
+    return none
+}
+
+func wrapped(k: i64) -> string? {
+    // ERROR: `Some` isn't callable [E0348]
+    return Some("x")
+}
+
+func unwrapped(text: string) {
+    let r = parse(text)
+    // ERROR: `Ok` isn't a pattern [E0350]
+    if r is Ok(v) {
+        println(v)
+    }
+}
+
+func defaulted(text: string) -> i64 {
+    // ERROR: `??` on a result throws the error away unseen [E0364]
+    return parse(text) ?? 0
+}
+
+func caught(k: i64) -> string {
+    // ERROR: an absence carries no error to catch [E0363]
+    return find(k) catch _ => "none"
+}
+
+func taken() {
+    let pending: string? = find(1)
+    // ERROR: `take` empties the slot, and a `let` can't be emptied [E0366]
+    let got = take pending
+}
+
+func main() {
+}

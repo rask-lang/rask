@@ -6,7 +6,6 @@
 // string that word went to `string_len` as the string's address and crashed
 // (#1997). The `with` form already typed its binding by the payload.
 import sync.Shared
-import sync.Mutex
 
 struct Pt {
     x: i64

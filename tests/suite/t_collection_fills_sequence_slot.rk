@@ -6,6 +6,7 @@
 // `Sequence<i64>`, found `Vec<i64>`" (#1325).
 
 import sequence.Sequence
+import collections.GrowError
 
 func total(items: Sequence<i64>) -> i64 {
     mut t = 0

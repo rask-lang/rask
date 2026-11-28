@@ -25,7 +25,7 @@ func bad_heal(p: Player) {
 struct Roster { name: string, members: Vec<string> }
 
 func bad_store(p: Roster) {
-    // ERROR: cannot move out of borrowed parameter `p`
+    // ERROR: cannot move out of borrowed parameter `p` [E0835]
     let stored = p
 }
 
@@ -34,7 +34,7 @@ struct Named { name: string, value: Vec<i32> }
 
 extend Named {
     func bad_take_field(self) -> Vec<i32> {
-        // ERROR: cannot move `self.value` out of borrowed self
+        // ERROR: cannot move `self.value` out of borrowed self [E0872]
         return self.value
     }
 }
@@ -42,7 +42,7 @@ extend Named {
 // --- a block-scoped slice kept past its statement (B3, S3) ---
 func store_slice() -> string {
     let s = "hello world"
-    // ERROR: `s[0..5]` gives a view into `s`, not a new string [E0324]
+    // ERROR: `s[0..5]` gives a view into `s`, not a new string [E0303]
     let slice = s[0..5]
     return slice
 }
@@ -52,7 +52,7 @@ struct Holder { data: Vec<i32> }
 
 func borrow_escape() {
     let h = Holder(data: Vec.new())
-    // ERROR: `h.data` is a block-scoped borrow of a non-Copy field
+    // ERROR: `h.data` is a block-scoped borrow of a non-Copy field [E0873]
     mut escaped = h.data
 }
 
@@ -89,7 +89,7 @@ func both(mutate a: i32, b: Player) -> i32 {
 
 func overlapping_borrow() {
     mut p = Player(health: 50, score: 10)
-    // ERROR: cannot borrow `p` while `p.health` is mutably borrowed
+    // ERROR: cannot borrow `p` while `p.health` is mutably borrowed [E0870]
     let n = both(mutate p.health, p)
 }
 
@@ -99,7 +99,7 @@ struct BigThing { data: Vec<i32> }
 func writable_non_copy() {
     mut items = Vec<BigThing>.new()
     items.push(BigThing(data: Vec.new()))
-    // ERROR: `x` and `items[…]` would be the same `BigThing`, both writable
+    // ERROR: `x` and `items[…]` would be the same `BigThing`, both writable [E0871]
     mut x = items[0]
 }
 
@@ -112,7 +112,7 @@ func view_of_wide_tuple() {
     mut rows: Vec<(Line, i64)> = Vec.new()
     rows.push((Line(text: "t"), 1))
     let t = rows[0]
-    // ERROR: `rows` written while `t` views one of its elements
+    // ERROR: `rows` written while `t` views one of its elements [E0958]
     rows[0] = (Line(text: "u"), 2)
     println("{t.0.text} {t.1}")
 }
@@ -121,7 +121,7 @@ func view_of_wide_array() {
     mut grids: Vec<[Line; 2]> = Vec.new()
     grids.push([Line(text: "a"), Line(text: "b")])
     let g = grids[0]
-    // ERROR: `grids` written while `g` views one of its elements
+    // ERROR: `grids` written while `g` views one of its elements [E0958]
     grids.clear()
     println(g[0].text)
 }

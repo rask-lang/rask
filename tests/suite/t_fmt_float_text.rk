@@ -52,7 +52,7 @@ test "F5 — an f32 rounds at its own width" {
     assert "{i}" == "16777216"
 }
 
-test "F6 — {:e} is the same digits as a mantissa, with a bare exponent" {
+test "F6 — \{:e\} is the same digits as a mantissa, with a bare exponent" {
     let x = 1.5
     assert "{x:e}" == "1.5e0"
     let big = 123456.789
@@ -68,7 +68,7 @@ test "F6 — {:e} is the same digits as a mantissa, with a bare exponent" {
     assert format("{:e}", 2.5) == "2.5e0"
 }
 
-test "F6 — a precision under {:e} fixes the mantissa's decimals" {
+test "F6 — a precision under \{:e\} fixes the mantissa's decimals" {
     let x = 1.5
     assert "{x:.2e}" == "1.50e0"
     let big = 123456.789
@@ -76,7 +76,7 @@ test "F6 — a precision under {:e} fixes the mantissa's decimals" {
     assert "{big:.0e}" == "1e5"
 }
 
-test "F6 — an integer under {:e} converts first" {
+test "F6 — an integer under \{:e\} converts first" {
     let n = 1500
     assert "{n:e}" == "1.5e3"
     let z = 0
@@ -85,7 +85,7 @@ test "F6 — an integer under {:e} converts first" {
     assert "{m:e}" == "2e2"
 }
 
-test "S5 — a precision under {} is decimal places, rounded" {
+test "S5 — a precision under \{\} is decimal places, rounded" {
     let pi = 3.141592653589793
     assert "{pi:.3}" == "3.142"
     assert "{pi:.0}" == "3"

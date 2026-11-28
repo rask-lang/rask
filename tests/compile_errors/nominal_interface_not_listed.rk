@@ -16,7 +16,7 @@ extend Board {
     // the context wants. `Self` was left open, so this passed as a `Board`
     // (#2004).
     func weird(self) -> Board {
-        // ERROR: expected `Board`, found `Money`
+        // ERROR: expected `Board`, found `Money` [E0308]
         return Money.zero()
     }
 }
@@ -27,15 +27,15 @@ func main() {
     // Equal was listed, so this is fine.
     println("eq={a == b}")
 
-    // ERROR: no method `lt` found for type `OnlyEq`
+    // ERROR: no method `lt` found for type `OnlyEq` [E0313]
     println("lt={a < b}")
 
-    // ERROR: no `+` between `OnlyEq` and `OnlyEq` — `Add` wasn't listed, and
+    // ERROR: no `+` between `OnlyEq` and `OnlyEq` — `Add` wasn't listed, and [E0894]
     // ERROR: an operator answers to a declared conformance
     let sum = a + b
     println("sum={sum}")
 
-    // ERROR: `Money` doesn't list `Comparable`, so no inherited `max`
+    // ERROR: `Money` doesn't list `Comparable`, so no inherited `max` [E0313]
     let m = Money.zero().max(Money.one())
     println("{Board(n: 1).weird().n} {m.value}")
 }

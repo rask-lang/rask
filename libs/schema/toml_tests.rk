@@ -60,24 +60,24 @@ func entry(key: string, take value: Value) -> Entry {
 
 test "whole-line and trailing comments are skipped" {
     let text = "# top\n  # indented\na = 1 # trailing\n[t] # after a header\nb = 2#tight\n# at the end, no newline"
-    assert shape(text) == "{{ a = 1, t = {{ b = 2 }} }}"
+    assert shape(text) == "\{ a = 1, t = \{ b = 2 \} \}"
 }
 
 test "a # inside a string is not a comment" {
-    assert shape("a = \"x # y\"\nb = 'p # q'\n") == "{{ a = \"x # y\", b = \"p # q\" }}"
+    assert shape("a = \"x # y\"\nb = 'p # q'\n") == "\{ a = \"x # y\", b = \"p # q\" \}"
 }
 
 test "an empty file and a comment-only file are empty tables" {
-    assert shape("") == "{{}}"
-    assert shape("# nothing\n\n   \n") == "{{}}"
+    assert shape("") == "\{\}"
+    assert shape("# nothing\n\n   \n") == "\{\}"
 }
 
 test "bare keys take letters, digits, `_` and `-`" {
-    assert shape("a-b_C9 = 1\n1234 = 2\n") == "{{ a-b_C9 = 1, 1234 = 2 }}"
+    assert shape("a-b_C9 = 1\n1234 = 2\n") == "\{ a-b_C9 = 1, 1234 = 2 \}"
 }
 
 test "quoted keys may hold anything, including dots" {
-    assert shape("\"a b\" = 1\n'x.y' = 2\n\"\" = 3\n\"é\" = 4\n") == "{{ \"a b\" = 1, \"x.y\" = 2, \"\" = 3, \"é\" = 4 }}"
+    assert shape("\"a b\" = 1\n'x.y' = 2\n\"\" = 3\n\"é\" = 4\n") == "\{ \"a b\" = 1, \"x.y\" = 2, \"\" = 3, \"é\" = 4 \}"
 }
 
 test "a quoted key with escapes" {
@@ -86,11 +86,11 @@ test "a quoted key with escapes" {
 }
 
 test "dotted keys build nested tables" {
-    assert shape("a.b.c = 1\na.b.d = 2\na.e = 3\n") == "{{ a = {{ b = {{ c = 1, d = 2 }}, e = 3 }} }}"
+    assert shape("a.b.c = 1\na.b.d = 2\na.e = 3\n") == "\{ a = \{ b = \{ c = 1, d = 2 \}, e = 3 \} \}"
 }
 
 test "dotted keys allow spaces and quoted segments" {
-    assert shape("a . \"b c\" . 'd' = 1\n") == "{{ a = {{ \"b c\" = {{ d = 1 }} }} }}"
+    assert shape("a . \"b c\" . 'd' = 1\n") == "\{ a = \{ \"b c\" = \{ d = 1 \} \} \}"
 }
 
 test "a non-ASCII bare key is not a key" {
@@ -98,30 +98,30 @@ test "a non-ASCII bare key is not a key" {
 }
 
 test "CRLF line endings work and lines still count" {
-    assert shape("a = 1\r\nb = \"x\"\r\n[t]\r\nc = 2\r\n") == "{{ a = 1, b = \"x\", t = {{ c = 2 }} }}"
+    assert shape("a = 1\r\nb = \"x\"\r\n[t]\r\nc = 2\r\n") == "\{ a = 1, b = \"x\", t = \{ c = 2 \} \}"
     assert err_line("a = 1\r\nb = 2\r\nc = 1.5\r\n") == 3
 }
 
 // ─── Tables ─────────────────────────────────────────────────────
 
 test "a [table] header collects the keys under it" {
-    assert shape("top = 1\n[t]\na = 1\nb = 2\n") == "{{ top = 1, t = {{ a = 1, b = 2 }} }}"
+    assert shape("top = 1\n[t]\na = 1\nb = 2\n") == "\{ top = 1, t = \{ a = 1, b = 2 \} \}"
 }
 
 test "an empty header is an empty table" {
-    assert shape("[t]\n") == "{{ t = {{}} }}"
+    assert shape("[t]\n") == "\{ t = \{\} \}"
 }
 
 test "[a.b] headers nest, with spaces and quotes allowed" {
-    assert shape("[a.b]\nx = 1\n[ a . \"c d\" ]\ny = 2\n") == "{{ a = {{ b = {{ x = 1 }}, \"c d\" = {{ y = 2 }} }} }}"
+    assert shape("[a.b]\nx = 1\n[ a . \"c d\" ]\ny = 2\n") == "\{ a = \{ b = \{ x = 1 \}, \"c d\" = \{ y = 2 \} \} \}"
 }
 
 test "dotted keys under a header land inside it" {
-    assert shape("[t]\nx.y = 1\nx.z = 2\n") == "{{ t = {{ x = {{ y = 1, z = 2 }} }} }}"
+    assert shape("[t]\nx.y = 1\nx.z = 2\n") == "\{ t = \{ x = \{ y = 1, z = 2 \} \} \}"
 }
 
 test "a super-table may be defined after its sub-table" {
-    assert shape("[a.b]\nx = 1\n[a]\ny = 2\n") == "{{ a = {{ b = {{ x = 1 }}, y = 2 }} }}"
+    assert shape("[a.b]\nx = 1\n[a]\ny = 2\n") == "\{ a = \{ b = \{ x = 1 \}, y = 2 \} \}"
 }
 
 // ─── Strings ────────────────────────────────────────────────────
@@ -152,7 +152,7 @@ test "literal strings take backslashes as they are" {
 }
 
 test "empty strings of both kinds" {
-    assert shape("a = \"\"\nb = ''\n") == "{{ a = \"\", b = \"\" }}"
+    assert shape("a = \"\"\nb = ''\n") == "\{ a = \"\", b = \"\" \}"
 }
 
 test "non-ASCII text passes through" {
@@ -196,7 +196,7 @@ test "a table defined by dotted keys can't also have a header" {
 // ─── Integers ───────────────────────────────────────────────────
 
 test "decimal integers with signs and underscores" {
-    assert shape("a = 0\nb = 42\nc = +7\nd = -7\ne = 1_000_000\nf = -0\ng = +0\n") == "{{ a = 0, b = 42, c = 7, d = -7, e = 1000000, f = 0, g = 0 }}"
+    assert shape("a = 0\nb = 42\nc = +7\nd = -7\ne = 1_000_000\nf = -0\ng = +0\n") == "\{ a = 0, b = 42, c = 7, d = -7, e = 1000000, f = 0, g = 0 \}"
 }
 
 test "the full i64 range reads, one past it doesn't" {
@@ -209,7 +209,7 @@ test "the full i64 range reads, one past it doesn't" {
 }
 
 test "hex, octal and binary integers" {
-    assert shape("h = 0xDEAD_beef\no = 0o755\nb = 0b1010\nz = 0x0\n") == "{{ h = 3735928559, o = 493, b = 10, z = 0 }}"
+    assert shape("h = 0xDEAD_beef\no = 0o755\nb = 0b1010\nz = 0x0\n") == "\{ h = 3735928559, o = 493, b = 10, z = 0 \}"
     assert int_at(tree("h = 0x7FFFFFFFFFFFFFFF\n"), "h") == 9223372036854775807
     assert err("h = 0x8000000000000000\n").contains("doesn't fit in 64 bits")
 }
@@ -242,28 +242,28 @@ test "a lone sign is not a number" {
 // ─── Booleans, arrays, inline tables ────────────────────────────
 
 test "booleans" {
-    assert shape("t = true\nf = false\n") == "{{ t = true, f = false }}"
+    assert shape("t = true\nf = false\n") == "\{ t = true, f = false \}"
     assert err("t = True\n").contains("expected a value")
     assert err("t = truely\n").contains("unexpected text after the value")
 }
 
 test "arrays: empty, flat, nested, mixed" {
-    assert shape("a = []\nb = [1, 2, 3]\nc = [[1, 2], [\"x\"], []]\nd = [1, \"two\", true]\n") == "{{ a = [], b = [1, 2, 3], c = [[1, 2], [\"x\"], []], d = [1, \"two\", true] }}"
+    assert shape("a = []\nb = [1, 2, 3]\nc = [[1, 2], [\"x\"], []]\nd = [1, \"two\", true]\n") == "\{ a = [], b = [1, 2, 3], c = [[1, 2], [\"x\"], []], d = [1, \"two\", true] \}"
 }
 
 test "an array may end with a comma" {
-    assert shape("a = [1, 2,]\n") == "{{ a = [1, 2] }}"
+    assert shape("a = [1, 2,]\n") == "\{ a = [1, 2] \}"
 }
 
 test "an array may span lines, with comments" {
     let text = "a = [\n  1, # one\n  # nothing here\n  2,\n]\nb = 3\n"
-    assert shape(text) == "{{ a = [1, 2], b = 3 }}"
+    assert shape(text) == "\{ a = [1, 2], b = 3 \}"
     // Lines inside the array still count.
     assert err_line("a = [\n  1,\n  1.5,\n]\n") == 3
 }
 
 test "arrays of inline tables" {
-    assert shape("a = [{{ x = 1 }}, {{ x = 2, y = \"z\" }}]\n") == "{{ a = [{{ x = 1 }}, {{ x = 2, y = \"z\" }}] }}"
+    assert shape("a = [\{ x = 1 \}, \{ x = 2, y = \"z\" \}]\n") == "\{ a = [\{ x = 1 \}, \{ x = 2, y = \"z\" \}] \}"
 }
 
 test "a malformed array is an error" {
@@ -273,26 +273,26 @@ test "a malformed array is an error" {
 }
 
 test "inline tables: empty, flat, nested, dotted" {
-    assert shape("a = {{}}\nb = {{ }}\n") == "{{ a = {{}}, b = {{}} }}"
-    assert shape("a = {{ x = 1, y = \"s\" }}\n") == "{{ a = {{ x = 1, y = \"s\" }} }}"
-    assert shape("a = {{ b = {{ c = {{ d = 1 }} }} }}\n") == "{{ a = {{ b = {{ c = {{ d = 1 }} }} }} }}"
-    assert shape("a = {{ b.c = 1, b.d = 2 }}\n") == "{{ a = {{ b = {{ c = 1, d = 2 }} }} }}"
+    assert shape("a = \{\}\nb = \{ \}\n") == "\{ a = \{\}, b = \{\} \}"
+    assert shape("a = \{ x = 1, y = \"s\" \}\n") == "\{ a = \{ x = 1, y = \"s\" \} \}"
+    assert shape("a = \{ b = \{ c = \{ d = 1 \} \} \}\n") == "\{ a = \{ b = \{ c = \{ d = 1 \} \} \} \}"
+    assert shape("a = \{ b.c = 1, b.d = 2 \}\n") == "\{ a = \{ b = \{ c = 1, d = 2 \} \} \}"
 }
 
 test "an inline table stays on one line and has no trailing comma" {
-    assert err("a = {{ x = 1, }}\n").contains("expected a key")
-    assert err("a = {{ x = 1,\ny = 2 }}\n").contains("expected a key")
-    assert err("a = {{ x 1 }}\n").contains("expected `=` after the key")
-    assert err("a = {{ x = 1 y = 2 }}\n").contains("expected `,` or `}}` in the inline table")
+    assert err("a = \{ x = 1, \}\n").contains("expected a key")
+    assert err("a = \{ x = 1,\ny = 2 \}\n").contains("expected a key")
+    assert err("a = \{ x 1 \}\n").contains("expected `=` after the key")
+    assert err("a = \{ x = 1 y = 2 \}\n").contains("expected `,` or `\}` in the inline table")
 }
 
 test "an inline table can't set a key twice" {
-    assert err("a = {{ x = 1, x = 2 }}\n") == "line 1: duplicate key `x`"
+    assert err("a = \{ x = 1, x = 2 \}\n") == "line 1: duplicate key `x`"
 }
 
 test "an inline table is closed; it can't be extended later" {
-    assert err("a = {{ b = 1 }}\na.c = 2\n").contains("is a value on line 1 and a table on line 2")
-    assert err("a = {{ b = 1 }}\n[a]\nc = 2\n").contains("is a value on line 1 and a table on line 2")
+    assert err("a = \{ b = 1 \}\na.c = 2\n").contains("is a value on line 1 and a table on line 2")
+    assert err("a = \{ b = 1 \}\n[a]\nc = 2\n").contains("is a value on line 1 and a table on line 2")
 }
 
 // ─── Order ──────────────────────────────────────────────────────
@@ -300,7 +300,7 @@ test "an inline table is closed; it can't be extended later" {
 test "keys keep file order" {
     assert keys(tree("z = 1\na = 2\nm = 3\n")) == "z,a,m"
     assert keys(tree("[b]\n[a]\n[c]\n")) == "b,a,c"
-    assert keys(table_at(tree("t = {{ z = 1, a = 2 }}\n"), "t")) == "z,a"
+    assert keys(table_at(tree("t = \{ z = 1, a = 2 \}\n"), "t")) == "z,a"
 }
 
 test "a table sits where its first key was seen" {
@@ -384,7 +384,7 @@ test "a quoted key must be NFC" {
     assert err("a = 1\n\"cafe\u{301}\" = 1\n").contains("line 2: quoted key")
     assert err("'cafe\u{301}' = 1\n").contains("not in NFC form")
     assert err("[\"cafe\u{301}\"]\n").contains("not in NFC form")
-    assert shape("\"caf\u{E9}\" = 1\n") == "{{ \"café\" = 1 }}"
+    assert shape("\"caf\u{E9}\" = 1\n") == "\{ \"café\" = 1 \}"
 }
 
 test "a file over 1 MiB is rejected" {
@@ -411,8 +411,8 @@ test "values nest at most 32 levels, counting the keys above them" {
     assert err("{deep(29)}a = [[1]]\n") == ""
     assert err("{deep(29)}a = [[[1]]]\n").contains("deeper than 32 levels")
     // Keys inside an inline table count as well.
-    assert err("{deep(29)}a = {{ b.c = 1 }}\n") == ""
-    assert err("{deep(29)}a = {{ b.c.d = 1 }}\n").contains("deeper than 32 levels")
+    assert err("{deep(29)}a = \{ b.c = 1 \}\n") == ""
+    assert err("{deep(29)}a = \{ b.c.d = 1 \}\n").contains("deeper than 32 levels")
 }
 
 // ─── Accessors ──────────────────────────────────────────────────
@@ -473,8 +473,8 @@ test "render_value for each kind" {
     assert render_value(Value.Bool(false)) == "false"
     assert render_value(Value.Array(Vec.new())) == "[]"
     assert render_value(Value.Array(Vec<Value>.from([Value.Int(1), Value.Str("a"), Value.Array(Vec<Value>.from([Value.Bool(true)]))]))) == "[1, \"a\", [true]]"
-    assert render_value(Value.Table(Vec.new())) == "{{}}"
-    assert render_value(Value.Table(Vec<Entry>.from([entry("a", Value.Int(1)), entry("b", Value.Table(Vec.new()))]))) == "{{ a = 1, b = {{}} }}"
+    assert render_value(Value.Table(Vec.new())) == "\{\}"
+    assert render_value(Value.Table(Vec<Entry>.from([entry("a", Value.Int(1)), entry("b", Value.Table(Vec.new()))]))) == "\{ a = 1, b = \{\} \}"
 }
 
 test "strings escape what the reader would refuse raw" {
@@ -496,7 +496,7 @@ test "keys are quoted only when a bare key can't spell them" {
         entry("é", Value.Int(5))
         entry("q\"", Value.Int(6))
     ])
-    assert render_value(Value.Table(t)) == "{{ plain-key_1 = 1, \"\" = 2, \"a.b\" = 3, \"a b\" = 4, \"é\" = 5, \"q\\\"\" = 6 }}"
+    assert render_value(Value.Table(t)) == "\{ plain-key_1 = 1, \"\" = 2, \"a.b\" = 3, \"a b\" = 4, \"é\" = 5, \"q\\\"\" = 6 \}"
 }
 
 // ─── Writing documents ──────────────────────────────────────────
@@ -507,24 +507,24 @@ test "render_document puts scalars first, then sections" {
 }
 
 test "render_document writes leaf tables inline inside a section" {
-    let t = tree("[deps]\na = {{ version = \"1\" }}\nb = {{}}\nc = \"2\"\n")
-    assert render_document(t) == "\n[deps]\na = {{ version = \"1\" }}\nb = {{}}\nc = \"2\"\n"
+    let t = tree("[deps]\na = \{ version = \"1\" \}\nb = \{\}\nc = \"2\"\n")
+    assert render_document(t) == "\n[deps]\na = \{ version = \"1\" \}\nb = \{\}\nc = \"2\"\n"
 }
 
 test "render_document gives tables of tables their own headers" {
     let t = tree("[a.b.c]\nd = 1\n[a]\ne = 2\n")
-    assert render_document(t) == "\n[a]\ne = 2\n\n[a.b]\nc = {{ d = 1 }}\n"
+    assert render_document(t) == "\n[a]\ne = 2\n\n[a.b]\nc = \{ d = 1 \}\n"
 }
 
 test "render_document quotes keys in headers" {
     let t = tree("[\"x y\".\"a.b\".c]\nd = 1\n")
-    assert render_document(t) == "\n[\"x y\".\"a.b\"]\nc = {{ d = 1 }}\n"
+    assert render_document(t) == "\n[\"x y\".\"a.b\"]\nc = \{ d = 1 \}\n"
 }
 
 test "render_document leaves out a header with nothing under it" {
     // `[features]` holding only `[features.ssl]`: the sub-header is enough.
-    let t = tree("[features.ssl]\ndefault = true\n[features.ssl.dependencies]\ntls = {{ registry = \"^1\" }}\n")
-    assert render_document(t) == "\n[features.ssl]\ndefault = true\n\n[features.ssl.dependencies]\ntls = {{ registry = \"^1\" }}\n"
+    let t = tree("[features.ssl]\ndefault = true\n[features.ssl.dependencies]\ntls = \{ registry = \"^1\" \}\n")
+    assert render_document(t) == "\n[features.ssl]\ndefault = true\n\n[features.ssl.dependencies]\ntls = \{ registry = \"^1\" \}\n"
     // An empty table has nothing else to define it.
     assert render_document(tree("[a]\n")) == "\n[a]\n"
 }
@@ -535,7 +535,7 @@ test "an empty tree is an empty document" {
 
 // ─── Round trip ─────────────────────────────────────────────────
 
-const VARIED = "# a header comment\r\ntitle = \"T \\\"q\\\" \\\\ \\u202E \\u0001\\r\"\nlit = 'C:\\x'\nn = -9223372036854775808\nh = 0xFF\non = true\n\"quoted key\" = [1, [\"a\", []], {{ x = 1 }}]\nempty = {{}}\n\n[server]\nhost = \"h\"\nlimits.max = 10\nlimits.min = 1_0\nopts = {{ a = 1, c = \"2\" }}\n\n[server.tls]\ncert = \"é😀\"\n\n[server.sub]\nx = {{ y = {{}} }}\nz = {{ a.b = 1, c = 2 }}\n\n[deps]\nfoo = {{ version = \"1\", features = [\"x\"] }}\n\"bar.baz\" = {{ path = \"../b\" }}\n\n[a.b.c.d]\ne = false\n"
+const VARIED = "# a header comment\r\ntitle = \"T \\\"q\\\" \\\\ \\u202E \\u0001\\r\"\nlit = 'C:\\x'\nn = -9223372036854775808\nh = 0xFF\non = true\n\"quoted key\" = [1, [\"a\", []], \{ x = 1 \}]\nempty = \{\}\n\n[server]\nhost = \"h\"\nlimits.max = 10\nlimits.min = 1_0\nopts = \{ a = 1, c = \"2\" \}\n\n[server.tls]\ncert = \"é😀\"\n\n[server.sub]\nx = \{ y = \{\} \}\nz = \{ a.b = 1, c = 2 \}\n\n[deps]\nfoo = \{ version = \"1\", features = [\"x\"] \}\n\"bar.baz\" = \{ path = \"../b\" \}\n\n[a.b.c.d]\ne = false\n"
 
 test "round trip: parse, render, parse gives the same tree" {
     let first = shape(VARIED)

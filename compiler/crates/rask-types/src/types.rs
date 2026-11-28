@@ -570,6 +570,8 @@ impl fmt::Display for Type {
             Type::Result { ok, err } if **err == Type::None => write!(f, "{}?", ok),
             // An error side that can't happen: the call can't fail, and is a `T`.
             Type::Result { ok, err } if **err == Type::Never => write!(f, "{}", ok),
+            // `|` binds looser than `or` would read: `T or (A | B)`.
+            Type::Result { ok, err } if matches!(**err, Type::Union(_)) => write!(f, "{} or ({})", ok, err),
             Type::Result { ok, err } => write!(f, "{} or {}", ok, err),
             Type::Union(types) => {
                 for (i, ty) in types.iter().enumerate() {

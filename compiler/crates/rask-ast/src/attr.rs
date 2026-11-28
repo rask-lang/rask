@@ -157,7 +157,7 @@ pub const COMPILER_ATTRS: &[(&str, ArgForm, Writer)] = &[
     ("c_name", ArgForm::Exprs, Writer::Anyone),             // struct.c-interop/PP4, on a C struct or union
     ("export", ArgForm::Exprs, Writer::Anyone),             // compiler.mangling
     ("traced", ArgForm::Exprs, Writer::Anyone),             // type.errors/ER34
-    ("memory_only", ArgForm::Exprs, Writer::Anyone),        // on an `extern` only, comp.effects/INF5
+    ("memory_only", ArgForm::Exprs, Writer::StdlibOrExtern), // comp.effects/INF5
     ("call_text", ArgForm::Exprs, Writer::Anyone),          // ctrl.call-info (proposed)
     ("call_location", ArgForm::Exprs, Writer::Anyone),      // ctrl.call-info (proposed)
 ];
@@ -499,4 +499,43 @@ pub fn c_name(attrs: &[Attr]) -> Option<CName> {
         return Some(CName::Nameless);
     }
     value.string().map(CName::Spelled)
+}
+
+/// Every annotation written on a declaration and the declarations inside it
+/// (fields, variants, methods), in source order. The same sites
+/// `rewrite::rewrite_decl` visits.
+pub fn each_attr<'a>(decl: &'a crate::decl::Decl, f: &mut impl FnMut(&'a Attr)) {
+    use crate::decl::DeclKind;
+    let mut all = |attrs: &'a [Attr]| attrs.iter().for_each(&mut *f);
+    match &decl.kind {
+        DeclKind::Fn(func) => all(&func.attrs),
+        DeclKind::Struct(s) => {
+            all(&s.attrs);
+            s.fields.iter().for_each(|field| all(&field.attrs));
+            s.methods.iter().for_each(|m| all(&m.attrs));
+        }
+        DeclKind::Enum(e) => {
+            all(&e.attrs);
+            for v in &e.variants {
+                all(&v.attrs);
+                v.fields.iter().for_each(|field| all(&field.attrs));
+            }
+            e.methods.iter().for_each(|m| all(&m.attrs));
+        }
+        DeclKind::Interface(t) => {
+            all(&t.attrs);
+            t.methods.iter().for_each(|m| all(&m.attrs));
+        }
+        DeclKind::Impl(i) => i.methods.iter().for_each(|m| all(&m.attrs)),
+        DeclKind::Const(c) => all(&c.attrs),
+        DeclKind::Test(t) => all(&t.attrs),
+        DeclKind::Benchmark(b) => all(&b.attrs),
+        DeclKind::Union(u) => u.fields.iter().for_each(|field| all(&field.attrs)),
+        DeclKind::TypeAlias(_)
+        | DeclKind::Annotation(_)
+        | DeclKind::Extern(_)
+        | DeclKind::Import(_)
+        | DeclKind::Export(_)
+        | DeclKind::CImport(_) => {}
+    }
 }

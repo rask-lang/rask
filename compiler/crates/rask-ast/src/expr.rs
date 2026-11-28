@@ -312,6 +312,14 @@ pub enum StringSegment {
     Literal(String),
     /// An expression inside `{...}`, with the `:spec` that followed it.
     Expr(Box<Expr>, Option<crate::fmt_spec::FormatSpec>),
+    /// A `format` placeholder: `{}` (`index: None`) takes the next argument,
+    /// `{1}` the one at that index. Only a `format` template holds these, and
+    /// the desugar replaces them with the arguments they name.
+    Placeholder {
+        index: Option<usize>,
+        spec: Option<crate::fmt_spec::FormatSpec>,
+        span: crate::Span,
+    },
 }
 
 /// How an argument is passed at a call site.
@@ -838,13 +846,13 @@ impl Expr {
             ExprKind::Float(f, _) => Literal::Float(*f),
             ExprKind::Bool(b) => Literal::Bool(*b),
             ExprKind::String(s) => Literal::Str(s.clone()),
-            // `"{{x}}"` arrives as segments, all of them text.
+            // `"\{x\}"` arrives as segments, all of them text.
             ExprKind::StringInterp(segments) => {
                 let mut text = String::new();
                 for seg in segments {
                     match seg {
                         StringSegment::Literal(t) => text.push_str(t),
-                        StringSegment::Expr(..) => return None,
+                        StringSegment::Expr(..) | StringSegment::Placeholder { .. } => return None,
                     }
                 }
                 Literal::Str(text)

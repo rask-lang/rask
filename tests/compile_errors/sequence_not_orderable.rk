@@ -43,7 +43,7 @@ func sort_rows(mutate rows: Vec<Vec<i64>>) {
 }
 
 func compare_structs(a: Row, b: Row) {
-    let _lt = a < b               // ERROR: a Vec field means no derived order
+    let _lt = a < b               // ERROR: a Vec field means no derived order [E0313]
 }
 
 func main() {

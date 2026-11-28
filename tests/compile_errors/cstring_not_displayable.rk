@@ -6,14 +6,12 @@
 // through `decode() -> string or Utf8Error` and isn't Displayable. The error
 // points at `decode()` rather than suggesting a conformance on a stdlib type.
 
-import string.cstring
-
 func main() {
     let c = "hi".to_cstring()!
     // ERROR: `cstring` does not implement `Displayable` [E0826]
     println(c.to_string())
 
-    // ERROR: same through a placeholder
+    // ERROR: same through a placeholder [E0826]
     println("{c}")
 
     // Fine: the text, with the failure handled.

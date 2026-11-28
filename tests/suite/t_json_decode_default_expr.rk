@@ -36,7 +36,7 @@ struct Batch {
 }
 
 test "an expression default fills a missing field" {
-    let j = json.decode<Job>("{{\"name\": \"a\"}}") catch e => {
+    let j = json.decode<Job>("\{\"name\": \"a\"\}") catch e => {
         assert false
         return
     }
@@ -51,7 +51,7 @@ test "an expression default fills a missing field" {
 }
 
 test "a present field wins over its default" {
-    let j = json.decode<Job>("{{\"name\": \"a\", \"retries\": 9, \"level\": null, \"limits\": {{\"lo\": 2}}}}") catch e => {
+    let j = json.decode<Job>("\{\"name\": \"a\", \"retries\": 9, \"level\": null, \"limits\": \{\"lo\": 2\}\}") catch e => {
         assert false
         return
     }
@@ -62,7 +62,7 @@ test "a present field wins over its default" {
 }
 
 test "defaults fill structs inside a list" {
-    let b = json.decode<Batch>("{{\"jobs\": [{{\"name\": \"x\"}}, {{\"name\": \"y\", \"tries\": 0}}]}}") catch e => {
+    let b = json.decode<Batch>("\{\"jobs\": [\{\"name\": \"x\"\}, \{\"name\": \"y\", \"tries\": 0\}]\}") catch e => {
         assert false
         return
     }

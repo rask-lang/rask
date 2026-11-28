@@ -58,28 +58,28 @@ test "an enum and a fixed array round-trip through json" {
         lists: lists,
     )
     let text = json.encode(scene)
-    assert text.contains("\"named\":{{\"a\":{{\"Whole\":3}}}}")
+    assert text.contains("\"named\":\{\"a\":\{\"Whole\":3\}\}")
     assert text.contains("\"maybe\":[\"Point\",null]")
     assert text.contains("\"grid\":[7,8,9]")
     assert outcome(text) == text
 }
 
 test "each enum form decodes to its variant" {
-    let n = json.decode<Number>("{{\"frac\":2.5}}") catch _ => Number.Whole(0)
+    let n = json.decode<Number>("\{\"frac\":2.5\}") catch _ => Number.Whole(0)
     assert n is Fraction(f) && f == 2.5
     let s = json.decode<Shape>("\"Point\"") catch _ => Shape.Circle(radius: 0.0)
     assert s is Point
-    let r = json.decode<Shape>("{{\"Rect\":{{\"w\":2,\"h\":3}}}}") catch _ => Shape.Point
+    let r = json.decode<Shape>("\{\"Rect\":\{\"w\":2,\"h\":3\}\}") catch _ => Shape.Point
     assert r is Rect(w, h) && w * h == 6
-    let e = json.decode<Event>("{{\"type\":\"Click\",\"y\":1,\"x\":9}}") catch _ => Event.Close
+    let e = json.decode<Event>("\{\"type\":\"Click\",\"y\":1,\"x\":9\}") catch _ => Event.Close
     assert e is Click(x, y) && x == 9 && y == 1
-    let c = json.decode<Event>("{{\"type\":\"Close\"}}") catch _ => Event.Click(x: 0, y: 0)
+    let c = json.decode<Event>("\{\"type\":\"Close\"\}") catch _ => Event.Click(x: 0, y: 0)
     assert c is Close
 }
 
 test "a wrong variant or length is a type error" {
-    let base = "\"shapes\":[],\"named\":{{}},\"corners\":[1,{{\"Whole\":2}}]"
-    assert outcome("{{{base},\"grid\":[1,2]}}").contains("should hold 3 items")
-    assert outcome("{{\"shapes\":[\"Square\"],\"named\":{{}},\"grid\":[1,2,3],\"corners\":[],\"maybe\":[],\"lists\":{{}}}}").contains("names no variant")
-    assert outcome("{{\"shapes\":[\"Circle\"],\"named\":{{}},\"grid\":[1,2,3],\"corners\":[],\"maybe\":[],\"lists\":{{}}}}").contains("has a payload")
+    let base = "\"shapes\":[],\"named\":\{\},\"corners\":[1,\{\"Whole\":2\}]"
+    assert outcome("\{{base},\"grid\":[1,2]\}").contains("should hold 3 items")
+    assert outcome("\{\"shapes\":[\"Square\"],\"named\":\{\},\"grid\":[1,2,3],\"corners\":[],\"maybe\":[],\"lists\":\{\}\}").contains("names no variant")
+    assert outcome("\{\"shapes\":[\"Circle\"],\"named\":\{\},\"grid\":[1,2,3],\"corners\":[],\"maybe\":[],\"lists\":\{\}\}").contains("has a payload")
 }

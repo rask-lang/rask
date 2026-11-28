@@ -492,6 +492,69 @@ pub fn check_build_script(path: &Path, source: &str, config: &CompilerConfig) ->
     out
 }
 
+/// The warnings about the program as written: W1 (unused imports) and W4
+/// (unreachable code). Each is the first template round's, since a later
+/// round has every `comptime for` written out: the call it iterated over
+/// (`reflect.fields<T>()`) is gone, and a `return` in one copy of the body
+/// makes the next copy look dead. And each reads past the `comptime if cfg.*`
+/// branches this target folded away, because the source holds every target's.
+struct WrittenWarnings<F: Fn(u16) -> bool> {
+    folds: rask_comptime::CfgFolds,
+    /// Whether a file is the program's own. A dependency's warnings are its
+    /// author's to hear about.
+    ours: F,
+    unused_imports: Option<Vec<Diagnostic>>,
+    unreachable: Option<Vec<Diagnostic>>,
+}
+
+impl<F: Fn(u16) -> bool> WrittenWarnings<F> {
+    fn new(folds: rask_comptime::CfgFolds, ours: F) -> Self {
+        WrittenWarnings { folds, ours, unused_imports: None, unreachable: None }
+    }
+
+    /// W1. An import named only in a branch for another target is used.
+    fn unused_imports(&mut self, resolved: &rask_resolve::ResolvedProgram) -> Vec<Diagnostic> {
+        let (folds, ours) = (&self.folds, &self.ours);
+        self.unused_imports
+            .get_or_insert_with(|| {
+                resolved
+                    .unused_imports
+                    .iter()
+                    .filter(|u| {
+                        !folds.dropped_names.iter().any(|(name, at)| ours(at.file_id) && &u.name == name)
+                    })
+                    .map(|u| u.to_diagnostic())
+                    .collect()
+            })
+            .clone()
+    }
+
+    /// The checker's findings as diagnostics, W4 among them as described above.
+    fn type_diagnostics(&mut self, type_errors: &[rask_check::TypeError]) -> Vec<Diagnostic> {
+        use rask_check::TypeError::UnreachableCode;
+        let (folds, ours) = (&self.folds, &self.ours);
+        let mut out: Vec<Diagnostic> = type_errors
+            .iter()
+            .filter(|e| !matches!(e, UnreachableCode { .. }))
+            .map(|e| e.to_diagnostic())
+            .collect();
+        let unreachable = self.unreachable.get_or_insert_with(|| {
+            type_errors
+                .iter()
+                .filter(|e| match e {
+                    UnreachableCode { span, after, .. } => {
+                        ours(span.file_id) && !folds.taken_without(*after, *span)
+                    }
+                    _ => false,
+                })
+                .map(|e| e.to_diagnostic())
+                .collect()
+        });
+        out.extend(unreachable.iter().cloned());
+        out
+    }
+}
+
 fn check_loaded_scoped(
     files: &[(PathBuf, String)],
     config: &CompilerConfig,
@@ -517,7 +580,12 @@ fn check_loaded_scoped(
             let parsed = parser.parse();
             next_id = parser.next_node_id();
             debug_assert!(parsed.is_ok(), "the prelude is fixed text");
-            decls.extend(parsed.decls);
+            decls.extend(parsed.decls.into_iter().map(|mut d| {
+                if let DeclKind::Import(import) = &mut d.kind {
+                    import.implicit = true;
+                }
+                d
+            }));
         }
 
         // --- Lex ---
@@ -536,7 +604,9 @@ fn check_loaded_scoped(
             diags.push(e.to_diagnostic());
         }
         source_files.push((path.clone(), source));
-        if !parse_result.is_ok() {
+        // Tokens the lexer dropped leave a tree that isn't what was written,
+        // and checking it would report mistakes that aren't there.
+        if !parse_result.is_ok() || !lex_result.errors.is_empty() {
             return PipelineOutput::fail_with_sources(diags, source_files);
         }
         decls.extend(parse_result.decls);
@@ -581,7 +651,7 @@ fn check_loaded_scoped(
     ));
 
     // --- Build configuration into `comptime` code (CC1) ---
-    rask_comptime::apply_cfg(&mut parse_result.decls, &config.cfg);
+    let folds = rask_comptime::apply_cfg(&mut parse_result.decls, &config.cfg);
 
     // --- Desugar (accumulate errors, continue) ---
     let desugared = rask_desugar::desugar(
@@ -604,6 +674,7 @@ fn check_loaded_scoped(
     let mut rounds = rask_template::Rounds::new(&parse_result.decls, desugared.operator_calls.clone());
     let round_start = diags.len();
     let stdlib_decls = rask_stdlib::StubRegistry::typecheck_decls();
+    let mut written = WrittenWarnings::new(folds, |_| true);
     let (mut typed, ownership_result) = loop {
         diags.truncate(round_start);
         parse_result.decls = rounds.program();
@@ -628,6 +699,7 @@ fn check_loaded_scoped(
             }
     };
     diags.extend(resolved.unused_locals.iter().map(|u| u.to_diagnostic()));
+    diags.extend(written.unused_imports(&resolved));
     parse_result.decls.extend(rounds.library_copies().iter().cloned());
 
     // --- Typecheck (lenient — always returns TypedProgram + errors, so
@@ -640,9 +712,7 @@ fn check_loaded_scoped(
             &rounds.operator_calls,
             config.cfg.target(),
         );
-    for e in &type_errors {
-        diags.push(e.to_diagnostic());
-    }
+    diags.extend(written.type_diagnostics(&type_errors));
 
     // --- Ownership (non-blocking — accumulate and continue) ---
     let ownership_result =
@@ -1016,6 +1086,9 @@ fn check_package_scoped(
     // and a dependency's references to its own dependencies. Aliases come from
     // the importing package's own `import … as` lines, so this is per package
     // rather than program-wide.
+    // What each package wrote that the rewrite below turns into a merged
+    // name: the uses of its imports, which resolve can no longer see.
+    let mut written_uses: HashMap<rask_resolve::PackageId, std::collections::HashSet<String>> = HashMap::new();
     if !exports.is_empty() {
         let annotations: std::collections::HashSet<String> = merged
             .iter()
@@ -1030,11 +1103,13 @@ fn check_package_scoped(
         };
         let root_scope = package_scope::ImportScope { exports, index: &index, importer: None, private: &private };
         let root_visible = visible_packages(&pkg_ctx.all_decls, &root_scope);
-        package_scope::qualify_references(&mut pkg_ctx.all_decls, &root_visible, &annotations);
+        let mut root_uses =
+            package_scope::qualify_references(&mut pkg_ctx.all_decls, &root_visible, &annotations);
         let (imported, shadowed) =
             package_scope::unqualified_imports(&pkg_ctx.all_decls, &root_scope);
         diags.extend(package_scope::type_params_named_like_types(&pkg_ctx.all_decls, &imported_types(&imported)));
-        package_scope::qualify_imported_names(&mut pkg_ctx.all_decls, &imported, &annotations);
+        root_uses.extend(package_scope::qualify_imported_names(&mut pkg_ctx.all_decls, &imported, &annotations));
+        written_uses.insert(pkg_ctx.root_id, root_uses);
         diags.extend(shadowed.iter().map(shadowed_import_diagnostic));
         diags.extend(
             package_scope::unimported_annotations(&mut pkg_ctx.all_decls, &root_visible, &annotations)
@@ -1044,10 +1119,11 @@ fn check_package_scoped(
         for (id, decls) in merged.iter_mut() {
             let scope = package_scope::ImportScope { exports, index: &index, importer: Some(*id), private: &private };
             let visible = visible_packages(decls, &scope);
-            package_scope::qualify_references(decls, &visible, &annotations);
+            let mut uses = package_scope::qualify_references(decls, &visible, &annotations);
             let (imported, shadowed) = package_scope::unqualified_imports(decls, &scope);
             diags.extend(package_scope::type_params_named_like_types(decls, &imported_types(&imported)));
-            package_scope::qualify_imported_names(decls, &imported, &annotations);
+            uses.extend(package_scope::qualify_imported_names(decls, &imported, &annotations));
+            written_uses.insert(*id, uses);
             diags.extend(shadowed.iter().map(shadowed_import_diagnostic));
             diags.extend(
                 package_scope::unimported_annotations(decls, &visible, &annotations)
@@ -1094,7 +1170,7 @@ fn check_package_scoped(
 
     // --- Build configuration into `comptime` code (CC1) ---
     // After the merge, so a dependency's `comptime if` is settled too.
-    rask_comptime::apply_cfg(&mut pkg_ctx.all_decls, &config.cfg);
+    let folds = rask_comptime::apply_cfg(&mut pkg_ctx.all_decls, &config.cfg);
     if diags.iter().any(|d| d.severity == Severity::Error) {
         return PipelineOutput::fail_with_sources(diags, source_files);
     }
@@ -1117,9 +1193,15 @@ fn check_package_scoped(
 
     // Templates (ctrl.comptime/CT50), as in the single-file path: check, write
     // out the template instances reached, check again until none are new.
+    let root_files: HashSet<u16> = pkg_ctx
+        .registry
+        .get(pkg_ctx.root_id)
+        .map(|pkg| pkg.files.iter().map(|f| f.file_id).collect())
+        .unwrap_or_default();
     let mut rounds = rask_template::Rounds::new(&pkg_ctx.all_decls, desugared.operator_calls.clone());
     let round_start = diags.len();
     let stdlib_decls = rask_stdlib::StubRegistry::typecheck_decls();
+    let mut written = WrittenWarnings::new(folds, |file| root_files.contains(&file));
     let (mut typed, ownership_result) = loop {
         diags.truncate(round_start);
         pkg_ctx.all_decls = rounds.program();
@@ -1135,7 +1217,7 @@ fn check_package_scoped(
         let resolved = match rask_resolve::resolve(rask_resolve::ResolveInput {
             decls: &pkg_ctx.all_decls,
             stdlib: &stdlib_bodies,
-            package: Some((&pkg_ctx.registry, pkg_ctx.root_id)),
+            package: Some(rask_resolve::PackageBuild { registry: &pkg_ctx.registry, id: pkg_ctx.root_id, written_uses: &written_uses }),
         }) {
             Ok(r) => r,
             Err(errors) => {
@@ -1154,6 +1236,7 @@ fn check_package_scoped(
             }
         };
         diags.extend(resolved.unused_locals.iter().map(|u| u.to_diagnostic()));
+        diags.extend(written.unused_imports(&resolved));
 
         // --- A dependency's internals are not the program's to name ---
         //
@@ -1218,9 +1301,7 @@ fn check_package_scoped(
                 &rounds.operator_calls,
                 config.cfg.target(),
             );
-        for e in &type_errors {
-            diags.push(e.to_diagnostic());
-        }
+        diags.extend(written.type_diagnostics(&type_errors));
 
         // --- Ownership (non-blocking) ---
         let ownership_result =

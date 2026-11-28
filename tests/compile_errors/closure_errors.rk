@@ -27,16 +27,16 @@
 // pipes, and a `mutate` parameter names its type. `|mutate x|` is neither.
 func test_mutable_capture() {
     mut x = 0
-    // ERROR: `mutate` on the capture `x` [mem.closures/MC1]
+    // ERROR: `mutate` on the capture `x` [mem.closures/MC1] [E0100]
     let a = |mutate x| { x += 1 }
-    // ERROR: `mutate` on the capture `x` [mem.closures/MC1]
+    // ERROR: `mutate` on the capture `x` [mem.closures/MC1] [E0100]
     let b = |mutate x| { x += 2 }
 }
 
 // --- a closure type in a return position ---
 struct Entity { tags: Vec<string> }
 
-// ERROR: a closure type can't be written in a signature yet
+// ERROR: a closure type can't be written in a signature yet [E0100]
 func test_closure_escape() -> || {
     let entity = Entity { tags: Vec.new() }
     let tags = entity.tags           // block-scoped borrow

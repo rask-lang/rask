@@ -9,7 +9,7 @@ struct Req {
     public n: i64
 }
 
-// ERROR: `check` is a keyword, so it can't name a function
+// ERROR: `check` is a keyword, so it can't name a function [E0100]
 func check(req: Req) -> i64 {
     return req.n
 }

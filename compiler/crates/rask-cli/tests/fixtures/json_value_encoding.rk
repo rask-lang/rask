@@ -2,7 +2,6 @@
 // routed anything that wasn't a struct, a Vec or a string to `json_encode_i64`.
 // The encoder was in stdlib/json.rk all along, in Rask, unreached —
 // `stringify_value` and the escape and number helpers under it.
-import json
 import json.JsonValue
 
 func main() {

@@ -18,13 +18,13 @@
 // hasn't imported.
 
 func main() {
-    // ERROR: `json` is used but never imported
+    // ERROR: `json` is used but never imported [E0210]
     let v = json.encode(1)
 
-    // ERROR: `net` is used but never imported
+    // ERROR: `net` is used but never imported [E0210]
     let l = net.tcp_listen("127.0.0.1:0")
 
-    // ERROR: `fs` is used but never imported
+    // ERROR: `fs` is used but never imported [E0210]
     let e = fs.exists("/tmp")
 
     println("{v} {l} {e}")

@@ -70,7 +70,6 @@ test "a task that panics costs only its own result" {
         group.add(spawn { return 1 })
         group.add(spawn {
             panic("boom")
-            return 2
         })
         group.add(spawn { return 3 })
         mut ok = 0

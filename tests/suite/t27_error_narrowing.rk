@@ -52,7 +52,7 @@ func use_block() -> i32 {
     return v * 2
 }
 
-test "?? { return } unwraps present" {
+test "?? \{ return \} unwraps present" {
     assert use_block() == 84
 }
 

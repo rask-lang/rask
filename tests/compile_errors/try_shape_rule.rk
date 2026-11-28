@@ -40,13 +40,13 @@ func fallible(k: string) -> i64 or LoadError {
     return LoadError.Missing
 }
 
-// ERROR: `try` here would propagate `none`, and this function has no absent branch
+// ERROR: `try` here would propagate `none`, and this function has no absent branch [E0399]
 func optional_in_result(k: string) -> i64 or LoadError {
     let v = try maybe(k)
     return v
 }
 
-// ERROR: `try` here would propagate an error, and this function only returns absence
+// ERROR: `try` here would propagate an error, and this function only returns absence [E0400]
 func result_in_optional(k: string) -> i64? {
     let v = try fallible(k)
     return v

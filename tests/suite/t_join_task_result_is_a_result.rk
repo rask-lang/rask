@@ -10,6 +10,7 @@
 // where the interpreter says `bad bad`.
 
 import async.Handle
+import async.JoinError
 
 struct Bad {
     why: string

@@ -2,10 +2,10 @@
 // Output that looks like the runner's result record.
 
 test "claims to pass, then fails" {
-    println("{{\"name\":\"claims to pass, then fails\",\"passed\":true}}")
+    println("\{\"name\":\"claims to pass, then fails\",\"passed\":true\}")
     assert 1 == 2
 }
 
 test "prints a JSON body and passes" {
-    println("{{\"passed\":false}}")
+    println("\{\"passed\":false\}")
 }

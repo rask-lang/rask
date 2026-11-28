@@ -23,7 +23,7 @@
 
 import async.{Channel, Sender}
 import http
-import http.{Response, Responder}
+import http.Response
 
 struct Line {
     text: string

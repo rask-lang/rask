@@ -13,45 +13,45 @@
 // chained comparison in comparison_chaining.rk.
 
 // --- Rust-ism: `pub` instead of `public` ---
-// ERROR: unknown keyword 'pub', did you mean 'public'?
+// ERROR: unknown keyword 'pub', did you mean 'public'? [E0100]
 pub struct BadVisibility { x: i32 }
 
 // --- Rust-ism: `fn` instead of `func` ---
-// ERROR: unknown keyword 'fn', did you mean 'func'?
+// ERROR: unknown keyword 'fn', did you mean 'func'? [E0100]
 fn bad_func(a: i32) -> i32 { return a }
 
 // --- Rust-ism: `::` path separator ---
-// ERROR: unexpected '::', use '.' for path access
+// ERROR: unexpected '::', use '.' for path access [E0100]
 func test_double_colon() {
     let x = Result::Ok(42)
 }
 
 // --- `const` in a function body ---
-// ERROR: 'const' is only for module-level constants — use 'let'
+// ERROR: 'const' is only for module-level constants — use 'let' [E0100]
 func test_const_in_body() {
     const x = 0
 }
 
 // --- Rust-ism: `let mut` ---
-// ERROR: 'let mut' is not Rask — use 'mut' directly
+// ERROR: 'let mut' is not Rask — use 'mut' directly [E0100]
 func test_let_mut() {
     let mut x = 0
 }
 
 // --- Rust-ism: `impl` instead of `extend` ---
-// ERROR: unknown keyword 'impl', did you mean 'extend'?
+// ERROR: unknown keyword 'impl', did you mean 'extend'? [E0100]
 impl Point {
     func origin() -> Point { return Point { x: 0, y: 0 } }
 }
 
 // --- Rust-ism: turbofish `::<T>` ---
-// ERROR: unexpected '::<', use 'Type<T>' without '::'
+// ERROR: unexpected '::<', use 'Type<T>' without '::' [E0100]
 func test_turbofish() {
     let v = Vec::<i32>.new()
 }
 
 // --- Rust-ism: `&` reference syntax ---
-// ERROR: Rask uses parameter modes, not reference syntax
+// ERROR: Rask uses parameter modes, not reference syntax [E0100]
 func test_ref(x: &i32) -> i32 {
     return x
 }
@@ -61,7 +61,7 @@ func test_ref(x: &i32) -> i32 {
 // Newlines also work as terminators, but missing both is ambiguous.
 
 // --- comparison chaining (P2) ---
-// ERROR: comparison operators cannot be chained
+// ERROR: comparison operators cannot be chained [E0100]
 func test_chained_comparison() {
     let x = 1 < 2 < 3
 }

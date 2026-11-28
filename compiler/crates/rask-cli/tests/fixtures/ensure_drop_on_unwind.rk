@@ -17,8 +17,6 @@
 // The inline cleanup on the ordinary exit path had the load and the thunk did
 // not, which is why this only showed when something panicked.
 
-import memory.Heap
-
 struct Big {
     public a: i64
     public b: i64

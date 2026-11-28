@@ -87,8 +87,8 @@ fn quote(s: &str) -> String {
             '\\' => out.push_str("\\\\"),
             '\n' => out.push_str("\\n"),
             '\t' => out.push_str("\\t"),
-            '{' => out.push_str("{{"),
-            '}' => out.push_str("}}"),
+            '{' => out.push_str("\\{"),
+            '}' => out.push_str("\\}"),
             c => out.push(c),
         }
     }

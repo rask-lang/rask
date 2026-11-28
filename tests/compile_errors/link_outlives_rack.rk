@@ -21,21 +21,21 @@ struct Holder {
 func returned() -> Link<Node> {
     mut s: Rack<Node> = Rack.new()
     let n = s.insert(Node(value: 1))
-    return n                        // ERROR: `s` dies here
+    return n                        // ERROR: `s` dies here [E0379]
 }
 
 // Out inside a struct — the same dangle with a wrapper on it.
 func wrapped() -> Holder {
     mut s: Rack<Node> = Rack.new()
     let n = s.insert(Node(value: 2))
-    return Holder(link: n)       // ERROR: still `s`
+    return Holder(link: n)       // ERROR: still `s` [E0379]
 }
 
 // Out through a tuple.
 func tupled() -> (Link<Node>, i32) {
     mut s: Rack<Node> = Rack.new()
     let n = s.insert(Node(value: 3))
-    return (n, 7)                   // ERROR: still `s`
+    return (n, 7)                   // ERROR: still `s` [E0379]
 }
 
 // Out through an assignment to a longer-lived name.
@@ -44,7 +44,7 @@ func assigned() {
     {
         mut s: Rack<Node> = Rack.new()
         let n = s.insert(Node(value: 4))
-        escaped = n                 // ERROR: `escaped` outlives `s`
+        escaped = n                 // ERROR: `escaped` outlives `s` [E0379]
     }
     if escaped? as e { println("{e.value}") }
 }

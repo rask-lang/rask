@@ -506,8 +506,7 @@ impl ToDiagnostic for crate::OwnershipError {
                     LinearWildcardDiscard { .. } | ResourceDiscardedAsStatement { .. } => {
                         "throws a value away with `_`".to_string()
                     }
-                    ResourceAlreadyConsumed { name, .. }
-                    | UseAfterMove { name, .. }
+                    UseAfterMove { name, .. }
                     | UseAfterMaybeMove { name, .. } => format!("uses `{}` after giving it away", name),
                     _ => "does something to it a linear value can't take".to_string(),
                 };
@@ -841,25 +840,6 @@ impl ToDiagnostic for crate::OwnershipError {
                 .with_why("concurrent read and write access to the same value would be a data race")
             }
 
-            MoveFromBorrowedParam { name } => {
-                Diagnostic::error(format!(
-                    "cannot move `{}` — parameter is borrowed, not owned",
-                    name
-                ))
-                .with_code("E0806")
-                .with_primary(self.span, "move occurs here")
-                .with_fix(format!("use `take {}` in the parameter list to transfer ownership", name))
-                .with_why("borrowed parameters can only be read — the caller retains ownership")
-            }
-
-            ResourceAlreadyConsumed { name, consumed_at } => {
-                Diagnostic::error(format!("resource `{}` already consumed", name))
-                    .with_code("E0807")
-                    .with_primary(self.span, "second use here")
-                    .with_secondary(*consumed_at, "resource consumed here")
-                    .with_why("resources must be consumed exactly once")
-            }
-
             MutateWhileBorrowed { name, borrow_span } => {
                 Diagnostic::error(format!(
                     "`{}` cannot be changed while it's being read",
@@ -870,71 +850,6 @@ impl ToDiagnostic for crate::OwnershipError {
                 .with_secondary(*borrow_span, "borrow is active here")
                 .with_help(format!("restructure so the borrow ends before mutating, or use `{}.clone()` to work on an independent copy", name))
                 .with_why("mutation during an active borrow could invalidate the borrow's view of the data")
-            }
-
-            InstantBorrowEscapes { source_type } => {
-                Diagnostic::error(format!(
-                    "cannot store reference from `{}`",
-                    source_type
-                ))
-                .with_code("E0803")
-                .with_primary(self.span, "reference would escape")
-                .with_help("use the value inline or copy it out")
-                .with_fix("use the value inline or copy it out")
-                .with_why("collection element references are expression-scoped — they can't outlive the access expression")
-            }
-
-            BorrowEscapes { name } => {
-                Diagnostic::error(format!(
-                    "`{}` would become invalid after this point",
-                    name
-                ))
-                .with_code("E0804")
-                .with_primary(self.span, "borrow would escape scope")
-                .with_help("ensure the value lives long enough, or clone it")
-                .with_fix("ensure the value lives long enough, or clone it")
-                .with_why("references cannot outlive their source — Rask prevents dangling references by construction")
-            }
-
-            MutateParamNotReplaced { name, ty, consumed_at } => {
-                let ctor = if ty.is_empty() {
-                    "a new one".to_string()
-                } else {
-                    format!("`{}.new(…)`", ty)
-                };
-                Diagnostic::error(format!(
-                    "`{}` was consumed and never put back",
-                    name
-                ))
-                .with_code("E0860")
-                .with_primary(self.span, format!("`{}` is still empty when this returns", name))
-                .with_secondary(*consumed_at, format!("`{}` was consumed here", name))
-                .with_help(format!(
-                    "assign {} to `{}` before returning, or declare it `take {}` and return the replacement",
-                    ctor, name, name
-                ))
-                .with_fix(format!("{} = {}", name, ctor))
-                .with_why("`mutate` lends the value and takes it back — the caller keeps using the same binding afterwards. Consuming it is allowed, because consume-and-replace is a real pattern, but the slot has to hold something again by the time control leaves [mem.parameters/PM3]")
-            }
-
-            ConsumedBorrowedParam { name, ty } => {
-                let decl = if ty.is_empty() {
-                    format!("take {}", name)
-                } else {
-                    format!("take {}: {}", name, ty)
-                };
-                Diagnostic::error(format!(
-                    "`{}` is borrowed from the caller — it can't be given away here",
-                    name
-                ))
-                .with_code("E0806")
-                .with_primary(self.span, format!("`{}` is consumed here", name))
-                .with_help(format!(
-                    "declare it `{}` if this function should own it, or read what you need instead of passing it on",
-                    decl
-                ))
-                .with_fix(decl)
-                .with_why("a parameter without `take` is a borrow: the caller keeps the value and goes on using it. Consuming it here would consume it twice — for a `@resource` that means the cleanup runs twice, which mem.linear/L1 exists to make impossible at compile time [mem.parameters/PM3, mem.linear/L1]")
             }
 
             LocalSharedSent { name } => {
@@ -1612,18 +1527,6 @@ impl ToDiagnostic for crate::OwnershipError {
                     .with_secondary(*discarded_at, "value discarded here")
                     .with_help("remove the `discard` or restructure so the value isn't needed after this point")
                     .with_why("`discard` explicitly drops a value and invalidates its binding — using it afterwards is an error")
-            }
-
-            DiscardResource { name } => {
-                Diagnostic::error(format!(
-                    "cannot discard resource `{}` — use its consuming method",
-                    name
-                ))
-                .with_code("E0812")
-                .with_primary(self.span, "resource types cannot be discarded")
-                .with_help(format!("call `.close()` or another consuming method on `{}`", name))
-                .with_fix(format!("replace `discard {}` with `{}.close()`", name, name))
-                .with_why("resource types must be consumed properly — `discard` would silently leak the resource")
             }
 
             ScopeLimitedClosureEscapes { name, points_at: Some(local) } => {

@@ -1,34 +1,93 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 // Braces in string literals. The interpolation scanner re-emitted a closing
-// brace whether or not it had consumed one, so the one-character string `"{"`
-// evaluated to `"{}"` on the interpreter while native kept it at one character
-// (#481). That made a JSON string compare unequal to its own opening brace.
+// brace whether or not it had consumed one, so the one-brace string evaluated
+// to two characters on the interpreter while native kept it at one (#481).
+// That made a JSON string compare unequal to its own opening brace. A brace
+// meant as text is escaped, `\{` (fmt/F4).
 
-test "type.strings — a lone brace is one character" {
-    let open = "{"
-    let close = "}"
+test "type.strings — an escaped brace is one character" {
+    let open = "\{"
+    let close = "\}"
     assert open.len() == 1
     assert close.len() == 1
     assert (open.byte_at(0) ?? 0) == 123
     assert (close.byte_at(0) ?? 0) == 125
 }
 
-// A brace-prefixed string built at runtime — a JSON object spelled as a
-// literal would be read as interpolation, so it has to be assembled.
-test "type.strings — a lone brace is a usable prefix" {
-    let open = "{"
+test "type.strings — an escaped brace is a usable prefix" {
+    let open = "\{"
     let obj = "{open}\"a\":1"
     assert obj.len() == 6
     assert obj.starts_with(open)
-    assert !obj.starts_with("}")
+    assert obj == "\{\"a\":1"
+    assert !obj.starts_with("\}")
 }
 
-// `{}` is an empty placeholder and stays two characters; interpolation of a
-// real expression still has to work alongside it.
-test "type.strings — empty placeholder and interpolation coexist" {
-    let placeholder = "{}"
-    assert placeholder.len() == 2
+test "type.strings — escaped braces and interpolation coexist" {
+    let empty = "\{\}"
+    assert empty.len() == 2
     let n = 7
-    let rendered = "n={n}"
-    assert rendered == "n=7"
+    let rendered = "\{n={n}\}"
+    assert rendered == "\{n=7\}"
+    assert rendered.len() == 5
+}
+
+test "type.strings — a raw string is text as written" {
+    let name = "Ada"
+    let raw = r"{name} \{ }"
+    assert raw.len() == 11
+    assert raw.starts_with("\{name\}")
+    assert r#"{"k": 1}"# == "\{\"k\": 1\}"
+}
+
+test "type.strings — a triple-quoted string escapes and interpolates" {
+    let name = "Ada"
+    let text = """\{{name}\}\t"""
+    assert text == "\{Ada\}\t"
+}
+
+test "type.strings — a hole is code, quotes and all" {
+    let m = Map.from([("k", 3)])
+    assert "{m.get("k") ?? 0}" == "3"
+    assert "{"\{".len()}" == "1"
+    let path = "a\\b"
+    assert "{path.replace(r"\", "/")}" == "a/b"
+    assert "{r#"x"y"#.len()}" == "3"
+}
+
+test "type.strings — a brace made by a \\u escape is text" {
+    let x = 42
+    assert "\u{7b}x\u{7d}" == "\{x\}"
+    assert "\u{7b}".len() == 1
+}
+
+test "type.strings — a triple-quoted string can end in an escaped quote" {
+    let s = """say \"hi\""""
+    assert s == "say \"hi\""
+}
+
+func tag(s: string) -> string {
+    return s
+}
+
+test "type.strings — a colon in a hole's literal doesn't start a spec" {
+    let c = ':'
+    assert "{c == ':'}" == "true"
+    assert "{r#"a"b:c"#.len()}" == "5"
+    assert "[{tag(r"a\"):>3}]" == "[ a\\]"
+}
+
+test "std.fmt — a template's holes read as any string's do" {
+    let c = '{'
+    assert format("{tag("\}")}") == "\}"
+    assert format("{tag(r"}")}") == "\}"
+    assert format("{c == '}'}") == "false"
+    assert format("x {tag("\{")} y") == "x \{ y"
+    assert format("{tag("{c}")} {}", 1) == "\{ 1"
+    let s = format(
+        "{} and \{\} {}",
+        1,
+        2,
+    )
+    assert s == "1 and \{\} 2"
 }

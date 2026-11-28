@@ -17,18 +17,18 @@ func digits(a: i64, b: i64) -> i64 {
 }
 
 func main() {
-    // ERROR: a label naming no parameter
+    // ERROR: a label naming no parameter [E0903]
     println("{digits(1, z: 2)}")
-    // ERROR: `a` filled by position and by label
+    // ERROR: `a` filled by position and by label [E0903]
     println("{digits(1, a: 2)}")
-    // ERROR: an unnamed argument after a named one
+    // ERROR: an unnamed argument after a named one [E0903]
     println("{digits(b: 1, 2)}")
     mut v: Vec<i64> = Vec.new()
-    // ERROR: a stdlib method has no `at`
+    // ERROR: a stdlib method has no `at` [E0903]
     v.insert(at: 0, value: 9)
-    // ERROR: tuple variant has no names to label
+    // ERROR: tuple variant has no names to label [E0903]
     let p = Shape.Pair(x: 1, y: 2)
     let g = |a: i64, b: i64| a * 10 + b
-    // ERROR: a closure value's parameters have no names
+    // ERROR: a closure value's parameters have no names [E0903]
     println("{g(a: 1, b: 2)}")
 }

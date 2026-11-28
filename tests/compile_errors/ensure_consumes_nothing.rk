@@ -27,14 +27,14 @@ func show(id: i64) {
 
 func borrowing_method() {
     let latch = Latch(id: 1)
-    // ERROR: `peek` borrows `latch`, so the ensure commits nothing
+    // ERROR: `peek` borrows `latch`, so the ensure commits nothing [E0908]
     ensure latch.peek()
     println("x")
 }
 
 func field_read() {
     let latch = Latch(id: 2)
-    // ERROR: reading a field consumes nothing
+    // ERROR: reading a field consumes nothing [E0908]
     ensure show(latch.id)
     println("y")
 }

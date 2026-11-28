@@ -14,7 +14,7 @@ struct User {
 
 func main() {
     let u = User(name: "alice")
-    // ERROR: `json.to_value` is declared but not implemented yet
+    // ERROR: `json.to_value` is declared but not implemented yet [E0349]
     let value = json.to_value(u)
     println("unreachable")
 }

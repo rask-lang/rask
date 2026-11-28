@@ -2,6 +2,7 @@
 // A loopback network inside the test: a listener bound here accepts
 // connections from tasks in the same test (sim/B3's v1 surface).
 import net
+import io.IoError
 
 test "a server greets a client" {
     using Multitasking {

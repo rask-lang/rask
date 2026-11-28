@@ -66,8 +66,6 @@ pub enum TypeError {
         index: usize,
         span: Span,
     },
-    #[error("undefined type: {0}")]
-    Undefined(String),
     /// Inference finished and this binding's type is still open. Either nothing
     /// in scope pinned it down (the program needs an annotation) or inference
     /// has a gap (our bug) — the message says both, because the compiler can't
@@ -196,10 +194,6 @@ pub enum TypeError {
     },
     #[error("infinite type: type variable would create infinite type")]
     InfiniteType { var: TypeVarId, ty: Type, span: Span },
-    #[error("cannot infer type")]
-    CannotInfer { span: Span },
-    #[error("invalid type string: {0}")]
-    InvalidTypeString(String),
     /// type.gradual/PC2: PascalCase name in a signature resolves to nothing
     #[error("unknown type `{name}`")]
     UnknownTypeName {
@@ -388,6 +382,7 @@ pub enum TypeError {
     RecursiveTypeHasNoSize {
         name: String,
         through: String,
+        site: HoldsItself,
         span: Span,
     },
     /// mem.racks/RK11: `<`, `compare` or `sort` on links. A link is the node's
@@ -422,10 +417,11 @@ pub enum TypeError {
         method: String,
         span: Span,
     },
-    #[error("`{name}` is not a type any more — it's a strategy on `Shared`")]
-    RetiredBoxType {
+    /// `Mutex.new(1)`: a locking strategy called as if it held a value.
+    #[error("`{name}` is a strategy for `Shared`, not a container")]
+    StrategyAsContainer {
         name: String,
-        replacement: String,
+        constructor: &'static str,
         span: Span,
     },
     #[error("cannot mutate `{name}` — declared `let`")]
@@ -524,6 +520,16 @@ pub enum TypeError {
     /// type.enums/PM7: a `match` arm that can never run, because a catch-all
     /// above it takes every value or an unguarded arm above it already tests
     /// the same variant.
+    /// tool.warnings/W4 (`unreachable_code`, W0902): a statement after one
+    /// control never gets past.
+    #[error("unreachable code")]
+    UnreachableCode {
+        /// The first statement nothing reaches.
+        span: Span,
+        /// The statement that stops control.
+        after: Span,
+        leaves: super::unreachable::Leaves,
+    },
     #[error("unreachable match arm")]
     UnreachableArm {
         /// The arm that took this one's values, written as it reads.
@@ -1196,14 +1202,6 @@ pub enum TypeError {
         span: Span,
     },
 
-    /// D1: use after discard
-    #[error("use of discarded value: `{name}`")]
-    UseAfterDiscard {
-        name: String,
-        discarded_at: Span,
-        span: Span,
-    },
-
     /// SP3: zero step on range
     #[error("zero step")]
     ZeroStep {
@@ -1513,13 +1511,6 @@ pub enum TypeError {
         span: Span,
     },
 
-    /// ER23: `is TypeName` must reference a component of the union error
-    #[error("type pattern `{ty_name}` is not part of the error union `{union}`")]
-    TypePatternNotInUnion {
-        ty_name: String,
-        union: Type,
-        span: Span,
-    },
 
     /// E19/E21: a serialization annotation the compiler can't act on — the old
     /// `@skip` spelling, or `@rename` given something that isn't a string.
@@ -1570,7 +1561,7 @@ pub enum TypeError {
     },
 
     /// OPT2/ER2: legacy `Some(x)`/`Ok(x)`/`Err(x)` constructor — migration error
-    #[error("`{name}(...)` is no longer a valid constructor")]
+    #[error("`{name}(...)` isn't a constructor in Rask")]
     LegacyWrapperConstructor {
         name: String,
         span: Span,
@@ -1677,13 +1668,6 @@ pub enum TypeError {
         method: String,
         elem: Type,
         copies: bool,
-        span: Span,
-    },
-
-    /// type.sequence/SEQ29: `to_map` is defined only on a sequence of pairs.
-    #[error("`to_map` needs a sequence of pairs")]
-    ToMapNeedsPairs {
-        elem: Type,
         span: Span,
     },
 
@@ -1950,6 +1934,9 @@ impl TypeError {
                 TypeError::TypeArgCount { name, params, expected, found, site, span }
             }
             TypeError::ValueTooLarge { ty, bytes, .. } => TypeError::ValueTooLarge { ty, bytes, span },
+            TypeError::DuplicateSumVariant { ty, variant, .. } => {
+                TypeError::DuplicateSumVariant { ty, variant, span }
+            }
             other => other,
         }
     }
@@ -1978,7 +1965,9 @@ impl TypeError {
             | NoSuchField { ty, .. }
             | NoSuchMethod { ty, .. }
             | NotCallable { ty, .. }
-            | ResultNotDisjoint { ty, .. } => *ty = f(ty),
+            | ResultNotDisjoint { ty, .. }
+            | UnionOwningMember { ty, .. }
+            | VariadicArg { ty, .. } => *ty = f(ty),
 
             FixedArrayGrowth { array, .. } => *array = f(array),
 
@@ -2019,8 +2008,6 @@ impl TypeError {
 
             MissingReturn { expected_type, .. } => *expected_type = f(expected_type),
 
-            TypePatternNotInUnion { union, .. } => *union = f(union),
-
             PatternVariantMismatch { scrutinee, .. } => *scrutinee = f(scrutinee),
             TupleArity { tuple, .. } => *tuple = f(tuple),
             RangeNotCountable { ty, .. } => *ty = f(ty),
@@ -2036,7 +2023,6 @@ impl TypeError {
                 *to = f(to);
             }
             UnhashableMapKey { key, .. } => *key = f(key),
-            ToMapNeedsPairs { elem, .. } => *elem = f(elem),
 
             DuplicateSumVariant { ty, variant, .. } => {
                 *ty = f(ty);
@@ -2102,8 +2088,7 @@ impl TypeError {
             }
 
             // Carry no types.
-            Undefined(..)
-            | DynamicFieldNameNotComptime { .. }
+            DynamicFieldNameNotComptime { .. }
             | ReflectItemNotUnrolled { .. }
             | DuplicateConformance { .. }
             | ForeignCoreConformance { .. }
@@ -2119,8 +2104,6 @@ impl TypeError {
             | PrivateModuleFunction { .. }
             | NotDisplayable { .. }
             | UnboundedTypeParamMethod { .. }
-            | CannotInfer { .. }
-            | InvalidTypeString(..)
             | UnknownTypeName { .. }
             | SingleLetterTypeName { .. }
             | LowercaseTypeName { .. }
@@ -2132,7 +2115,7 @@ impl TypeError {
             | AliasingViolation { .. }
             | MutateReadOnlyParam { .. }
             | MutateConst { .. }
-            | RetiredBoxType { .. }
+            | StrategyAsContainer { .. }
             | SharedAccessClosure { .. }
             | SharedStrategyMismatch { .. }
             | NonOptionalLink { .. }
@@ -2153,6 +2136,7 @@ impl TypeError {
             | StagedOnLocal { .. }
             | StagedOutsideWith { .. }
             | TornLockUpdate { .. }
+            | UnreachableCode { .. }
             | UnreachableArm { .. }
 
             | NoAllocViolation { .. }
@@ -2204,14 +2188,11 @@ impl TypeError {
             | MethodNotVisible { .. }
             | MissingFields { .. }
             | UnionMemberCount { .. }
-            | UnionOwningMember { .. }
             | NotCCallable { .. }
             | AddressOfValue { .. }
             | CMacroCall { .. }
-            | VariadicArg { .. }
             | TypeCalledAsFunction { .. }
             | PublicMissingAnnotation { .. }
-            | UseAfterDiscard { .. }
             | NoReturnFinishes { .. }
             | NoReturnReturns { .. }
             | ZeroStep { .. }
@@ -2268,4 +2249,12 @@ pub enum ArgProblem {
     /// Labels that place fine, on a kind of call the checker matches by
     /// position only. A compiler gap, reported rather than miscompiled.
     NotReordered,
+}
+
+/// Where a type that holds itself does so: in a field or variant payload, or
+/// as the type a nominal `type X = …` wraps.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HoldsItself {
+    Field,
+    Wraps,
 }

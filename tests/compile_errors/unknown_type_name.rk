@@ -8,12 +8,12 @@ struct Config {
     port: i32
 }
 
-// ERROR: unknown type `Confg` (did you mean `Config`?)
+// ERROR: unknown type `Confg` (did you mean `Config`?) [E0356]
 func load(c: Confg) -> i32 {
     return c.port
 }
 
-// ERROR: unknown type `Recod` in return type
+// ERROR: unknown type `Recod` in return type [E0356]
 func fetch() -> Recod {
     return todo()
 }

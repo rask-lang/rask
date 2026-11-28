@@ -7,7 +7,6 @@
 
 import memory.Rack
 import memory.Link
-import memory.Staged
 import thread.ThreadPool
 
 struct Entity {

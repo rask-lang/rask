@@ -17,6 +17,9 @@
 // size — the old `Receiver_receive_struct` spelling existed only because the
 // payload had to fit in the return value.
 
+import async.ReceiveError
+import async.TryReceiveError
+
 struct Reading {
     sensor: i64
     value: f64

@@ -3,7 +3,6 @@
 // The ownership check kept each name's type in one table, so the closure's
 // `|v|` (a `Vec<i64>`) was still there when the loop bound `v` to an `i64`,
 // and `acc.push(v)` was refused as giving away an owning value (#2093).
-import sequence.Sequence
 
 test "the loop variable has the item's type, not the closure parameter's" {
     let flat: Vec<Vec<i64>> = [[1, 2], [3]]

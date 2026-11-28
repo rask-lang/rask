@@ -8,7 +8,6 @@
 
 import random.Random
 import sync.Atomic
-import sync.MemoryOrder
 
 struct Dice {
     rng: Random

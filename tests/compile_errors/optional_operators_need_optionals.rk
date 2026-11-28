@@ -28,26 +28,26 @@ struct Widget {
 func main() {
     let n: i64 = 5
 
-    // ERROR: `??` on a plain value
+    // ERROR: `??` on a plain value [E0831]
     let a: i64 = n ?? -1
 
-    // ERROR: `??` on a string
+    // ERROR: `??` on a string [E0831]
     let s: string = "hi"
     let b: string = s ?? "fallback"
 
-    // ERROR: `??` after a map index — the fix is `.get(k)`
+    // ERROR: `??` after a map index — the fix is `.get(k)` [E0831]
     mut m: Map<string, i64> = Map.new()
     m.insert("a", 5)
     let c: i64 = m["a"] ?? -1
 
-    // ERROR: `??` on a struct field that isn't optional
+    // ERROR: `??` on a struct field that isn't optional [E0831]
     let w = Widget(tag: 3)
     let d: i64 = w.tag ?? -1
 
-    // ERROR: `!` on a plain value
+    // ERROR: `!` on a plain value [E0832]
     let e: i64 = n!
 
-    // ERROR: `take` on a place that isn't a `T?`
+    // ERROR: `take` on a place that isn't a `T?` [E0365]
     mut slot = Slot(held: 3)
     let f: i64 = take slot.held
 
@@ -70,10 +70,10 @@ func id<R>(x: R) -> R {
 func late_operands() {
     mut m: Map<string, i64> = Map.new()
     m.insert("a", 1)
-    // ERROR: the closure's `v + 1` settles last; the call returns a plain `i64`
+    // ERROR: the closure's `v + 1` settles last; the call returns a plain `i64` [E0831]
     let g = m.modify_with_default("b", || { return 7 }, |mutate v: i64| { return v + 1 }) ?? -1
 
-    // ERROR: a generic handing back an unsuffixed number
+    // ERROR: a generic handing back an unsuffixed number [E0831]
     let h = id(5) ?? -1
     println("{g} {h}")
 }

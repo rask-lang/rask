@@ -27,10 +27,10 @@ func scaled<T: Mul<K>, K>(x: T, k: K) -> T {
 }
 
 func main() {
-    // ERROR: `Meters` does not implement `Mul<Meters>`
+    // ERROR: `Meters` does not implement `Mul<Meters>` [E0333]
     let a = squared(Meters(v: 3.0))
 
-    // ERROR: the sibling's argument fills in too: `Mul<string>`
+    // ERROR: the sibling's argument fills in too: `Mul<string>` [E0333]
     let b = scaled(Meters(v: 1.0), "two")
 
     // Fine: `Mul<f64>` is declared.

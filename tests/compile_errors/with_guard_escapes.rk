@@ -24,7 +24,7 @@ const counter = Shared.mutex(Counter(hits: 3, misses: 4))
 const plain = Shared.mutex(0)
 
 func main() {
-    // ERROR: the with guard `g` can't leave its block
+    // ERROR: the with guard `g` can't leave its block [E0829]
     let escaped = with counter as g { g }
 
     // Fine — a field read copies a scalar out.

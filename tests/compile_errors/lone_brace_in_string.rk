@@ -1,0 +1,51 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: a brace in a string that belongs to no interpolation
+//
+// A `{` in a string starts an interpolation and a `}` ends one. A brace meant
+// as text is escaped: `\{` and `\}`. A lone one used to be kept as text
+// without a word, so `"{name"` printed `{name` when `{name}` was meant.
+
+// ERROR: a test name is fixed text too [E0100]
+test "lone { brace" {
+    assert true
+}
+
+@message
+enum Fault {
+    // ERROR: a raw string is no template, braces or not [E0100]
+    @message(r"plain")
+    Plain
+}
+
+func main() {
+    let name = "Ada"
+    // ERROR: a `{` that nothing closes [E0100]
+    println("hello {name")
+    // ERROR: a `}` that closes nothing [E0100]
+    println("expected '}' here")
+    // ERROR: doubling is not the escape [E0100]
+    println("{{ and }}")
+    // ERROR: an empty hole outside `format` [E0100]
+    println("hello {}")
+    // ERROR: a spec with no value [E0100]
+    println("{:>8}")
+    println(format("{} and \{\}", name))
+    // ERROR: doubling is not the escape in a template either [E0100]
+    println(format("{} and {{}}", name))
+    // ERROR: a pattern is fixed text [E0100]
+    let greeting = match name {
+        "hi {name}" => 1,
+        "\{" => 2,
+        _ => 3,
+    }
+    let maybe: i64? = none
+    // ERROR: so is an unwrap message [E0100]
+    let n = maybe! "no {name}"
+    println("\{ and \} are braces: {name} {greeting} {n}")
+    println(r"{ starts a block, {name} stays as written")
+    // ERROR: a raw template has no placeholders to fill [E0100]
+    println(format(r"{} of {}", name, name))
+    println("""
+        {name} interpolates here, \{ is a brace
+        """)
+}

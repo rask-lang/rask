@@ -5,20 +5,20 @@
 // interpreter (#306).
 
 func float_key() -> u64 {
-    mut m: Map<f64, string> = Map.new()   // ERROR: f64 is not Hashable
+    mut m: Map<f64, string> = Map.new()   // ERROR: f64 is not Hashable [E0834]
     m.insert(1.5, "one-point-five")
     return m.len()
 }
 
 func f32_key() -> u64 {
-    mut m: Map<f32, string> = Map.new()   // ERROR: f32 either
+    mut m: Map<f32, string> = Map.new()   // ERROR: f32 either [E0834]
     m.insert(1.5, "one-point-five")
     return m.len()
 }
 
 // Nested counts too — the Map doesn't have to be the outer type.
 func nested_float_key() -> u64 {
-    mut v: Vec<Map<f64, string>> = Vec.new()   // ERROR: still a float key
+    mut v: Vec<Map<f64, string>> = Vec.new()   // ERROR: still a float key [E0834]
     return v.len()
 }
 

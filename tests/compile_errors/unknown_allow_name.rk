@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 // Compile Error: `@allow` has to name a warning or a lint rule that exists
-// ERROR: `@allow(torn_lock_updat)` names nothing
+// ERROR: `@allow(torn_lock_updat)` names nothing [E0855]
 //
 // The annotation parsed, the name was collected, nothing matched it, and the
 // warning fired as if the annotation weren't there (#1085). There was no way to

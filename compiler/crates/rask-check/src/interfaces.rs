@@ -74,9 +74,6 @@ pub enum InterfaceError {
 
     #[error("Unknown interface: {0}")]
     UnknownInterface(String),
-
-    #[error("Conflicting method signatures in composed interfaces: {method}")]
-    ConflictingMethods { method: String, interface1: String, interface2: String },
 }
 
 // ============================================================================

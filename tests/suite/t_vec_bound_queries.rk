@@ -2,6 +2,8 @@
 // `Vec.is_full` and `Vec.remaining` (std.collections CP1–CP3): only a bounded
 // vector can be full, and only a bounded one has a number of slots left.
 
+import collections.GrowError
+
 test "a fixed vector counts down to full" {
     mut v: Vec<i64> = Vec.fixed(3)
     assert !v.is_full()

@@ -34,8 +34,6 @@
 // blocks releases elsewhere. The two sides need to agree on which slots hold
 // containers, which is the same missing relation as #1035.
 
-import string.NullByteError
-
 enum Refused {
     Negative
     TooBig

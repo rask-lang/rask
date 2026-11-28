@@ -2,7 +2,7 @@
 // A generic closure over an empty `Vec<Link<Node>>`. The vector holds no link
 // yet, but its type says it can, so the closure may not cross to another
 // task. Decided from the type on both backends (#1382).
-import memory.{Rack, Link}
+import memory.Link
 
 struct Node {
     id: i64

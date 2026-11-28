@@ -5,11 +5,11 @@
 // program compiled and ran natively and died on the interpreter (#723).
 
 func uses_math() -> f64 {
-    return math.sin(0.5)               // ERROR: `math` used but never imported
+    return math.sin(0.5)               // ERROR: `math` used but never imported [E0210]
 }
 
 func uses_fs() -> bool {
-    return fs.exists("/tmp")           // ERROR: `fs` used but never imported
+    return fs.exists("/tmp")           // ERROR: `fs` used but never imported [E0210]
 }
 
 func main() {}

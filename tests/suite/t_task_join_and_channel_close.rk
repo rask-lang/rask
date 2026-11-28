@@ -5,7 +5,7 @@
 // interpreter, so the receive loop never ended (#2037), and a worker never saw
 // an explicit close (#2040).
 
-import async.{Channel, JoinError, Receiver, Sender}
+import async.{Channel, JoinError}
 
 struct Bad {
     why: string

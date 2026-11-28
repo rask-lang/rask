@@ -5,7 +5,6 @@
 // rask.toml inline. Only the current version: an editor shows what to
 // write now, and the loader handles older files.
 
-import json
 import json.JsonValue
 
 public func json_schema(s: Schema) -> string {

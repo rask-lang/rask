@@ -110,7 +110,6 @@ test "conc.async/B1 a task hands back what it built" {
 test "conc.async/B5 a panic in a task is its join's error" {
     let h = ThreadPool.spawn(requires_pool: false) {
         panic("inside")
-        1
     }
     let r = h.join()
     assert r is JoinError

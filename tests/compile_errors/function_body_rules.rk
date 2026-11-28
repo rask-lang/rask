@@ -1,0 +1,36 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: function bodies that don't do what the signature says
+//
+// A function with a return type says `return` on every path; the last
+// expression isn't the value. `+` adds numbers, and strings are joined by
+// interpolation. `try` needs somewhere to send the error.
+
+// ERROR: the value is computed and dropped, nothing is returned [E0318]
+func double(x: i64) -> i64 {
+    let y = x * 2
+}
+
+func full_name(first: string, last: string) -> string {
+    // ERROR: `+` doesn't join strings [E0335]
+    return first + " " + last
+}
+
+struct LimitError {
+    raw: string
+}
+
+extend LimitError {
+    func message(self) -> string {
+        return "bad limit {self.raw}"
+    }
+}
+
+func parse_limit() -> i64 or LimitError {
+    return 100
+}
+
+// ERROR: a constant has no caller to hand the error to [E0317]
+const LIMIT: i64 = try parse_limit()
+
+func main() {
+}

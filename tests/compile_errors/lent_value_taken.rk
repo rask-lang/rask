@@ -9,7 +9,6 @@
 //
 // One marker per rejection, on the line the compiler points at.
 
-import json
 import json.JsonValue
 
 func unwrapped(obj: Map<string, JsonValue>) -> u64 {

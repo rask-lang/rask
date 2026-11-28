@@ -3,7 +3,7 @@
 // argument apart: `extend Pairs<(K, V)>` on a `Pairs<(string, Vec<Link<Node>>)>`
 // gives `V` the vector. The interpreter used to pair the header's two names
 // with the type's one argument, give up, and let the closure cross (#1382).
-import memory.{Rack, Link}
+import memory.Link
 
 struct Node {
     id: i64

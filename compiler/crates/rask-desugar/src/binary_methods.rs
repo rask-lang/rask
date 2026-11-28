@@ -93,6 +93,8 @@ pub(crate) fn inject(decls: &mut Vec<Decl>, injected: &mut Injected) {
                 alias: Some(BITS_ALIAS.to_string()),
                 is_glob: false,
                 is_lazy: false,
+                implicit: true,
+                member_span: None,
             }),
             span,
         });

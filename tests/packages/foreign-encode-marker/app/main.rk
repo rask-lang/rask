@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 
 import interfacepkg
-import liba
 
 func main() {
     let s = interfacepkg.make_secret("hunter2")

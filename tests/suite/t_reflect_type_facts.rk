@@ -9,8 +9,8 @@
 // backends now fold the same constants from one classifier
 // (rask-types/src/reflect.rs), which is what this gates.
 import std.reflect
-import fs
 import memory.Link
+import fs.File
 
 struct Point { public x: f64, public y: f64 }
 

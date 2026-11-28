@@ -21,6 +21,7 @@ import memory.Rack
 import sync.Shared
 import string.StringBuilder
 import json.JsonValue
+import http.Response
 
 // ─── Semver ─────────────────────────────────────────────────────────
 
@@ -324,7 +325,7 @@ func parse_manifest(content: string) -> Manifest or ManifestError {
             continue
         }
 
-        if trimmed == "}" {
+        if trimmed == "\}" {
             in_block = false
             continue
         }

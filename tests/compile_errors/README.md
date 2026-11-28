@@ -11,6 +11,11 @@ marker directly above (or on the end of) the line that should be rejected. A run
 of consecutive `// ERROR` lines counts as one marker — several lines often
 describe a single rejection.
 
+**Markers name the code they expect**, in brackets: `// ERROR: wrong type [E0308]`.
+The error under the marker has to carry that code, so a file rejected for some
+other reason (an earlier error that stops the check before the rule runs) fails
+instead of passing.
+
 Markers no diagnostic answers yet are listed in
 [DEAD_MARKERS.txt](DEAD_MARKERS.txt) with a per-file count. That count may only
 go down.
@@ -302,6 +307,40 @@ go down.
 | [list_leading_operator.rk](list_leading_operator.rk) | A list item that starts with `-` on a new line (SYNTAX.md, Lists). A newline separates items, so `1` then `- 2` would quietly be two arguments; the fix is the operator at the end of the line above, or a comma |
 | [container_turbofish.rk](container_turbofish.rk) | `Vec.new<string>()` followed by a push of the wrong type (#1084) — the written type argument used to be dropped, so the binding stayed open and widened instead |
 | [context_on_entry_point.rk](context_on_entry_point.rk) | A `using` clause on the entry point (CC11, E0831) — nothing can supply the hidden param, so it used to run on garbage (#732) |
+| [unterminated_string.rk](unterminated_string.rk) | A `"` or `r"` string whose line ends before its closing quote (E0002), reported at its opening quote. It used to run on to the next quote in the file |
+| [unterminated_block_comment.rk](unterminated_block_comment.rk) | A `/*` comment still open at the end of the file, nested comments included (E0006). It used to surface as a missing `}` |
+| [call_on_a_value.rk](call_on_a_value.rk) | `n(3)` on an `i64`, `s()` on a string (E0311). The result type was left unsolved and the error came later or not at all |
+| [missing_c_header.rk](missing_c_header.rk) | `import c` of a header that isn't on any search path (E0214). The error carried no code, and a file named without a directory listed an empty entry as the first place searched |
+| [return_outside_function.rk](return_outside_function.rk) | `return` inside a constant's initializer block (E0206) |
+| [unknown_package.rk](unknown_package.rk) | `import nosuchpkg` (E0207), and only that: every later `nosuchpkg.x` used to add an undefined-symbol error of its own |
+| [range_step_rules.rk](range_step_rules.rk) | `(0..10).step(0)` (E0337). The check looked for the range's type before the checker resolved it, so it never fired |
+| [call_site_markers_and_strategies.rk](call_site_markers_and_strategies.rk) | A `deleting` parameter called with `mutate` (E0330), a `Local` `Shared` where `Readers` is expected (E0381), and `using` an unknown context (E0342) |
+| [optional_operators.rk](optional_operators.rk) | `!x` on a `bool?` (E0830), and `else as e` on an optional, which has no error to bind (E0397) |
+| [interface_object_self.rk](interface_object_self.rk) | A `Self`-returning method called through `any Shape` (E0332); the same call on the concrete type is fine |
+| [union_rules.rk](union_rules.rk) | A `union` member that owns memory (E0934), and a union built from two members at once (E0938) |
+| [literal_operand_ambiguous.rk](literal_operand_ambiguous.rk) | `3 * tick` when both `i64` and `i32` multiply a `Tick` (E0895); a suffix picks one |
+| [enum_discriminants.rk](enum_discriminants.rk) | Explicit discriminants: some variants state one and some don't (E0391), a payload variant claims a number (E0393), two variants share one (E0394) |
+| [public_signature_contract.rk](public_signature_contract.rk) | A public function whose parameter types (E0334) or error types (E0390, `_`) are left to inference; a public signature is what callers read |
+| [type_declaration_rules.rk](type_declaration_rules.rk) | Aliases that name each other (E0395, with no unknown-type cascade after it), a method named like a field (E0403), an inherent method on a primitive (E0892), an error union naming one error twice (E0354: `A | A` used to be quietly shortened to `A`), `A or A` (E0343) |
+| [foreign_wrapper_spellings.rk](foreign_wrapper_spellings.rk) | `Some(x)` as a call (E0348), `Ok(v)` as a pattern (E0350), `??` on a result (E0364), `catch` on an optional (E0363), `take` on a `let` (E0366) |
+| [function_body_rules.rk](function_body_rules.rk) | A body whose last expression is dropped instead of returned (E0318), `+` on strings (E0335), `try` in a constant (E0317) |
+| [unknown_character.rk](unknown_character.rk) | A `$` the language has no use for (E0001), and only that: the parser used to report the gap it left as a missing newline |
+| [unknown_escape.rk](unknown_escape.rk) | `"\q"`, an escape the language doesn't have (E0003) |
+| [closure_calls_itself_with_itself.rk](closure_calls_itself_with_itself.rk) | `\|x\| x(x)`: a type that would contain itself (E0314), with no "couldn't work out the type" after it |
+| [no_alloc_allocates.rk](no_alloc_allocates.rk) | `Vec.new()` inside a `@no_alloc` function (E0324) |
+| [format_template_arguments.rk](format_template_arguments.rk) | `format("{} and {}", name)`, `{1}` with one argument, and `{}` mixed with `{0}` (E0338); a hole's own string holds no placeholders |
+| [format_template_not_literal.rk](format_template_not_literal.rk) | `format(t, 1)` with the template in a variable (E0338); placeholders are matched to arguments while compiling |
+| [c_callback_wrong_function.rk](c_callback_wrong_function.rk) | A Rask function (E0935) and a capturing closure (E0936) passed where C expects a function pointer |
+| [variadic_struct_arg.rk](variadic_struct_arg.rk) | A struct passed through C's `...` (E0937). The message used to name the type `<type#N>` |
+| [import_build_outside_build_script.rk](import_build_outside_build_script.rk) | `import build` in a program (E0955) |
+| [strategy_as_container.rk](strategy_as_container.rk) | `Mutex.new(1)` and `Local.new(1)` (E0380). `Mutex.new` used to say "no method `new`", and `Mutex<i64>.new` said `Mutex` "is not a type any more", which it is: a strategy for `Shared` |
+| [type_test_not_in_error_union.rk](type_test_not_in_error_union.rk) | `r is NetFailed` on an `i64 or (ParseFailed \| DiskFailed)` (E0398). A union error side used to get a code of its own (E0347) for the same mistake, and the type printed without its parentheses |
+| [type_contains_itself.rk](type_contains_itself.rk) | A `type alias` that names itself anywhere, even inside `Vec<…>` (E0395), and a nominal `type` that wraps itself inline (E0890). The aliases overflowed the compiler's stack; the nominal ones were accepted |
+| [pattern_names_nothing.rk](pattern_names_nothing.rk) | `p is some(v)` on an `i64?`, `n is bogus(x)` on an `i64` (E0954). The name is no variant of anything; these type-checked, and the two backends disagreed on whether the test held |
+| [lone_brace_in_string.rk](lone_brace_in_string.rk) | `"hello {name"`, `"'}'"`, `"hello {}"` outside `format`, a hole in a match pattern or an `x! "…"` message (E0100). `{{`, which is not the escape, in a string or a `format` template; a raw string as a `format` or `@message` template; a test name with a lone brace. A brace that belongs to no interpolation; literal braces are written `\{` and `\}`, and raw strings do not interpolate. These used to pass through as text |
+| [closure_reads_mutated_receiver.rk](closure_reads_mutated_receiver.rk) | `v.remove_where(\|x\| x < v.len())`: the closure reads `v` while the call has it lent for writing (E0320) |
+| [destructure_read_then_write.rk](destructure_read_then_write.rk) | `mut Person(name: other, ..) = p` while an earlier `let` destructuring still reads `p` (E0801) |
+| [closure_carries_uncloneable.rk](closure_carries_uncloneable.rk) | A returned closure carrying an `any Displayable` (E0976); cloning the closure would have to clone it |
 
 ## Running Tests
 

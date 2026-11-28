@@ -1761,11 +1761,11 @@ mod tests {
 
     // A value is an expression; only `@allow` and friends take rule names,
     // whose `/` and `-` are part of the name. A string reads the way it does
-    // anywhere: `{0}` is an interpolation, `{{` an escaped brace.
+    // anywhere: `{0}` is an interpolation, `\{` an escaped brace.
     #[test]
     fn attribute_values_are_expressions() {
         let result = parse(
-            "@allow(idiom/duck-interface)\nstruct S {\n@default(-1.5)\na: f64\n@default(Color.Red)\nb: Color\n@message(\"nf {id}\")\nc: i64\n@rename(\"{{x}}\")\nd: i64 }",
+            "@allow(idiom/duck-interface)\nstruct S {\n@default(-1.5)\na: f64\n@default(Color.Red)\nb: Color\n@message(\"nf {id}\")\nc: i64\n@rename(\"\\{x\\}\")\nd: i64 }",
         );
         assert!(result.is_ok(), "Parse errors: {:?}", result.errors);
         let DeclKind::Struct(ref s) = result.decls[0].kind else { panic!("expected struct") };
@@ -1871,8 +1871,8 @@ mod tests {
         let src = concat!(
             "func main() {\n",
             "    println(\"a\\tb {f(|| { return zz })}\")\n",
-            "    println(\"\\\"q\\\" {g(\\\"k\\\", yy)}\")\n",
-            "    println(r\"raw {xx}\")\n",
+            "    println(\"\\\"q\\\" {g(\"k\", yy)}\")\n",
+            "    println(\"\\u{e9}\\{ {xx}\")\n",
             "    println(\"\"\"tri {ww}\"\"\")\n",
             "}\n",
         );

@@ -18,6 +18,8 @@
 
 import os
 import os.Stdio
+import os.Output
+import io.IoError
 
 test "a command runs and its output comes back" {
     let out = os.Command.new("sh").arg("-c").arg("echo hello").run()!

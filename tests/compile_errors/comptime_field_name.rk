@@ -21,7 +21,7 @@ struct Budget9 {
     limit: i64
 }
 
-// ERROR: `nope` isn't a field of Budget9 — it has `spent` and `limit`.
+// ERROR: `nope` isn't a field of Budget9 — it has `spent` and `limit`. [E0312]
 func typo(b: Budget9) -> i64 {
     return b.("nope")
 }
@@ -36,7 +36,7 @@ func typo(b: Budget9) -> i64 {
 // which bails once a program has type errors — and this file has two by
 // design, so the quota error could never land here however well it worked.
 
-// ERROR: it finished, it just didn't produce a name.
+// ERROR: it finished, it just didn't produce a name. [E0866]
 func not_a_name(b: Budget9) -> i64 {
     return b.(comptime { 42 })
 }

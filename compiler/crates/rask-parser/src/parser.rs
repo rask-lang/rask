@@ -44,6 +44,9 @@ pub struct Parser {
     /// Inside `@message("…")`, where `{0}` is the variant's first payload, as
     /// it is `format`'s first argument (type.errors/ER36, std.fmt/F2).
     in_message_template: bool,
+    /// Inside `format`'s template, where `{}` and `{0}` are placeholders for
+    /// its arguments (std.fmt/F2).
+    in_format_template: bool,
 }
 
 impl Parser {
@@ -59,7 +62,7 @@ impl Parser {
 
     /// Create a parser with a custom starting NodeId and file index.
     pub fn new_with_file_id(tokens: Vec<Token>, start_id: u32, file_id: u16) -> Self {
-        Self { tokens, pos: 0, pending_gt: false, allow_brace_expr: true, in_comma_list: false, errors: Vec::new(), next_node_id: start_id, pending_decls: Vec::new(), doc_buffer: Vec::new(), file_id, allow_keyword_fn_names: false, loop_labels: Vec::new(), in_message_template: false }
+        Self { tokens, pos: 0, pending_gt: false, allow_brace_expr: true, in_comma_list: false, errors: Vec::new(), next_node_id: start_id, pending_decls: Vec::new(), doc_buffer: Vec::new(), file_id, allow_keyword_fn_names: false, loop_labels: Vec::new(), in_message_template: false, in_format_template: false }
     }
 
     /// Let top-level `func` declarations use keyword names. Only stub files
@@ -246,6 +249,19 @@ impl Parser {
                 self.current_kind(),
                 self.current().span,
             )),
+        }
+    }
+
+    /// A string literal that is fixed text, like a test's name: braces read
+    /// as in any string, and a hole is an error.
+    fn expect_fixed_text(&mut self, what: &str) -> Result<String, ParseError> {
+        match self.current_kind().clone() {
+            TokenKind::String(s, positions) => {
+                let span = self.current().span;
+                self.advance();
+                Ok(self.fixed_text(&s, &positions, span, what))
+            }
+            _ => Err(ParseError::expected("a string", self.current_kind(), self.current().span)),
         }
     }
 
@@ -671,10 +687,13 @@ impl Parser {
             }
         }
 
-        ParseResult {
-            decls,
-            errors: std::mem::take(&mut self.errors),
-        }
+        // The lexer already reported each unreadable character. A parse error
+        // that lands on one is that same mistake seen again.
+        let mut errors = std::mem::take(&mut self.errors);
+        errors.retain(|e| {
+            !self.tokens.iter().any(|t| matches!(t.kind, TokenKind::Invalid) && t.span.start == e.span.start)
+        });
+        ParseResult { decls, errors }
     }
 
     fn parse_decl(&mut self) -> Result<Decl, ParseError> {
@@ -2605,7 +2624,7 @@ impl Parser {
         };
 
         self.expect_terminator()?;
-        Ok(DeclKind::Import(ImportDecl { path, alias, is_glob, is_lazy }))
+        Ok(DeclKind::Import(ImportDecl { path, alias, is_glob, is_lazy, implicit: false, member_span: None }))
     }
 
     /// Parse `import c "header.h"` (CI1).
@@ -2668,7 +2687,7 @@ impl Parser {
         self.expect(&TokenKind::LBrace)?;
         self.skip_newlines();
 
-        let mut items: Vec<(String, Option<String>)> = Vec::new();
+        let mut items: Vec<(String, Option<String>, Span)> = Vec::new();
 
         loop {
             if self.check(&TokenKind::RBrace) {
@@ -2678,13 +2697,15 @@ impl Parser {
                 break;
             }
 
+            let member_start = self.current().span.start;
             let name = self.expect_ident()?;
             let alias = if self.match_token(&TokenKind::As) {
                 Some(self.expect_ident()?)
             } else {
                 None
             };
-            items.push((name, alias));
+            let member_end = self.tokens.get(self.pos.saturating_sub(1)).map(|t| t.span.end).unwrap_or(member_start);
+            items.push((name, alias, self.span(member_start, member_end)));
 
             if !self.match_token(&TokenKind::Comma) {
                 break;
@@ -2702,7 +2723,7 @@ impl Parser {
         // (which is what the LIFO drain used to need) would hand the imports back
         // last-first.
         for i in 1..items.len() {
-            let (ref name, ref alias) = items[i];
+            let (ref name, ref alias, member) = items[i];
             let mut path = base_path.clone();
             path.push(name.clone());
             let decl = Decl {
@@ -2712,16 +2733,18 @@ impl Parser {
                     alias: alias.clone(),
                     is_glob: false,
                     is_lazy,
+                    implicit: false,
+                    member_span: Some(member),
                 }),
                 span: self.span(start, end),
             };
             self.pending_decls.push(decl);
         }
 
-        let (name, alias) = items.into_iter().next().unwrap();
+        let (name, alias, member) = items.into_iter().next().unwrap();
         let mut path = base_path;
         path.push(name);
-        Ok(DeclKind::Import(ImportDecl { path, alias, is_glob: false, is_lazy }))
+        Ok(DeclKind::Import(ImportDecl { path, alias, is_glob: false, is_lazy, implicit: false, member_span: Some(member) }))
     }
 
     fn parse_export_decl(&mut self) -> Result<DeclKind, ParseError> {
@@ -2873,7 +2896,7 @@ impl Parser {
     /// Parse a test block: `test "name" { body }` or `comptime test "name" { body }`
     fn parse_test_decl(&mut self, is_comptime: bool, attrs: Vec<rask_ast::attr::Attr>) -> Result<DeclKind, ParseError> {
         self.expect(&TokenKind::Test)?;
-        let name = self.expect_string()?;
+        let name = self.expect_fixed_text("a test name")?;
         self.skip_newlines();
         let body = self.parse_block_body()?;
         Ok(DeclKind::Test(TestDecl { name, body, is_comptime, attrs }))
@@ -2882,7 +2905,7 @@ impl Parser {
     /// Parse a benchmark block: `benchmark "name" { body }`
     fn parse_benchmark_decl(&mut self, attrs: Vec<rask_ast::attr::Attr>) -> Result<DeclKind, ParseError> {
         self.expect(&TokenKind::Benchmark)?;
-        let name = self.expect_string()?;
+        let name = self.expect_fixed_text("a benchmark name")?;
         self.skip_newlines();
         let body = self.parse_block_body()?;
         Ok(DeclKind::Benchmark(BenchmarkDecl { name, body, attrs }))
@@ -4067,9 +4090,10 @@ impl Parser {
             TokenKind::String(s, positions) => {
                 self.advance();
                 let str_span = self.span(start, self.tokens[self.pos - 1].span.end);
-                // `}` alone matters too: `"}}"` is an escaped brace with no
-                // `{` anywhere in it (fmt/F4).
-                if s.contains('{') || s.contains('}') {
+                // `}` alone matters too: it closes nothing. An `@message`
+                // template is read even without braces, since a raw one is an
+                // error either way.
+                if s.contains('{') || s.contains('}') || self.in_message_template {
                     match self.parse_string_interpolation(&s, &positions, str_span) {
                         Some(segments) => Ok(Expr { id: self.next_id(), kind: ExprKind::StringInterp(segments), span: str_span }),
                         None => Ok(Expr { id: self.next_id(), kind: ExprKind::String(s), span: str_span }),
@@ -4760,13 +4784,10 @@ impl Parser {
         match self.current_kind() {
             TokenKind::LParen => {
                 self.advance();
-                // std.fmt/CM2: the desugar pass parses `format`'s template at
-                // compile time, so the literal has to reach it whole. Splitting
-                // it here read `{0}` as the integer zero and turned `{{x}}`
-                // back into a placeholder.
-                let raw_template = matches!(&lhs.kind, ExprKind::Ident(n) if n == "format")
-                    && matches!(self.current_kind(), TokenKind::String(..));
-                let args = self.parse_args_with(raw_template)?;
+                // std.fmt/CM2: `format`'s template has placeholders, `{}` and
+                // `{0}`, that no other string has.
+                let template = matches!(&lhs.kind, ExprKind::Ident(n) if n == "format");
+                let args = self.parse_args_with(template)?;
                 self.expect(&TokenKind::RParen)?;
                 let end = self.tokens[self.pos - 1].span.end;
                 // `Heap(expr)` allocates (mem.heap). It reads as an ordinary
@@ -4937,10 +4958,10 @@ impl Parser {
 
                 // Check for optional custom message: x! "message"
                 let message = if matches!(self.peek(0), TokenKind::String(..)) {
-                    let msg_token = self.advance();
+                    let msg_token = self.advance().clone();
                     end = msg_token.span.end;
-                    if let TokenKind::String(s, _) = &msg_token.kind {
-                        Some(s.clone())
+                    if let TokenKind::String(s, positions) = &msg_token.kind {
+                        Some(self.fixed_text(s, positions, msg_token.span, "an unwrap message"))
                     } else {
                         None
                     }
@@ -4994,15 +5015,13 @@ impl Parser {
         self.parse_args_with(false)
     }
 
-    /// `raw_first_string`: take the first argument's string literal verbatim,
-    /// without splitting it into interpolation segments. Only `format` wants
-    /// this — its template is a compile-time input, not a string to render.
-    fn parse_args_with(&mut self, raw_first_string: bool) -> Result<Vec<CallArg>, ParseError> {
-        self.parse_arg_list(raw_first_string, &TokenKind::RParen)
+    /// `template`: a string literal first argument is a `format` template.
+    fn parse_args_with(&mut self, template: bool) -> Result<Vec<CallArg>, ParseError> {
+        self.parse_arg_list(template, &TokenKind::RParen)
     }
 
     /// The arguments up to `close`, which is left unconsumed.
-    fn parse_arg_list(&mut self, raw_first_string: bool, close: &TokenKind) -> Result<Vec<CallArg>, ParseError> {
+    fn parse_arg_list(&mut self, template: bool, close: &TokenKind) -> Result<Vec<CallArg>, ParseError> {
         let mut args = Vec::new();
         self.skip_newlines();
         if self.check(close) { return Ok(args); }
@@ -5011,7 +5030,7 @@ impl Parser {
         // Inside `f(` a `{` can't open the body of an enclosing `if`, so
         // `spawn { … }` is a value again.
         let outer_braces = std::mem::replace(&mut self.allow_brace_expr, true);
-        let result = self.parse_args_loop(raw_first_string, &mut args, close);
+        let result = self.parse_args_loop(template, &mut args, close);
         self.allow_brace_expr = outer_braces;
         self.in_comma_list = outer_list;
         result?;
@@ -5020,20 +5039,20 @@ impl Parser {
 
     fn parse_args_loop(
         &mut self,
-        raw_first_string: bool,
+        template: bool,
         args: &mut Vec<CallArg>,
         close: &TokenKind,
     ) -> Result<(), ParseError> {
         loop {
-            if raw_first_string && args.is_empty() {
-                if let TokenKind::String(s, _) = self.current_kind().clone() {
-                    let start = self.current().span.start;
+            if template && args.is_empty() {
+                if let TokenKind::String(s, positions) = self.current_kind().clone() {
+                    let str_span = self.current().span;
                     self.advance();
-                    let span = self.span(start, self.tokens[self.pos - 1].span.end);
+                    let kind = self.format_template(&s, &positions, str_span);
                     args.push(CallArg {
                         name: None,
                         mode: ArgMode::Default,
-                        expr: Expr { id: self.next_id(), kind: ExprKind::String(s), span },
+                        expr: Expr { id: self.next_id(), kind, span: str_span },
                     });
                     if !self.list_continues(close)? { break; }
                     continue;
@@ -5580,26 +5599,43 @@ impl Parser {
     }
 
     /// Parse string interpolation segments from a string like "hello {name}, age {age}".
-    /// Returns None if the string has no valid interpolation (e.g., escaped braces only).
+    /// Returns None for a raw string, a string with no braces, or an error.
     fn parse_string_interpolation(&mut self, s: &str, positions: &StrPositions, str_span: Span) -> Option<Vec<StringSegment>> {
+        if !positions.interpolates() {
+            if self.in_message_template {
+                self.raw_template_error(str_span, "an `@message` template");
+            }
+            return None;
+        }
         let mut segments = Vec::new();
         let mut literal = String::new();
         let chars: Vec<char> = s.chars().collect();
+        let bytes: Vec<usize> = s.char_indices().map(|(b, _)| b).collect();
         let mut i = 0;
-        // A string with escapes but no expressions still has to come back as
-        // segments — returning None handed the raw text on with the `{{` still
-        // in it, and the next scanner down read `{braces}` as an expression
+        // A string with escaped braces but no expressions still comes back as
+        // segments, so nothing downstream reads its `{braces}` as a hole
         // (#521, fmt/F4).
         let mut escaped_any = false;
+        // The payload the next `{}` stands for in an `@message` template.
+        let mut next_payload = 0;
 
         while i < chars.len() {
+            if (chars[i] == '{' || chars[i] == '}') && positions.is_literal_brace(bytes[i]) {
+                literal.push(chars[i]);
+                escaped_any = true;
+                i += 1;
+                continue;
+            }
             if chars[i] == '{' {
-                if i + 1 < chars.len() && chars[i + 1] == '{' {
-                    // Escaped brace: {{ → {
-                    literal.push('{');
-                    escaped_any = true;
-                    i += 2;
-                    continue;
+                if chars.get(i + 1) == Some(&'{') {
+                    let at = str_span.start + positions.source_offset(bytes[i]);
+                    self.errors.push(ParseError {
+                        span: self.span(at, at + 2),
+                        message: "`{{` in string".to_string(),
+                        hint: Some("write `\\{` for a literal `{`".to_string()),
+                        why: Some("a `{` in a string starts an interpolation; a brace meant as text is escaped".to_string()),
+                    });
+                    return None;
                 }
                 // Start of interpolation expression
                 if !literal.is_empty() {
@@ -5609,17 +5645,40 @@ impl Parser {
                 let expr_start = i;
                 let mut depth = 1;
                 // Braces inside a nested literal are text, not nesting —
-                // `{tag("}")}` used to end the hole at the quoted brace.
+                // `{tag("}")}` used to end the hole at the quoted brace, and
+                // `{c == '{'}` never closed. A backslash outside a literal
+                // isn't code either; stepping over it as the lexer does keeps
+                // `"{\"x\":1}"` one hole the expression parser rejects by name.
+                //
+                // The same walk finds the `:` that starts a format spec: the
+                // first one outside brackets and literals, so neither
+                // `{c == ':'}` nor `{f(x: 1)}` splits.
                 let mut in_string = false;
                 let mut escaped = false;
+                let mut brackets = 0usize;
+                let mut spec_at: Option<usize> = None;
                 while i < chars.len() && depth > 0 {
                     if escaped {
                         escaped = false;
                     } else {
                         match chars[i] {
-                            '\\' if in_string => escaped = true,
+                            '\\' => escaped = true,
                             '"' => in_string = !in_string,
                             _ if in_string => {}
+                            '(' | '[' => brackets += 1,
+                            ')' | ']' => brackets = brackets.saturating_sub(1),
+                            ':' if depth == 1 && brackets == 0 && spec_at.is_none() => spec_at = Some(i),
+                            'r' => {
+                                if let Some(after) = rask_lexer::skip_raw_string(s.as_bytes(), bytes[i]) {
+                                    // Land on the raw literal's last char.
+                                    i = bytes.partition_point(|b| *b < after) - 1;
+                                }
+                            }
+                            '\'' => {
+                                if let Some(close) = char_literal_end(&chars, i) {
+                                    i = close;
+                                }
+                            }
                             '{' => depth += 1,
                             '}' => depth -= 1,
                             _ => {}
@@ -5628,38 +5687,68 @@ impl Parser {
                     if depth > 0 { i += 1; }
                 }
                 if depth != 0 {
-                    return None; // Unclosed brace
+                    self.lone_brace_error(s, positions, str_span, expr_start - 1, '{');
+                    return None;
                 }
                 let expr_str: String = chars[expr_start..i].iter().collect();
+                let expr_part: String = chars[expr_start..spec_at.unwrap_or(i)].iter().collect();
+                let spec: Option<String> = spec_at.map(|at| chars[at + 1..i].iter().collect());
                 i += 1; // skip '}'
 
                 let hole_start = s.char_indices().nth(expr_start).map(|(pos, _)| pos).unwrap_or(0);
                 let to_file = |text_byte: usize| str_span.start + positions.source_offset(hole_start + text_byte);
-                // `{}` and `{:spec}` are placeholders the runtime formatter
-                // fills in — nothing to parse here.
-                if expr_str.is_empty() || expr_str.starts_with(':') {
-                    literal.push('{');
-                    literal.push_str(&expr_str);
-                    literal.push('}');
-                    continue;
+                // `{}` and `{:spec}` take `format`'s next argument, or in
+                // `@message` the next payload (error-types/ER36). Anywhere
+                // else nothing fills them in: `"hi {}"` is a hole whose name
+                // was forgotten.
+                if expr_part.is_empty() {
+                    if self.in_message_template || self.in_format_template {
+                        let parsed_spec = match spec.as_deref().filter(|t| !t.is_empty()) {
+                            Some(t) => match rask_ast::fmt_spec::parse_spec(t) {
+                                Some(p) => Some(p),
+                                None => {
+                                    self.errors.push(ParseError {
+                                        span: self.span(to_file(0), to_file(expr_str.len())),
+                                        message: format!("`{{{expr_str}}}` has no format spec the formatter knows"),
+                                        hint: Some("write `\\{` for a literal `{`".to_string()),
+                                        why: None,
+                                    });
+                                    return None;
+                                }
+                            },
+                            None => None,
+                        };
+                        let span = self.span(to_file(0) - 1, to_file(expr_str.len()) + 1);
+                        if self.in_format_template {
+                            segments.push(StringSegment::Placeholder { index: None, spec: parsed_spec, span });
+                            continue;
+                        }
+                        let hole = Expr {
+                            id: self.next_id(),
+                            kind: ExprKind::Ident(rask_ast::decl::positional_field_name(next_payload)),
+                            span,
+                        };
+                        next_payload += 1;
+                        segments.push(StringSegment::Expr(Box::new(hole), parsed_spec));
+                        continue;
+                    } else {
+                        let at = to_file(0) - 1;
+                        self.errors.push(ParseError {
+                            span: self.span(at, to_file(expr_str.len()) + 1),
+                            message: format!("`{{{expr_str}}}` names no value"),
+                            hint: Some(format!("put the value in the hole, like `{{x{expr_str}}}`, or write `\\{{{expr_str}\\}}` for the text")),
+                            why: Some("a placeholder without a name is filled in only by `format` and `@message`".to_string()),
+                        });
+                        return None;
+                    }
                 }
 
-                // `{expr}` or `{expr:spec}` (fmt/F1–F4). Split the same way the
-                // formatter does, then sanity-check the spec: a real one is a
-                // short run of spec characters. Anything with quotes or commas
-                // in it means these braces were never an interpolation —
-                // `"{\"x\":1,\"y\":2}"` used to parse as the expression `"x"`
-                // with `1,"y":2` as its "format spec", and the rest of the JSON
-                // vanished without a word (#506).
-                let (expr_part, spec) = match rask_ast::fmt_spec::split_spec(&expr_str) {
-                    Some(pos) => (&expr_str[..pos], Some(&expr_str[pos + 1..])),
-                    None => (expr_str.as_str(), None),
-                };
-                // The spec has to be one the formatters actually understand.
-                // A character-class guess accepted ` 1`, so a one-pair JSON
-                // body `{"k": 1}` parsed as the expression `"k"` with ` 1` as
-                // its spec and printed `k` (#506).
-                let parsed_spec = spec.map(rask_ast::fmt_spec::parse_spec);
+                // `{expr}` or `{expr:spec}` (fmt/F1–F4). The spec has to be one
+                // the formatters actually understand. A character-class guess
+                // accepted ` 1`, so a one-pair JSON body `{"k": 1}` parsed as
+                // the expression `"k"` with ` 1` as its spec and printed `k`
+                // (#506).
+                let parsed_spec = spec.as_deref().map(rask_ast::fmt_spec::parse_spec);
                 let spec_is_plausible = !matches!(parsed_spec, Some(None));
                 let parsed_spec = parsed_spec.flatten();
 
@@ -5667,7 +5756,7 @@ impl Parser {
                     parser.errors.push(ParseError {
                         span: parser.span(to_file(0), to_file(expr_str.len())),
                         message: format!("`{{{}}}` is not a valid interpolation: {}", expr_str, detail),
-                        hint: Some("write `{{` for a literal `{` — a lone `{` starts an interpolation".to_string()),
+                        hint: Some("write `\\{` for a literal `{` — a lone `{` starts an interpolation".to_string()),
                         why: None,
                     }.with_why("a `{` in a string always starts an interpolation, so what follows has to be an expression"));
                 };
@@ -5678,7 +5767,7 @@ impl Parser {
                 }
 
                 // Parse the expression using the lexer/parser with correct context
-                let lex = rask_lexer::Lexer::new(expr_part).tokenize();
+                let lex = rask_lexer::Lexer::new(&expr_part).tokenize();
                 if !lex.errors.is_empty() {
                     bad_expr(self, "the text inside doesn't lex");
                     return None;
@@ -5693,8 +5782,14 @@ impl Parser {
                 }
                 let saved_tokens = std::mem::replace(&mut self.tokens, tokens);
                 let saved_pos = std::mem::replace(&mut self.pos, 0);
+                // A string inside the hole is an ordinary string, not part of
+                // the template: `{tag("{}")}` is no placeholder.
+                let outer_message = std::mem::replace(&mut self.in_message_template, false);
+                let outer_format = std::mem::replace(&mut self.in_format_template, false);
 
                 let result = self.parse_expr();
+                self.in_message_template = outer_message;
+                self.in_format_template = outer_format;
                 // The whole expression part belongs to the interpolation.
                 let leftover = !self.at_end()
                     && !matches!(self.current_kind(), TokenKind::Newline);
@@ -5721,6 +5816,15 @@ impl Parser {
                 if matches!(parsed.kind, ExprKind::String(_)) {
                     bad_expr(self, "a string literal on its own isn't something to interpolate");
                     return None;
+                }
+                // `{1}` is `format`'s second argument.
+                if self.in_format_template {
+                    if let ExprKind::Int(n, _) = parsed.kind {
+                        if n >= 0 {
+                            segments.push(StringSegment::Placeholder { index: Some(n as usize), spec: parsed_spec, span: parsed.span });
+                            continue;
+                        }
+                    }
                 }
                 // In a variant's message, `{0}` is its first payload, the way
                 // it's `format`'s first argument. The match arm `message()` is
@@ -5755,7 +5859,7 @@ impl Parser {
                         message: format!("`{{{}}}` interpolates a constant", expr_str),
                         hint: Some(format!(
                             "write `{}` in the text itself; a hole takes a name, like `{{id}}`",
-                            shown
+                            shown.replace('{', "\\{").replace('}', "\\}")
                         )),
                         why: Some("a `{…}` hole is for a value only known when the string is built".to_string()),
                     });
@@ -5763,11 +5867,9 @@ impl Parser {
                 }
 
                 segments.push(StringSegment::Expr(Box::new(parsed), parsed_spec));
-            } else if chars[i] == '}' && i + 1 < chars.len() && chars[i + 1] == '}' {
-                // Escaped brace: }} → }
-                literal.push('}');
-                escaped_any = true;
-                i += 2;
+            } else if chars[i] == '}' {
+                self.lone_brace_error(s, positions, str_span, i, '}');
+                return None;
             } else {
                 literal.push(chars[i]);
                 i += 1;
@@ -5780,11 +5882,92 @@ impl Parser {
 
         // Segments are worth returning when there's an expression to evaluate,
         // or an escape whose unescaping would otherwise be lost.
-        if escaped_any || segments.iter().any(|s| matches!(s, StringSegment::Expr(..))) {
+        if escaped_any || segments.iter().any(|s| !matches!(s, StringSegment::Literal(_))) {
             Some(segments)
         } else {
             None
         }
+    }
+
+    /// The text of a string literal that can't interpolate: a pattern, or an
+    /// unwrap message. Braces read as they do in any other string, so `"\\{"`
+    /// is one brace here too, and a hole is an error rather than text.
+    fn fixed_text(&mut self, s: &str, positions: &StrPositions, span: Span, what: &str) -> String {
+        if !s.contains('{') && !s.contains('}') {
+            return s.to_string();
+        }
+        let Some(segments) = self.parse_string_interpolation(s, positions, span) else {
+            return s.to_string();
+        };
+        let mut text = String::new();
+        for seg in segments {
+            match seg {
+                StringSegment::Literal(lit) => text.push_str(&lit),
+                StringSegment::Placeholder { span, .. } => {
+                    self.errors.push(ParseError {
+                        span,
+                        message: format!("{what} can't interpolate"),
+                        hint: Some("write `\\{` and `\\}` for literal braces".to_string()),
+                        why: Some(format!("{what} is fixed text, known before the program runs")),
+                    });
+                }
+                StringSegment::Expr(e, _) => {
+                    self.errors.push(ParseError {
+                        span: e.span,
+                        message: format!("{what} can't interpolate"),
+                        hint: Some("write `\\{` and `\\}` for literal braces".to_string()),
+                        why: Some(format!("{what} is fixed text, known before the program runs")),
+                    });
+                }
+            }
+        }
+        text
+    }
+
+    /// `format`'s template, parsed as any string is but with `{}` and `{0}`
+    /// as placeholders for its arguments. Holes, escapes and nested literals
+    /// read exactly as they do elsewhere; the desugar gets the pieces.
+    fn format_template(&mut self, s: &str, positions: &StrPositions, str_span: Span) -> ExprKind {
+        if !positions.interpolates() {
+            self.raw_template_error(str_span, "a `format` template");
+            return ExprKind::String(s.to_string());
+        }
+        let outer = std::mem::replace(&mut self.in_format_template, true);
+        let segments = self.parse_string_interpolation(s, positions, str_span);
+        self.in_format_template = outer;
+        match segments {
+            Some(segments) => ExprKind::StringInterp(segments),
+            None => ExprKind::String(s.to_string()),
+        }
+    }
+
+    /// A raw string has no placeholders, so as a template it would print
+    /// `{}` as text and drop every argument.
+    fn raw_template_error(&mut self, str_span: Span, what: &str) {
+        self.errors.push(ParseError {
+            span: str_span,
+            message: format!("a raw string can't be {what}"),
+            hint: Some("write it as `\"…\"`, with `\\{` for a literal brace".to_string()),
+            why: Some("a raw string is text as written, so its `{}` would never be filled in".to_string()),
+        });
+    }
+
+    /// A `{` with no `}` after it, or a `}` that closes nothing. Either is a
+    /// typo or a brace meant as text, which is escaped: `\\{` (fmt/F4).
+    fn lone_brace_error(&mut self, s: &str, positions: &StrPositions, str_span: Span, char_index: usize, brace: char) {
+        let byte = s.char_indices().nth(char_index).map(|(pos, _)| pos).unwrap_or(0);
+        let at = str_span.start + positions.source_offset(byte);
+        let (message, why) = if brace == '{' {
+            ("unclosed `{` in string", "a `{` in a string starts an interpolation, which a `}` has to close")
+        } else {
+            ("`}` in string closes nothing", "braces in strings belong to interpolations, so a brace meant as text is escaped")
+        };
+        self.errors.push(ParseError {
+            span: self.span(at, at + 1),
+            message: message.to_string(),
+            hint: Some(format!("write `\\{brace}` for a literal `{brace}`")),
+            why: Some(why.to_string()),
+        });
     }
 
     fn parse_pattern(&mut self) -> Result<Pattern, ParseError> {
@@ -5938,9 +6121,10 @@ impl Parser {
                 }
                 Ok(PatternKind::Literal(start))
             }
-            TokenKind::String(s, _) => {
+            TokenKind::String(s, positions) => {
                 self.advance();
                 let span = self.tokens[self.pos - 1].span.clone();
+                let s = self.fixed_text(&s, &positions, span, "a pattern");
                 Ok(PatternKind::Literal(Box::new(Expr { id: self.next_id(), kind: ExprKind::String(s), span })))
             }
             TokenKind::Bool(b) => {
@@ -6206,4 +6390,15 @@ fn tok_text(kind: &TokenKind) -> &'static str {
         TokenKind::BangEq => "!=",
         _ => "?",
     }
+}
+
+/// Index of the closing quote of the char literal opening at `open`, if one
+/// does: `'x'`, `'\n'`, `'\u{1F600}'`.
+fn char_literal_end(chars: &[char], open: usize) -> Option<usize> {
+    let close = if chars.get(open + 1) == Some(&'\\') {
+        (open + 3..chars.len().min(open + 14)).find(|&j| chars[j] == '\'')?
+    } else {
+        open + 2
+    };
+    (chars.get(close) == Some(&'\'')).then_some(close)
 }

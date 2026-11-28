@@ -128,7 +128,7 @@ LoopOpt implements Decode {
     }
 }
 
-// ERROR: each reads the other, one of them through a `T?`. A circle is reported
+// ERROR: each reads the other, one of them through a `T?`. A circle is reported [E0425]
 // once, at the first type of it [E0425]
 struct Ping {
     n: i64

@@ -552,7 +552,7 @@ let LOGGING_ENABLED: bool = comptime cfg.features.contains("logging")
 
 func process(data: Vec<u8>) -> void or Error {
     comptime if LOGGING_ENABLED {
-        log.debug("Processing {} bytes", data.len)
+        log.debug("Processing {data.len} bytes")
     }
 
     for byte in data {
@@ -660,7 +660,7 @@ comptime func build_table() -> [u8; 256] {
     for i in 0..256 {
         table[i] = compute(i)
         if i % 64 == 0 {
-            @comptime_print("Progress: {}/256", i)
+            @comptime_print("Progress: {i}/256")
         }
     }
     @comptime_print("Done!")
@@ -683,7 +683,7 @@ Compiling main.rk...
 Explicit checks with clear error messages:
 ```rask
 comptime func safe_factorial(n: u32) -> u32 {
-    @comptime_assert(n <= 20, "Factorial input too large: {} (max 20)", n)
+    @comptime_assert(n <= 20, "Factorial input too large: {n} (max 20)")
     if n <= 1 { return 1 }
     return n * safe_factorial(n - 1)
 }

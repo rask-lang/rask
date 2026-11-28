@@ -9,20 +9,20 @@
 
 struct Clock {
     started: i64
-    // ERROR: `Duration` is not in scope
+    // ERROR: `Duration` is not in scope [E0210]
     limit: Duration
 }
 
 enum ReadError {
     Empty
     Truncated(at: i64)
-    // ERROR: `IoError` is not in scope
+    // ERROR: `IoError` is not in scope [E0210]
     Failed(path: string, cause: IoError)
 }
 
 union Stamp {
     raw: u64
-    // ERROR: `Instant` is not in scope
+    // ERROR: `Instant` is not in scope [E0210]
     at: Instant
 }
 

@@ -8,8 +8,6 @@
 // elements are told apart by index, a Map's values by key, and two different
 // collections never collide.
 
-import thread.Thread
-
 func swap_at(mutate v: Vec<i64>, i: i64, j: i64) {
     with v[i] as a, v[j] as b {
         let t = a

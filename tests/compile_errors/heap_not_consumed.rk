@@ -30,7 +30,7 @@ func double_frees() {
     drop(q)
 }
 
-// ERROR: handing it to a `take` parameter consumes it, so the `drop` after is
+// ERROR: handing it to a `take` parameter consumes it, so the `drop` after is [E0800]
 // a second free [E0800]
 func gives_then_drops() -> i64 {
     let r = Heap(Node(v: 2))

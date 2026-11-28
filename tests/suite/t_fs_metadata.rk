@@ -9,6 +9,8 @@
 // both backends answer the same way.
 
 import fs
+import fs.Metadata
+import io.IoError
 
 test "std.fs — metadata on a missing path is an IoError, not a zero-sized file" {
     let missing = "/tmp/rask_t_fs_metadata_does_not_exist"

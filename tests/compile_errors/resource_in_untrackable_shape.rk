@@ -22,12 +22,12 @@ struct InOptional {
 
 func in_optional() {
     let h = InOptional(c: Conn(id: 1), tag: 1)
-    println("{h.tag}")          // ERROR: `h.c` — an optional field still has a path
+    println("{h.tag}")          // ERROR: `h.c` — an optional field still has a path [E0805]
 }
 
 func in_tuple() {
     let t = (Conn(id: 3), 7)
-    println("{t.1}")            // ERROR: whole binding owed, tuple named as the reason
+    println("{t.1}")            // ERROR: whole binding owed, tuple named as the reason [E0805]
 }
 
 func main() {

@@ -18,7 +18,7 @@ func use_after_send() -> void or Fail {
     mut data = Vec.new<i32>()
     data.push(1)
     tx.send(data) catch _ => return Fail.Msg("send failed")
-    print(data.len())   // ERROR: `data` was sent — ownership transferred [T1]
+    print(data.len())   // ERROR: `data` was sent — ownership transferred [T1] [E0800]
     return ()
 }
 
@@ -31,7 +31,7 @@ func use_after_take() {
     mut items = Vec.new<i32>()
     items.push(1)
     let n = consume(items)
-    print(items.len())  // ERROR: `items` was taken by `consume` [PM3/#296]
+    print(items.len())  // ERROR: `items` was taken by `consume` [PM3/#296] [E0800]
     print(n)
 }
 
@@ -53,7 +53,7 @@ func detached_in_loop(take v: Vec<i64>) {
     using Multitasking {
         mut i = 0
         while i < 3 {
-            // ERROR: `v` moved into the first iteration's task
+            // ERROR: `v` moved into the first iteration's task [E0813]
             spawn {
                 println("{v.len()}")
             }.detach()

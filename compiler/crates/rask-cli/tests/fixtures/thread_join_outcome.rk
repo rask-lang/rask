@@ -22,7 +22,6 @@ func main() {
 
     let boom = Thread.spawn {
         panic("boom")
-        return 0
     }
     match boom.join() {
         i64 as v => println("value {v}"),

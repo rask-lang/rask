@@ -12,8 +12,6 @@
 // The leak gate runs this file. A read of `v` after the loop is here too, so
 // a free placed at the closure's drop can't be too early.
 
-import sequence.Sequence
-
 test "a map's keys, indexing the map" {
     mut m: Map<string, i64> = Map.new()
     m["a key long enough to live on the heap"] = 1

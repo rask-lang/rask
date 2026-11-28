@@ -7,7 +7,6 @@ func main() -> void or JoinError {
     using Multitasking {
         let h = spawn {
             panic("boom")
-            return 1
         }
         println("joining")
         let n = try h.join()

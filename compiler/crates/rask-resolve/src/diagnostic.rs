@@ -266,15 +266,6 @@ impl ToDiagnostic for crate::ResolveError {
                 )
             }
 
-            NotVisible { name } => {
-                Diagnostic::error(format!("`{}` is not public", name))
-                    .with_code("E0203")
-                    .with_primary(self.span, "not visible from this scope")
-                    .with_help("mark the item as `public` to make it accessible")
-                    .with_fix(format!("mark `{}` as `public`, or access it from the defining module", name))
-                    .with_why("items are private by default — only `public` items are accessible from other modules")
-            }
-
             ShadowsImport { name, module } => {
                 // Naming the module the name came from is the difference between
                 // a fix the reader can apply and a hunt through their import
@@ -303,18 +294,6 @@ impl ToDiagnostic for crate::ResolveError {
                         .with_help("rename your declaration, or alias the import")
                         .with_fix(format!("import pkg.{} as Other{}", name, name)),
                 }
-            }
-
-            CircularDependency { path } => {
-                Diagnostic::error(format!(
-                    "circular import: {}",
-                    path.join(" -> ")
-                ))
-                .with_code("E0202")
-                .with_primary(self.span, "cycle detected here")
-                .with_help("break the cycle by restructuring imports or extracting shared types")
-                .with_fix("extract shared types into a separate module to break the cycle")
-                .with_why("circular imports create unresolvable dependencies — restructure into a DAG")
             }
 
             ConflictingExtern { name, previous, current, previous_span: _ } => {
@@ -415,24 +394,6 @@ impl ToDiagnostic for crate::ResolveError {
                         .with_fix(format!("import {}", module)),
                 }
             }
-
-            CHeaderNotFound { header, detail } => {
-                Diagnostic::error(format!("C header not found: `{}`", header))
-                    .with_code("E0214")
-                    .with_primary(self.span, detail.as_str())
-                    .with_help("check the header path or install the library's development package")
-                    .with_fix("verify the header path and include directories")
-                    .with_why("import c requires the header file to exist in system or project include paths")
-            }
-
-            CParseError { header, detail } => {
-                Diagnostic::error(format!("failed to parse C header: `{}`", header))
-                    .with_code("E0211")
-                    .with_primary(self.span, detail.as_str())
-                    .with_help("check the header for C++ or non-standard extensions")
-                    .with_fix("use explicit `extern \"C\"` bindings for problematic declarations")
-                    .with_why("the built-in C parser handles standard C headers — use explicit bindings for edge cases")
-            }
         }
     }
 }
@@ -458,5 +419,19 @@ impl ToDiagnostic for crate::UnusedLocal {
             .with_primary(self.span, "nothing reads this")
             .with_fix(format!("use it, or name it `_{}` if that's meant", self.name))
             .with_why("an unread binding is usually a typo or a leftover from an edit [tool.warnings/W3]")
+    }
+}
+
+impl ToDiagnostic for crate::UnusedImport {
+    fn to_diagnostic(&self) -> Diagnostic {
+        let (span, fix) = match self.member_span {
+            Some(member) => (member, format!("remove `{}` from the braces", self.name)),
+            None => (self.span, "remove the import".to_string()),
+        };
+        Diagnostic::warning(format!("unused import `{}`", self.name))
+            .with_code("W0201")
+            .with_primary(span, "nothing uses this")
+            .with_fix(fix)
+            .with_why("an import nothing uses is usually left over from an edit [tool.warnings/W1]")
     }
 }

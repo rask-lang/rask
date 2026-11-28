@@ -9,6 +9,8 @@
 // values and tasks joined in their block are fine. In a generic body it
 // depends on `T`, so the call that makes `T` a `Vec` is the one reported.
 
+import async.JoinError
+
 func detached_reads(items: Vec<i64>) {
     spawn {
         // ERROR: the caller only lent [E0982]

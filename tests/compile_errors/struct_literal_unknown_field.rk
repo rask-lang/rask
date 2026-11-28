@@ -13,9 +13,9 @@ struct Holder<T> {
 }
 
 func main() {
-    // ERROR: no field `xx` on type `Pt`
+    // ERROR: no field `xx` on type `Pt` [E0312]
     let p = Pt(x: 1, xx: 2)
-    // ERROR: a generic struct's literal is checked the same way
+    // ERROR: a generic struct's literal is checked the same way [E0312]
     let h = Holder(item: 1, itme: 2)
     println(p.x)
     println(h.item)

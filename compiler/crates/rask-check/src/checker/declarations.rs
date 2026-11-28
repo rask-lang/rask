@@ -5,7 +5,7 @@ use rask_ast::type_params::{enum_type_param_names, is_type_param_name, signature
 use rask_ast::decl::{Decl, DeclKind, EnumDecl, FnDecl, ImplDecl, StructDecl, InterfaceDecl, UnionDecl, TypeAliasDecl};
 use rask_types::{TypeDef, MethodSig, SelfParam};
 use rask_ast::ty::ParamMode;
-use super::errors::TypeError;
+use super::errors::{HoldsItself, TypeError};
 use super::inference::TypeConstraint;
 use super::parse_type::resolve_type_expr;
 use rask_ast::ty::TypeExpr;
@@ -375,6 +375,16 @@ impl TypeChecker {
                             }
                         }
                     }
+                }
+            }
+            DeclKind::TypeAlias(a) if !a.is_transparent => {
+                let Some(id) = self.types.get_type_id(&a.name) else { return };
+                let Some(TypeDef::NominalAlias { underlying: old, .. }) = self.types.get(id) else { return };
+                let fresh = resolve_type_expr(&a.target, &self.types)
+                    .ok()
+                    .filter(|n| was_forward(old) && !cycles(self, n, id));
+                if let (Some(new), Some(TypeDef::NominalAlias { underlying, .. })) = (fresh, self.types.get_mut(id)) {
+                    *underlying = new;
                 }
             }
             _ => {}
@@ -2296,6 +2306,7 @@ impl TypeChecker {
                 cycle: path.join(" → "),
                 span,
             });
+            self.types.register_cyclic_alias(a.name.clone());
             return;
         }
         let params = a.type_params.iter().map(|p| p.name.clone()).collect();
@@ -3213,6 +3224,17 @@ impl TypeChecker {
     /// once every type is registered, so a field may name one declared below.
     /// Unknown names are left for `check_decl` to report.
     fn reject_recursive_decl(&mut self, decl: &Decl) {
+        // `type Celsius = Celsius`: a nominal type is stored as what it wraps.
+        if let DeclKind::TypeAlias(a) = &decl.kind {
+            if a.is_transparent {
+                return;
+            }
+            let Some(owner) = self.types.get_type_id(&a.name) else { return };
+            if let Ok(ty) = resolve_type_expr(&a.target, &self.types) {
+                self.reject_recursive_type(owner, &ty, HoldsItself::Wraps, decl.span);
+            }
+            return;
+        }
         let (name, fields): (&str, Vec<_>) = match &decl.kind {
             // `@binary` fields are wire specifiers, never a declared type.
             DeclKind::Struct(s) if !s.attrs.iter().any(|a| a.is("binary")) => {
@@ -3226,7 +3248,7 @@ impl TypeChecker {
         let Some(owner) = self.types.get_type_id(name) else { return };
         for (ty, span) in fields {
             if let Ok(ty) = resolve_type_expr(ty, &self.types) {
-                self.reject_recursive_type(owner, &ty, span);
+                self.reject_recursive_type(owner, &ty, HoldsItself::Field, span);
             }
         }
     }
@@ -3245,14 +3267,16 @@ impl TypeChecker {
     /// and arrays. `Heap<T>`, `Link<T>`, `Vec` and the rest put the value
     /// somewhere else and hold an address, which is exactly what breaks the
     /// cycle — and what the message tells the author to reach for.
-    fn reject_recursive_type(&mut self, owner: rask_types::TypeId, ty: &Type, span: Span) {
+    fn reject_recursive_type(&mut self, owner: rask_types::TypeId, ty: &Type, site: HoldsItself, span: Span) {
         let mut chain: Vec<String> = Vec::new();
         let mut seen: Vec<rask_types::TypeId> = Vec::new();
         if !self.reaches_inline(ty, owner, &mut seen, &mut chain) {
             return;
         }
         let name = match self.types.get(owner) {
-            Some(TypeDef::Struct { name, .. }) | Some(TypeDef::Enum { name, .. }) => name.clone(),
+            Some(TypeDef::Struct { name, .. })
+            | Some(TypeDef::Enum { name, .. })
+            | Some(TypeDef::NominalAlias { name, .. }) => name.clone(),
             _ => return,
         };
         self.types.sizeless.insert(owner);
@@ -3261,7 +3285,7 @@ impl TypeChecker {
         } else {
             format!("{} -> {}", chain.join(" -> "), name)
         };
-        self.errors.push(TypeError::RecursiveTypeHasNoSize { name, through, span });
+        self.errors.push(TypeError::RecursiveTypeHasNoSize { name, through, site, span });
     }
 
     /// Does `ty` store an `owner` inline, directly or through other types?

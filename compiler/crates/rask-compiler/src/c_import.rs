@@ -139,9 +139,7 @@ pub fn expand(
                     Ok(p) => p,
                     Err(msg) => {
                         out.diagnostics.push(
-                            Diagnostic::error(format!("C header not found: `{}`", header))
-                                .with_primary(*span, "imported here")
-                                .with_note(msg),
+                            header_not_found(header, *span, "imported here", msg),
                         );
                         continue;
                     }
@@ -161,6 +159,7 @@ pub fn expand(
                     Err(msg) => {
                         out.diagnostics.push(
                             Diagnostic::error(format!("couldn't read C header `{}`", header))
+                                .with_code("E0211")
                                 .with_primary(*span, "imported here")
                                 .with_note(msg),
                         );
@@ -281,11 +280,7 @@ fn resolve_macro_headers(decls: &mut [Decl], cx: &Context) -> Vec<Diagnostic> {
             }
             Err(msg) => {
                 if let Some(what) = what {
-                    diags.push(
-                        Diagnostic::error(format!("C header not found: `{}`", header))
-                            .with_primary(d.span, what)
-                            .with_note(msg),
-                    );
+                    diags.push(header_not_found(&header, d.span, &what, msg));
                 }
             }
         }
@@ -318,6 +313,14 @@ impl Rewrite for Leftover<'_> {
     }
 }
 
+fn header_not_found(header: &str, span: rask_ast::Span, label: &str, looked: String) -> Diagnostic {
+    Diagnostic::error(format!("C header not found: `{}`", header))
+        .with_code("E0214")
+        .with_primary(span, label)
+        .with_note(looked)
+        .with_help("check the header's path, or install the library's development package")
+}
+
 /// Find a header as C does: beside the importing file, as written, then along
 /// the target compiler's search list (struct.c-interop/CI1, XC2).
 fn locate(header: &str, file_id: u16, cx: &Context) -> Result<PathBuf, String> {
@@ -339,7 +342,8 @@ fn locate(header: &str, file_id: u16, cx: &Context) -> Result<PathBuf, String> {
     }
     let mut looked: Vec<String> = Vec::new();
     if let Some(dir) = cx.source_dirs.get(&file_id) {
-        looked.push(dir.display().to_string());
+        // A file named without a directory has an empty parent: the current one.
+        looked.push(if dir.as_os_str().is_empty() { ".".to_string() } else { dir.display().to_string() });
     }
     looked.extend(search.dirs.iter().map(|d| d.display().to_string()));
     let mut msg = format!("looked in: {}", looked.join(", "));

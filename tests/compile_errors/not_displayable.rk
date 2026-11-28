@@ -17,18 +17,18 @@ struct Point { x: i64, y: i64 }
 
 func main() {
     let p = Point(x: 1, y: 2)
-    // ERROR: `Point` does not implement `Displayable`
+    // ERROR: `Point` does not implement `Displayable` [E0826]
     println("{p}")
 
     let maybe: i64? = 5
-    // ERROR: `i64?` does not implement `Displayable`
+    // ERROR: `i64?` does not implement `Displayable` [E0826]
     println("{maybe}")
 
     // Same two through `print` as a call, and through `println` as a call.
-    // ERROR: `Point` does not implement `Displayable`
+    // ERROR: `Point` does not implement `Displayable` [E0826]
     print(p)
-    // ERROR: `i64?` does not implement `Displayable`
+    // ERROR: `i64?` does not implement `Displayable` [E0826]
     print(maybe)
-    // ERROR: `Point` does not implement `Displayable`
+    // ERROR: `Point` does not implement `Displayable` [E0826]
     println(p)
 }

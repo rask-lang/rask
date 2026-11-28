@@ -778,7 +778,7 @@ impl TypeChecker {
                 }
                 self.pending_pattern_sides.push((pattern.id, scrutinee_ty.clone(), narrow_ty.clone()));
                 match &resolved {
-                    Type::Result { err, .. } => {
+                    Type::Result { .. } => {
                         // Every branch the scrutinee could hold — a flat
                         // `T? or E` offers `T`, `none` and `E` (OPT30).
                         let branches = two_branch_leaves(&mut self.ctx, &self.types, &resolved);
@@ -812,22 +812,11 @@ impl TypeChecker {
                                 span,
                             });
                         } else if !branches.contains(&narrow_ty) {
-                            let err_applied = normalize_type(&self.ctx.apply(err), &self.types);
-                            // A union error side gets the "not in union"
-                            // wording, which names the alternatives.
-                            if matches!(&err_applied, Type::Union(_)) {
-                                self.errors.push(TypeError::TypePatternNotInUnion {
-                                    ty_name: ty.to_string(),
-                                    union: err_applied,
-                                    span,
-                                });
-                            } else {
-                                self.errors.push(TypeError::TypePatternNotResult {
-                                    ty_name: ty.to_string(),
-                                    found: resolved,
-                                    span,
-                                });
-                            }
+                            self.errors.push(TypeError::TypePatternNotResult {
+                                ty_name: ty.to_string(),
+                                found: resolved,
+                                span,
+                            });
                         }
                     }
                     Type::Var(_) => {
@@ -1312,10 +1301,31 @@ impl TypeChecker {
             }
         }
 
+        // `n is bogus(x)` on an `i64`, `p is some(v)` on an `i64?`: the name
+        // is no variant of anything, and the value's type is known. It used
+        // to bind `x` to a variable nothing solved, and the backends disagreed
+        // on whether the test held.
+        let settled = self.settle_number(&resolved_scrutinee);
+        let payload_ty = if self.enum_id_from_pattern_name(name).is_none()
+            && !settled.contains(&|t| {
+                matches!(t, Type::Var(_) | Type::Error | Type::UnresolvedNamed(_) | Type::UnresolvedGeneric { .. })
+            })
+        {
+            self.errors.push(TypeError::PatternVariantMismatch {
+                pattern: name.to_string(),
+                scrutinee: settled,
+                variants: Vec::new(),
+                span,
+            });
+            Some(Type::Error)
+        } else {
+            None
+        };
+
         let mut bindings = vec![];
         for pat in fields {
-            let fresh = self.ctx.fresh_var();
-            bindings.extend(self.check_pattern(pat, &fresh, span));
+            let ty = payload_ty.clone().unwrap_or_else(|| self.ctx.fresh_var());
+            bindings.extend(self.check_pattern(pat, &ty, span));
         }
         bindings
     }

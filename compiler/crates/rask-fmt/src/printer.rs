@@ -2860,6 +2860,8 @@ fn escape_string_literal(s: &str) -> String {
             '\r' => out.push_str("\\r"),
             '\t' => out.push_str("\\t"),
             '\0' => out.push_str("\\0"),
+            '{' => out.push_str("\\{"),
+            '}' => out.push_str("\\}"),
             c if (c as u32) < 0x20 => out.push_str(&format!("\\u{{{:x}}}", c as u32)),
             c => out.push(c),
         }

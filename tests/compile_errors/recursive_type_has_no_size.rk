@@ -21,25 +21,25 @@
 // `Heap<T>` for a single-owner recursive value, `Rack` + `Link<T>?` for nodes
 // that point at each other or need identity.
 
-// ERROR: a struct field is inline, and so is the `?` around it.
+// ERROR: a struct field is inline, and so is the `?` around it. [E0890]
 struct Node {
     value: i64
     next: Node?
 }
 
-// ERROR: a variant payload is inline too.
+// ERROR: a variant payload is inline too. [E0890]
 enum Tree {
     Leaf(i32)
     Node(Tree)
 }
 
-// ERROR: a tuple doesn't break it either.
+// ERROR: a tuple doesn't break it either. [E0890]
 struct Pair {
     both: (i64, Pair)
 }
 
 // Through another type, which is the case a per-field name check can't see.
-// ERROR: `Edge` holds a `Vertex`, and `Vertex` holds an `Edge`.
+// ERROR: `Edge` holds a `Vertex`, and `Vertex` holds an `Edge`. [E0890]
 struct Edge {
     to: Vertex
 }
@@ -54,7 +54,7 @@ struct Vertex {
 // `Grow<((T, T), (T, T))>`. The checker kept expanding the instance and never
 // finished, so `rask check` hung (#1882). The instance is the declaration
 // again, whatever its arguments are.
-// ERROR: `Grow<T>` holds a `Grow<(T, T)>` inline.
+// ERROR: `Grow<T>` holds a `Grow<(T, T)>` inline. [E0890]
 struct Grow<T> {
     v: T
     next: Grow<(T, T)>?
@@ -62,7 +62,7 @@ struct Grow<T> {
 
 // Through a generic carrier the declaration doesn't name: `Wrapper<Chain<T>>`
 // holds a `Chain<T>` by value, so `Chain<T>` holds itself.
-// ERROR: `Chain` reaches itself through `Wrapper`.
+// ERROR: `Chain` reaches itself through `Wrapper`. [E0890]
 struct Chain<T> {
     v: T
     next: Wrapper<Chain<T>>

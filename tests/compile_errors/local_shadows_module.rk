@@ -10,9 +10,9 @@ import bits as b
 import json
 
 func main() {
-    // ERROR: `b` already names an imported module
+    // ERROR: `b` already names an imported module [E0911]
     let b = 5
-    // ERROR: so does the module's own name
+    // ERROR: so does the module's own name [E0911]
     mut json = 1
     json += 1
 }

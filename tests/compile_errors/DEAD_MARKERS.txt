@@ -19,11 +19,9 @@
 # `match_errors.rk` that leaked its own `take` parameter, whose E0805 was
 # standing in for a non-exhaustive-match claim two functions above it.
 #
-# That last one is this check's blind spot: it asks whether *a* diagnostic lands
-# under the marker, not whether it is the right one. Only 65 of the markers name
-# a code, so that is as far as it can go on its own. Keeping one rejection per
-# section, with the marker on the line the compiler points at, is what keeps the
-# blind spot small.
+# That last one was this check's blind spot: it asked whether *a* diagnostic
+# landed under the marker, not whether it was the right one. Every marker now
+# names its code, and the gate checks the code too.
 #
 # Two ways off this list. Either the rule is real and the marker should fire, in
 # which case the compiler needs the check (that is the interesting case — see

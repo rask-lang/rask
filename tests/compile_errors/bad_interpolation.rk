@@ -1,17 +1,19 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 // Compile Error: a `{...}` that isn't an expression.
 //
-// A `{` in a string always starts an interpolation (`{{` is the literal form,
-// fmt/F4). What's inside used to be parsed with whatever the expression parser
-// happened to consume and the rest thrown away — `json.decode("{\"x\":1,\"y\":2}")`
-// reached the decoder as the string "x" and every POST handler failed (#506).
+// A `{` in a string always starts an interpolation (`\{` is the literal form,
+// fmt/F4), and the hole holds code, so the `\"` of a JSON body written with
+// old escapes is no expression. What's inside used to be parsed with whatever
+// the expression parser happened to consume and the rest thrown away —
+// `json.decode("{\"x\":1,\"y\":2}")` reached the decoder as the string "x" and
+// every POST handler failed (#506).
 
 func main() {
-    // ERROR: `{"x":1,"y":2}` is not a valid interpolation
+    // ERROR: `{"x":1,"y":2}` is not a valid interpolation [E0100]
     let body = "{\"x\":1,\"y\":2}"
     println(body)
 
-    // ERROR: `{"x":1}` is not a valid interpolation
+    // ERROR: `{"x":1}` is not a valid interpolation [E0100]
     // A single pair is the hard case: `1` is a perfectly good width spec, so
     // the spec grammar can't rule it out. The bare string literal in the
     // expression position can — nobody interpolates a literal they already

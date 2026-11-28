@@ -298,7 +298,7 @@ pub fn rewrite_expr(expr: &mut Expr, r: &mut impl Rewrite) {
         ExprKind::StringInterp(segments) => {
             for seg in segments {
                 match seg {
-                    StringSegment::Literal(_) => {}
+                    StringSegment::Literal(_) | StringSegment::Placeholder { .. } => {}
                     StringSegment::Expr(e, _) => rewrite_expr(e, r),
                 }
             }

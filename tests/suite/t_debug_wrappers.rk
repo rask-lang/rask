@@ -182,5 +182,5 @@ test "a container whose type was inferred from its literal" {
     let vp = Vec.from([Pt(x: 1, y: 2.5)])
     assert "{vp:debug}" == "[Pt(x: 1, y: 2.5)]"
     let m = Map.from([("k", 1.5)])
-    assert "{m:debug}" == "Map {{ \"k\": 1.5 }}"
+    assert "{m:debug}" == "Map \{ \"k\": 1.5 \}"
 }

@@ -6,4 +6,4 @@
 mod lexer;
 mod diagnostic;
 
-pub use lexer::{LexError, LexResult, Lexer};
+pub use lexer::{skip_raw_string, LexError, LexResult, Lexer};

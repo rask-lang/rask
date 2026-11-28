@@ -2,9 +2,6 @@
 // Game Loop with Entities
 // Demonstrates: Rack + Link for entities, interfaces, threading, time/delta, game systems
 
-import time
-import random
-import thread.ThreadPool
 import memory.Rack
 import memory.Link
 import random.Random

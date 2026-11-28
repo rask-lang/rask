@@ -23,7 +23,6 @@
 
 import string.cstring
 import string.NullByteError
-import string.Utf8Error
 
 /// The round trip, both halves. `decode` is fallible because the bytes came
 /// from C — here they came from a Rask string a moment earlier, so they are

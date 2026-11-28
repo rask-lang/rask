@@ -9,7 +9,6 @@
 // It's a Rask struct holding nanoseconds now, so both backends run the same
 // arithmetic. Only the clock read itself is native — `time.wall_clock_nanos()`.
 
-import time
 import time.SystemTime
 import time.Duration
 

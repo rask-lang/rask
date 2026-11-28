@@ -33,7 +33,7 @@ import http
 
 // ── IM1: a stdlib type with no import ───────────────────────────
 
-// ERROR: `Metadata` is not in scope — on a *local's* annotation. The check
+// ERROR: `Metadata` is not in scope — on a *local's* annotation. The check [E0210]
 // started as a pass over declarations, so it never looked inside a body, and
 // this is the most ordinary way to write the thing IM1 rejects.
 func local_annotation() {
@@ -41,12 +41,12 @@ func local_annotation() {
     return
 }
 
-// ERROR: `Instant` is not in scope
+// ERROR: `Instant` is not in scope [E0210]
 func started() -> Instant {
     return Instant.now()
 }
 
-// ERROR: `Request` is not in scope — `import http` is right there, and it binds
+// ERROR: `Request` is not in scope — `import http` is right there, and it binds [E0210]
 // `http`. Registering every type a module exports made the two import forms
 // mean the same thing, so naming the type bought nothing; it also reserved all
 // nine of http's names against a program that asked for one of them (#999).
@@ -54,7 +54,7 @@ func handle(r: Request) {
     return
 }
 
-// ERROR: `StringBuilder` is not in scope — in an annotation, which nothing
+// ERROR: `StringBuilder` is not in scope — in an annotation, which nothing [E0210]
 // used to check
 struct Report {
     body: StringBuilder
@@ -62,19 +62,19 @@ struct Report {
 
 // ── IM8: a declaration over an imported name ────────────────────
 
-// ERROR: `Duration` is already in scope from `time`
+// ERROR: `Duration` is already in scope from `time` [E0208]
 struct Duration {
     ticks: i64
 }
 
 // ── BI3: a type with a built-in's name ──────────────────────────
 
-// ERROR: `Vec` is a built-in type
+// ERROR: `Vec` is a built-in type [E0209]
 struct Vec {
     n: i64
 }
 
-// ERROR: `Option` is a built-in type — a prelude enum, and `option.rk`
+// ERROR: `Option` is a built-in type — a prelude enum, and `option.rk` [E0209]
 // declares one of its own, which is why this was accepted
 enum Option {
     Yes
@@ -83,7 +83,7 @@ enum Option {
 
 // ── BF3: a function with a built-in function's name ─────────────
 
-// ERROR: `println` is a built-in function
+// ERROR: `println` is a built-in function [E0209]
 func println(x: i64) {
     return
 }

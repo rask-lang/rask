@@ -4,7 +4,7 @@
 // Single uppercase letters always mean type parameters in signatures, so a
 // concrete type named `T` would be unusable.
 
-// ERROR: single-letter type name `T` is reserved for type parameters
+// ERROR: single-letter type name `T` is reserved for type parameters [E0357]
 struct T {
     x: i32
 }

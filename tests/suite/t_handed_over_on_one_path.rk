@@ -21,9 +21,9 @@
 // The tests read the value after the fallible step rather than only counting
 // allocations: a release let through on the wrong path is a use-after-free, so
 // a wrong answer here is the failure that matters.
-import io
 import io.Buffer
 import io.SeekFrom
+import io.IoError
 
 struct Row {
     public key: string

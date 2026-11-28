@@ -143,20 +143,24 @@ pub fn annotation_names(decls: &[Decl]) -> std::collections::HashSet<String> {
 }
 
 /// Rename single-segment attachments by `map`.
-fn rename_attachments(decls: &mut [Decl], map: &HashMap<String, String>) {
-    struct Renamer<'a>(&'a HashMap<String, String>);
+/// Returns the names it renamed.
+fn rename_attachments(decls: &mut [Decl], map: &HashMap<String, String>) -> std::collections::HashSet<String> {
+    struct Renamer<'a>(&'a HashMap<String, String>, std::collections::HashSet<String>);
     impl Rewrite for Renamer<'_> {
         fn attr(&mut self, a: &mut rask_ast::attr::Attr) {
             if let [name] = a.path.as_slice() {
                 if let Some(q) = self.0.get(name) {
+                    self.1.insert(name.clone());
                     a.path = vec![q.clone()];
                 }
             }
         }
     }
+    let mut r = Renamer(map, Default::default());
     if !map.is_empty() {
-        rewrite::rewrite_decls(decls, &mut Renamer(map));
+        rewrite::rewrite_decls(decls, &mut r);
     }
+    r.1
 }
 
 /// Point the program's own references at a dependency's qualified names.
@@ -172,16 +176,21 @@ fn rename_attachments(decls: &mut [Decl], map: &HashMap<String, String>) {
 ///
 /// `@libpkg.validate(…)` is the attachment spelling of the same thing, and is
 /// rewritten when `validate` is one of `annotations`.
+///
+/// Returns the package bindings it rewrote a reference through: the
+/// program's uses of those imports, by the name it wrote.
+#[must_use]
 pub fn qualify_references(
     decls: &mut [Decl],
     exports: &HashMap<String, HashMap<String, String>>,
     annotations: &std::collections::HashSet<String>,
-) {
+) -> std::collections::HashSet<String> {
     if exports.is_empty() {
-        return;
+        return Default::default();
     }
-    let mut r = ReferenceQualifier { exports, annotations };
+    let mut r = ReferenceQualifier { exports, annotations, used: Default::default() };
     rewrite::rewrite_decls(decls, &mut r);
+    r.used.into_inner()
 }
 
 /// What an import path names, from one package: `ImportIndex`'s answer, the
@@ -334,31 +343,40 @@ pub struct ShadowedImport {
 ///
 /// `import libpkg.validate` brings an annotation in the same way, and `@validate`
 /// then means it.
+///
+/// Returns the imported names it rewrote a reference to: the program's uses
+/// of those imports.
+#[must_use]
 pub fn qualify_imported_names(
     decls: &mut [Decl],
     imported: &HashMap<String, String>,
     annotations: &std::collections::HashSet<String>,
-) {
+) -> std::collections::HashSet<String> {
     if imported.is_empty() {
-        return;
+        return Default::default();
     }
-    qualify::rewrite_references(decls, imported);
+    let mut used = qualify::rewrite_references(decls, imported);
     let imported_annotations: HashMap<String, String> = imported
         .iter()
         .filter(|(_, q)| annotations.contains(*q))
         .map(|(n, q)| (n.clone(), q.clone()))
         .collect();
-    rename_attachments(decls, &imported_annotations);
+    used.extend(rename_attachments(decls, &imported_annotations));
+    used
 }
 
 struct ReferenceQualifier<'a> {
     exports: &'a HashMap<String, HashMap<String, String>>,
     annotations: &'a std::collections::HashSet<String>,
+    /// The package bindings a reference went through.
+    used: std::cell::RefCell<std::collections::HashSet<String>>,
 }
 
-impl ReferenceQualifier<'_> {
-    fn resolve(&self, pkg: &str, name: &str) -> Option<&String> {
-        self.exports.get(pkg)?.get(name)
+impl<'a> ReferenceQualifier<'a> {
+    fn resolve(&self, pkg: &str, name: &str) -> Option<&'a String> {
+        let q = self.exports.get(pkg)?.get(name)?;
+        self.used.borrow_mut().insert(pkg.to_string());
+        Some(q)
     }
 }
 

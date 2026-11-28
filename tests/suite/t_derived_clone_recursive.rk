@@ -102,11 +102,11 @@ test "a written clone wins" {
 }
 
 test "a JsonValue clones" {
-    let j = json.decode<JsonValue>("[1,[2,3],{{\"k\":\"v\"}}]") catch e => {
+    let j = json.decode<JsonValue>("[1,[2,3],\{\"k\":\"v\"\}]") catch e => {
         assert false
         return
     }
     let items = j.clone().as_array() ?? Vec.new()
     assert items.len() == 3
-    assert "{j}" == "[1,[2,3],{{\"k\":\"v\"}}]"
+    assert "{j}" == "[1,[2,3],\{\"k\":\"v\"\}]"
 }

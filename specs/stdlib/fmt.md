@@ -13,7 +13,7 @@
 | **F1: Signature** | `format(template: string, args...) -> string` |
 | **F2: Positional** | `{}` uses next arg; `{0}`, `{1}` use explicit index. Cannot mix auto and explicit |
 | **F3: Named** | `{name}` captures variable from scope. Cannot mix with positional |
-| **F4: Escape** | `{{` and `}}` produce literal `{` and `}` |
+| **F4: Escape** | `\{` and `\}` produce literal `{` and `}`. Raw strings (`r"…"`) don't interpolate, so their braces are text |
 
 Arguments after the template are compiler support (CM1), so the declaration has the template alone.
 
@@ -172,7 +172,7 @@ println(format("{:debug}", p))    // Point(x: 1, y: 2)
 |------|-------------|
 | **I1: Variable capture** | `println("Hello, {name}!")` interpolates `name` from scope |
 | **I2: Field access** | `{point.x}` works for dotted field access |
-| **I3: No expressions** | `{x + y}` is an error — use `format()` for expressions |
+| **I3: Expressions** | A hole holds any expression: `{x + y}`, `{items.len()}`, `{m.get("k") ?? 0}`. The hole is code, so a string inside it uses plain quotes |
 | **I4: No constants** | `{0}`, `{true}`, `{"x"}` are errors. A constant goes in the text as written; a hole is for a value only known when the string is built. `{0}` is a positional placeholder, in `format` (F2) and in a variant's `@message` (`type.errors/ER36`), and means nothing anywhere else |
 
 <!-- surface -->
@@ -214,18 +214,6 @@ FIX 2: If this is an error type, add message() instead (auto-bridges to Displaya
 ```
 
 ```
-ERROR [std.fmt/I3]: expression not supported in string interpolation
-   |
-3  |  println("{x + y}")
-   |           ^^^^^^^ expressions not allowed in interpolation
-
-WHY: println interpolation only supports names and field access.
-
-FIX: Use format():
-  println(format("{} + {} = {}", x, y, x + y))
-```
-
-```
 ERROR [std.fmt/F2]: cannot mix auto and explicit positional args
    |
 3  |  format("{} {0}", a, b)
@@ -243,7 +231,8 @@ FIX: Use all auto ({}, {}) or all explicit ({0}, {1}).
 | Missing arg for `{2}` | F2 | Compile-time error (when possible) or runtime panic |
 | Type without Displayable in `{}` | D4 | Compile-time error |
 | Error type in `{}` | D5 | Auto-bridges — calls `message()` |
-| `{{` in template | F4 | Literal `{` |
+| Lone `{` or `}` in a string | F4 | Compile error: a brace that opens or closes no hole is a typo or text, and text is escaped |
+| `{{` in a string or template | F4 | Compile error: write `\{` |
 | Empty template | F1 | Returns empty string |
 | `format("{:debug}", x)` on auto-derived type | G2 | Shows struct fields / enum variants |
 | Text already wider than the width | S4 | Printed in full — width pads, it never truncates. Use `.n` to cut |
@@ -285,7 +274,7 @@ isn't implemented.
 
 **D5 (Error bridge):** Every error type already has `message()` — requiring a separate `to_string()` that just calls `message()` is pure boilerplate. The compiler auto-bridges: if a type has `message(self) -> string`, it satisfies `Displayable` with `to_string()` delegating to `message()`. If you want different Displayable output than the error message, override with an explicit `Type implements Displayable`.
 
-**I3 (no expressions):** Expressions in string interpolation create hidden complexity. `format()` makes the formatting explicit. Keeps println simple.
+**I3 (expressions):** Without `+` on strings, interpolation is how text and values combine, so a hole that took only names would push every `items.len()` into a temporary first. A hole is parsed as ordinary code, so it reads the way the same expression reads anywhere else.
 
 **S4–S6 (columns, truncation, runtime width):** The grammar shipped with a `width` slot that never said what it counted, and the spec's own tabular example was the thing that breaks when you guess wrong. Bytes and scalars both give a table that lines up until someone's name has an accent in it — which is the failure mode of most CLI tools in most languages, because their format width counts the wrong unit and nobody notices until a bug report arrives from Japan.
 

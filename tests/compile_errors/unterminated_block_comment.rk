@@ -1,0 +1,12 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: a block comment that never closes
+//
+// Block comments nest, so the inner `/*` needs a `*/` of its own and the one
+// at the end of the line closes only that. The rest of the file is comment,
+// which used to surface as a missing `}` at the end of the file.
+
+func main() {
+    // ERROR: the outer comment is still open at the end of the file [E0006]
+    /* outer /* inner */
+    println("hi")
+}

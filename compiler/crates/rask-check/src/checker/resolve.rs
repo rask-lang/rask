@@ -1511,7 +1511,7 @@ impl TypeChecker {
                 self.resolve_rng_method(&method, &args, &ret, call_node, span)
             }
             // Shared<T>, Sender<T>, Receiver<T>, Channel<T>
-            Type::UnresolvedGeneric { name, args: type_args } if matches!(name.as_str(), "Cell" | "Shared" | "Mutex" | "Sender" | "Receiver" | "Channel") => {
+            Type::UnresolvedGeneric { name, args: type_args } if matches!(name.as_str(), "Shared" | "Sender" | "Receiver" | "Channel") => {
                 self.resolve_concurrency_generic_method(name, &type_args, &method, &args, &ret, call_node, span)
             }
             // `Channel.buffered(n)` / `.unbuffered()` with no explicit `<T>`.
@@ -1528,7 +1528,7 @@ impl TypeChecker {
                 self.resolve_concurrency_generic_method("Channel", &[], &method, &args, &ret, call_node, span)
             }
             // Builtin runtime types: Instant, Duration, TcpListener, TcpConnection, Shared (bare)
-            Type::UnresolvedNamed(name) if matches!(name.as_str(), "Instant" | "Duration" | "TcpListener" | "TcpConnection" | "Response" | "Request" | "Shared" | "Mutex")
+            Type::UnresolvedNamed(name) if matches!(name.as_str(), "Instant" | "Duration" | "TcpListener" | "TcpConnection" | "Response" | "Request" | "Shared" | "Mutex" | "Readers" | "Local")
                 || rask_stdlib::StubRegistry::load().get_type(name).is_some()
             => {
                 self.resolve_runtime_method(name, &method, &args, &ret, call_node, span)
@@ -2493,14 +2493,16 @@ impl TypeChecker {
                 let shared_ty = Self::shared_type(args[0].clone(), method).unwrap();
                 self.unify(ret, &shared_ty, span)
             }
-            // `Cell` is the `Local` strategy now (analysis.storage-consolidation).
-            ("Cell", _) => {
-                self.errors.push(TypeError::RetiredBoxType {
-                    name: "Cell".to_string(),
-                    replacement: "Shared.new(…)` / `Shared<T>".to_string(),
-                    span,
-                });
-                Ok(true)
+            // A strategy holds nothing; `Shared` holds the value and the
+            // strategy says how it locks. `Mutex.new(1)` is the old spelling
+            // from when `Mutex` was a container (analysis.storage-consolidation).
+            ("Mutex" | "Readers" | "Local", _) => {
+                let constructor = match type_name {
+                    "Mutex" => "Shared.mutex",
+                    "Local" => "Shared.local",
+                    _ => "Shared.new",
+                };
+                Err(TypeError::StrategyAsContainer { name: type_name.to_string(), constructor, span })
             }
             _ => Err(TypeError::NoSuchMethod {
                 ty: Type::UnresolvedNamed(type_name.to_string()),
@@ -2675,25 +2677,6 @@ impl TypeChecker {
                     args: inner_args.clone(),
                 };
                 self.unify(ret, &shared_ty, span)
-            }
-            // `Cell` and `Mutex` are strategies now, not types
-            // (analysis.storage-consolidation). Say so where the old spelling
-            // is used, rather than letting it fail as an unknown name.
-            ("Cell", _) => {
-                self.errors.push(TypeError::RetiredBoxType {
-                    name: "Cell".to_string(),
-                    replacement: format!("Shared.new(…)` / `Shared<T>"),
-                    span,
-                });
-                Ok(true)
-            }
-            ("Mutex", "lock" | "try_lock" | "clone" | "new") => {
-                self.errors.push(TypeError::RetiredBoxType {
-                    name: "Mutex".to_string(),
-                    replacement: format!("Shared.mutex(…)` / `Shared<T, Mutex>"),
-                    span,
-                });
-                Ok(true)
             }
             // Sender<T>.clone() -> Sender<T>
             ("Sender", "clone") if args.is_empty() => {
@@ -2932,13 +2915,10 @@ impl TypeChecker {
                 };
                 Some(self.resolve_atomic_method(payload, method, args, ret, call_node, span))
             }
-            "Cell" | "Shared" | "Mutex" | "Sender" | "Receiver" | "Channel" if !type_args.is_empty() => {
+            "Shared" | "Sender" | "Receiver" | "Channel" if !type_args.is_empty() => {
                 Some(self.resolve_concurrency_generic_method(type_name, type_args, method, args, ret, call_node, span))
             }
-            // `Cell` and `Mutex` are here to be *rejected* with a message that
-            // names the strategy that replaced them — without the arm they fall
-            // through to "couldn't work out the type", which says nothing.
-            name if matches!(name, "Instant" | "Duration" | "TcpListener" | "TcpConnection" | "Response" | "Request" | "Shared" | "Mutex" | "Cell")
+            name if matches!(name, "Instant" | "Duration" | "TcpListener" | "TcpConnection" | "Response" | "Request" | "Shared")
                 || rask_stdlib::StubRegistry::load().get_type(name).is_some() => {
                 Some(self.resolve_runtime_method(name, method, args, ret, None, span))
             }

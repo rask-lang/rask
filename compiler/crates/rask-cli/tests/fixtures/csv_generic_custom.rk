@@ -2,6 +2,7 @@
 // A generic struct whose field is typed by its parameter: `Row<Flag>.x` is a
 // `Flag`, read from its cell as the `bool` its `decode` takes.
 import csv
+import csv.CsvError
 
 struct Bad {
     why: string

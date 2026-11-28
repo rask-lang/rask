@@ -213,6 +213,10 @@ pub struct TypeTable {
     pub(crate) stdlib_mode: bool,
     /// Built-in type names mapped to Type.
     pub(super) builtins: HashMap<String, Type>,
+    /// Aliases that were rejected as part of a cycle (E0395). The name still
+    /// exists as far as the program can tell, so a use of it is `Error`
+    /// rather than an unknown type: the cycle is the one thing to report.
+    cyclic_aliases: HashSet<String>,
     /// Type alias name → target, as program code reads them: the program's
     /// own aliases and imports, then the stdlib's.
     type_aliases: HashMap<String, Alias>,
@@ -358,6 +362,7 @@ impl TypeTable {
             declared_names: HashMap::new(),
             stdlib_mode: false,
             builtins: HashMap::new(),
+            cyclic_aliases: HashSet::new(),
             type_aliases: HashMap::new(),
             stdlib_aliases: HashMap::new(),
             type_param_scope: Vec::new(),
@@ -777,6 +782,17 @@ impl TypeTable {
     /// Scoped like a declared type: a stdlib alias is the stdlib's and, unless
     /// the program takes the name, the program's too; a program alias is the
     /// program's only.
+    /// Record an alias rejected for closing a cycle, so its uses read as
+    /// already reported.
+    pub fn register_cyclic_alias(&mut self, name: String) {
+        self.cyclic_aliases.insert(name);
+    }
+
+    /// An alias refused for reaching itself: declared, and already reported.
+    pub fn is_cyclic_alias(&self, name: &str) -> bool {
+        self.cyclic_aliases.contains(name)
+    }
+
     pub fn register_alias(&mut self, name: String, params: Vec<String>, target: TypeExpr) {
         let alias = Alias { params, target };
         if self.stdlib_mode {
@@ -844,26 +860,54 @@ impl TypeTable {
         self.alias_target(name).filter(|t| t.args().is_empty()).and_then(TypeExpr::name)
     }
 
-    /// Check if registering `name -> target` would create a cycle.
-    /// Returns the cycle path if so.
+    /// The alias chain by which registering `name -> target` would reach
+    /// `name` again, as `["Tree", "Forest", "Tree"]`. An alias is replaced by
+    /// what it stands for wherever it appears, so a mention anywhere counts:
+    /// `type alias Pair = (i64, Pair)` and `type alias Items = Vec<Items>`
+    /// both expand forever.
     pub fn check_alias_cycle(&self, name: &str, target: &TypeExpr) -> Option<Vec<String>> {
-        let mut path = vec![name.to_string(), target.to_string()];
-        let mut current = target;
-        loop {
-            let current_name = current.bare_name()?;
-            if current_name == name {
-                return Some(path);
+        let mut path = vec![name.to_string()];
+        let mut seen = HashSet::new();
+        self.alias_reaches(name, target, &mut path, &mut seen).then_some(path)
+    }
+
+    fn alias_reaches(
+        &self,
+        name: &str,
+        target: &TypeExpr,
+        path: &mut Vec<String>,
+        seen: &mut HashSet<String>,
+    ) -> bool {
+        let mentioned = std::cell::RefCell::new(Vec::new());
+        target.mentions(&|n| {
+            mentioned.borrow_mut().push(n.to_string());
+            false
+        });
+        for next in mentioned.into_inner() {
+            if next == name {
+                path.push(next);
+                return true;
             }
-            let next = &self.aliases().get(current_name)?.target;
-            path.push(next.to_string());
-            current = next;
+            if !seen.insert(next.clone()) {
+                continue;
+            }
+            let Some(alias) = self.aliases().get(&next) else { continue };
+            path.push(next);
+            if self.alias_reaches(name, &alias.target, path, seen) {
+                return true;
+            }
+            path.pop();
         }
+        false
     }
 
     /// Look up a type by name.
     pub fn lookup(&self, name: &str) -> Option<Type> {
         if let Some(ty) = self.builtins.get(name) {
             return Some(ty.clone());
+        }
+        if self.cyclic_aliases.contains(name) {
+            return Some(Type::Error);
         }
         if let Some(target) = self.alias_target(name) {
             return super::parse_type::resolve_type_expr(target, self).ok();

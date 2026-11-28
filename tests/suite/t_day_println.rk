@@ -72,10 +72,10 @@ test "escaped braces are literal" {
     mut b = StringBuilder.new()
     b.push_char('{')
     b.push_char('}')
-    assert "{{}}" == b.build()
+    assert "\{\}" == b.build()
     let n = 5
-    assert "{{{n}}}" == "{{5}}"
-    assert "{{{n}}}".len() == 3
+    assert "\{{n}\}" == "\{5\}"
+    assert "\{{n}\}".len() == 3
 }
 
 test "interpolation through a function" {

@@ -11,7 +11,6 @@
 // alongside the rest.
 
 import sync.Shared
-import sync.Mutex
 
 func main() {}
 

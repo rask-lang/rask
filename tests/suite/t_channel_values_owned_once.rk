@@ -5,7 +5,7 @@
 // The leak and memcheck gates are what catch a regression; the asserts only
 // keep the values alive long enough to be read.
 
-import async.{Channel, Receiver}
+import async.Channel
 import fs
 
 func make(n: i64) -> string {

@@ -14,10 +14,8 @@
 // runtime kind. The catch-all answers with the value's own type name now, which
 // also covers `i128`/`u128`, `File`, `Instant` and the rest of the box family.
 
-import time
 import time.Duration
 import time.Instant
-import time.SystemTime
 
 enum Failed {
     Reason(string)

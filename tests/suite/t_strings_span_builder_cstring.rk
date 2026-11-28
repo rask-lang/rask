@@ -2,7 +2,6 @@
 // Three small string-side surfaces: `Span.len`, `StringBuilder.with_capacity`,
 // and reading a C string's bytes through `cstring.as_ptr`.
 
-import string.cstring
 import string.StringBuilder
 import builtins.Span
 

@@ -1,0 +1,17 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: a range that steps by zero
+//
+// `step(0)` never gets past the start, so the loop never ends. The check
+// matched only the range literal's type before the checker resolved it, and
+// never fired.
+
+func main() {
+    // ERROR: a step of zero never moves [E0337]
+    for i in (0..10).step(0) {
+        println(i)
+    }
+    let r = (0..10).step(2)
+    for j in r {
+        println(j)
+    }
+}

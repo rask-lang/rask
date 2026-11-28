@@ -1,0 +1,26 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: a `union` holding owned memory, or built from two members
+//
+// A union's members share their bytes, so nothing knows which one to free:
+// a member that owns memory has no owner. Building one names exactly one
+// member, because the others are the same bytes.
+
+union Value {
+    n: i64
+    // ERROR: `s` owns its buffer, and nothing would free it [E0934]
+    s: string
+}
+
+union Bits {
+    i: i32
+    f: f32
+}
+
+func built() {
+    let ok = Bits(f: 2.0)
+    // ERROR: `i` and `f` are the same four bytes [E0938]
+    let both = Bits(i: 1, f: 2.0)
+}
+
+func main() {
+}

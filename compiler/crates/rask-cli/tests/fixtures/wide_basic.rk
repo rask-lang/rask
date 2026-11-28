@@ -22,7 +22,7 @@ func main() {
     print("{lanes().zip_with(ys, |a, b| a * b).sum()}\n")   // 300
 
     // lazy map, then materialize back to a Vec
-    print("{lanes().map(|x| x * 2.0).to_vec().join(\", \")}\n") // 2, 4, 6, 8
+    print("{lanes().map(|x| x * 2.0).to_vec().join(", ")}\n") // 2, 4, 6, 8
 
     // reduction family
     print("{xs.min()}\n")                              // 1

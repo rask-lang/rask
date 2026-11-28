@@ -142,7 +142,7 @@ Version implements Hashable {
 test "std.fmt — a hash in the top half of u64 renders unsigned" {
     // "a" hashes to 12638187200555641996, which is above i64::MAX.
     assert "a".hash() > 9223372036854775807
-    assert "{\"a\".hash()}" == "12638187200555641996"
+    assert "{"a".hash()}" == "12638187200555641996"
 
     // The same for an integer receiver, which never went through that path.
     let n: i8 = -1

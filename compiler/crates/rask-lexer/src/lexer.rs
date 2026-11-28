@@ -5,8 +5,20 @@ use logos::Logos;
 use rask_ast::token::{FloatSuffix, IntSuffix, StrPositions, Token, TokenKind};
 use rask_ast::Span;
 
+/// Why logos couldn't make a token. Anything no rule matches is `Unexpected`;
+/// the two scanners that run to end of input say so, so an unclosed string
+/// isn't reported as a stray quote.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+enum RawError {
+    #[default]
+    Unexpected,
+    UnterminatedString,
+    UnterminatedComment,
+}
+
 /// Raw token type for logos - we parse values in a second pass.
 #[derive(Logos, Debug, Clone, PartialEq)]
+#[logos(error = RawError)]
 #[logos(skip r"[ \t]+")]  // Skip horizontal whitespace (not newlines)
 enum RawToken {
     // === Keywords ===
@@ -274,11 +286,11 @@ enum RawToken {
     Char,
 
     // Raw string literal (r"..." — no escape processing)
-    #[regex(r#"r"[^"]*""#)]
+    #[token("r\"", one_line_quoted)]
     RawString,
 
     // Hex bytes literal (x"89 50 4E 47" — std.bytes/BY10)
-    #[regex(r#"x"[^"]*""#)]
+    #[token("x\"", to_next_quote)]
     HexBytes,
 
     // Raw string literal with hash delimiters (r#"..."# — handles embedded quotes)
@@ -327,7 +339,7 @@ fn parse_hex_bytes(inner: &str, base: usize) -> Result<Vec<u8>, LexError> {
 /// Lex a raw hash string: r#"..."#, r##"..."##, etc.
 /// The `r#` prefix is already consumed by logos. We count additional `#` chars,
 /// expect `"`, then scan for the matching `"` + same number of `#`.
-fn raw_hash_string(lexer: &mut logos::Lexer<RawToken>) -> bool {
+fn raw_hash_string(lexer: &mut logos::Lexer<RawToken>) -> Result<(), RawError> {
     let bytes = lexer.remainder().as_bytes();
     let mut pos = 0;
 
@@ -340,7 +352,7 @@ fn raw_hash_string(lexer: &mut logos::Lexer<RawToken>) -> bool {
 
     // Expect opening "
     if pos >= bytes.len() || bytes[pos] != b'"' {
-        return false;
+        return Err(RawError::Unexpected);
     }
     pos += 1;
 
@@ -357,13 +369,29 @@ fn raw_hash_string(lexer: &mut logos::Lexer<RawToken>) -> bool {
             if count == hash_count {
                 pos += 1 + hash_count; // skip " and all #s
                 lexer.bump(pos);
-                return true;
+                return Ok(());
             }
         }
         pos += 1;
     }
 
-    false
+    Err(RawError::UnterminatedString)
+}
+
+/// The delimiter a string starting at `rest` opened with: `"`, `"""`,
+/// `r"`, `x"` or `r#…#"`.
+fn string_opener(rest: &str) -> &str {
+    if rest.starts_with("\"\"\"") {
+        return &rest[..3];
+    }
+    if rest.starts_with("r\"") || rest.starts_with("x\"") {
+        return &rest[..2];
+    }
+    if rest.starts_with("r#") {
+        let hashes = rest[1..].bytes().take_while(|&b| b == b'#').count();
+        return &rest[..2 + hashes];
+    }
+    &rest[..1]
 }
 
 /// Scan a double-quoted string; the opening `"` is already consumed.
@@ -379,7 +407,7 @@ fn raw_hash_string(lexer: &mut logos::Lexer<RawToken>) -> bool {
 /// string on the same line and the hole it is reading has something in it
 /// before the quote. Otherwise the scan restarts with the old rule: stop at
 /// the first unescaped quote.
-fn double_quoted_string(lexer: &mut logos::Lexer<RawToken>) -> bool {
+fn double_quoted_string(lexer: &mut logos::Lexer<RawToken>) -> Result<(), RawError> {
     let bytes = lexer.remainder().as_bytes();
 
     let len = if bytes.starts_with(b"\"\"") {
@@ -391,17 +419,22 @@ fn double_quoted_string(lexer: &mut logos::Lexer<RawToken>) -> bool {
     match len {
         Some(n) => {
             lexer.bump(n);
-            true
+            Ok(())
         }
-        None => false,
+        None => Err(RawError::UnterminatedString),
     }
 }
 
-/// `"""..."""` — raw text up to the next triple quote. Two of the three opening
-/// quotes are in `bytes`; the third was consumed as the token start.
+/// `"""..."""` — up to the next unescaped triple quote. Two of the three
+/// opening quotes are in `bytes`; the third was consumed as the token start.
+/// The body processes escapes, so `"""say \"hi\""""` ends after the escaped quote.
 fn scan_multi_line(bytes: &[u8]) -> Option<usize> {
     let mut pos = 2;
     while pos + 3 <= bytes.len() {
+        if bytes[pos] == b'\\' {
+            pos += 2;
+            continue;
+        }
         if &bytes[pos..pos + 3] == b"\"\"\"" {
             return Some(pos + 3);
         }
@@ -410,17 +443,44 @@ fn scan_multi_line(bytes: &[u8]) -> Option<usize> {
     None
 }
 
-/// The old rule: end at the first unescaped quote, braces be damned.
+/// The old rule: end at the first unescaped quote, braces be damned. A
+/// plain string stays on its line; `"""` is the one that spans lines.
 fn scan_plain(bytes: &[u8]) -> Option<usize> {
     let mut pos = 0;
     while pos < bytes.len() {
         match bytes[pos] {
             b'\\' => pos += 2,
             b'"' => return Some(pos + 1),
+            b'\n' => return None,
             _ => pos += 1,
         }
     }
     None
+}
+
+/// The rest of an `r"…"` literal, opener already consumed: up to the next
+/// quote, on the same line. No escapes.
+fn one_line_quoted(lexer: &mut logos::Lexer<RawToken>) -> Result<(), RawError> {
+    let bytes = lexer.remainder().as_bytes();
+    match bytes.iter().position(|&b| b == b'"' || b == b'\n') {
+        Some(n) if bytes[n] == b'"' => {
+            lexer.bump(n + 1);
+            Ok(())
+        }
+        _ => Err(RawError::UnterminatedString),
+    }
+}
+
+/// The rest of an `x"…"` literal: up to the next quote. Hex pairs may be
+/// spread over lines (std.bytes/BY10), so a newline doesn't end it.
+fn to_next_quote(lexer: &mut logos::Lexer<RawToken>) -> Result<(), RawError> {
+    match lexer.remainder().find('"') {
+        Some(n) => {
+            lexer.bump(n + 1);
+            Ok(())
+        }
+        None => Err(RawError::UnterminatedString),
+    }
 }
 
 /// End at the first unescaped quote that isn't inside a `{ }` hole.
@@ -439,11 +499,32 @@ fn scan_hole_aware(bytes: &[u8]) -> Option<usize> {
                 pos += 2;
                 continue;
             }
+            // Outside a hole, a doubled brace is a mistake the parser reports
+            // (the escape is `\{`). Reading `"{{"` as two holes opening would
+            // run the string on past its closing quote.
+            b'{' | b'}' if holes.is_empty() && bytes.get(pos + 1) == Some(&bytes[pos]) => {
+                pos += 2;
+                continue;
+            }
             b'{' => {
                 holes.push(pos + 1);
             }
             b'}' => {
                 holes.pop();
+            }
+            // A raw literal in a hole: its backslashes and braces are text.
+            b'r' if !holes.is_empty() => {
+                if let Some(after) = skip_raw_string(bytes, pos) {
+                    pos = after;
+                    continue;
+                }
+            }
+            // A char literal in a hole holds its brace: `{c == '{'}`.
+            b'\'' if !holes.is_empty() => {
+                if let Some(after) = skip_char_literal(bytes, pos) {
+                    pos = after;
+                    continue;
+                }
             }
             b'"' => {
                 let Some(&hole_start) = holes.last() else {
@@ -470,12 +551,37 @@ fn scan_hole_aware(bytes: &[u8]) -> Option<usize> {
                 pos = after;
                 continue;
             }
-            b'\n' if !holes.is_empty() => return None,
+            b'\n' => return None,
             _ => {}
         }
         pos += 1;
     }
 
+    None
+}
+
+/// Step over a raw string `r"…"` or `r#"…"#` whose `r` is at `pos`; the
+/// result is the byte just past it. `None` if `pos` isn't one, or a
+/// single-hash-free one runs past its line.
+pub fn skip_raw_string(bytes: &[u8], pos: usize) -> Option<usize> {
+    if pos > 0 && (bytes[pos - 1].is_ascii_alphanumeric() || bytes[pos - 1] == b'_') {
+        return None;
+    }
+    let hashes = bytes[pos + 1..].iter().take_while(|b| **b == b'#').count();
+    let mut p = pos + 1 + hashes;
+    if bytes.get(p) != Some(&b'"') {
+        return None;
+    }
+    p += 1;
+    while p < bytes.len() {
+        match bytes[p] {
+            b'"' if bytes[p + 1..].iter().take(hashes).filter(|b| **b == b'#').count() == hashes => {
+                return Some(p + 1 + hashes);
+            }
+            b'\n' if hashes == 0 => return None,
+            _ => p += 1,
+        }
+    }
     None
 }
 
@@ -496,8 +602,28 @@ fn skip_nested_string(bytes: &[u8], pos: usize) -> Option<usize> {
     None
 }
 
+/// Step over a char literal nested in a hole: `'x'` or `'\n'`. `pos` is its
+/// opening quote; the result is the byte just past its closing quote.
+fn skip_char_literal(bytes: &[u8], pos: usize) -> Option<usize> {
+    let mut end = pos + 1;
+    if bytes.get(end) == Some(&b'\\') {
+        end += 2;
+        // `'\u{1F600}'` and the like: run to the closing quote.
+        while end < bytes.len() && bytes[end] != b'\'' && bytes[end] != b'\n' && end - pos < 16 {
+            end += 1;
+        }
+    } else {
+        // One UTF-8 character.
+        end += 1;
+        while end < bytes.len() && (bytes[end] & 0xC0) == 0x80 {
+            end += 1;
+        }
+    }
+    (bytes.get(end) == Some(&b'\'')).then_some(end + 1)
+}
+
 /// Skip block comments, handling nesting.
-fn block_comment(lexer: &mut logos::Lexer<RawToken>) -> logos::Skip {
+fn block_comment(lexer: &mut logos::Lexer<RawToken>) -> logos::FilterResult<(), RawError> {
     let mut depth = 1;
     let remainder = lexer.remainder();
     let mut chars = remainder.chars().peekable();
@@ -518,12 +644,15 @@ fn block_comment(lexer: &mut logos::Lexer<RawToken>) -> logos::Skip {
             Some(c) => {
                 consumed += c.len_utf8();
             }
-            None => break, // Unterminated - we'll handle error elsewhere
+            None => {
+                lexer.bump(consumed);
+                return logos::FilterResult::Error(RawError::UnterminatedComment);
+            }
         }
     }
 
     lexer.bump(consumed);
-    logos::Skip
+    logos::FilterResult::Skip
 }
 
 /// Maximum number of errors to collect before stopping.
@@ -590,11 +719,32 @@ impl<'a> Lexer<'a> {
                         }
                     }
                 }
-                Err(()) => {
-                    // Get the problematic character
+                Err(RawError::Unexpected) => {
                     let ch = self.source[span.start..].chars().next().unwrap_or('?');
                     self.errors.push(LexError::unexpected_char(ch, span.start));
-                    continue; // Skip and continue
+                    // Kept as a token so the parser knows something stood here
+                    // and doesn't report the gap as a second mistake.
+                    TokenKind::Invalid
+                }
+                Err(RawError::UnterminatedString) => {
+                    let rest = &self.source[span.start..];
+                    let opener = string_opener(rest);
+                    let spans_lines = matches!(opener, "\"\"\"" | "x\"") || opener.starts_with("r#");
+                    self.errors.push(LexError::unterminated_string(span.start, opener, spans_lines));
+                    // A string that may span lines ran to the end of input,
+                    // so nothing follows to recover. One that stays on its
+                    // line ended there, and lexing goes on from the next.
+                    if spans_lines {
+                        break;
+                    }
+                    let line_end = rest.find('\n').map_or(self.source.len(), |n| span.start + n);
+                    logos_lexer.bump(line_end.saturating_sub(logos_lexer.span().end));
+                    tokens.push(Token { kind: TokenKind::Invalid, span: self.span(span.start, line_end) });
+                    continue;
+                }
+                Err(RawError::UnterminatedComment) => {
+                    self.errors.push(LexError::unterminated_comment(span.start));
+                    break;
                 }
             };
 
@@ -843,19 +993,19 @@ impl<'a> Lexer<'a> {
                 TokenKind::Char(ch)
             }
             RawToken::String if slice.starts_with(r#"""""#) => {
-                // Triple-quoted: raw, no escape processing
                 let inner = &slice[3..slice.len() - 3];
-                TokenKind::String(inner.to_string(), StrPositions::new(3))
+                let (s, positions) = parse_string(inner, start, 3)?;
+                TokenKind::String(s, positions)
             }
             RawToken::String => {
                 let inner = &slice[1..slice.len() - 1]; // Remove quotes
-                let (s, positions) = parse_string(inner, start)?;
+                let (s, positions) = parse_string(inner, start, 1)?;
                 TokenKind::String(s, positions)
             }
             RawToken::RawString => {
-                // r"content" — strip r" prefix and " suffix, no escape processing
+                // r"content": no escapes, no interpolation.
                 let inner = &slice[2..slice.len() - 1];
-                TokenKind::String(inner.to_string(), StrPositions::new(2))
+                TokenKind::String(inner.to_string(), StrPositions::raw(2))
             }
             RawToken::RawHashString => {
                 // r#"content"# or r##"content"## etc.
@@ -864,7 +1014,7 @@ impl<'a> Lexer<'a> {
                 let content_start = 1 + hash_count + 1; // r + #*n + "
                 let content_end = slice.len() - 1 - hash_count; // " + #*n
                 let inner = &slice[content_start..content_end];
-                TokenKind::String(inner.to_string(), StrPositions::new(content_start))
+                TokenKind::String(inner.to_string(), StrPositions::raw(content_start))
             }
             RawToken::HexBytes => {
                 let inner = &slice[2..slice.len() - 1];
@@ -940,23 +1090,87 @@ fn parse_char(s: &str, pos: usize) -> Result<char, LexError> {
     }
 }
 
-/// Parse a string literal (handling escape sequences).
-fn parse_string(s: &str, pos: usize) -> Result<(String, StrPositions), LexError> {
+/// Parse a `"…"` or `"""…"""` literal's body: escapes outside holes become
+/// their characters, and a hole is copied as written, because it is code the
+/// parser lexes again. `\{` and `\}` are recorded as literal braces.
+fn parse_string(s: &str, pos: usize, delimiter_len: usize) -> Result<(String, StrPositions), LexError> {
     let mut result = String::new();
-    let mut positions = StrPositions::new(1);
+    let mut positions = StrPositions::new(delimiter_len);
     let mut chars = s.chars();
 
     while let Some(c) = chars.next() {
-        if c == '\\' {
-            result.push(parse_escape(&mut chars, pos)?);
-            // +1 for the opening quote.
-            positions.anchor(result.len(), 1 + s.len() - chars.as_str().len());
-        } else {
-            result.push(c);
+        match c {
+            '\\' => {
+                // Any escape that yields a brace is text: `\{`, and `\u{7b}`
+                // too, which once became a hole.
+                let ch = parse_escape(&mut chars, pos)?;
+                if ch == '{' || ch == '}' {
+                    positions.literal_brace(result.len());
+                }
+                result.push(ch);
+                positions.anchor(result.len(), delimiter_len + s.len() - chars.as_str().len());
+            }
+            '{' => {
+                let rest = chars.as_str();
+                let len = hole_len(rest.as_bytes());
+                result.push('{');
+                result.push_str(&rest[..len]);
+                chars = rest[len..].chars();
+            }
+            _ => result.push(c),
         }
     }
 
     Ok((result, positions))
+}
+
+/// Bytes of a hole's body after its `{`, up to and including the `}` that
+/// closes it, or all of `bytes` if none does. Nested string and char literals
+/// keep their braces.
+///
+/// A backslash is never code, so it and the byte after it are stepped over the
+/// way [`scan_hole_aware`] steps over them: `"{\"x\":1}"` is one hole holding
+/// `\"x\":1`, which the parser rejects by name, not a quote that opens a
+/// nested string and leaves the hole unclosed.
+fn hole_len(bytes: &[u8]) -> usize {
+    let mut depth = 1;
+    let mut pos = 0;
+    while pos < bytes.len() {
+        match bytes[pos] {
+            b'\\' => {
+                pos += 2;
+                continue;
+            }
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return pos + 1;
+                }
+            }
+            b'"' => {
+                pos += 1;
+                while pos < bytes.len() && bytes[pos] != b'"' {
+                    pos += if bytes[pos] == b'\\' { 2 } else { 1 };
+                }
+            }
+            b'r' => {
+                if let Some(after) = skip_raw_string(bytes, pos) {
+                    pos = after;
+                    continue;
+                }
+            }
+            b'\'' => {
+                if let Some(after) = skip_char_literal(bytes, pos) {
+                    pos = after;
+                    continue;
+                }
+            }
+            _ => {}
+        }
+        pos += 1;
+    }
+    bytes.len()
 }
 
 /// Parse an escape sequence.
@@ -969,7 +1183,8 @@ fn parse_escape(chars: &mut impl Iterator<Item = char>, pos: usize) -> Result<ch
         Some('0') => Ok('\0'),
         Some('\'') => Ok('\''),
         Some('"') => Ok('"'),
-        Some('{') => Ok('{'),  // For string interpolation escaping
+        Some('{') => Ok('{'),
+        Some('}') => Ok('}'),
         Some('u') => parse_unicode_escape(chars, pos),
         _ => Err(LexError::invalid_escape(pos)),
     }
@@ -1050,11 +1265,56 @@ impl LexError {
         }
     }
 
+    fn unterminated_string(start: usize, opener: &str, spans_lines: bool) -> Self {
+        // `r##"` closes with `"##`, `"""` with `"""`, `r"`, `x"` and `"` with `"`.
+        let quotes = opener.chars().filter(|&c| c == '"');
+        let close: String = quotes.chain(opener.chars().filter(|&c| c == '#')).collect();
+        let (label, why) = if spans_lines {
+            (
+                "this string runs to the end of the file",
+                "everything after an opening quote is text until the matching closing quote",
+            )
+        } else {
+            (
+                "the line ends before this string does",
+                if opener == "\"" {
+                    "a `\"` string stays on one line; `\"\"\"` is the form that spans lines"
+                } else {
+                    "an `r\"` string stays on one line; `\"\"\"` is the form that spans lines"
+                },
+            )
+        };
+        let hint = if opener == "\"" {
+            format!("end the string with `{close}`; a quote inside one is written `\\\"`")
+        } else {
+            format!("end the string with `{close}`")
+        };
+        Self {
+            span: Span::new(start, start + opener.len()),
+            message: "string literal never closed".to_string(),
+            hint: Some(hint),
+            code: "E0002",
+            label,
+            why,
+        }
+    }
+
+    fn unterminated_comment(start: usize) -> Self {
+        Self {
+            span: Span::new(start, start + 2),
+            message: "block comment never closed".to_string(),
+            hint: Some("end it with `*/`; block comments nest, so each `/*` inside needs its own `*/`".to_string()),
+            code: "E0006",
+            label: "this comment runs to the end of the file",
+            why: "everything after `/*` is comment until its matching `*/`",
+        }
+    }
+
     fn invalid_escape(pos: usize) -> Self {
         Self {
             span: Span::new(pos, pos + 1),
             message: "invalid escape sequence".to_string(),
-            hint: Some("valid escapes: \\n \\r \\t \\\\ \\0 \\' \\\" \\u{...}".to_string()),
+            hint: Some("valid escapes: \\n \\r \\t \\\\ \\0 \\' \\\" \\{ \\} \\u{...}".to_string()),
             code: "E0003",
             label: "not a valid escape",
             why: "a backslash in a string starts an escape, so every backslash has to name one",

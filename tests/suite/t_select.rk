@@ -205,7 +205,7 @@ test "a value already there wins over the cancel" {
 }
 
 // `!` is the form for a select that isn't expected to fail.
-test "select { … }! panics when every channel is closed" {
+test "select \{ … \}! panics when every channel is closed" {
     using Multitasking {
         let (tx, rx) = Channel<i64>.buffered(1)
         tx.close()!

@@ -538,6 +538,7 @@ impl TypeChecker {
                 if types.get_type_id(name).is_some()
                     || types.builtins.contains_key(name)
                     || types.aliases().contains_key(name)
+                    || types.is_cyclic_alias(name)
                     || rask_stdlib::mir_metadata::stdlib_type_names().contains(name)
                 {
                     return;

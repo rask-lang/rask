@@ -1,0 +1,36 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: a constructor pattern whose name is no variant at all
+//
+// `p is some(v)` reads naturally but Rask has no `some` pattern: the payload
+// of an optional is bound with `if p? as v`. These used to type-check, bind
+// `v` to a type nothing settled, and the interpreter and native disagreed on
+// whether the test held.
+
+func pick(flag: bool) -> i64? {
+    if flag {
+        return 5
+    }
+    return none
+}
+
+func main() {
+    let p = pick(true)
+    // ERROR: an optional has no `some` pattern [E0954]
+    if p is some(v) {
+        println(v)
+    }
+    let n = 5
+    // ERROR: a number has no variants [E0954]
+    if n is bogus(x) {
+        println(x)
+    }
+    let double = |x: i64| x * 2
+    let maybe: (func(i64) -> i64)? = double
+    // ERROR: the same on an optional closure [E0954]
+    if maybe is some(f) {
+        println(f(1))
+    }
+    if maybe? as f {
+        println(f(2))
+    }
+}

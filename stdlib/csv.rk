@@ -295,7 +295,7 @@ func csv_record<T: Decode>(shape: CsvShape, cols: Vec<i64>, record: Vec<string>,
         return CsvError.ColumnCount(row: row, expected: expected, found: record.len())
     }
     mut obj = StringBuilder.new()
-    obj.push("{{")
+    obj.push("\{")
     mut any = false
     for k in 0..shape.names.len() {
         if cols[k] >= 0 {
@@ -312,7 +312,7 @@ func csv_record<T: Decode>(shape: CsvShape, cols: Vec<i64>, record: Vec<string>,
             obj.push(value)
         }
     }
-    obj.push("}}")
+    obj.push("\}")
     // Every primitive cell was checked above, so what's left for the decoder
     // to reject is a type's own `decode` or a nested value written as JSON.
     let value = json.decode<T>(obj.build()) catch e => {

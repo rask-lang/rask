@@ -16,12 +16,12 @@ struct Point {
 
 func main() -> void or json.JsonError {
     let p = Point(x: 1)
-    // ERROR: `is Point` needs a two-branch scrutinee
+    // ERROR: `is Point` needs a two-branch scrutinee [E0398]
     let a = p is Point
     let v = try json.decode<JsonValue>("[1]")
-    // ERROR: `is JsonValue` needs a two-branch scrutinee
+    // ERROR: `is JsonValue` needs a two-branch scrutinee [E0398]
     let b = v is JsonValue
-    // ERROR: the module-qualified spelling names the same type
+    // ERROR: the module-qualified spelling names the same type [E0398]
     let c = v is json.JsonValue
     println("{a} {b} {c}")
 }

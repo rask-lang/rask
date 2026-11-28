@@ -14,8 +14,8 @@ struct WithPtr {
 }
 
 func main() {
-    // ERROR: `WithPtr` cannot be decoded — `p` is a raw pointer
-    let w = json.decode<WithPtr>("{{\"n\":1}}") catch e => {
+    // ERROR: `WithPtr` cannot be decoded — `p` is a raw pointer [E0388]
+    let w = json.decode<WithPtr>("\{\"n\":1\}") catch e => {
         return
     }
     println("n={w.n}")

@@ -644,6 +644,22 @@ impl Hasher {
                                 None => self.feed_tag(0),
                             }
                         }
+                        rask_ast::expr::StringSegment::Placeholder { index, spec, .. } => {
+                            self.feed_tag(2);
+                            match index {
+                                Some(i) => self.feed_u64(*i as u64 + 1),
+                                None => self.feed_u64(0),
+                            }
+                            match spec {
+                                Some(spec) => {
+                                    let (ty, width, precision, align, fill) = spec.encode();
+                                    for n in [ty, width, precision, align, fill as i64] {
+                                        self.feed_tag(n as u8);
+                                    }
+                                }
+                                None => self.feed_tag(0),
+                            }
+                        }
                     }
                 }
             }

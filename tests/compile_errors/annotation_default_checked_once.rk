@@ -7,7 +7,7 @@
 // skipped at the attachment now: two uses, one error.
 
 annotation @limit {
-    max: i64 = "ten"                   // ERROR: a string default for an i64
+    max: i64 = "ten"                   // ERROR: a string default for an i64 [E0854]
 }
 
 struct Form {

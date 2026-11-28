@@ -10,9 +10,8 @@
 import async.Handles
 import thread.Thread
 import thread.ThreadPool
-import net
 import http
-import http.{Request, Response, Responder}
+import http.Response
 
 @resource
 struct Conn {

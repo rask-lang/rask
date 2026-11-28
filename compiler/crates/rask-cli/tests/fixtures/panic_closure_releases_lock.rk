@@ -36,7 +36,6 @@ func main() {
         let b = Thread.spawn {
             NONBLOCKING.try_write(|w| {
                 panic("died in a try_write closure")
-                return 0
             })
             return 0
         }

@@ -11,8 +11,6 @@
 // and it costs nothing.
 
 import interfacepkg
-import liba
-import libb
 
 func main() {
     let d = interfacepkg.make_doc(7)

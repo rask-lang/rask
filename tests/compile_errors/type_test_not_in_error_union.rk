@@ -1,0 +1,47 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: a type test naming an error the result can't hold
+//
+// This used to get its own code (E0347) when the error side was a union and
+// E0398 otherwise, for the same mistake.
+
+struct ParseFailed {
+    m: string
+}
+extend ParseFailed {
+    func message(self) -> string {
+        return self.m
+    }
+}
+
+struct DiskFailed {
+    m: string
+}
+extend DiskFailed {
+    func message(self) -> string {
+        return self.m
+    }
+}
+
+struct NetFailed {
+    m: string
+}
+extend NetFailed {
+    func message(self) -> string {
+        return self.m
+    }
+}
+
+func load(n: i64) -> i64 or (ParseFailed | DiskFailed) {
+    if n < 0 {
+        return ParseFailed(m: "negative")
+    }
+    return n
+}
+
+func main() {
+    let r = load(1)
+    // ERROR: not a branch [E0398]
+    if r is NetFailed {
+        println("net")
+    }
+}

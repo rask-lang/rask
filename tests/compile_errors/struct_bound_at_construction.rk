@@ -40,24 +40,24 @@ func main() {
     let ok = Holder(item: Dog(n: "rex"))
     println(ok.item.name())
 
-    // ERROR: `Plain` does not implement `Named`
+    // ERROR: `Plain` does not implement `Named` [E0333]
     let h = Holder(item: Plain(x: 1))
 
-    // ERROR: an unsuffixed literal is checked as the type it defaults to
+    // ERROR: an unsuffixed literal is checked as the type it defaults to [E0333]
     let k = Holder(item: 5)
 
-    // ERROR: a variant's payload instantiates the enum
+    // ERROR: a variant's payload instantiates the enum [E0333]
     let s = Slot.Full(Plain(x: 2))
 
-    // ERROR: and with the arguments written out
+    // ERROR: and with the arguments written out [E0333]
     let w = Slot<Plain>.Full(Plain(x: 3))
 
-    // ERROR: a written type names an instantiation too
+    // ERROR: a written type names an instantiation too [E0333]
     let e: Slot<Plain> = Slot.Empty
 
-    // ERROR: and so does a variant with named fields (#1473)
+    // ERROR: and so does a variant with named fields (#1473) [E0333]
     let p = Slot.Pair(left: Plain(x: 4), right: Plain(x: 5))
 
-    // ERROR: with the arguments written at the variant (#1477)
+    // ERROR: with the arguments written at the variant (#1477) [E0333]
     let r = Slot<Plain>.Pair(left: Plain(x: 6), right: Plain(x: 7))
 }

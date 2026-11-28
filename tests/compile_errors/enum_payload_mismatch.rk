@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 // Compile Error: a variant payload names the type, so the message does too
-// ERROR: expected `i32`, found `string`
+// ERROR: expected `i32`, found `string` [E0308]
 //
 // The payload's declared type is what the reader has to match, and the message
 // used to name it as "found" (#922): `Node.Branch([1, 2, 3])` reported
