@@ -167,7 +167,7 @@ pub fn names_bound_in(decl: &Decl) -> HashSet<String> {
                 out.insert(b.clone());
             }
         }
-        ExprKind::GuardPattern { pattern, .. } | ExprKind::IsPattern { pattern, .. } => {
+        ExprKind::IsPattern { pattern, .. } => {
             out.extend(pattern.bound_names().into_iter().map(str::to_string));
         }
         ExprKind::Match { arms, .. } => {
@@ -203,7 +203,7 @@ fn bound_by_statements(decl: &Decl, out: &mut HashSet<String>) {
                 StmtKind::LetTuple { patterns, .. } | StmtKind::MutTuple { patterns, .. } => {
                     tuple(patterns, out)
                 }
-                StmtKind::LetStruct { pattern, .. } => {
+                StmtKind::LetPattern { pattern, .. } => {
                     out.extend(pattern.bound_names().into_iter().map(str::to_string))
                 }
                 StmtKind::While { body: b, .. } | StmtKind::Loop { body: b, .. } => body(b, out),

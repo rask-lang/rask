@@ -16,10 +16,6 @@ use super::TypeChecker;
 
 use rask_types::{GenericArg, Type};
 
-/// The name `guard_type_test_as_binding` binds. Never in scope: only the
-/// type it gets is read.
-const GUARD_BINDING: &str = "<guard>";
-
 /// Recursively resolve `UnresolvedNamed` and `UnresolvedGeneric` to `Named`
 /// and `Generic` where the type table knows the name. Matches `resolve_named`
 /// but walks into `Option`, `Result`, `Generic`, `Tuple`, `Array`,
@@ -80,7 +76,7 @@ pub(super) fn normalize_type(ty: &Type, types: &TypeTable) -> Type {
 /// `[T, none, E]`, because the layers stay distinct (OPT30) and each one is
 /// separately matchable.
 pub(super) fn two_branch_leaves(
-    ctx: &mut super::inference::InferenceContext,
+    ctx: &super::inference::InferenceContext,
     types: &TypeTable,
     ty: &Type,
 ) -> Vec<Type> {
@@ -251,22 +247,27 @@ impl TypeChecker {
         };
         let mut bindings = Vec::new();
         for field in fields {
-            let PatternKind::Ident(n) = &field.kind else {
-                self.errors.push(TypeError::StructPatternByPosition {
-                    name: name.to_string(),
-                    fields: declared.iter().map(|(f, _)| f.clone()).collect(),
-                    span,
-                });
-                return Some(bindings);
+            // A bare `x` binds field `x`; `x as px` binds it as `px`.
+            let (field_name, bound) = match (&field.kind, field.as_field_rename()) {
+                (PatternKind::Ident(n), _) => (n.as_str(), n.as_str()),
+                (_, Some(rename)) => rename,
+                _ => {
+                    self.errors.push(TypeError::StructPatternByPosition {
+                        name: name.to_string(),
+                        fields: declared.iter().map(|(f, _)| f.clone()).collect(),
+                        span,
+                    });
+                    return Some(bindings);
+                }
             };
-            match declared.iter().find(|(f, _)| f == n) {
+            match declared.iter().find(|(f, _)| f == field_name) {
                 Some((_, ty)) => {
                     self.pattern_targets.insert(field.id, rask_types::PatternTarget::Binding);
-                    bindings.push((n.clone(), ty.clone()));
+                    bindings.push((bound.to_string(), ty.clone()));
                 }
                 None => self.errors.push(TypeError::NoSuchField {
                     ty: Type::Named(id),
-                    field: n.clone(),
+                    field: field_name.to_string(),
                     span,
                 }),
             }
@@ -315,22 +316,66 @@ impl TypeChecker {
     /// with how many payload fields it carries. `None` when the scrutinee
     /// isn't known to be that enum: a bare name is then a binding, and a
     /// qualified one is checked as a constructor.
-    fn variant_of_scrutinee(&mut self, name: &str, scrutinee_ty: &Type) -> Option<(String, usize)> {
-        let resolved = normalize_type(&self.ctx.apply(scrutinee_ty), &self.types);
+    pub(super) fn variant_of_scrutinee(&mut self, name: &str, scrutinee_ty: &Type) -> Option<(String, usize)> {
+        // A box is what it holds to a pattern (mem.heap/HP5), the same as in
+        // `check_constructor_pattern`: `List.Cons` against a `Heap<List>`.
+        let resolved = normalize_type(self.ctx.apply(scrutinee_ty).peel_heap(), &self.types);
         let id = match resolved {
             Type::Named(id) => id,
             Type::Generic { base, .. } => base,
             _ => return None,
         };
-        let qualified = self.qualify_variant_name(name, scrutinee_ty);
-        let (enum_id, _) = self.enum_id_from_pattern_name(&qualified)?;
-        if enum_id != id {
-            return None;
-        }
-        let variant = qualified.rsplit('.').next()?;
+        let variant = name.rsplit('.').next()?;
         let TypeDef::Enum { variants, .. } = self.types.get(id)? else { return None };
         let arity = variants.iter().find(|(v, _)| v == variant)?.1.len();
-        Some((qualified, arity))
+        if name.contains('.') {
+            // A written qualifier has to name the scrutinee's own enum.
+            let (enum_id, _) = self.enum_id_from_pattern_name(name)?;
+            return (enum_id == id).then(|| (name.to_string(), arity));
+        }
+        // A bare name is looked up in the scrutinee's enum itself. Going
+        // through the enum's name found a program's own `IoError` in place of
+        // `io.IoError`, and the variant turned into a catch-all binding.
+        Some((format!("{}.{}", self.types.type_name(id), variant), arity))
+    }
+
+    /// E0223: `name` is capitalised but names no variant of the value's enum
+    /// and no type.
+    fn report_unknown_pattern_name(&mut self, name: &str, resolved: &Type, span: Span) {
+        let enum_def = match normalize_type(resolved.peel_heap(), &self.types) {
+            Type::Named(id) | Type::Generic { base: id, .. } => match self.types.get(id) {
+                Some(TypeDef::Enum { variants, .. }) => Some((
+                    self.types.written_name(&self.types.type_name(id)).to_string(),
+                    variants.iter().map(|(v, _)| v.clone()).collect::<Vec<_>>(),
+                )),
+                _ => None,
+            },
+            _ => None,
+        };
+        let (enum_name, variants) = match enum_def {
+            Some((n, v)) => (Some(n), v),
+            None => (None, Vec::new()),
+        };
+        let candidates: Vec<&str> = variants.iter().map(String::as_str).collect();
+        let suggestion = rask_diagnostics::suggestions::closest(name, candidates.iter().copied());
+        let qualified = match resolved {
+            Type::Result { .. } => two_branch_leaves(&self.ctx, &self.types, resolved).iter().find_map(|leaf| {
+                let (Type::Named(id) | Type::Generic { base: id, .. }) = leaf else { return None };
+                let Some(TypeDef::Enum { variants, .. }) = self.types.get(*id) else { return None };
+                variants.iter().any(|(v, _)| v == name).then(|| {
+                    format!("{}.{name}", self.types.written_name(&self.types.type_name(*id)))
+                })
+            }),
+            _ => None,
+        };
+        self.errors.push(TypeError::PatternNameNotVariant {
+            name: name.to_string(),
+            enum_name,
+            variants,
+            suggestion,
+            qualified,
+            span,
+        });
     }
 
     /// The type a bare pattern name stands for, when it names one.
@@ -338,36 +383,13 @@ impl TypeChecker {
     /// A module's namespace struct (`struct time { }`, which `time.sleep`
     /// hangs off) is not one: nothing has that type, and a binding a program
     /// calls `time` would otherwise turn into a type test against it.
-    fn pattern_type_name(&self, name: &str) -> Option<Type> {
+    pub(super) fn pattern_type_name(&self, name: &str) -> Option<Type> {
         let ty = resolve_type_name(&TypeExpr::named(name), &self.types);
         match &ty {
             Type::UnresolvedNamed(_) => None,
             Type::Named(_) if rask_stdlib::modules::is_module(name) => None,
             _ => Some(ty),
         }
-    }
-
-    /// A bare type test in a guard, `let p = x is Point else { … }`, as the
-    /// `as` form it means: `x is Point as <guard>`. `None` when the pattern
-    /// isn't a type test against a two-branch value, or already binds.
-    ///
-    /// The guard's value is the narrowed one either way. With nothing bound
-    /// it used to be the success payload whatever the pattern named, which on
-    /// a flat `T? or E` is the `T?` around the `Point`, and on an err-side
-    /// test is the wrong branch entirely (#1455).
-    pub(super) fn guard_type_test_as_binding(&mut self, pattern: &Pattern, scrutinee_ty: &Type) -> Option<Pattern> {
-        if matches!(self.ctx.apply(scrutinee_ty), Type::Var(_)) {
-            self.solve_constraints();
-        }
-        if !matches!(self.ctx.apply(scrutinee_ty), Type::Result { .. }) {
-            return None;
-        }
-        let ty = match &pattern.kind {
-            PatternKind::TypePat { ty: TypeExpr::NoneType, .. } => return None,
-            PatternKind::TypePat { binding: Some(_), .. } => return None,
-            _ => self.tested_type(pattern, scrutinee_ty)?,
-        };
-        Some(Pattern::new(pattern.id, PatternKind::TypePat { ty, binding: Some(GUARD_BINDING.to_string()) }, pattern.span))
     }
 
     /// The type an `is` pattern tests for, written with or without `as`:
@@ -509,6 +531,16 @@ impl TypeChecker {
                         }
                         return vec![];
                     }
+                }
+                // A capitalised name tests a variant or a type and never
+                // binds (type.enums/EN16). Binding it caught everything: a
+                // misspelled `Circel` arm swallowed every shape the arms above
+                // missed, and `let Job(mode: Fast, n) = j else { … }` never
+                // took its else.
+                if name.starts_with(|c: char| c.is_ascii_uppercase()) && !matches!(resolved, Type::Error) {
+                    let at = if pattern.span.end > pattern.span.start { pattern.span } else { span };
+                    self.report_unknown_pattern_name(name, &resolved, at);
+                    return vec![];
                 }
                 self.pattern_targets.insert(pattern.id, rask_types::PatternTarget::Binding);
                 vec![(name.clone(), scrutinee_ty.clone())]

@@ -199,7 +199,7 @@ test "enums in a Vec, matched in a loop" {
     mut circles = 0
     mut total = 0.0
     for s in shapes {
-        if s is Circle: circles = circles + 1
+        if s is Circle { circles = circles + 1 }
         total = total + s.area()
     }
     assert circles == 2

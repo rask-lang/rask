@@ -78,9 +78,9 @@ test "recursion through Heap with a forward payload" {
                     assert q.x + q.y == 7
                     assert q.label == "b"
                 }
-                Chain.Link(_, _) => assert false
+                Chain.Link => assert false
             }
         }
-        Chain.End(_) => assert false
+        Chain.End => assert false
     }
 }

@@ -152,8 +152,8 @@ func variant_of(r: string or ApiError) -> string {
         string as s   => return "ok:{s}",
         ApiError as e => match e {
             Store(inner)  => return "Store:{inner.message()}",
-            Validation(_) => return "Validation",
-            BadRequest(_) => return "BadRequest",
+            Validation => return "Validation",
+            BadRequest => return "BadRequest",
         },
     }
 }

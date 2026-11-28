@@ -210,9 +210,14 @@ impl<'a> WarnContext<'a> {
                 self.check_expr(init, warnings);
             }
             StmtKind::MutTuple { init, .. }
-            | StmtKind::LetTuple { init, .. }
-            | StmtKind::LetStruct { init, .. } => {
+            | StmtKind::LetTuple { init, .. } => {
                 self.check_expr(init, warnings);
+            }
+            StmtKind::LetPattern { init, else_branch, .. } => {
+                self.check_expr(init, warnings);
+                if let Some(e) = else_branch {
+                    self.check_expr(e, warnings);
+                }
             }
             StmtKind::Assign { target, value, .. } => {
                 self.check_expr(target, warnings);
@@ -401,10 +406,6 @@ impl<'a> WarnContext<'a> {
                 self.check_expr(expr, warnings);
                 self.check_expr(then_branch, warnings);
                 if let Some(e) = else_branch { self.check_expr(e, warnings); }
-            }
-            ExprKind::GuardPattern { expr, else_branch, .. } => {
-                self.check_expr(expr, warnings);
-                self.check_expr(else_branch, warnings);
             }
             ExprKind::IsPattern { expr, .. } => self.check_expr(expr, warnings),
             ExprKind::Match { scrutinee, arms } => {

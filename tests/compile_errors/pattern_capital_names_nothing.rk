@@ -1,0 +1,51 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: a capitalised pattern name that is no variant and no type
+// Rejects: a misspelt variant in a match arm and in a field, and a bare
+// variant of a branch's enum on a `T or E` (E0223)
+//
+// A capital never binds (type.enums/PM8). It used to: a misspelt arm caught
+// every value the arms above it missed, and a misspelt field test inside
+// `let … else` always matched, so its else never ran.
+
+enum Shape {
+    Circle(i64)
+    Square(i64)
+}
+
+struct Holder {
+    shape: Shape
+}
+
+enum IoError {
+    Missing
+    Denied
+}
+
+extend IoError {
+    func message(self) -> string { return "io" }
+}
+
+func area(s: Shape) -> i64 {
+    match s {
+        Square(x) => { return x * x }
+        // ERROR: E0223 `Circel` is not a variant of `Shape`; did you mean `Circle`?
+        Circel => { return 0 }
+    }
+}
+
+func held(h: Holder) -> i64 {
+    // ERROR: E0223 `Sqare` is not a variant of `Shape`
+    let Holder(shape: Sqare) = h else { return 0 }
+    return 1
+}
+
+func read(r: i64 or IoError) -> i64 {
+    match r {
+        i64 as n => { return n }
+        // ERROR: E0223 write `IoError.Missing`
+        Missing => { return -1 }
+        IoError.Denied => { return -2 }
+    }
+}
+
+func main() {}

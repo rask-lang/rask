@@ -51,7 +51,7 @@ test "a named variant that isn't first is tested by its own tag" {
     } else {
         assert false
     }
-    assert !(Shape.Sq(1) is Rect(w, h))
+    assert !(Shape.Sq(1) is Rect)
 }
 
 func main() {}

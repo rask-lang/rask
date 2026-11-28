@@ -169,7 +169,7 @@ public func describe(t: Ty) -> string {
 // out the whole shape, which is for comparing shapes, not for reading.
 public func kind_of(t: Ty) -> string {
     match t {
-        Ty.Record(_) => return "table",
+        Ty.Record => return "table",
         Ty.List(item) => return "list of {kind_of(item[0].clone())}",
         Ty.MapOf(value) => return "table of {kind_of(value[0].clone())}",
         Ty.Variant(cases, ..) => {

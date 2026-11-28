@@ -70,26 +70,6 @@ impl Interpreter {
         }
     }
 
-    /// The value a bare type test in a guard narrows to — `let p = x is
-    /// Point else …` — read off its `as` form. `None` when the pattern isn't
-    /// a type test against a two-branch value, or already binds.
-    pub(super) fn guard_type_test_value(&self, pattern: &Pattern, value: &Value) -> Option<Value> {
-        const GUARD: &str = "<guard>";
-        if !matches!(value, Value::Enum { name, .. } if name == "Result") {
-            return None;
-        }
-        let ty = match &pattern.kind {
-            PatternKind::TypePat { ty: TypeExpr::NoneType, .. } => return None,
-            PatternKind::TypePat { ty, binding: None } => ty.clone(),
-            PatternKind::Ident(name) if !name.contains('.') && self.is_known_type_name(name) => {
-                TypeExpr::named(name.as_str())
-            }
-            _ => return None,
-        };
-        let as_form = Pattern::new(pattern.id, PatternKind::TypePat { ty, binding: Some(GUARD.to_string()) }, pattern.span);
-        self.match_pattern(&as_form, value)?.remove(GUARD)
-    }
-
     /// Does a pattern's enum spelling name the enum a value carries? Under a
     /// transparent `type alias HB = Holder<Big>` the pattern says `HB` while
     /// the value was built as `Holder`.

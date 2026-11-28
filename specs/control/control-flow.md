@@ -41,7 +41,7 @@ let token = match c {
 | Rule | Description |
 |------|-------------|
 | **CF4: Bool condition** | Condition must be `bool` (no implicit conversion) |
-| **CF5: Braces required** | Braces required for blocks (except inline syntax `if c: a else: b`) |
+| **CF5: Braces required** | Every body is a block in braces, one line or many: `if c { a } else { b }`. A colon never opens a body |
 | **CF6: Branch type matching** | Expression context: both branches must have same type |
 | **CF7: Omitted else** | Omitting `else` produces `()` (statement context only) |
 | **CF7b: No bare struct literal in a condition** | A `{` in an `if`/`while` condition starts the body. To write a struct literal there, parenthesize it |
@@ -63,7 +63,7 @@ parser hasn't read yet.
 
 ```rask
 // Inline expression
-let sign = if x > 0: "+" else: "-"
+let sign = if x > 0 { "+" } else { "-" }
 
 // Block expression
 let x = if c { a } else { b }
@@ -79,11 +79,14 @@ if error {
 
 | Rule | Description |
 |------|-------------|
-| **CF8: Binding scope** | `if expr is Pattern(v)` binds `v` inside block only |
+| **CF8: Where a binding reaches** | A name bound by `is` or `? as` reaches the rest of its `&&` chain and the body the chain guards: the `if` branch, the `while` body, or the match arm under a guard. Nothing else sees it |
 | **CF9: Not exhaustive** | Unmatched patterns skip the block (not an error) |
-| **CF10: Combined conditions** | Bindings from `is` available after `&&` in same condition |
+| **CF10: `&&` carries, `\|\|` and `!` don't** | `s is Circle(r) && r > 1.0` reads `r`. A name bound on one side of `\|\|` or under `!` has no value where it could be read, so binding it is an error (E0220). One pattern can bind across alternatives: `s is Circle(r) \| Square(r)` |
 | **CF11: Linear resources** | Non-Copy values moved into pattern; must handle both match/no-match paths |
-| **CF12: A bare variant tests** | `x is Variant` or `x is Enum.Variant` with no payload pattern tests the tag and binds nothing, whatever the variant carries. A payload is named by writing it: `x is Variant(v)` |
+| **CF12: A bare variant tests** | `x is Variant` or `x is Enum.Variant` with no payload pattern tests the tag and binds nothing, whatever the variant carries. A payload is named by writing it: `x is Variant(v)`. `Variant(_)` and `Variant()` are errors whose fix is the bare name |
+| **CF35: The else reads none of them** | The `else` of an `if` runs when the test failed, so it can't read a name the condition bound (E0221) |
+| **CF36: A binding needs a reader** | A test that binds where nothing follows is an error (E0220): `let ok = a? as v` drops `v`. Keep the test without the name (`let ok = a?`), or bind in an `if` |
+| **CF37: A resource ends its chain** | A test that binds a resource (`@resource`) is the last test of its `&&` chain (E0858). When a later test fails, the else runs, and the else can't see the name (CF35), so nothing could consume it. Bind it alone and test inside the body |
 
 ```rask
 // Pattern match with explicit binding
@@ -115,27 +118,75 @@ while reader.next()? as line {
 if state is Connected(sock) && sock.is_ready() {
     sock.send(data)!
 }
+
+// A match guard's binding reaches its arm
+match job {
+    Retry(n) if n < 3 && lookup(n)? as plan => run(plan),
+    _ => give_up(),
+}
 ```
 
-## Guard Pattern: let...is...else
+What reaches where, in one block:
+
+```rask
+if s is Circle(r) && r > 1.0 { use(r) }     // ✅ `&&` carries `r`
+if s is Circle(r) || s is Dot { use(r) }    // ❌ E0220: `r` has no value when `Dot` held
+if !(s is Circle(r)) { … }                  // ❌ E0220: the branch runs when it didn't bind
+if s is Circle(r) { … } else { use(r) }     // ❌ E0221: the else runs when it didn't bind
+let ok = a? as v                            // ❌ E0220: nothing reads `v`; write `a?`
+```
+
+A condition can run over several lines without parens. The `{` that opens the body ends it:
+
+```rask
+if s is Circle(r)
+    && r > 1.0
+    && r < 10.0 {
+    use(r)
+}
+```
+
+## Guard Pattern: let...else
 
 | Rule | Description |
 |------|-------------|
 | **CF13: Diverging else** | `else` block must diverge (`return`, `break`, `panic`, etc.) |
-| **CF14: Binding escapes** | Successful match binds value to outer scope |
+| **CF14: Binding escapes** | `let Pattern = value else { … }` binds the pattern's names for the rest of the block. The left side is a pattern that can miss: a variant, a struct with a literal field, a nested test. A pattern that takes every value (a lowercase name, a tuple, a plain struct) is E0225: the `else` never runs. A type pattern on an optional or a result is E0226: `??` and `catch` do that on one line |
 | **CF33: Linear in else** | Pattern fails, value available in `else` for cleanup |
+
+The pattern sits where a `let` name sits, the same place `let (a, b) = pair` puts its tuple. Without `else` the pattern has to match every value (a tuple, a struct); with `else` it may miss:
 
 ```rask
 // Early return on non-matching variant
-let sock = state is Connected else { return }
+let Connected(sock) = state else { return }
 // sock available here
 
 // Break from loop when task missing
-let task = event is Ready else { break }
+let Ready(task) = event else { break }
 // task available here
+
+// A test inside a field
+let Job(id, result: IoError as e) = job else { return }
+
+// A struct with a literal field
+let Point(x: 0, y) = p else { return }
 ```
 
-The guard needs the `is` clause — it's pattern matching on a user enum. Optionals and results have their own surface: `??` supplies the absent branch and `catch e =>` the error branch (a value, or an exit like `?? break`), `try` propagates — and each binds the payload directly:
+What isn't a guard:
+
+```rask
+let n = find() else { return 0 }            // ❌ E0225: `n` takes the `none` too
+let Point(x, y) = p else { return }         // ❌ E0225: every `Point` matches
+let i64 as n = load() else { return -1 }    // ❌ E0226
+let n = load() catch _ => return -1         // ✅ the guard on a result
+let n = find() ?? return 0                  // ✅ the guard on an optional
+```
+
+**Why type patterns aren't guards.** On an optional or a result, the guard would say what `??` and `catch` already say on one line, with the exit written where it happens and the value bound. Two spellings of one thing is the confusion this design removes. A type test *inside* a pattern stays (`Job(id, result: IoError as e)`): no operator reaches into a field.
+
+The old spelling, `let sock = state is Connected else { … }`, is an error whose fix is the line above. It put the name on the left and the thing it named on the right, and it only worked for a variant with one payload.
+
+Optionals and results have their own surface: `??` supplies the absent branch and `catch e =>` the error branch (a value, or an exit like `?? break`), `try` propagates — and each binds the payload directly:
 
 ```rask
 let item = queue.pop() ?? break
@@ -360,10 +411,10 @@ FIX: Ensure all break expressions match:
 ```
 ERROR [ctrl.flow/CF13]: else block must diverge
    |
-3  |  let x = event is Tick else { 0 }
-   |                               ^ doesn't diverge
+3  |  let Tick(x) = event else { 0 }
+   |                              ^ doesn't diverge
 
-WHY: let...is...else requires the else block to exit via return,
+WHY: let...else requires the else block to exit via return,
      break, continue, or panic.
 
 FIX: Use if is instead:
@@ -409,7 +460,7 @@ FIX: Consume in both branches or use ensure:
 | **DS4: Arity match** | Number of bindings must match tuple length (compile error otherwise) |
 | **DS5: Nested** | `let (a, (b, c)) = expr` destructures nested tuples |
 | **DS6: Wildcard** | `_` discards an element: `let (_, b) = pair` |
-| **DS7: Guard pattern** | `let (a, b) = expr is Paired else { return }` combines destructuring with pattern matching on a user enum variant |
+| **DS7: Guard pattern** | `let Paired(a, b) = expr else { return }` destructures a value that may not match. See CF13–CF14 |
 
 <!-- test: parse -->
 ```rask
@@ -463,11 +514,13 @@ FIX: Match the number of bindings, use _ to discard:
 
 **CF8/CF13 (pattern binding):** Two forms for two use cases:
 - `if expr is Pattern(v) { ... }` — binding scoped to block, for conditional execution
-- `let v = expr is Pattern else { ... }` — binding escapes to outer scope, for early exit
+- `let Pattern(v) = expr else { ... }` — binding escapes to outer scope, for early exit
 
 The diverging `else` requirement (CF13) ensures the binding is always valid after the statement.
 
-**Why the guard stayed enum-only.** An earlier draft dropped the `is` clause so the guard covered `T?` and `T or E` too, replacing the `x ?? return` idiom. It was cut: `const v = x else { … }` doesn't name the condition, and the two-branch builtins didn't need a construct anyway — `??` and `catch` already handle the miss inline with the exit written out and the payload bound.
+**CF8/CF10 (`&&` carries, `||` doesn't):** A binding exists where the test that made it is known to have held. After `&&`, it held. After `||`, maybe the other side held instead, and under `!` the code runs exactly when it didn't. Both used to pass the checker and fail later, in lowering or at run time; now the binding is the error, with the fix written out.
+
+**Why the pattern goes on the left.** `let sock = state is Connected else { … }` named `sock` on the left and the variant it came from on the right, and bound the payload by position, so it couldn't take a variant with two payloads or a struct. Putting the pattern where `let` puts names is how Rust and Swift write it, and it reuses the destructuring every `let` already has. Optionals stay with `??` and `catch`: those handle the miss inline, with the exit written out and the payload bound.
 
 **CF12 (no implicit unwrap):** An earlier draft had `if x is Variant` rebind `x` to a single payload inside the branch. I dropped it for the same reason the error-model redesign dropped `if x is Some { use(x) }` (its P3): the name's type changes with nothing written to say so, and `while s is Next { s = step(s) }` can't be written at all. Naming the payload costs one word, `x is Variant(v)`. Optionals use dedicated operators (`?`, `? as v`, `??`); results use `catch`, `try`, and `is` with a type pattern.
 
@@ -479,12 +532,13 @@ The diverging `else` requirement (CF13) ensures the binding is always valid afte
 
 | Use Case | Recommended | Why |
 |----------|-------------|-----|
-| Value-producing conditional | `let x = if c: a else: b` | Inline, clear |
+| Value-producing conditional | `let x = if c { a } else { b }` | Inline, clear |
 | Value from multi-case enum | `let x = match e { ... }` | Exhaustive |
 | Value from repeated checks | `let x = loop { break ... }` | Clear exit |
 | Side effect conditional | `if c { f() }` | No value needed |
 | Check other enum variant | `if x is Variant` | Pattern match |
-| Early exit on error | `if r? as v { … } else as e { return e }` | Guard |
+| Early exit on other variant | `let Connected(sock) = state else { return }` | Guard |
+| Early exit on error | `let v = try r` | Propagates |
 | Loop over iterator | `for x in iter` | Standard |
 | Loop until condition | `while cond { ... }` | Clear intent |
 | Infinite loop | `loop { ... }` | Explicit |
@@ -576,7 +630,7 @@ let color = match status {
 }
 
 // Inline if
-let sign = if x > 0: "+" else: "-"
+let sign = if x > 0 { "+" } else { "-" }
 
 // Match with block arms on error union
 let opts = match parse_args(args) {
@@ -669,11 +723,11 @@ while reader.next()? as line {
     process(line)
 }
 
-// With else on error union
-if result? as value {
+// With else on an optional
+if cached? as value {
     use(value)
 } else {
-    handle_error()
+    recompute()
 }
 
 // Combined with boolean
@@ -698,7 +752,7 @@ func process_file(path: string) -> void or Error {
 
 **Negation:**
 ```rask
-if !(state is Connected(_)) {
+if !(state is Connected) {
     reconnect()
 }
 ```

@@ -223,6 +223,11 @@ pub enum ResolveErrorKind {
     #[error("`{name}` is bound twice")]
     RepeatedBinding { name: String },
 
+    /// The `else` of an `if` reads a name its condition bound. The else runs
+    /// when the test failed, so the name has no value there.
+    #[error("`{name}` is only bound where the test held")]
+    ReadInElse { name: String },
+
     /// Two tests (or two benchmarks) in one file with one name. The name is
     /// how a test is picked: `-f`, the runner's report, sim's replay line.
     #[error("two {kind}s named \"{name}\"")]

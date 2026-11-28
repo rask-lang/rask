@@ -30,8 +30,8 @@ func from_select() -> string {
     let (tx, rx) = Channel<Vec<string>>.buffered(2)
     tx.send(mk(2)) catch _ => panic("send")
     let r = select {
-        rx -> v: v[0],
-        _: "none",
+        rx -> v => v[0],
+        _ => "none",
     }
     return r
 }

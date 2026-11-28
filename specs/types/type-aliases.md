@@ -206,7 +206,7 @@ type Email = string implements Equal, Hashable, Debug
 
 extend Email {
     func parse(raw: string) -> Email or ValidationError {
-        if !raw.contains("@"): return ValidationError.invalid("email", raw)
+        if !raw.contains("@") { return ValidationError.invalid("email", raw) }
         return Email(raw)
     }
 }

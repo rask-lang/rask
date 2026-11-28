@@ -862,8 +862,12 @@ fn struct_shorthands(
                 PatternKind::Constructor { name, fields } if self.0.contains(&(span, name.clone())) => {
                     let fields = fields
                         .iter()
-                        .filter_map(|f| match &f.kind {
-                            PatternKind::Ident(n) => Some((n.clone(), f.clone())),
+                        .filter_map(|f| match (&f.kind, f.as_field_rename()) {
+                            (PatternKind::Ident(n), _) => Some((n.clone(), f.clone())),
+                            (_, Some((field, b))) => Some((
+                                field.to_string(),
+                                Pattern::new(f.id, PatternKind::Ident(b.to_string()), f.span),
+                            )),
                             _ => None,
                         })
                         .collect();
@@ -889,7 +893,6 @@ fn struct_shorthands(
             match &mut e.kind {
                 ExprKind::Match { arms, .. } => arms.iter_mut().for_each(|a| self.convert(&mut a.pattern, span)),
                 ExprKind::IfLet { pattern, .. }
-                | ExprKind::GuardPattern { pattern, .. }
                 | ExprKind::IsPattern { pattern, .. } => self.convert(pattern, span),
                 _ => {}
             }
@@ -897,7 +900,7 @@ fn struct_shorthands(
 
         fn body(&mut self, b: &mut Vec<Stmt>) {
             for stmt in b {
-                if let StmtKind::LetStruct { pattern, .. } = &mut stmt.kind {
+                if let StmtKind::LetPattern { pattern, .. } = &mut stmt.kind {
                     let span = stmt.span;
                     self.convert(pattern, span);
                 }
@@ -983,7 +986,6 @@ fn rename_types(
                     }
                 }
                 ExprKind::IfLet { pattern, .. }
-                | ExprKind::GuardPattern { pattern, .. }
                 | ExprKind::IsPattern { pattern, .. } => self.type_tests_in(pattern, span),
                 _ => {}
             }
@@ -991,7 +993,7 @@ fn rename_types(
 
         fn body(&mut self, b: &mut Vec<Stmt>) {
             for stmt in b {
-                if let StmtKind::LetStruct { pattern, .. } = &mut stmt.kind {
+                if let StmtKind::LetPattern { pattern, .. } = &mut stmt.kind {
                     let span = stmt.span;
                     self.type_tests_in(pattern, span);
                 }

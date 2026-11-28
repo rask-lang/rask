@@ -133,7 +133,7 @@ test "a pattern borrows the block an enum holds" {
         List.Cons(_, rest) => {
             match rest {
                 List.Nil => assert true
-                List.Cons(_, _) => assert false
+                List.Cons => assert false
             }
         }
         List.Nil => assert false

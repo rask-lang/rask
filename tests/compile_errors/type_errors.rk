@@ -84,7 +84,7 @@ func test_wrong_type_args() {
 // --- branch type mismatch in if expression (CF6) ---
 // ERROR: if branches have incompatible types: i32 vs string
 func test_if_type_mismatch() {
-    let x = if true: 42 else: "hello"
+    let x = if true { 42 } else { "hello" }
 }
 
 // --- break value type mismatch (CF16) ---

@@ -135,7 +135,7 @@ test "type.structs — `..` skips the rest, and `mut` bindings rebind" {
 
 test "type.structs — renaming while binding, and a string field" {
     let p = Point(x: 7, y: 8)
-    let Point(x: first, y: second) = p
+    let Point(x as first, y as second) = p
     assert first == 7
     assert second == 8
 

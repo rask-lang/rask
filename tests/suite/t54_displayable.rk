@@ -18,7 +18,7 @@ enum AppError {
 extend AppError {
     public func message(self) -> string {
         match self {
-            AppError.NotFound(path: p) => return "not found: {p}",
+            AppError.NotFound(path as p) => return "not found: {p}",
             AppError.Timeout => return "timed out",
         }
     }

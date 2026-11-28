@@ -837,6 +837,16 @@ pub enum OwnershipErrorKind {
         type_name: String,
     },
 
+    /// ctrl.flow/CF37: a resource bound by a test with another test after it
+    /// in the `&&` chain; when that test fails, nothing can consume it.
+    #[error("resource `{name}` is bound before another test, and leaks when that test fails")]
+    ResourceBoundMidChain {
+        name: String,
+        type_name: String,
+        /// The test right after the binding.
+        next_test: Span,
+    },
+
     /// conc.sync/SH9: a generic body `take`s a `Shared<T>`, and this call
     /// fixes `T` to a value that isn't consumed exactly once.
     #[error("`take` needs a `Shared` holding a resource, and this call gives `{param}` = `{type_arg}`")]
@@ -979,6 +989,14 @@ pub enum LinearDiscardPosition {
         field: Option<String>,
         /// Positional index for tuple-style payloads.
         index: Option<usize>,
+    },
+    /// A variant tested by its bare name, which leaves its payload unnamed:
+    /// `Open` against an `Open(Conn)`.
+    Unnamed {
+        variant: String,
+        /// Which payload field is linear, of how many.
+        index: usize,
+        arity: usize,
     },
 }
 

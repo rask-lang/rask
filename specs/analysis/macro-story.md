@@ -210,8 +210,7 @@ explicitly:
 <!-- test: skip -->
 ```rask
 func expect<T>(v: T?, msg: string, @call_location loc: SourceLoc) -> T {
-    let x = v is Some else { panic("{loc.file}:{loc.line}: {msg}") }
-    return x
+    return v ?? panic("{loc.file}:{loc.line}: {msg}")
 }
 
 // Wants failures blamed on ITS caller, not on the expect() line below:

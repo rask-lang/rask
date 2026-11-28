@@ -9,8 +9,8 @@ test "select on channels nobody will ever send on" {
         let (tx_a, rx_a) = Channel<i64>.buffered(1)
         let (tx_b, rx_b) = Channel<i64>.buffered(1)
         let got = select {
-            rx_a -> v: v,
-            rx_b -> v: v,
+            rx_a -> v => v,
+            rx_b -> v => v,
         }!
         assert got == 0
     }

@@ -66,7 +66,7 @@ test "the payload is named by writing it" {
 
 test "a pattern reusing an outer name rebinds it only in the branch" {
     let d = Cmd.Del(at: 7)
-    if d is Del(at: d) {
+    if d is Del(at as d) {
         assert d == 7
     }
     mut other = false

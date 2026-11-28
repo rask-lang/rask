@@ -1424,11 +1424,15 @@ impl<'a> Printer<'a> {
                 self.emit(" = ");
                 self.format_expr(init);
             }
-            StmtKind::LetStruct { pattern, init, is_mut } => {
+            StmtKind::LetPattern { pattern, init, is_mut, else_branch } => {
                 self.emit(if *is_mut { "mut " } else { "let " });
                 self.format_pattern(pattern);
                 self.emit(" = ");
                 self.format_expr(init);
+                if let Some(else_branch) = else_branch {
+                    self.emit(" else");
+                    self.format_branch(else_branch);
+                }
             }
             StmtKind::Assign { target, value, op } => {
                 self.format_expr(target);
@@ -1983,8 +1987,8 @@ impl<'a> Printer<'a> {
                     self.emit("}");
                 }
             }
-            ExprKind::If { cond, then_branch, else_branch, else_binding } => {
-                self.format_if_expr(cond, then_branch, else_branch, else_binding.as_deref());
+            ExprKind::If { cond, then_branch, else_branch } => {
+                self.format_if_expr(cond, then_branch, else_branch);
             }
             ExprKind::IfLet { expr: scrutinee, pattern, then_branch, else_branch, else_binding } => {
                 self.emit("if ");
@@ -1994,10 +1998,8 @@ impl<'a> Printer<'a> {
                 self.format_branch(then_branch);
                 if let Some(ref else_br) = else_branch {
                     self.emit(" else");
-                    // ER22: the `as e` names the value the handler is about to
-                    // handle. `If` right above passes it through and this arm
-                    // didn't, so `} else as e {` came back out as `} else {` and
-                    // the body then referred to a name nothing declared (#805).
+                    // ER22: dropping the `as e` left the body reading a name
+                    // nothing declared (#805).
                     if let Some(name) = else_binding {
                         self.emit(" as ");
                         self.emit(name);
@@ -2121,13 +2123,6 @@ impl<'a> Printer<'a> {
                     self.emit(" ");
                     self.emit(&format!("\"{}\"", msg));
                 }
-            }
-            ExprKind::GuardPattern { expr, pattern, else_branch } => {
-                self.format_expr(expr);
-                self.emit(" is ");
-                self.format_pattern(pattern);
-                self.emit(" else ");
-                self.format_expr(else_branch);
             }
             ExprKind::NullCoalesce { value, default } => {
                 // `??` binds looser than arithmetic and tighter than comparison,
@@ -2438,7 +2433,7 @@ impl<'a> Printer<'a> {
                             self.emit("_");
                         }
                     }
-                    self.emit(": ");
+                    self.emit(" => ");
                     self.format_expr(&arm.body);
                     self.emit(",");
                 }
@@ -2484,26 +2479,9 @@ impl<'a> Printer<'a> {
         cond: &Expr,
         then_branch: &Expr,
         else_branch: &Option<Box<Expr>>,
-        else_binding: Option<&str>,
     ) {
         self.emit("if ");
         self.format_expr(cond);
-
-        if !matches!(then_branch.kind, ExprKind::Block(_)) {
-            self.emit(": ");
-            self.format_expr(then_branch);
-            if let Some(ref else_br) = else_branch {
-                self.emit(" else");
-                if let Some(name) = else_binding {
-                    self.emit(" as ");
-                    self.emit(name);
-                }
-                self.emit(": ");
-                self.format_expr(else_br);
-            }
-            return;
-        }
-
         self.format_branch(then_branch);
 
         if let Some(ref else_br) = else_branch {
@@ -2512,10 +2490,6 @@ impl<'a> Printer<'a> {
                 self.format_expr(else_br);
             } else {
                 self.emit(" else");
-                if let Some(name) = else_binding {
-                    self.emit(" as ");
-                    self.emit(name);
-                }
                 self.format_branch(else_br);
             }
         }
@@ -2765,9 +2739,16 @@ impl<'a> Printer<'a> {
                         self.emit(", ");
                     }
                     self.emit(fname);
-                    if !matches!(&fpat.kind, PatternKind::Ident(ref n) if n == fname) {
-                        self.emit(": ");
-                        self.format_pattern(fpat);
+                    match &fpat.kind {
+                        PatternKind::Ident(n) if n == fname => {}
+                        PatternKind::Ident(n) => {
+                            self.emit(" as ");
+                            self.emit(n);
+                        }
+                        _ => {
+                            self.emit(": ");
+                            self.format_pattern(fpat);
+                        }
                     }
                 }
                 if *rest {

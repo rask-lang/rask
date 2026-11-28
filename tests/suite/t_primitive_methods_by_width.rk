@@ -10,7 +10,7 @@ import async.JoinError
 func panicked<T>(r: T or JoinError) -> bool {
     match r {
         T as _ => { return false },
-        JoinError.Panicked(_) => { return true },
+        JoinError.Panicked => { return true },
         JoinError as _ => { return false },
     }
 }

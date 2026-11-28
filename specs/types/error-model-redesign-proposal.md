@@ -410,7 +410,7 @@ func greet_v2(path: string) -> string {
             log("config malformed: {e.message()}")
             "Hello, guest"
         }
-        IoError.NotFound(_) => "Hello, new user",
+        IoError.NotFound => "Hello, new user",
         IoError => "config load failed",
     }
 }
@@ -423,7 +423,7 @@ func greet_v2(path: string) -> string {
 - `.map`, `.and_then` method chaining on `T?`.
 - `if r is E as e` narrow-to-error with rename.
 - Early-exit narrowing: by the time control reaches line "narrows to Config here," every error arm has diverged.
-- `match` with type patterns (`Config`, `ParseError`, `IoError`) and variant patterns (`IoError.NotFound(_)`).
+- `match` with type patterns (`Config`, `ParseError`, `IoError`) and variant patterns (`IoError.NotFound`).
 - `Error.message()` used at `.message()` call sites; compiler-enforced because every `E` satisfies the interface.
 
 **What would not compile:**

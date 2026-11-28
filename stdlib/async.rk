@@ -247,8 +247,8 @@ public enum TrySendError<T> {
 extend TrySendError<T> {
     public func message(self) -> string {
         match self {
-            TrySendError.Full(_) => return "channel is full"
-            TrySendError.Closed(_) => return "send on closed channel"
+            TrySendError.Full => return "channel is full"
+            TrySendError.Closed => return "send on closed channel"
         }
     }
 }

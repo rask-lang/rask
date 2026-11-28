@@ -17,7 +17,7 @@ func main() {
     mut counter = 0          // rebindable binding (never "let mut" — one keyword each)
     counter = counter + 1
 
-    let sign = if x > 0: "+" else: "-"    // inline block: `: expr`
+    let sign = if x > 0 { "+" } else { "-" }    // inline block: `: expr`
     let label = match x {
         0 => "zero",
         n if n > 0 => "positive",         // guard arms use => like all arms
@@ -73,7 +73,7 @@ with units[i] as entity {          // multi-statement access; writes back at blo
     if entity.health <= 0 { entity.status = Status.Dead }
     try log_hit(entity.id)         // return/try/break/continue work — real block, not a closure
 }
-with units[i] as e: e.health -= 10 // one-liner form
+with units[i] as e { e.health -= 10 } // one-liner form
 ```
 
 - Inside `with` on Vec/Map: no structural mutation (push/insert/remove/clear) — compile error (`mem.borrowing/W2`). A rack needs no `with` at all: a link is already a stable name for a node, so you hold it directly.

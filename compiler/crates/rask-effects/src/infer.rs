@@ -528,9 +528,14 @@ fn classify_stmt(stmt: &Stmt, effects: &mut Effects, callees: &mut HashSet<Strin
             classify_expr(init, effects, callees, t);
         }
         StmtKind::MutTuple { init, .. }
-        | StmtKind::LetTuple { init, .. }
-        | StmtKind::LetStruct { init, .. } => {
+        | StmtKind::LetTuple { init, .. } => {
             classify_expr(init, effects, callees, t);
+        }
+        StmtKind::LetPattern { init, else_branch, .. } => {
+            classify_expr(init, effects, callees, t);
+            if let Some(e) = else_branch {
+                classify_expr(e, effects, callees, t);
+            }
         }
         StmtKind::Assign { target, value, .. } => {
             classify_expr(target, effects, callees, t);
@@ -633,10 +638,6 @@ fn classify_expr(expr: &Expr, effects: &mut Effects, callees: &mut HashSet<Strin
             if let Some(e) = else_branch {
                 classify_expr(e, effects, callees, t);
             }
-        }
-        ExprKind::GuardPattern { expr, else_branch, .. } => {
-            classify_expr(expr, effects, callees, t);
-            classify_expr(else_branch, effects, callees, t);
         }
         ExprKind::IsPattern { expr, .. } => classify_expr(expr, effects, callees, t),
         ExprKind::Match { scrutinee, arms } => {
@@ -864,8 +865,14 @@ fn rt_scan_stmt(stmt: &Stmt, held: Runtimes, rs: &mut ReachScan<'_>) -> Runtimes
         StmtKind::Expr(e) => rt_scan_expr(e, held, rs),
         StmtKind::Mut { init, .. } | StmtKind::Let { init, .. } => rt_scan_expr(init, held, rs),
         StmtKind::MutTuple { init, .. }
-        | StmtKind::LetTuple { init, .. }
-        | StmtKind::LetStruct { init, .. } => rt_scan_expr(init, held, rs),
+        | StmtKind::LetTuple { init, .. } => rt_scan_expr(init, held, rs),
+        StmtKind::LetPattern { init, else_branch, .. } => {
+            let mut r = rt_scan_expr(init, held, rs);
+            if let Some(e) = else_branch {
+                r |= rt_scan_expr(e, held, rs);
+            }
+            r
+        }
         StmtKind::Assign { target, value, .. } => {
             rt_scan_expr(target, held, rs) | rt_scan_expr(value, held, rs)
         }
@@ -979,9 +986,6 @@ fn rt_scan_expr(expr: &Expr, held: Runtimes, rs: &mut ReachScan<'_>) -> Runtimes
             r |= rt_scan_expr(then_branch, held, rs);
             if let Some(e) = else_branch { r |= rt_scan_expr(e, held, rs); }
             r
-        }
-        ExprKind::GuardPattern { expr, else_branch, .. } => {
-            rt_scan_expr(expr, held, rs) | rt_scan_expr(else_branch, held, rs)
         }
         ExprKind::IsPattern { expr, .. } | ExprKind::IsPresent { expr, .. }
         | ExprKind::Unwrap { expr, .. } | ExprKind::Cast { expr, .. } | ExprKind::Convert { expr, .. } => rt_scan_expr(expr, held, rs),

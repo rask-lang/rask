@@ -70,7 +70,7 @@ test "an or-pattern in an `is` test" {
     assert !(c is Green | Red)
     let m = Msg.Note("long enough")
     assert m is Text(s) | Note(s) && s.len() > 3
-    assert !(Msg.Nothing is Text(_) | Note(_))
+    assert !(Msg.Nothing is Text | Note)
 }
 
 test "alternatives inside a tuple pattern" {

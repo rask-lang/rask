@@ -22,10 +22,10 @@ func error_response(e: ApiError) -> Response {
 // Stable machine-readable codes, independent of the human message.
 func error_code(e: ApiError) -> string {
     match e {
-        Validation(_) => return "validation_failed"
+        Validation => return "validation_failed"
         Store(inner) => return store_code(inner)
-        Auth(_) => return "unauthorized"
-        System(_) => return "system_error"
+        Auth => return "unauthorized"
+        System => return "system_error"
         BadRequest(reason: _) => return "bad_request"
         RateLimited(seconds: _) => return "rate_limited"
         Internal(reason: _) => return "internal"

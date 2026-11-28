@@ -103,25 +103,25 @@ let total = a -
     b              // a line ending in an operator can't be finished
 ```
 
-### 2. Colon for Inline, Braces for Multi-line
+### 2. Braces for Every Body; the Colon Only Annotates
 
-Single-expression blocks use `:`. Multi-statement blocks use `{ }`.
+A body is always a block in braces. A short one fits on one line. An arm, of `match`, `select` or `catch`, follows `=>`.
 
 ```rask
-// Inline (single expression after colon)
-if x > 0: return x
-let sign = if x > 0: "+" else: "-"
+// One line
+if x > 0 { return x }
+let sign = if x > 0 { "+" } else { "-" }
 
-// Multi-line (braces and return required)
+// Several lines
 if x > 0 {
     process(x)
     return x
 }
 ```
 
-**Parsing rule:** `:` takes one expression until newline or next keyword. `{ }` for multiple statements.
+The colon means one thing: what comes before it is named, what follows is its type or value. `x: i64` in a parameter or a `let`, `host: "a"` in a struct literal or pattern.
 
-**Why:** Python-style colon is cleaner for simple cases. Braces are explicit when you need them.
+**Why:** An earlier draft also let `:` open a one-expression body (`if c: a else: b`). That gave the colon two jobs in the same positions, so `if ok: x` and `ok: bool` looked alike, and a reader had to know which. Braces cost two characters on a short body and nothing on a long one.
 
 ### 3. Minimal Type Annotations
 Types inferred within function bodies. Public signatures require explicit types; private functions can omit them entirely.
@@ -302,7 +302,7 @@ func add(a: i32, b: i32) -> i32 {
 }
 
 func divide(a: f64, b: f64) -> f64 or Error {
-    if b == 0.0: return Error.DivByZero
+    if b == 0.0 { return Error.DivByZero }
     return a / b              // Auto-wrapped in Ok (explicit return)
 }
 ```
@@ -581,7 +581,7 @@ let widgets: Vec<any Widget> = [
     textbox as any Widget
     slider as any Widget
 ]
-for w in widgets: w.draw()    // Dynamic dispatch
+for w in widgets { w.draw() }    // Dynamic dispatch
 ```
 
 ### Generics
@@ -756,11 +756,11 @@ for (key, value) in map { ... }
 ### If/Else
 
 ```rask
-// Inline (colon + single expression)
-if x > 0: println("positive")
-if x > 0: return x
+// One line
+if x > 0 { println("positive") }
+if x > 0 { return x }
 
-// Multi-line (braces)
+// Several lines
 if x > 0 {
     println("positive")
 } else {
@@ -768,21 +768,23 @@ if x > 0 {
 }
 
 // Else if
-if x > 0: "positive"
-else if x < 0: "negative"
-else: "zero"
+if x > 0 { "positive" }
+else if x < 0 { "negative" }
+else { "zero" }
 
 // As expression
-let sign = if x > 0: "+" else if x < 0: "-" else: "0"
+let sign = if x > 0 { "+" } else if x < 0 { "-" } else { "0" }
 
-// Complex conditions (parentheses required for multi-line)
-if (x > 0 && y < 10): handle()
+// A long condition breaks after or before an operator; no parens needed
+if x > 0
+    && y < 10 {
+    handle()
+}
 ```
 
 **Rules:**
-- No parens for simple conditions
-- Parens required when condition spans multiple lines
-- `:` for single expression, `{ }` for multiple statements
+- No parens around a condition, on one line or several. The `{` that opens the body ends it
+- Every body is in braces
 
 ### Match
 
@@ -842,12 +844,12 @@ Match a single pattern in `if` or `while` with automatic binding:
 
 ```rask
 // Check enum variant with binding
-if state is Connected(sock): sock.send(data)
+if state is Connected(sock) { sock.send(data) }
 
-if result? as value {
+if cached? as value {
     process(value)
 } else {
-    handle_error()
+    recompute()
 }
 
 // Loop while pattern matches (Option narrowing with `as`)
@@ -865,13 +867,32 @@ if state is Connected(sock) && sock.is_ready() {
 
 | Use Case | Recommended |
 |----------|-------------|
-| Check optional presence | `if opt?` (narrow) or `if opt? as v` (bind) |
+| Check optional presence | `if opt?` (test) or `if opt? as v` (bind) |
 | Check error variant on `T or E` | `if r is IoError as e` |
-| Check user enum variant | `if x is Variant` |
+| Check user enum variant | `if x is Variant` (bare name, whatever it carries) |
+| Leave unless it matches | `let Connected(sock) = state else { return }` |
 | Exhaustive handling | `match` |
 | Loop over a sequence | `for x in seq` |
 
 `is` is non-exhaustive — unmatched patterns skip the block. Use `match` when you need to handle all cases.
+
+**Where a bound name reaches.** A name bound by `is` or `? as` reaches the rest of its `&&` chain and the body that chain guards: the `if` branch, the `while` body, or a match arm under a guard. `||` and `!` carry nothing, and the `else` sees none of it. A binding nothing can read is an error with the fix written out (`ctrl.flow/CF8`–`CF10`):
+
+```rask
+if s is Circle(r) && r > 1.0 { use(r) }     // ✅
+if s is Circle(r) || s is Dot { use(r) }    // ❌ `r` has no value when `Dot` held
+if s is Circle(r) | Square(r) { use(r) }    // ✅ one pattern, both bind `r`
+```
+
+**One spelling each.** Each test has one way to write it, and the others are errors whose fix is that spelling:
+
+| Write | Not |
+|-------|-----|
+| `x?` | `!(x is none)` |
+| `x? as v` | `x is T as v` on a `T?` |
+| `Circle` (test only) | `Circle(_)`, `Circle()` |
+| `let Circle(r) = s else { … }` | `let r = s is Circle else { … }` |
+| `Point(x as px)` (rename a field) | `Point(x: px)` |
 
 **Guards bind:**
 
@@ -899,7 +920,7 @@ let port = config.port ?? 8080                              // a value instead
 // Loop that produces a value via 'break'
 let input = loop {
     let x = read_input()
-    if x.is_valid(): break x    // Exit loop with value
+    if x.is_valid() { break x }    // Exit loop with value
     println("Invalid, try again")
 }
 ```
@@ -920,12 +941,12 @@ while queue.len() > 0 {
 }
 
 // Inline
-while running: process_next()
+while running { process_next() }
 ```
 
 **For-in:**
 ```rask
-for item in items: process(item)
+for item in items { process(item) }
 
 for i in 0..10 {
     println("{i}")
@@ -936,25 +957,25 @@ for (key, value) in map {
 }
 
 // Step ranges
-for i in (0..100).step(2): process_even(i)      // 0, 2, 4, ..., 98
-for i in (10..0).step(-1): countdown(i)         // 10, 9, 8, ..., 1
-for x in (0.0..1.0).step(0.25): interpolate(x)  // 0.0, 0.25, 0.5, 0.75
+for i in (0..100).step(2) { process_even(i) }      // 0, 2, 4, ..., 98
+for i in (10..0).step(-1) { countdown(i) }         // 10, 9, 8, ..., 1
+for x in (0.0..1.0).step(0.25) { interpolate(x) }  // 0.0, 0.25, 0.5, 0.75
 ```
 
 **Labels:**
 ```rask
 outer: for row in rows {
     for cell in row {
-        if cell == target: break outer
+        if cell == target { break outer }
     }
 }
 
 // Break with value from labeled loop
 let result = search: loop {
     for item in items {
-        if item.matches(): break search item
+        if item.matches() { break search item }
     }
-    if no_more(): break search none
+    if no_more() { break search none }
 }
 ```
 
@@ -1072,9 +1093,9 @@ let msg = try rx.receive()
 
 // Select
 select {
-    rx1 -> msg: process1(msg),
-    rx2 -> msg: process2(msg),
-    Timer.after(5.seconds) -> _: handle_timeout(),
+    rx1 -> msg => process1(msg),
+    rx2 -> msg => process2(msg),
+    Timer.after(5.seconds) -> _ => handle_timeout(),
 }!
 
 // Shared state
@@ -1319,8 +1340,7 @@ println("{sum}")
 | Feature | Rask Syntax | Notes |
 |---------|-------------|-------|
 | Statement separator | Newline | `;` optional for multiple per line |
-| Inline blocks | `: expr` | Single expression after colon |
-| Multi-line blocks | `{ }` | Multiple statements |
+| Blocks | `{ }` | Every body, one line or several |
 | Types | `: Type` | Inference reduces annotations |
 | Functions | `func name(params) -> Type` | Familiar |
 | Permanent binding | `let x = ...` | Cannot reassign (value still mutable) |
@@ -1333,7 +1353,7 @@ println("{sum}")
 | Other branch | `x ?? v` (absent) / `r catch e => f(e)` (failed) | Right side is a value or a written-out exit; `catch` always binds — `e =>` or `_ =>` |
 | Match | `match x { ... }` | Expression with `=>` arms |
 | Pattern condition | `if x is Pattern` | Non-exhaustive, binds `v` |
-| Guard extraction | `let v = x is P else { }` | Enum patterns only; binds to outer scope |
+| Guard extraction | `let P(v) = x else { }` | A pattern that can miss; binds for the rest of the block. Optionals and results use `??` and `catch` |
 | Loops | `for x in xs: ...` | Inline or braced |
 | Loop value | `break expr` | Exit loop with value |
 | Attributes | `@name` | Familiar from Python/Java |

@@ -1656,8 +1656,7 @@ impl<'a> MirLowerer<'a> {
                 cond,
                 then_branch,
                 else_branch,
-                else_binding,
-            } => self.lower_if(cond, then_branch, else_branch.as_deref(), else_binding.as_deref()),
+            } => self.lower_if(cond, then_branch, else_branch.as_deref()),
 
             // Match expression (spec L2)
             ExprKind::Match { scrutinee, arms } => self.lower_match(scrutinee, arms),
@@ -1723,11 +1722,6 @@ impl<'a> MirLowerer<'a> {
             // If-let (if expr is Pattern { then } else { else })
             ExprKind::IfLet { expr, pattern, then_branch, else_branch, else_binding } => {
                 self.lower_if_let(expr, pattern, then_branch, else_branch.as_deref(), else_binding.as_deref())
-            }
-
-            // Guard pattern (const v = expr is Pattern else { diverge })
-            ExprKind::GuardPattern { expr, pattern, else_branch } => {
-                self.lower_guard_pattern(expr, pattern, else_branch)
             }
 
             // Pattern test (expr is Pattern) — evaluates to bool
@@ -1931,9 +1925,15 @@ impl<'a> MirLowerer<'a> {
         }
 
     fn lower_binary(&mut self, op: BinOp, left: &Expr, right: &Expr) -> Result<TypedOperand, LoweringError> {
-            // Short-circuit `&&`/`||`: evaluate rhs only if lhs doesn't decide the result.
+            // Short-circuit `&&`/`||`: evaluate rhs only if lhs doesn't decide
+            // the result. Away from an `if`/`while` root (which goes through
+            // `lower_cond`), a chain's bindings end with it: `let r = 5` before
+            // `let ok = s is Circle(r) && r > 1.0` is still 5 afterwards.
             if matches!(op, BinOp::And | BinOp::Or) {
-                return self.lower_short_circuit(op, left, right);
+                let saved_locals = self.locals.clone();
+                let result = self.lower_short_circuit(op, left, right);
+                self.locals = saved_locals;
+                return result;
             }
 
             let (left_op, left_ty) = self.lower_expr(left)?;
@@ -1984,73 +1984,6 @@ impl<'a> MirLowerer<'a> {
                 kind: ExprKind::Field { object: Box::new(object.clone()), field: name },
             };
             self.lower_expr(&synthetic)
-        }
-
-    fn lower_guard_pattern(&mut self, expr: &Expr, pattern: &Pattern, else_branch: &Expr) -> Result<TypedOperand, LoweringError> {
-            let (val, val_ty) = self.lower_expr(expr)?;
-            let niche = self.option_niche(expr, &val_ty);
-            let is_niche = niche.is_some();
-            let test = self.emit_is_test(expr, &val, &val_ty, niche, pattern)?;
-
-            let ok_block = self.builder.create_block();
-            let else_block = self.builder.create_block();
-            let merge_block = self.builder.create_block();
-
-            self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
-                cond: MirOperand::Local(test.matches),
-                then_block: ok_block,
-                else_block,
-            }));
-
-            // Else branch diverges (return, panic, etc.)
-            self.builder.switch_to_block(else_block);
-            self.lower_expr(else_branch)?;
-            // Only add unreachable if the else branch didn't already terminate
-            // (e.g. via return or break)
-            if self.builder.current_block_unterminated() {
-                self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Unreachable));
-            }
-
-            // Ok block: bind payload and continue
-            self.builder.switch_to_block(ok_block);
-            // Demanded, not optional: `emit_option_payload` below extracts the
-            // value and needs its real width.
-            let payload_ty = self.payload_type_of_niche(expr, &val_ty, is_niche)
-                .unwrap_or_else(|| crate::fallback::unknown_type("lower/expr:try_else_payload"));
-            self.bind_tested_pattern(
-                &test, pattern, expr, val.clone(), Some(payload_ty.clone()), is_niche, &val_ty);
-            // The guard's own value is the narrowed one, whether or not the
-            // pattern binds it — the checker reads a bare type test as its
-            // `as` form. On a flat `T? or E` that's the leaf inside the inner
-            // option: a bare `is Point` used to yield the `Point?` around it
-            // (#1455). `none` names a leaf with nothing in it, so it keeps the
-            // outer payload.
-            let names_none = matches!(&pattern.kind, PatternKind::TypePat { ty: TypeExpr::NoneType, .. });
-            let leaf = test.flat_payload.as_ref().filter(|_| !names_none);
-            // A type test on the err side reads the err payload, the branch
-            // the test just checked. It used to read the success payload's
-            // type out of the same slot.
-            // A variant of the error enum or a member of an error union
-            // narrows further than the err side, so those stay as they were.
-            let err_side = leaf.is_none()
-                && matches!(&pattern.kind, PatternKind::Ident(_) | PatternKind::TypePat { .. })
-                && !names_none
-                && matches!(val_ty, MirType::Result { .. })
-                && self.deep_result_path(pattern, &val_ty).is_none()
-                && self.pattern_tag_in_type_context(pattern, &val_ty)? == 1;
-            let (src, payload_ty, src_niche) = match leaf {
-                Some((inner, inner_payload)) => (MirOperand::Local(*inner), inner_payload.clone(), false),
-                None if err_side => {
-                    let err_ty = self.err_type_of(expr, &val_ty).unwrap_or(payload_ty);
-                    (val, err_ty, is_niche)
-                }
-                None => (val, payload_ty, is_niche),
-            };
-            let payload = self.emit_option_payload(src, payload_ty.clone(), src_niche);
-            self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: merge_block }));
-
-            self.builder.switch_to_block(merge_block);
-            Ok((MirOperand::Local(payload), payload_ty))
         }
 
     fn lower_is_pattern(&mut self, inner: &Expr, pattern: &Pattern) -> Result<TypedOperand, LoweringError> {
@@ -4100,7 +4033,81 @@ impl<'a> MirLowerer<'a> {
         Ok(())
     }
 
+    /// ER23: what a tested pattern binds from `expr`. `Type as v` binds the
+    /// matching side's payload; which side is decided by type identity.
+    fn tested_bind_type(&mut self, expr: &Expr, pattern: &Pattern, val_ty: &MirType, is_niche: bool) -> Result<Option<MirType>, LoweringError> {
+        let PatternKind::TypePat { ty, .. } = &pattern.kind else {
+            return Ok(self.payload_type_of_niche(expr, val_ty, is_niche));
+        };
+        let err_side = self.pattern_is_err_side(pattern, &super::type_pat_name(ty), val_ty)?;
+        Ok(if let MirType::Result { ok, err } = val_ty {
+            Some(if err_side { *err.clone() } else { *ok.clone() })
+        } else if err_side {
+            self.err_type_of(expr, val_ty)
+        } else {
+            self.payload_type_of_niche(expr, val_ty, is_niche)
+        })
+    }
+
+    /// `let P = init` with a pattern that tests, and the guard
+    /// `let P = init else { … }`. The pattern is tested as `if init is P`
+    /// tests it, the `else` runs when it fails and leaves, and the bindings
+    /// stay in scope for the rest of the block. Without an `else` the checker
+    /// proved the test can't fail.
+    pub(super) fn lower_let_pattern(&mut self, pattern: &Pattern, init: &Expr, else_branch: Option<&Expr>) -> Result<(), LoweringError> {
+        let (val, val_ty) = self.lower_expr(init)?;
+        let outer = self.save_names(pattern.bound_names());
+        if matches!(val_ty, MirType::Struct(_)) && matches!(&pattern.kind, PatternKind::Struct { .. }) {
+            // A struct's fields are read, and bound, as they're tested.
+            let (matched, _) = self.lower_struct_is(init, val, val_ty, pattern)?;
+            return self.leave_unless(matched, else_branch, pattern, outer);
+        }
+        let niche = self.option_niche(init, &val_ty);
+        let is_niche = niche.is_some();
+        let test = self.emit_is_test(init, &val, &val_ty, niche, pattern)?;
+        self.leave_unless(MirOperand::Local(test.matches), else_branch, pattern, outer)?;
+        let bind_ty = self.tested_bind_type(init, pattern, &val_ty, is_niche)?;
+        self.bind_tested_pattern(&test, pattern, init, val, bind_ty, is_niche, &val_ty);
+        Ok(())
+    }
+
+    /// Branch on `matched`: run the guard's `else` when it's false and carry
+    /// on in a fresh block when it's true. The `else` sees the names the
+    /// pattern shadows as they were before it (`outer`).
+    fn leave_unless(&mut self, matched: MirOperand, else_branch: Option<&Expr>, pattern: &Pattern, outer: Vec<super::SavedName>) -> Result<(), LoweringError> {
+        let ok_block = self.builder.create_block();
+        let else_block = self.builder.create_block();
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
+            cond: matched,
+            then_block: ok_block,
+            else_block,
+        }));
+        self.builder.switch_to_block(else_block);
+        if let Some(else_branch) = else_branch {
+            let inner = self.save_names(pattern.bound_names());
+            self.restore_names(outer);
+            self.lower_expr(else_branch)?;
+            self.restore_names(inner);
+        }
+        if self.builder.current_block_unterminated() {
+            self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Unreachable));
+        }
+        self.builder.switch_to_block(ok_block);
+        Ok(())
+    }
+
     fn lower_if_let(&mut self, expr: &Expr, pattern: &Pattern, then_branch: &Expr, else_branch: Option<&Expr>, else_binding: Option<&str>) -> Result<TypedOperand, LoweringError> {
+            // `if s is Circle(r) | Square(r)`: the condition lowering tests each
+            // alternative and merges what they bind, so this is a plain `if` on
+            // that condition. The checker gives an or-pattern no `else as`.
+            if super::match_lower::contains_or(pattern) && else_binding.is_none() {
+                let cond = Expr {
+                    id: rask_ast::NodeId::DUMMY,
+                    kind: ExprKind::IsPattern { expr: Box::new(expr.clone()), pattern: pattern.clone() },
+                    span: expr.span,
+                };
+                return self.lower_if(&cond, then_branch, else_branch);
+            }
             let (val, val_ty) = self.lower_expr(expr)?;
 
             // `if p is Point(x: 0, y) { … }` on a plain struct tests fields,
@@ -4143,18 +4150,7 @@ impl<'a> MirLowerer<'a> {
             // ER23: `Type as v` binds the matching side's payload. Which side
             // is decided by type identity (capitalization only as last resort,
             // inside pattern_is_err_side).
-            let bind_ty = if let rask_ast::expr::PatternKind::TypePat { ty, .. } = &pattern.kind {
-                let err_side = self.pattern_is_err_side(pattern, &super::type_pat_name(ty), &val_ty)?;
-                if let MirType::Result { ok, err } = &val_ty {
-                    Some(if err_side { *err.clone() } else { *ok.clone() })
-                } else if err_side {
-                    self.err_type_of(expr, &val_ty)
-                } else {
-                    self.payload_type_of_niche(expr, &val_ty, is_niche)
-                }
-            } else {
-                self.payload_type_of_niche(expr, &val_ty, is_niche)
-            };
+            let bind_ty = self.tested_bind_type(expr, pattern, &val_ty, is_niche)?;
             let outer = self.save_names(pattern.bound_names());
             self.bind_tested_pattern(&test, pattern, expr, val.clone(), bind_ty, is_niche, &val_ty);
             let (then_val, then_ty) = self.lower_expr(then_branch)?;
@@ -10852,28 +10848,10 @@ impl<'a> MirLowerer<'a> {
         cond: &Expr,
         then_branch: &Expr,
         else_branch: Option<&Expr>,
-        else_binding: Option<&str>,
     ) -> Result<TypedOperand, LoweringError> {
-        // `if x? as v` / `... else as e` evaluate the scrutinee once and bind
-        // the payload as a fresh local in the matching branch. A test with
-        // no `as` binds nothing: `if x?` is a plain boolean and `x` keeps its
-        // optional type inside the branch, because the language has no flow
-        // typing (type.optionals, type.errors "Conditions and Binding").
-        if let ExprKind::IsPresent { expr: inner, binding } = &cond.kind {
-            let then_name = binding.clone();
-            let else_name = else_binding.map(|s| s.to_string());
-            if then_name.is_some() || else_name.is_some() {
-                return self.lower_if_present(
-                    inner,
-                    then_branch,
-                    else_branch,
-                    then_name,
-                    else_name,
-                );
-            }
-        }
-
-        let (cond_op, _) = self.lower_expr(cond)?;
+        // The condition's bindings reach the then-branch and no further.
+        let saved_locals = self.locals.clone();
+        let (cond_op, _) = self.lower_cond(cond)?;
 
         let then_block = self.builder.create_block();
         let else_block = self.builder.create_block();
@@ -10901,6 +10879,7 @@ impl<'a> MirLowerer<'a> {
         }
 
         // Else branch
+        self.locals = saved_locals;
         self.builder.switch_to_block(else_block);
         if let Some(else_expr) = else_branch {
             let (else_val, _) = self.lower_expr(else_expr)?;
@@ -10933,7 +10912,7 @@ impl<'a> MirLowerer<'a> {
         right: &Expr,
     ) -> Result<TypedOperand, LoweringError> {
         let (left_op, _) = if matches!(op, BinOp::And) {
-            self.lower_and_operand(left)?
+            self.lower_cond(left)?
         } else {
             self.lower_expr(left)?
         };
@@ -10974,7 +10953,7 @@ impl<'a> MirLowerer<'a> {
         // Long branch: evaluate rhs, yield rhs.
         self.builder.switch_to_block(rhs_block);
         let (right_op, _) = if matches!(op, BinOp::And) {
-            self.lower_and_operand(right)?
+            self.lower_cond(right)?
         } else {
             self.lower_expr(right)?
         };
@@ -10993,16 +10972,81 @@ impl<'a> MirLowerer<'a> {
         Ok((MirOperand::Local(result_local), MirType::Bool))
     }
 
-    /// Lower one operand of an `&&` chain. An `is` pattern anywhere in the
-    /// chain has to bind its payload, because everything to its right — and the
-    /// branch the chain guards — only runs when it matched (#256).
-    fn lower_and_operand(&mut self, expr: &Expr) -> Result<TypedOperand, LoweringError> {
+    /// Lower a condition whose bindings reach onward: an `if` or `while`
+    /// condition, a match guard, or an operand of `&&`. An `is` or `? as` test
+    /// binds on the path where it held, because everything to its right, and
+    /// the branch the chain guards, only runs then (#256). The bindings stay in
+    /// `locals`; the caller restores them where its branch ends.
+    pub(super) fn lower_cond(&mut self, expr: &Expr) -> Result<TypedOperand, LoweringError> {
         match &expr.kind {
             ExprKind::IsPattern { expr: scrutinee, pattern } => {
                 self.lower_is_pattern_binding(scrutinee, pattern)
             }
+            ExprKind::IsPresent { expr: inner, binding: Some(name) } => {
+                self.lower_is_present_binding(inner, name)
+            }
+            ExprKind::Binary { op: BinOp::And, left, right } => {
+                self.lower_short_circuit(BinOp::And, left, right)
+            }
             _ => self.lower_expr(expr),
         }
+    }
+
+    /// Lower `inner? as name` as a bool, binding the payload on the present
+    /// path.
+    fn lower_is_present_binding(&mut self, inner: &Expr, name: &str) -> Result<TypedOperand, LoweringError> {
+        let (val, scrutinee_ty) = self.lower_expr(inner)?;
+        let niche = self.option_niche(inner, &scrutinee_ty);
+        let is_niche = niche.is_some();
+        let tag = self.emit_option_tag(&val, niche);
+        // Tag 0 is present.
+        let is_present = self.builder.alloc_temp(MirType::Bool);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: is_present,
+            rvalue: MirRValue::BinaryOp {
+                op: crate::operand::BinOp::Eq,
+                left: MirOperand::Local(tag),
+                right: MirOperand::Constant(MirConst::Int(0)),
+            },
+        }));
+
+        let bind_block = self.builder.create_block();
+        let short_block = self.builder.create_block();
+        let merge_block = self.builder.create_block();
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
+            cond: MirOperand::Local(is_present),
+            then_block: bind_block,
+            else_block: short_block,
+        }));
+        let result_local = self.builder.alloc_temp(MirType::Bool);
+
+        self.builder.switch_to_block(bind_block);
+        let payload_ty = self.presence_payload_type(inner, &scrutinee_ty);
+        self.bind_presence_payload(name, inner, &val, &payload_ty, is_niche);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: result_local,
+            rvalue: MirRValue::Use(MirOperand::Constant(MirConst::Int(1))),
+        }));
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: merge_block }));
+
+        // Absent: the name is in `locals` past the merge, so a string left
+        // unwritten would reach a release as stack garbage. Same reason as
+        // `lower_is_pattern_binding`'s no-match path.
+        self.builder.switch_to_block(short_block);
+        if let Some((dst, MirType::Buffer)) = self.locals.get(name).cloned() {
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                dst,
+                rvalue: MirRValue::Use(MirOperand::Constant(MirConst::String(String::new()))),
+            }));
+        }
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: result_local,
+            rvalue: MirRValue::Use(MirOperand::Constant(MirConst::Int(0))),
+        }));
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: merge_block }));
+
+        self.builder.switch_to_block(merge_block);
+        Ok((MirOperand::Local(result_local), MirType::Bool))
     }
 
     /// Lower `scrutinee is Pattern` as a bool, binding the payload on the
@@ -11116,105 +11160,6 @@ impl<'a> MirLowerer<'a> {
             }
         }
         self.locals.insert(name.to_string(), (local, payload_ty.clone()));
-    }
-
-    /// Lower `if expr? [as v] { then } [else [as e] { else_br }]`: test the
-    /// scrutinee once and bind the payload to the names that were written.
-    /// Mirrors the interpreter's `ExprKind::If` arm for `IsPresent`.
-    fn lower_if_present(
-        &mut self,
-        inner: &Expr,
-        then_branch: &Expr,
-        else_branch: Option<&Expr>,
-        then_name: Option<String>,
-        else_name: Option<String>,
-    ) -> Result<TypedOperand, LoweringError> {
-        let (val, scrutinee_ty) = self.lower_expr(inner)?;
-        let niche = self.option_niche(inner, &scrutinee_ty);
-        let is_niche = niche.is_some();
-        let tag = self.emit_option_tag(&val, niche);
-
-        // Branch on tag: 0 = present (Some/Ok), nonzero = absent (None/Err).
-        let is_present = self.builder.alloc_temp(MirType::Bool);
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-            dst: is_present,
-            rvalue: MirRValue::BinaryOp {
-                op: crate::operand::BinOp::Eq,
-                left: MirOperand::Local(tag),
-                right: MirOperand::Constant(MirConst::Int(0)),
-            },
-        }));
-
-        let then_block = self.builder.create_block();
-        let else_block = self.builder.create_block();
-        let merge_block = self.builder.create_block();
-
-        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
-            cond: MirOperand::Local(is_present),
-            then_block,
-            else_block,
-        }));
-
-        // Then: bind the present payload as the `as` name, lower body.
-        //
-        // The bind is scoped to the branch. `lower_block` snapshots `locals`,
-        // but it does that *after* this bind, so the bound name used to
-        // outlive its block — a second `if x?` further down then read a tag out
-        // of the bare payload and segfaulted, where the interpreter answered.
-        self.builder.switch_to_block(then_block);
-        let payload_ty = self.presence_payload_type(inner, &scrutinee_ty);
-        let outer_locals = self.locals.clone();
-        if let Some(name) = then_name.as_ref() {
-            self.bind_presence_payload(name, inner, &val, &payload_ty, is_niche);
-        }
-        let (then_val, then_ty) = self.lower_expr(then_branch)?;
-        self.locals = outer_locals;
-        let result_local = self.builder.alloc_temp(then_ty.clone());
-        if self.builder.current_block_unterminated() {
-            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                dst: result_local,
-                rvalue: MirRValue::Use(then_val),
-            }));
-            self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
-                target: merge_block,
-            }));
-        }
-
-        // Else: for Result, bind the err payload (field 0) as the else name.
-        // For Option, None has no payload so skip the bind.
-        self.builder.switch_to_block(else_block);
-        let outer_locals = self.locals.clone();
-        let else_err_ty = self.extract_err_type(inner)
-            .or_else(|| match &scrutinee_ty {
-                MirType::Result { err, .. } => Some((**err).clone()),
-                _ => None,
-            });
-        if let (Some(name), Some(err_ty)) = (else_name.as_ref(), else_err_ty) {
-            let local = self.builder.alloc_local(name.clone(), err_ty.clone());
-            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                dst: local,
-                rvalue: self.payload_field(val.clone(), &scrutinee_ty, &err_ty),
-            }));
-            self.locals.insert(name.clone(), (local, err_ty.clone()));
-        }
-        if let Some(else_expr) = else_branch {
-            let (else_val, _) = self.lower_expr(else_expr)?;
-            if self.builder.current_block_unterminated() {
-                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                    dst: result_local,
-                    rvalue: MirRValue::Use(else_val),
-                }));
-            }
-        }
-        if self.builder.current_block_unterminated() {
-            self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
-                target: merge_block,
-            }));
-        }
-
-        self.locals = outer_locals;
-        self.builder.switch_to_block(merge_block);
-        Ok((MirOperand::Local(result_local), then_ty))
     }
 
     /// Block expression: lower each statement, last expression is the value.

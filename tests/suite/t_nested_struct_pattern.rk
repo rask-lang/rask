@@ -1,0 +1,84 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A pattern inside a struct field: `Item(tag: Tag(name, level: 1), note)`.
+//
+// Native tested the outer struct's fields one by one, but a field whose
+// pattern had parts of its own fell to a test that always failed, and its
+// names were never bound: the arm never ran, and when the checker let a body
+// read `name`, MIR lowering stopped at "unresolved variable". The interpreter
+// had it right. Same for `is` and for the `let … else` guard.
+
+struct Tag {
+    name: string
+    level: i64
+}
+
+struct Item {
+    tag: Tag
+    note: string
+}
+
+enum Shape {
+    Circle(i64)
+    Square(i64)
+}
+
+struct Holder {
+    shape: Shape
+    label: string
+}
+
+func item(name: string, level: i64, note: string) -> Item {
+    return Item(tag: Tag(name: name, level: level), note: note)
+}
+
+func by_match(it: Item) -> string {
+    match it {
+        Item(tag: Tag(name, level: 1), note) => { return "{name}/{note}" }
+        _ => { return "other" }
+    }
+}
+
+func by_is(it: Item) -> string {
+    if it is Item(tag: Tag(name, level: 2), note) && name.len() > 1 { return "{name}+{note}" }
+    return "other"
+}
+
+func by_guard(it: Item) -> string {
+    let Item(tag: Tag(name as n, level: 3), note) = it else { return "other" }
+    return "{n}.{note}"
+}
+
+func circle_label(h: Holder) -> string {
+    let Holder(shape: Circle(r), label) = h else { return "not a circle" }
+    return "{label}:{r}"
+}
+
+test "match binds the names inside a nested struct pattern" {
+    assert by_match(item("a".repeat(20), 1, "b")) == "{"a".repeat(20)}/b"
+    assert by_match(item("a", 2, "b")) == "other"
+}
+
+test "is binds them, and a failed test leaves nothing to release" {
+    mut seen = 0
+    for i in 0..200 {
+        if by_is(item("n{i}".repeat(5), i % 3, "m{i}")) != "other" { seen += 1 }
+    }
+    assert seen == 66
+    assert by_is(item("x", 2, "y")) == "other"
+}
+
+test "a let guard destructures a nested struct" {
+    assert by_guard(item("p", 3, "q")) == "p.q"
+    assert by_guard(item("p", 4, "q")) == "other"
+}
+
+test "a variant nested in a struct field is tested and bound" {
+    assert circle_label(Holder(shape: Shape.Circle(3), label: "c")) == "c:3"
+    assert circle_label(Holder(shape: Shape.Square(3), label: "s")) == "not a circle"
+}
+
+test "an irrefutable nested let binds every field" {
+    let Item(tag: Tag(name, level), note) = item("k", 9, "v")
+    assert "{name}{level}{note}" == "k9v"
+}

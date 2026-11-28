@@ -1,0 +1,131 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// The one guard spelling, `let <pattern> = value else { leave }`, and the
+// spellings that took over from the forms it replaced.
+//
+// A guard's left side is a pattern that can miss: a variant with or without
+// a payload, or a struct holding one. An optional is unwrapped with `??` and a
+// result with `catch`, and both take a block when leaving needs more than one
+// statement. A `while` whose condition is an `&&` chain binds every name in
+// the chain afresh on each pass, so a body that moves one doesn't leave it
+// maybe-moved for the next test.
+
+enum Shape {
+    Circle(i64)
+    Rect(w: i64, h: i64)
+    Dot
+}
+
+struct Point {
+    x: i64
+    y: i64
+}
+
+struct Big {
+    a: i64
+    b: i64
+    c: i64
+}
+
+enum Slot {
+    Full(Big)
+    Empty
+}
+
+func heap(s: string) -> string {
+    return "{s}, long enough to live on the heap"
+}
+
+func radius(s: Shape) -> i64 {
+    let Circle(r) = s else { return -1 }
+    return r
+}
+
+func is_dot(s: Shape) -> bool {
+    let Dot = s else { return false }
+    return true
+}
+
+func area(s: Shape) -> i64 {
+    let Rect(w, h as tall) = s else { return 0 }
+    return w * tall
+}
+
+func parse_or_log(s: string, mutate log: Vec<string>) -> i64 {
+    let n = s.parse<i64>() catch _ => {
+        log.push(heap(s))
+        return -1
+    }
+    return n
+}
+
+func find(ok: bool) -> string? {
+    if ok { return heap("found") }
+    return none
+}
+
+func found_or_log(ok: bool, mutate log: Vec<string>) -> string {
+    let s = find(ok) ?? {
+        log.push(heap("missing"))
+        return "none"
+    }
+    return s
+}
+
+func renamed(p: Point) -> i64 {
+    if p is Point(x as px, y) && px > y { return px - y }
+    return 0
+}
+
+func eat(take b: Big) -> i64 {
+    return b.a + b.b + b.c
+}
+
+test "a variant guard binds the payload or leaves" {
+    assert radius(Shape.Circle(4)) == 4
+    assert radius(Shape.Dot) == -1
+    assert radius(Shape.Rect(w: 2, h: 3)) == -1
+}
+
+test "a unit variant guard tests without binding" {
+    assert is_dot(Shape.Dot)
+    assert !is_dot(Shape.Circle(1))
+}
+
+test "a guard renames a named field with as" {
+    assert area(Shape.Rect(w: 2, h: 3)) == 6
+    assert area(Shape.Circle(5)) == 0
+}
+
+test "catch and ?? take a block to leave from" {
+    mut log: Vec<string> = []
+    assert parse_or_log("12", mutate log) == 12
+    assert parse_or_log("x", mutate log) == -1
+    assert found_or_log(true, mutate log) == heap("found")
+    assert found_or_log(false, mutate log) == "none"
+    assert log.len() == 2
+    assert log[0] == heap("x")
+    assert log[1] == heap("missing")
+}
+
+test "a struct pattern renames a field and the name carries across &&" {
+    assert renamed(Point(x: 5, y: 2)) == 3
+    assert renamed(Point(x: 1, y: 2)) == 0
+}
+
+test "every name an && chain binds in a while is fresh each pass" {
+    mut xs: Vec<Big> = [Big(a: 0, b: 0, c: 0), Big(a: 1, b: 2, c: 3), Big(a: 4, b: 5, c: 6)]
+    mut total = 0
+    while xs.pop()? as b && b.a > 0 {
+        total += eat(b)
+    }
+    assert total == 21
+    assert xs.len() == 0
+
+    mut ys: Vec<Slot> = [Slot.Empty, Slot.Full(Big(a: 1, b: 1, c: 1)), Slot.Full(Big(a: 2, b: 2, c: 2))]
+    while ys.pop()? as it && it is Full(b) {
+        total += eat(b)
+    }
+    assert total == 30
+    assert ys.len() == 0
+}

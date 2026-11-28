@@ -345,8 +345,8 @@ Match arms dispatch on type and narrow the scrutinee in the arm. Two pattern fam
 
 | Rule | Description |
 |------|-------------|
-| **ER27: Type patterns** | `Type => …` narrows the scrutinee to that type in the arm. `Type as name => …` additionally binds |
-| **ER28: Variant patterns** | Enum variants use normal variant destructure (`IoError.NotFound(p)`, `ParseError.Syntax(line, col)`) — narrows and destructures |
+| **ER27: Type patterns** | `Type => …` tests which branch the value holds; the scrutinee keeps its type. `Type as name => …` binds that branch's value. In an `is` test on a plain `T?`, the test is `x?` and the bind `x? as v`: `x is T` and `x is T as v` there are E0222. A type pattern is never a guard's whole pattern (E0226, `ctrl.flow/CF14`): `catch` and `??` are the guard |
+| **ER28: Variant patterns** | Enum variants use normal variant destructure (`IoError.NotFound(p)`, `ParseError.Syntax(line, col)`) — tests and destructures |
 | **ER29: Wildcard** | `_ => …` matches anything not covered |
 | **ER30: Exhaustiveness** | Match on `T or E` must cover T and every variant of E (or use `_`) |
 

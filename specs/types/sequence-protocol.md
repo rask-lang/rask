@@ -104,16 +104,16 @@ A `Sequence<T>` is nominal but still callable — `seq(f)` invokes it. The wrapp
 // Source
 for node in tree.in_order() {
     print(node.value)
-    if node.skip: continue
-    if node.stop: break
+    if node.skip { continue }
+    if node.stop { break }
     process(node)
 }
 
 // Desugars to:
 tree.in_order()(|node| {
     print(node.value)
-    if node.skip: return true    // continue
-    if node.stop: return false   // break
+    if node.skip { return true }    // continue
+    if node.stop { return false }   // break
     process(node)
     return true
 })
@@ -392,7 +392,7 @@ func zip_buffered(tree_a: Tree<Node>, tree_b: Tree<Node>) {
     let a_items = tree_a.in_order().to_vec()
     mut idx = 0
     tree_b.in_order()(|b_node| {
-        if idx >= a_items.len(): return false
+        if idx >= a_items.len() { return false }
         process(a_items[idx], b_node)
         idx += 1
         return true

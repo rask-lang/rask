@@ -79,7 +79,7 @@ test "type.optionals — optional against optional, and against none" {
     assert a == b
     assert !(a == c)
     assert c is none
-    assert !(a is none)
+    assert a?
 }
 
 // The shape from tiwaz: a map lookup gives a `bool?`, and "unknown means

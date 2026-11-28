@@ -15,8 +15,8 @@ func min_max(v: Vec<i32>) -> (i32, i32) {
     mut lo = v[0]
     mut hi = v[0]
     for x in v {
-        if x < lo: lo = x
-        if x > hi: hi = x
+        if x < lo { lo = x }
+        if x > hi { hi = x }
     }
     return (lo, hi)
 }

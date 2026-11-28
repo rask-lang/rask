@@ -306,8 +306,9 @@ impl<'a> MirLowerer<'a> {
             }
 
             if let Some(guard_expr) = &arm.guard {
-                // A failed guard carries on down the chain.
-                let (guard_val, _) = self.lower_expr(guard_expr)?;
+                // A failed guard carries on down the chain. Its own bindings
+                // reach the arm body.
+                let (guard_val, _) = self.lower_cond(guard_expr)?;
                 let guard_pass = self.builder.create_block();
                 self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
                     cond: guard_val,
@@ -704,7 +705,7 @@ impl<'a> MirLowerer<'a> {
             self.retain_pattern_copies(&arm.pattern, scrutinee, &scrutinee_ty);
 
             if let Some(guard_expr) = &arm.guard {
-                let (guard_val, _) = self.lower_expr(guard_expr)?;
+                let (guard_val, _) = self.lower_cond(guard_expr)?;
                 let guard_fail_block = redispatch(self, last_row_of_arm + 1);
                 let guard_pass_block = self.builder.create_block();
                 self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
@@ -1488,17 +1489,9 @@ impl<'a> MirLowerer<'a> {
     /// to `fail` at the first that does. Carries on in the block where they
     /// all passed. A field that only binds, or is `_`, has nothing to test.
     fn emit_field_tests(&mut self, reads: &[FieldRead], fail: BlockId) -> Result<(), LoweringError> {
-        use rask_ast::expr::PatternKind;
         for read in reads {
-            let pattern = read.pattern;
             let value = MirOperand::Local(read.local);
-            if self.field_pattern_tests_type(pattern) {
-                self.emit_field_type_test(&value, &read.ty, Some(&read.checked), pattern, fail)?;
-            } else if !matches!(&pattern.kind, PatternKind::Ident(_) | PatternKind::Wildcard) {
-                let pass = self.builder.create_block();
-                self.emit_pattern_test(&value, pattern, pass, fail)?;
-                self.builder.switch_to_block(pass);
-            }
+            self.emit_subpattern_test(&value, &read.ty, Some(&read.checked), read.pattern, fail)?;
         }
         Ok(())
     }
@@ -1515,6 +1508,11 @@ impl<'a> MirLowerer<'a> {
                 PatternKind::TypePat { .. } => {
                     self.bind_field_type_pattern(
                         &MirOperand::Local(read.local), &read.ty, Some(&read.checked), read.pattern,
+                    );
+                }
+                PatternKind::Constructor { .. } | PatternKind::Struct { .. } | PatternKind::Tuple(_) => {
+                    self.bind_pattern_fields(
+                        read.pattern, MirOperand::Local(read.local), None, false, &read.ty, Some(&read.checked),
                     );
                 }
                 _ => {}
@@ -1534,7 +1532,7 @@ impl<'a> MirLowerer<'a> {
         val_ty: MirType,
         pattern: &rask_ast::expr::Pattern,
     ) -> Result<TypedOperand, LoweringError> {
-        use rask_ast::expr::{Pattern, PatternKind};
+        use rask_ast::expr::PatternKind;
         let PatternKind::Struct { fields, .. } = &pattern.kind else {
             unreachable!("lower_struct_is takes a struct pattern");
         };
@@ -1571,10 +1569,10 @@ impl<'a> MirLowerer<'a> {
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: merge_block }));
 
         self.builder.switch_to_block(fail_block);
-        for read in &reads {
-            if matches!(&read.pattern.kind, PatternKind::Ident(_)) && read.ty == MirType::Buffer {
+        for name in rask_ast::stmt::pattern_binding_names(pattern) {
+            if let Some((dst, MirType::Buffer)) = self.locals.get(&name).cloned() {
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                    dst: read.local,
+                    dst,
                     rvalue: MirRValue::Use(MirOperand::Constant(MirConst::String(String::new()))),
                 }));
             }

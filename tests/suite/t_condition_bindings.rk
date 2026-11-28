@@ -1,0 +1,128 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// Where a name bound by a condition can be read.
+//
+// A binding from `x is P(v)` or `x? as v` reaches the rest of its `&&` chain
+// and the branch the chain guards: an `if`'s then-branch, a `while` body, a
+// match arm under a guard. `||` and `!` carry nothing, and the else branch
+// never sees it.
+//
+// Native lowered only an `is` test inside `&&`: `x? as v && v > 0` stopped at
+// "unresolved variable `v`", and so did a match guard's `is` test read in the
+// arm, and `if s is Circle(r) | Square(r)` never bound `r`. The interpreter
+// failed on `(s is Circle(r) && r > 1.0) || d`, a binding nested inside `||`
+// that only the inner `&&` reads.
+//
+// Spec: ctrl.control-flow (condition bindings), type.optionals (OPT19)
+
+enum Shape {
+    Circle(f64)
+    Square(f64)
+    Dot
+}
+
+struct Feed {
+    items: Vec<string>
+    pos: i64
+}
+
+extend Feed {
+    func next(mutate self) -> string? {
+        if self.pos >= self.items.len() { return none }
+        self.pos += 1
+        return self.items[self.pos - 1].clone()
+    }
+}
+
+func first_big(xs: Vec<i64>) -> i64? {
+    for x in xs {
+        if x > 10 { return x }
+    }
+    return none
+}
+
+func classify(s: Shape) -> string {
+    match s {
+        _ if s is Circle(r) && r > 1.0 => { return "big circle {r}" }
+        Square(w) if w > 2.0 => { return "big square {w}" }
+        _ if s is Square(w) => { return "square {w}" }
+        _ => { return "other" }
+    }
+}
+
+func wide_or_dot(s: Shape) -> bool {
+    return (s is Circle(r) && r > 2.0) || s is Dot
+}
+
+func side(s: Shape) -> f64 {
+    if s is Circle(r) | Square(r) { return r }
+    return 0.0
+}
+
+func big_side(s: Shape) -> bool {
+    return s is Circle(r) | Square(r) && r > 1.0
+}
+
+test "an or-pattern binds the name every alternative binds" {
+    // The E0220 fix for a binding on one side of `||` suggests this form.
+    // Native lowered `if s is A(r) | B(r)` without binding `r`.
+    assert side(Shape.Circle(1.5)) == 1.5
+    assert side(Shape.Square(2.5)) == 2.5
+    assert side(Shape.Dot) == 0.0
+    assert big_side(Shape.Square(2.0))
+    assert !big_side(Shape.Circle(0.5))
+    assert !big_side(Shape.Dot)
+}
+
+test "a presence binding reaches the rest of its && chain" {
+    mut hits = Vec<i64>.new()
+    for limit in [5, 20, 30] {
+        if first_big([3, 12, 25])? as v && v < limit { hits.push(v) }
+    }
+    assert hits == [12, 12]
+}
+
+test "an is binding inside || reaches only its own && chain" {
+    assert wide_or_dot(Shape.Circle(3.0))
+    assert !wide_or_dot(Shape.Circle(1.0))
+    assert wide_or_dot(Shape.Dot)
+    assert !wide_or_dot(Shape.Square(9.0))
+}
+
+test "a match guard's binding reaches its arm" {
+    assert classify(Shape.Circle(2.0)) == "big circle 2"
+    assert classify(Shape.Circle(0.5)) == "other"
+    assert classify(Shape.Square(3.0)) == "big square 3"
+    assert classify(Shape.Square(1.0)) == "square 1"
+}
+
+test "a while condition binds a string payload each turn" {
+    mut feed = Feed(items: ["ab", "cde", "", "zz"], pos: 0)
+    mut seen = ""
+    while feed.next()? as s && s.len() > 0 { seen = "{seen}{s}." }
+    assert seen == "ab.cde."
+    assert feed.pos == 3
+}
+
+test "a binding ends with its if, its while and its expression" {
+    let r = 7.0
+    if Shape.Circle(1.5) is Circle(r) { assert r == 1.5 }
+    assert r == 7.0
+    mut feed = Feed(items: ["a".repeat(30)], pos: 0)
+    let s = "outer"
+    while feed.next()? as s && s.len() > 1 { assert s.len() == 30 }
+    assert s == "outer"
+    let wide = Shape.Circle(4.0) is Circle(r) && r > 3.0
+    assert wide
+    assert r == 7.0
+}
+
+test "a failed test leaves nothing behind to release" {
+    mut count = 0
+    for i in 0..300 {
+        mut feed = Feed(items: Vec<string>.new(), pos: 0)
+        if i % 2 == 0 { feed.items.push("x{i}".repeat(10)) }
+        if feed.next()? as s && s.len() >= 20 { count += 1 }
+    }
+    assert count == 150
+}

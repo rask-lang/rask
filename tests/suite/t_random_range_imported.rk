@@ -12,8 +12,8 @@ test "range stays in [low, high) and reaches both ends" {
     for _ in 0..400 {
         let n = pick(-3, 4)
         assert n >= -3 && n < 4
-        if n == -3: saw_low = true
-        if n == 3: saw_high = true
+        if n == -3 { saw_low = true }
+        if n == 3 { saw_high = true }
     }
     assert saw_low
     assert saw_high

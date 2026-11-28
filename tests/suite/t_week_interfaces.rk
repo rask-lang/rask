@@ -78,7 +78,7 @@ func area_of_any(s: any Shape) -> f64 {
 func biggest(shapes: Vec<any Shape>) -> f64 {
     mut best = 0.0
     for s in shapes {
-        if s.area() > best: best = s.area()
+        if s.area() > best { best = s.area() }
     }
     return best
 }

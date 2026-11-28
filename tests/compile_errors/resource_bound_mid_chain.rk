@@ -1,0 +1,27 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: a resource bound before another test in an `&&` chain
+// Rejects: `open(n)? as c && c.id > 5` (E0858)
+//
+// When the second test fails the else runs, and the else can't see `c`, so
+// nothing could close it (ctrl.flow/CF37). Bind it alone and test inside.
+
+@resource
+struct Conn {
+    id: i64
+}
+
+extend Conn {
+    func close(take self) {}
+}
+
+func open(n: i64) -> Conn? {
+    if n > 0 { return Conn(id: n) }
+    return none
+}
+
+func main() {
+    // ERROR: E0858 `c` leaks when `c.id > 5` is false
+    if open(3)? as c && c.id > 5 {
+        c.close()
+    }
+}

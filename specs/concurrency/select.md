@@ -11,16 +11,16 @@ Wait on multiple sources simultaneously.
 
 | Rule | Description |
 |------|-------------|
-| **A1: Receive** | `rx -> v: expr` — wait for value, bind to `v` |
-| **A2: Send** | `tx <- val: expr` — wait for send completion |
-| **A3: Default** | `_: expr` — non-blocking fallback |
+| **A1: Receive** | `rx -> v => expr` — wait for value, bind to `v` |
+| **A2: Send** | `tx <- val => expr` — wait for send completion |
+| **A3: Default** | `_ => expr` — non-blocking fallback |
 
 ```rask
 result = select {
-    rx1 -> v: handle_v(v),
-    rx2 -> v: handle_v(v),
-    tx <- msg: sent(),
-    Timer.after(5.seconds) -> _: timed_out(),
+    rx1 -> v => handle_v(v),
+    rx2 -> v => handle_v(v),
+    tx <- msg => sent(),
+    Timer.after(5.seconds) -> _ => timed_out(),
 }!
 ```
 
@@ -38,14 +38,14 @@ Timeouts use `Timer.after(duration)` which returns a receiver that fires once �
 ```rask
 // Random (default) — fair
 select {
-    rx1 -> v: handle(v),  // 50% if both ready
-    rx2 -> v: handle(v),  // 50% if both ready
+    rx1 -> v => handle(v),  // 50% if both ready
+    rx2 -> v => handle(v),  // 50% if both ready
 }!
 
 // Priority — deterministic
 select_priority {
-    shutdown -> _: return,       // Always checked first
-    work -> w: process(w),       // Only if shutdown not ready
+    shutdown -> _ => return,       // Always checked first
+    work -> w => process(w),       // Only if shutdown not ready
 }!
 ```
 
@@ -59,8 +59,8 @@ select_priority {
 <!-- test: skip -->
 ```rask
 result = select {
-    tx1 <- msg: "sent to tx1",
-    tx2 <- msg: "sent to tx2",  // msg reused if tx1 selected
+    tx1 <- msg => "sent to tx1",
+    tx2 <- msg => "sent to tx2",  // msg reused if tx1 selected
 }!
 ```
 
@@ -79,13 +79,13 @@ A select that can wait can also end without running any arm, so its value is `T 
 ```rask
 // Not expected to fail: `!` panics if it does
 let v = select {
-    rx1 -> v: v,
-    rx2 -> v: v,
+    rx1 -> v => v,
+    rx2 -> v => v,
 }!
 
 // A worker that stops cleanly
 loop {
-    match select { jobs -> j: j } {
+    match select { jobs -> j => j } {
         Job as j => run(j)
         SelectError.Closed => return
         SelectError.Cancelled => return
@@ -103,8 +103,8 @@ let rx = Timer.after(5.seconds)
 rx.receive()  // Blocks for 5 seconds, returns ()!
 
 select {
-    work -> w: process(w),
-    Timer.after(1.seconds) -> _: check_health(),
+    work -> w => process(w),
+    Timer.after(1.seconds) -> _ => check_health(),
 }
 ```
 
@@ -146,8 +146,8 @@ ERROR [conc.select/P3]: select requires at least one arm
 <!-- test: skip -->
 ```rask
 result = select {
-    rx -> v: v,
-    Timer.after(5.seconds) -> _: Timeout,
+    rx -> v => v,
+    Timer.after(5.seconds) -> _ => Timeout,
 }!
 ```
 
@@ -156,9 +156,9 @@ result = select {
 ```rask
 loop {
     select {
-        rx1 -> v: process(v),
-        rx2 -> v: process(v),
-        rx3 -> v: process(v),
+        rx1 -> v => process(v),
+        rx2 -> v => process(v),
+        rx3 -> v => process(v),
     }!
 }
 ```
@@ -167,8 +167,8 @@ loop {
 <!-- test: skip -->
 ```rask
 select {
-    tx <- msg: log("sent"),
-    _: log("channel full, dropping"),
+    tx <- msg => log("sent"),
+    _ => log("channel full, dropping"),
 }
 ```
 

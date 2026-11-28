@@ -1641,28 +1641,14 @@ impl ComptimeInterpreter {
             }
 
             // If expression
-            // `else_binding` is dropped here. Unlike the `IfLet` form below, the
-            // scrutinee isn't in hand — the condition is a presence or `is` test
-            // wrapping it — and binding the wrong thing is worse than binding
-            // nothing. Filed rather than guessed (#808).
             ExprKind::If {
                 cond,
                 then_branch,
                 else_branch,
-                else_binding,
             } => {
-                // OPT19/ER22: `if x? as v { … } else as e { … }` evaluates the
-                // scrutinee *once* and binds its payload — `v` in the then branch,
-                // `e` in the else. Comptime dropped `else_binding` on the floor, so
-                // a body reading `e` failed with "undefined variable" (#808).
-                //
-                // Same rule as the interpreter's arm, including its restraint: the
-                // else binds only when there's a payload to bind. An Option's
-                // absence carries nothing, and inventing a `Unit` for it would put
-                // a wrong value where a missing one at least reports itself.
-                if let Some(flow) =
-                    self.eval_presence_if(cond, then_branch, else_branch.as_deref(), else_binding)?
-                {
+                // OPT19: `if x? as v { … }` evaluates the scrutinee once and
+                // binds its payload in the then branch.
+                if let Some(flow) = self.eval_presence_if(cond, then_branch, else_branch.as_deref())? {
                     return Ok(flow);
                 }
 
@@ -2047,66 +2033,37 @@ impl ComptimeInterpreter {
         Ok(kind.make(n))
     }
 
-    /// `if x? { … }`, `if x? as v { … }`, `if x? as v { … } else as e { … }`.
+    /// `if x? as v { … }`.
     ///
-    /// `Ok(None)` when the condition isn't a presence test with a name to bind, so
-    /// the caller falls through to evaluating it as an ordinary bool. Otherwise the
-    /// scrutinee is evaluated once — not the condition, which would evaluate it a
-    /// second time — and the branch runs with its payload bound.
+    /// `Ok(None)` when the condition isn't a presence test with a name, so the
+    /// caller evaluates it as an ordinary bool. Otherwise the scrutinee is
+    /// evaluated once, not the condition, which would evaluate it twice.
     fn eval_presence_if(
         &mut self,
         cond: &Expr,
         then_branch: &Expr,
         else_branch: Option<&Expr>,
-        else_binding: &Option<String>,
     ) -> ComptimeResult<Option<ControlFlow>> {
-        let ExprKind::IsPresent { expr: inner, binding } = &cond.kind else {
+        let ExprKind::IsPresent { expr: inner, binding: Some(name) } = &cond.kind else {
             return Ok(None);
         };
-        // A bare `if x?` narrows `x` itself; `as v` names the payload instead.
-        let then_name = match (binding, &inner.kind) {
-            (Some(v), _) => Some(v.clone()),
-            (None, ExprKind::Ident(n)) => Some(n.clone()),
-            _ => None,
-        };
-        let else_name = else_binding.clone().or_else(|| then_name.clone());
-        if then_name.is_none() && else_name.is_none() {
-            return Ok(None);
-        }
-
         let value = self.eval_expr(inner)?;
         let (variant, payload) = match &value {
             ComptimeValue::Enum { variant, data, .. } => {
                 (variant.clone(), data.as_ref().map(|d| (**d).clone()))
             }
-            // Not a wrapper at all — the condition isn't the shape this handles.
             _ => return Ok(None),
         };
-
         if matches!(variant.as_str(), "Some" | "Ok") {
             self.env.push_scope();
-            if let Some(name) = then_name {
-                self.env.define(name, payload.unwrap_or(ComptimeValue::Unit));
-            }
+            self.env.define(name.clone(), payload.unwrap_or(ComptimeValue::Unit));
             let result = self.eval_expr_cf(then_branch);
             self.env.pop_scope();
             return result.map(Some);
         }
-
-        let Some(else_br) = else_branch else {
-            return Ok(Some(ControlFlow::Normal(ComptimeValue::Unit)));
-        };
-        // A Result's error branch carries E; an Option's absence carries nothing,
-        // and there is no name to give nothing.
-        match (else_name, payload) {
-            (Some(name), Some(p)) => {
-                self.env.push_scope();
-                self.env.define(name, p);
-                let result = self.eval_expr_cf(else_br);
-                self.env.pop_scope();
-                result.map(Some)
-            }
-            _ => self.eval_expr_cf(else_br).map(Some),
+        match else_branch {
+            Some(else_br) => self.eval_expr_cf(else_br).map(Some),
+            None => Ok(Some(ControlFlow::Normal(ComptimeValue::Unit))),
         }
     }
 
@@ -2151,8 +2108,19 @@ impl ComptimeInterpreter {
                 Ok(ControlFlow::Normal(ComptimeValue::Unit))
             }
 
-            // `let Point { x, .. } = p` — bind the fields the pattern names.
-            StmtKind::LetStruct { pattern, init, .. } => {
+            // `let Circle(r) = s else { … }`: the else runs on a miss and
+            // diverges; on a match the pattern's names are bound here.
+            StmtKind::LetPattern { pattern, init, else_branch: Some(else_branch), .. } => {
+                let value = self.eval_expr(init)?;
+                if !self.pattern_matches(pattern, &value)? {
+                    return self.eval_expr_cf(else_branch);
+                }
+                self.bind_pattern(pattern, &value)?;
+                Ok(ControlFlow::Normal(ComptimeValue::Unit))
+            }
+
+            // `let Point(x, ..) = p` — bind the fields the pattern names.
+            StmtKind::LetPattern { pattern, init, else_branch: None, .. } => {
                 let value = self.eval_expr(init)?;
                 let PatternKind::Struct { fields: pat_fields, .. } = &pattern.kind else {
                     return Err(ComptimeError::NotSupported(

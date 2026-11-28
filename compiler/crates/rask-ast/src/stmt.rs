@@ -125,16 +125,18 @@ pub enum StmtKind {
         patterns: Vec<TuplePat>,
         init: Expr,
     },
-    /// Struct destructuring binding: `let Point { x, y } = p`,
-    /// `mut Point { x, .. } = p` (type.structs "Partial patterns").
+    /// Binding through a pattern: `let Point(x, y) = p`, `mut Point(x, ..) = p`,
+    /// and the guard `let Circle(r) = s else { return }`.
     ///
-    /// One variant with `is_mut`, where the tuple form has a `Let`/`Mut` pair: the
-    /// two spellings differ only in whether the bindings can be reassigned, and
-    /// every pass that cares about that reads a bool from it anyway.
-    LetStruct {
+    /// A pattern that can fail to match needs `else_branch`, which must diverge;
+    /// the pattern's names are bound in the enclosing block after it. One variant
+    /// with `is_mut`, where the tuple form has a `Let`/`Mut` pair: the two
+    /// spellings differ only in whether the bindings can be reassigned.
+    LetPattern {
         pattern: Pattern,
         init: Expr,
         is_mut: bool,
+        else_branch: Option<Box<Expr>>,
     },
     /// Assignment.
     ///

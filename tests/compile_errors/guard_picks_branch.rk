@@ -1,0 +1,45 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: a guard whose whole pattern is a type test
+// Rejects: `let i64 as n = load() else { … }` on a result or an optional (E0226)
+//
+// `catch` and `??` keep the value and leave on the other branch on one line;
+// the guard said the same thing a second way (ctrl.flow/CF14). A type test
+// inside a field stays: no operator reaches into a field.
+
+enum Bad {
+    Missing
+}
+
+extend Bad {
+    func message(self) -> string { return "bad" }
+}
+
+func load(ok: bool) -> i64 or Bad {
+    if ok { return 3 }
+    return Bad.Missing
+}
+
+func find(ok: bool) -> i64? {
+    if ok { return 3 }
+    return none
+}
+
+func value_branch() -> i64 {
+    // ERROR: E0226 write `let n = load(true) catch _ => return -1`
+    let i64 as n = load(true) else { return -1 }
+    return n
+}
+
+func error_branch() -> i64 {
+    // ERROR: E0226 test the error where it's handled, with `if` or `match`
+    let Bad as e = load(true) else { return -1 }
+    return 0
+}
+
+func optional() -> i64 {
+    // ERROR: E0226 write `let n = find(true) ?? return 0`
+    let i64 as n = find(true) else { return 0 }
+    return n
+}
+
+func main() {}

@@ -53,7 +53,7 @@ The same thing in Rask:
 func process_entries(entries: Vec<Entry>, filter: string) -> Vec<string> {
     let result = Vec.new()
     for entry in entries {
-        if entry.tag == filter: result.push(entry.name)
+        if entry.tag == filter { result.push(entry.name) }
     }
     return result
 }

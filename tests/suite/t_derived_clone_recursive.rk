@@ -88,7 +88,7 @@ test "a struct holding one clones every field" {
 test "a variant with named fields clones" {
     let s = Shape.Circle(radius: 1.5, label: "c")
     let c = s.clone()
-    if c is Circle(radius: r, label: l) {
+    if c is Circle(radius as r, label as l) {
         assert r == 1.5
         assert l == "c"
     } else {

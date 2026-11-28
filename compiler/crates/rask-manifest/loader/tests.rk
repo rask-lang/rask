@@ -837,7 +837,7 @@ test "claims sources come from a path or git" {
                 assert c.name == "acme" && url == "https://git.acme.dev/claims" && rev == "v2.1"
                 gits += 1
             }
-            DepSource.Registry(_) => panic("no registry claims source was written")
+            DepSource.Registry => panic("no registry claims source was written")
         }
     }
     assert paths == 1 && gits == 1

@@ -84,12 +84,12 @@ extend ApiError {
     // HTTP status this error maps to. Keeps status policy in one place.
     func status(self) -> u16 {
         match self {
-            Validation(_) => return 422
+            Validation => return 422
             BadRequest(reason: _) => return 400
-            Auth(_) => return 401
+            Auth => return 401
             RateLimited(seconds: _) => return 429
             Store(e) => return store_status(e)
-            System(_) => return 500
+            System => return 500
             Internal(reason: _) => return 500
         }
     }

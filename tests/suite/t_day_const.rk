@@ -78,7 +78,7 @@ test "a const in a condition" {
     } else {
         assert false
     }
-    let n = if MAX_RETRIES > 2: "many" else: "few"
+    let n = if MAX_RETRIES > 2 { "many" } else { "few" }
     assert n == "many"
 }
 

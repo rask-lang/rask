@@ -43,8 +43,8 @@ func test_wildcard_linear() {
 
 // --- guard pattern else doesn't diverge (CF13) ---
 func test_guard_no_diverge() {
-    let opt: i32? = 42
-    mut value = opt is Some else { 0 }   // ERROR: 0 doesn't diverge
+    let r: i32 or GuardError = 42
+    let i32 as value = r else { 0 }   // ERROR: 0 doesn't diverge
     // else must use return, break, panic, etc.
 }
 

@@ -155,7 +155,7 @@ struct Level {
 
 Level implements Decode {
     func decode(raw: i64?) -> Level or Bad {
-        if raw is i64 as n {
+        if raw? as n {
             return Level(n: n)
         }
         return Level(n: 1)

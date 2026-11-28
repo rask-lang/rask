@@ -11,7 +11,7 @@
 // --- if as expression (CF1, CF4) ---
 
 func sign(x: i32) -> string {
-    let s = if x > 0: "positive" else if x < 0: "negative" else: "zero"
+    let s = if x > 0 { "positive" } else if x < 0 { "negative" } else { "zero" }
     return s
 }
 
@@ -23,7 +23,7 @@ test "if as expression" {
 
 test "if expression in binding" {
     let x = 10
-    let abs_x = if x >= 0: x else: -x
+    let abs_x = if x >= 0 { x } else { -x }
     assert abs_x == 10
 }
 
@@ -59,7 +59,7 @@ test "match expression in binding" {
 test "loop with break value" {
     mut i = 0
     let found = loop {
-        if i == 5: break i * 10
+        if i == 5 { break i * 10 }
         i += 1
     }
     assert found == 50
@@ -68,7 +68,7 @@ test "loop with break value" {
 test "loop break value type" {
     mut n = 1
     let result = loop {
-        if n > 100: break n
+        if n > 100 { break n }
         n = n * 2
     }
     assert result == 128
@@ -92,7 +92,7 @@ test "labeled loop break" {
 test "labeled loop break value" {
     let result = search: loop {
         for i in 0..10 {
-            if i == 7: break search i
+            if i == 7 { break search i }
         }
         break search -1
     }
@@ -105,7 +105,7 @@ test "continue label" {
     mut count = 0
     outer: for i in 0..5 {
         for j in 0..5 {
-            if j == 2: continue outer
+            if j == 2 { continue outer }
             count += 1
         }
     }
@@ -236,8 +236,8 @@ test "guard pattern Err diverges" {
 // --- inline colon syntax (CF5) ---
 
 func clamp(x: i32, lo: i32, hi: i32) -> i32 {
-    if x < lo: return lo
-    if x > hi: return hi
+    if x < lo { return lo }
+    if x > hi { return hi }
     return x
 }
 
@@ -306,7 +306,7 @@ test "pattern guards" {
 
 test "never coercion in if expression" {
     mut x = 5
-    let y = if x > 0: x else { panic("negative") }
+    let y = if x > 0 { x } else { panic("negative") }
     // The else branch has type Never, which coerces to i32
     assert y == 5
 }

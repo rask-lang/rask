@@ -18,23 +18,23 @@ func no_return_value(n: i32) {
 }
 
 func factorial(n: i64) -> i64 {
-    if n <= 1: return 1
+    if n <= 1 { return 1 }
     return n * factorial(n - 1)
 }
 
 func fib(n: i32) -> i32 {
-    if n < 2: return n
+    if n < 2 { return n }
     return fib(n - 1) + fib(n - 2)
 }
 
 func connect(host: string, port: i32 = 8080, secure: bool = false) -> string {
-    let scheme = if secure: "https" else: "http"
+    let scheme = if secure { "https" } else { "http" }
     return "{scheme}://{host}:{port}"
 }
 
 func first_negative(v: Vec<i32>) -> i32 {
     for x in v {
-        if x < 0: return x
+        if x < 0 { return x }
     }
     return 0
 }

@@ -616,7 +616,7 @@ impl<'a> OwnershipChecker<'a> {
                             .collect();
                         self.bind(&names, init);
                     }
-                    StmtKind::LetStruct { pattern, init, .. } => {
+                    StmtKind::LetPattern { pattern, init, .. } => {
                         let names = rask_ast::stmt::pattern_binding_names(pattern);
                         self.bind(&names, init);
                     }

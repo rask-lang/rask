@@ -48,7 +48,7 @@ struct HasOptInt {
 
 test "type.optionals — a chain onto an optional string field keeps the value" {
     let a = HasOpt(inner: OptField(v: "abc"))
-    assert !(a.inner?.v is none)
+    assert a.inner?.v?
     assert a.inner?.v! == "abc"
 }
 
@@ -75,7 +75,7 @@ test "type.optionals — an absent outer value short-circuits" {
 // Controls: both of these work on both backends today.
 test "type.optionals — a chain onto a plain field is the control" {
     let b = HasPlain(inner: PlainField(v: "abc"))
-    assert !(b.inner?.v is none)
+    assert b.inner?.v?
     assert b.inner?.v! == "abc"
 }
 

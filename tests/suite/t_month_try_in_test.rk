@@ -33,7 +33,7 @@ MyErr implements Error {
 }
 
 func might_fail(ok: bool) -> i64 or MyErr {
-    if !ok: return MyErr.Bad
+    if !ok { return MyErr.Bad }
     return 7
 }
 

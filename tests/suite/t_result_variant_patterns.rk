@@ -47,7 +47,7 @@ func get(a: i64) -> Light? or Color {
 
 func describe(x: i64) -> string {
     return match f(x) {
-        Bad.Named(a: n, b: s) => "named {n} {s}",
+        Bad.Named(a as n, b as s) => "named {n} {s}",
         Bad.Plain => "plain",
         _ => "ok",
     }

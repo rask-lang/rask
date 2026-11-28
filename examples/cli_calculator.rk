@@ -289,7 +289,7 @@ extend Parser {
 func evaluate(expr: Expr) -> f64 or CalcError {
     match expr {
         Number(n) => return n
-        Unary(op, expr: inner) => {
+        Unary(op, expr as inner) => {
             let val = try evaluate(inner)
             match op {
                 Neg => return -val

@@ -5,10 +5,10 @@ use rask_ast::ty::TypeExpr;
 use std::collections::{HashMap, HashSet};
 use rask_ast::decl::{Decl, DeclKind, FnDecl, StructDecl, EnumDecl, InterfaceDecl, ImplDecl, ImportDecl, ExportDecl, TypeParam, UnionDecl};
 use rask_ast::stmt::{ForBinding, Stmt, StmtKind};
-use rask_ast::expr::{Expr, ExprKind, Pattern, PatternKind};
+use rask_ast::expr::{BinOp, Expr, ExprKind, Pattern, PatternKind, UnaryOp};
 use rask_ast::{NodeId, Span};
 
-use crate::error::ResolveError;
+use crate::error::{ResolveError, ResolveErrorKind};
 use crate::scope::{ScopeId, ScopeTree, ScopeKind};
 use crate::symbol::{BuiltinModuleKind, SymbolTable, SymbolId, SymbolKind};
 use crate::package::PackageId;
@@ -113,6 +113,10 @@ pub struct Resolver {
     write_only: HashSet<NodeId>,
     /// The function being resolved says `@allow(unused_variable)`.
     allow_unused_variable: bool,
+    /// Names each enclosing `if` condition bound, while its `else` branch is
+    /// resolved. Reading one there gets "only bound where the test held"
+    /// rather than "undefined symbol".
+    else_hidden_names: Vec<Vec<String>>,
 }
 
 impl Resolver {
@@ -143,6 +147,7 @@ impl Resolver {
             local_bindings: Vec::new(),
             write_only: HashSet::new(),
             allow_unused_variable: false,
+            else_hidden_names: Vec::new(),
         };
 
         resolver.register_builtins();
@@ -2050,20 +2055,14 @@ impl Resolver {
                     }
                 }
             }
-            StmtKind::LetStruct { pattern, init, is_mut } => {
+            StmtKind::LetPattern { pattern, init, is_mut, else_branch } => {
                 self.resolve_expr(init);
-                for name in rask_ast::stmt::pattern_binding_names(pattern) {
-                    let sym_id = self.symbols.insert(
-                        name.clone(),
-                        SymbolKind::Variable { mutable: *is_mut },
-                        None,
-                        stmt.span,
-                        false,
-                    );
-                    if let Err(e) = self.scopes.define(name, sym_id, stmt.span) {
-                        self.errors.push(e);
-                    }
+                // The else runs when the pattern didn't match: its names
+                // aren't bound there.
+                if let Some(e) = else_branch {
+                    self.resolve_expr(e);
                 }
+                self.resolve_pattern(pattern, *is_mut);
             }
             StmtKind::Assign { target, value, op } => {
                 self.resolve_expr(target);
@@ -2120,32 +2119,21 @@ impl Resolver {
                 }
             }
             StmtKind::While { label, cond, body } => {
-                self.resolve_expr(cond);
+                // The condition's bindings reach the body and nothing after
+                // the loop; each iteration binds them afresh.
+                self.scopes.push(ScopeKind::Block);
+                self.resolve_cond(cond, true);
                 self.scopes.push(ScopeKind::Loop { label: label.clone() });
-                // OPT19 on a loop: `while expr? as v` binds the payload for the
-                // body, re-read each iteration. Same binder the `If` arm defines,
-                // scoped to the loop instead of a then-branch.
-                if let ExprKind::IsPresent { binding: Some(name), .. } = &cond.kind {
-                    let sym_id = self.symbols.insert(
-                        name.clone(),
-                        SymbolKind::Variable { mutable: false },
-                        None,
-                        stmt.span,
-                        false,
-                    );
-                    if let Err(e) = self.scopes.define(name.clone(), sym_id, stmt.span) {
-                        self.errors.push(e);
-                    }
-                }
                 for s in body {
                     self.resolve_stmt(s);
                 }
+                self.scopes.pop();
                 self.scopes.pop();
             }
             StmtKind::WhileLet { label, pattern, expr, body } => {
                 self.resolve_expr(expr);
                 self.scopes.push(ScopeKind::Loop { label: label.clone() });
-                self.resolve_pattern(pattern);
+                self.resolve_pattern(pattern, false);
                 for s in body {
                     self.resolve_stmt(s);
                 }
@@ -2439,9 +2427,16 @@ impl Resolver {
         if self.report_missing_import(name, expr.span) {
             return;
         }
+        if self.else_hidden_names.iter().any(|names| names.iter().any(|n| n == name)) {
+            self.errors.push(ResolveError {
+                kind: ResolveErrorKind::ReadInElse { name: name.to_string() },
+                span: expr.span,
+            });
+            return;
+        }
         let similar = rask_diagnostics::suggestions::closest(name, self.scopes.visible_names());
         self.errors.push(ResolveError {
-            kind: crate::error::ResolveErrorKind::UndefinedSymbol { name: name.to_string(), similar },
+            kind: ResolveErrorKind::UndefinedSymbol { name: name.to_string(), similar },
             span: expr.span,
         });
     }
@@ -2456,6 +2451,12 @@ impl Resolver {
                 for arg in type_args {
                     self.check_type_annotation(arg, expr.span);
                 }
+            }
+            ExprKind::Binary { op: BinOp::And | BinOp::Or, .. }
+            | ExprKind::Unary { op: UnaryOp::Not, .. }
+            | ExprKind::IsPattern { .. }
+            | ExprKind::IsPresent { .. } => {
+                self.resolve_cond(expr, false);
             }
             ExprKind::Binary { left, right, .. } => {
                 self.resolve_expr(left);
@@ -2604,86 +2605,48 @@ impl Resolver {
                 }
                 self.scopes.pop();
             }
-            ExprKind::If { cond, then_branch, else_branch, else_binding } => {
-                self.resolve_expr(cond);
-                // OPT20/ER20: `if expr? as v` binds v in the then-branch.
-                // ER21: else-branch also binds v (to the error) for Result.
-                let presence_binding = match &cond.kind {
-                    ExprKind::IsPresent { binding: Some(name), .. } => Some(name.clone()),
-                    _ => None,
-                };
-                if let Some(ref name) = presence_binding {
-                    self.scopes.push(ScopeKind::Block);
-                    let sym_id = self.symbols.insert(
-                        name.clone(),
-                        SymbolKind::Variable { mutable: false },
-                        None,
-                        Span::new(0, 0),
-                        false,
-                    );
-                    if let Err(e) = self.scopes.define(name.clone(), sym_id, Span::new(0, 0)) {
-                        self.errors.push(e);
-                    }
-                    self.resolve_expr(then_branch);
-                    self.scopes.pop();
-                } else {
-                    self.resolve_expr(then_branch);
-                }
+            ExprKind::If { cond, then_branch, else_branch } => {
+                // The condition's bindings reach the then-branch only. The
+                // else runs when a test failed, so they have no value there.
+                self.scopes.push(ScopeKind::Block);
+                self.resolve_cond(cond, true);
+                self.resolve_expr(then_branch);
+                self.scopes.pop();
                 if let Some(else_br) = else_branch {
-                    // ER22: explicit `else as e` takes precedence over the cond's
-                    // `as v` for the else-branch name.
-                    let else_name = else_binding.clone().or_else(|| presence_binding.clone());
-                    if let Some(ref name) = else_name {
-                        self.scopes.push(ScopeKind::Block);
-                        let sym_id = self.symbols.insert(
-                            name.clone(),
-                            SymbolKind::Variable { mutable: false },
-                            None,
-                            Span::new(0, 0),
-                            false,
-                        );
-                        if let Err(e) = self.scopes.define(name.clone(), sym_id, Span::new(0, 0)) {
-                            self.errors.push(e);
-                        }
-                        self.resolve_expr(else_br);
-                        self.scopes.pop();
-                    } else {
-                        self.resolve_expr(else_br);
-                    }
+                    self.else_hidden_names.push(self.cond_binding_names(cond));
+                    self.resolve_expr(else_br);
+                    self.else_hidden_names.pop();
                 }
             }
             ExprKind::IfLet { expr, pattern, then_branch, else_branch, else_binding } => {
                 self.resolve_expr(expr);
                 self.scopes.push(ScopeKind::Block);
-                self.resolve_pattern(pattern);
+                self.resolve_pattern(pattern, false);
                 self.resolve_expr(then_branch);
                 self.scopes.pop();
                 if let Some(else_br) = else_branch {
+                    let hidden = rask_ast::stmt::pattern_binding_names(pattern)
+                        .into_iter()
+                        .filter(|n| !self.pattern_name_is_not_a_binding(n))
+                        .collect();
+                    self.else_hidden_names.push(hidden);
                     // ER22: `else as e` scopes its binding to the else branch.
                     self.scopes.push(ScopeKind::Block);
                     if let Some(name) = else_binding {
-                        let sym_id = self.symbols.insert(
-                            name.clone(),
-                            SymbolKind::Variable { mutable: false },
-                            None,
-                            Span::new(0, 0),
-                            false,
-                        );
-                        if let Err(e) = self.scopes.define(name.clone(), sym_id, Span::new(0, 0)) {
-                            self.errors.push(e);
-                        }
+                        self.define_pattern_binding(name, false);
                     }
                     self.resolve_expr(else_br);
                     self.scopes.pop();
+                    self.else_hidden_names.pop();
                 }
             }
             ExprKind::Match { scrutinee, arms } => {
                 self.resolve_expr(scrutinee);
                 for arm in arms {
                     self.scopes.push(ScopeKind::Block);
-                    self.resolve_pattern(&arm.pattern);
+                    self.resolve_pattern(&arm.pattern, false);
                     if let Some(guard) = &arm.guard {
-                        self.resolve_expr(guard);
+                        self.resolve_cond(guard, true);
                     }
                     self.resolve_expr(&arm.body);
                     self.scopes.pop();
@@ -2711,20 +2674,8 @@ impl Resolver {
                 self.resolve_expr(&clause.body);
                 self.scopes.pop();
             }
-            ExprKind::IsPresent { expr: inner, .. } => {
-                self.resolve_expr(inner);
-            }
             ExprKind::Unwrap { expr: inner, .. } => {
                 self.resolve_expr(inner);
-            }
-            ExprKind::GuardPattern { expr, pattern, else_branch } => {
-                self.resolve_expr(expr);
-                self.resolve_pattern(pattern);
-                self.resolve_expr(else_branch);
-            }
-            ExprKind::IsPattern { expr, pattern } => {
-                self.resolve_expr(expr);
-                self.resolve_pattern(pattern);
             }
             ExprKind::NullCoalesce { value, default } => {
                 self.resolve_expr(value);
@@ -2952,10 +2903,68 @@ impl Resolver {
                 .is_some_and(|sym| matches!(sym.kind, SymbolKind::EnumVariant { .. }))
     }
 
-    fn define_pattern_binding(&mut self, name: &str) {
+    /// Resolve a condition, defining its `is` and `? as` bindings in the
+    /// current scope. `&&` carries a binding to its right operand and, when
+    /// `onward`, to whatever the caller resolves next in this scope: the
+    /// then-branch, the loop body, the match arm. `||` and `!` carry nothing,
+    /// since the side that ran may not be the one that bound.
+    ///
+    /// A binding that reaches nothing is still defined, so a read of it isn't
+    /// also "undefined symbol"; the checker reports it, since only the checker
+    /// knows that `Null` in `self is Null` is a variant and binds nothing.
+    fn resolve_cond(&mut self, cond: &Expr, onward: bool) {
+        match &cond.kind {
+            ExprKind::Binary { op: BinOp::And, left, right } => {
+                if !onward {
+                    self.scopes.push(ScopeKind::Block);
+                }
+                self.resolve_cond(left, true);
+                self.resolve_cond(right, onward);
+                if !onward {
+                    self.scopes.pop();
+                }
+            }
+            ExprKind::Binary { op: BinOp::Or, left, right } => {
+                self.resolve_cond(left, false);
+                self.resolve_cond(right, false);
+            }
+            ExprKind::Unary { op: UnaryOp::Not, operand } => self.resolve_cond(operand, false),
+            ExprKind::IsPattern { expr, pattern } => {
+                self.resolve_expr(expr);
+                self.resolve_pattern(pattern, false);
+            }
+            ExprKind::IsPresent { expr, binding } => {
+                self.resolve_expr(expr);
+                if let Some(name) = binding {
+                    self.define_pattern_binding(name, false);
+                }
+            }
+            _ => self.resolve_expr(cond),
+        }
+    }
+
+    /// The names a condition binds for the branch it guards: those of the
+    /// tests along its top-level `&&` chain.
+    fn cond_binding_names(&self, cond: &Expr) -> Vec<String> {
+        match &cond.kind {
+            ExprKind::Binary { op: BinOp::And, left, right } => {
+                let mut names = self.cond_binding_names(left);
+                names.extend(self.cond_binding_names(right));
+                names
+            }
+            ExprKind::IsPattern { pattern, .. } => rask_ast::stmt::pattern_binding_names(pattern)
+                .into_iter()
+                .filter(|n| !self.pattern_name_is_not_a_binding(n))
+                .collect(),
+            ExprKind::IsPresent { binding: Some(name), .. } => vec![name.clone()],
+            _ => Vec::new(),
+        }
+    }
+
+    fn define_pattern_binding(&mut self, name: &str, mutable: bool) {
         let sym_id = self.symbols.insert(
             name.to_string(),
-            SymbolKind::Variable { mutable: false },
+            SymbolKind::Variable { mutable },
             None,
             Span::new(0, 0),
             false,
@@ -2965,7 +2974,9 @@ impl Resolver {
         }
     }
 
-    fn resolve_pattern(&mut self, pattern: &Pattern) {
+    /// Resolve the names a pattern tests for and declare the ones it binds;
+    /// `mutable` is set by `mut Circle(r) = s else { … }`.
+    fn resolve_pattern(&mut self, pattern: &Pattern, mutable: bool) {
         match &pattern.kind {
             PatternKind::Wildcard => {}
             PatternKind::Ident(name) => {
@@ -2984,7 +2995,7 @@ impl Resolver {
                 if self.pattern_name_is_not_a_binding(name) {
                     return;
                 }
-                self.define_pattern_binding(name);
+                self.define_pattern_binding(name, mutable);
             }
             PatternKind::Literal(expr) => {
                 self.resolve_expr(expr);
@@ -2994,7 +3005,7 @@ impl Resolver {
                     let _ = sym_id;
                 }
                 for field_pattern in fields {
-                    self.resolve_pattern(field_pattern);
+                    self.resolve_pattern(field_pattern, mutable);
                 }
             }
             PatternKind::Struct { name, fields, .. } => {
@@ -3033,17 +3044,17 @@ impl Resolver {
                             }
                         }
                     }
-                    self.resolve_pattern(field_pattern);
+                    self.resolve_pattern(field_pattern, mutable);
                 }
             }
             PatternKind::Tuple(patterns) => {
                 for p in patterns {
-                    self.resolve_pattern(p);
+                    self.resolve_pattern(p, mutable);
                 }
             }
             PatternKind::Or(patterns) => {
                 for p in patterns {
-                    self.resolve_pattern(p);
+                    self.resolve_pattern(p, mutable);
                 }
             }
             PatternKind::Range { .. } => {}

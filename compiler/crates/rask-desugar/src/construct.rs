@@ -367,7 +367,7 @@ impl Rewrite for Construct<'_> {
 
     fn body(&mut self, stmts: &mut Vec<rask_ast::stmt::Stmt>) {
         for stmt in stmts.iter_mut() {
-            if let rask_ast::stmt::StmtKind::LetStruct { pattern, init, .. } = &mut stmt.kind {
+            if let rask_ast::stmt::StmtKind::LetPattern { pattern, init, .. } = &mut stmt.kind {
                 let at = init.span;
                 self.place(pattern, at);
             }
@@ -416,6 +416,13 @@ impl Construct<'_> {
         let Some(declared) = self.shapes.matched_fields(&path) else { return };
         let mut named = Vec::new();
         for (i, field) in fields.iter().enumerate() {
+            if let Some((f, b)) = field.as_field_rename() {
+                if declared.is_empty() || declared.iter().any(|d| d.name == f) {
+                    let renamed = Pattern::new(field.id, PatternKind::Ident(b.to_string()), field.span);
+                    named.push((f.to_string(), renamed));
+                    continue;
+                }
+            }
             let problem = match &field.kind {
                 PatternKind::Ident(n) if declared.is_empty() || declared.iter().any(|f| f.name == *n) => {
                     named.push((n.clone(), field.clone()));

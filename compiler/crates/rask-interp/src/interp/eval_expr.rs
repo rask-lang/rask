@@ -1901,6 +1901,15 @@ impl Interpreter {
             }
 
             ExprKind::Binary { op, left, right } => match op {
+                // An `&&` chain whose tests bind, away from an `if`/`while`
+                // root: `(s is Circle(r) && r > 1.0) || d`. The bindings reach
+                // the rest of the chain and end with it.
+                BinOp::And if cond_binds_pattern(expr) => {
+                    self.env.push_scope();
+                    let taken = self.eval_cond_bindings(expr);
+                    self.env.pop_scope();
+                    Ok(Value::Bool(taken?))
+                }
                 BinOp::And => {
                     let l = self.eval_expr(left)?;
                     if !self.is_truthy(&l) {
@@ -2035,55 +2044,10 @@ impl Interpreter {
                 cond,
                 then_branch,
                 else_branch,
-                else_binding,
             } => {
-                // `if expr? as v` / `... else as e` evaluate the scrutinee once
-                // and bind the payload in the matching branch. A test with no
-                // `as` binds nothing: `if x?` is a plain boolean and `x` stays
-                // optional inside the branch (no flow typing, type.optionals).
-                if let ExprKind::IsPresent { expr: inner, binding } = &cond.kind {
-                    let then_name = binding.clone();
-                    let else_name = else_binding.clone();
-                    if then_name.is_some() || else_name.is_some() {
-                        let scrutinee_val = self.eval_expr(inner)?;
-                        let present = matches!(
-                            &scrutinee_val,
-                            Value::Enum { variant, .. } if matches!(variant.as_str(), "Some" | "Ok")
-                        );
-                        if present {
-                            let payload = match &scrutinee_val {
-                                Value::Enum { fields, .. } => fields.first().cloned().unwrap_or(Value::Unit),
-                                _ => Value::Unit,
-                            };
-                            self.env.push_scope();
-                            if let Some(name) = then_name {
-                                self.env.define(name, payload);
-                            }
-                            let result = self.eval_branch(expr, then_branch);
-                            self.env.pop_scope();
-                            return result;
-                        } else if let Some(else_br) = else_branch {
-                            let payload = match &scrutinee_val {
-                                Value::Enum { fields, .. } => fields.first().cloned(),
-                                _ => None,
-                            };
-                            if let (Some(name), Some(p)) = (else_name, payload) {
-                                // Result Err branch binds E; Option None has no payload.
-                                self.env.push_scope();
-                                self.env.define(name, p);
-                                let result = self.eval_branch(expr, else_br);
-                                self.env.pop_scope();
-                                return result;
-                            }
-                            return self.eval_branch(expr, else_br);
-                        } else {
-                            return Ok(Value::Unit);
-                        }
-                    }
-                }
-
-                // `if x is Pat(v) && …` — the payload has to be in scope for the
-                // rest of the condition and for the then-branch (#256).
+                // `if x is Pat(v) && …` and `if x? as v` — the payload has to be
+                // in scope for the rest of the condition and for the then-branch
+                // (#256). A bare `x?` binds nothing: `x` stays optional.
                 if cond_binds_pattern(cond) {
                     self.env.push_scope();
                     let taken = match self.eval_cond_bindings(cond) {
@@ -2478,21 +2442,19 @@ impl Interpreter {
 
                 for arm in arms {
                     if let Some(bindings) = self.match_pattern(&arm.pattern, &value) {
-                        if let Some(guard) = &arm.guard {
-                            self.env.push_scope();
-                            for (name, val) in &bindings {
-                                self.env.define(name.clone(), val.clone());
-                            }
-                            let guard_result = self.eval_expr(guard)?;
-                            self.env.pop_scope();
-                            if !self.is_truthy(&guard_result) {
-                                continue;
-                            }
-                        }
-
                         self.env.push_scope();
                         for (name, val) in bindings {
                             self.env.define(name, val);
+                        }
+                        // A guard's own `is`/`? as` bindings reach the arm body.
+                        let taken = match &arm.guard {
+                            Some(guard) => self.eval_cond_bindings(guard),
+                            None => Ok(true),
+                        };
+                        if !matches!(taken, Ok(true)) {
+                            self.env.pop_scope();
+                            taken?;
+                            continue;
                         }
                         let result = self.eval_branch(expr, &arm.body);
                         self.env.pop_scope();
@@ -2543,43 +2505,6 @@ impl Interpreter {
                 Ok(Value::Bool(matched))
             }
 
-
-            // Guard pattern: const v = expr is Ok(v) else { diverge }
-            ExprKind::GuardPattern { expr: inner, pattern, else_branch } => {
-                let value = self.eval_expr(inner)?;
-                if let Some(bindings) = self.match_pattern(pattern, &value) {
-                    // Pattern matched — bind variables in the current scope
-                    for (name, val) in &bindings {
-                        self.env.define(name.clone(), val.clone());
-                    }
-                    // A bare type test yields what its `as` form would bind,
-                    // as the checker types it: on a flat `T? or E` the `T`,
-                    // not the `T?` around it (#1455).
-                    if let Some(narrowed) = self.guard_type_test_value(pattern, &value) {
-                        return Ok(narrowed);
-                    }
-                    // The guard's value is what the pattern binds, as the
-                    // checker types it. On a flat `T? or E` the outer payload
-                    // is the `T?`, so `is string as s` handed back an option
-                    // where a string was promised.
-                    if let Some(first) = pattern.bound_names().first() {
-                        if let Some(bound) = bindings.get(*first) {
-                            return Ok(bound.clone());
-                        }
-                    }
-                    // Nothing bound: the payload (first field of Ok/Some).
-                    match &value {
-                        Value::Enum { fields, .. } => {
-                            Ok(fields.first().cloned().unwrap_or(Value::Unit))
-                        }
-                        _ => Ok(value),
-                    }
-                } else {
-                    // Pattern didn't match — execute else branch (should diverge)
-                    self.eval_expr(else_branch)?;
-                    Ok(Value::Unit)
-                }
-            }
 
             ExprKind::Try { expr: inner } => {
                 // ER17: `try { … }` block form. Inner `try`s raise TryError;

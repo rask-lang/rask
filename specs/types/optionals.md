@@ -55,7 +55,7 @@ cache = get_current_user()               // User widens at assignment
 | **OPT11: Other branch** | `x ?? <expr>` | unwraps `x` if present, else evaluates the right side — lazily, only on the miss. The right side is a **value** (a `T` collapses to `T`, another `T?` stays wrapped and keeps chaining, `type.errors/ER14a`) **or any divergence** — `return`, `break`, `continue`, `panic(…)`. `x ?? return Token.Eof`, `x ?? break` are ordinary |
 | — | `try x` | unwraps if present, else `none` **leaves to the caller** — so the enclosing function must return a `T?` (`type.errors/ER16`, ER47). The shape rule is the whole constraint; there is no clause |
 | **OPT13: Force** | `x!` | extracts if present; panics with `"none"` or `x! "msg"` custom message. What it extracts is read out, as with OPT19, so `x!.f = v` is a compile error (E0985) unless a link sits between the `!` and the field: `node!.health = 0` on a `Link<T>?` writes the node |
-| **OPT15: Absent check** | `x is none` | tests the absent branch — a plain bool, like every other `is` test. Presence is `x?`; there is no `is not none`. `x == none` still typechecks as ordinary equality on a zero-field type, but lints to `is none` (`tool.lint/I5`) |
+| **OPT15: Absent check** | `x is none` | tests the absent branch — a plain bool, like every other `is` test. Presence is `x?`; there is no `is not none`, and `!(x is none)` on a `T?` is an error pointing at `x?` (on a flat `T? or E` it means "a value or an error" and stays). `x == none` still typechecks as ordinary equality on a zero-field type, but lints to `is none` (`tool.lint/I5`) |
 | **OPT16: `!x?` forbidden** | `!x?` is a parse error suggesting `x is none` |
 
 OPT12 (the `try x else <diverge>` absence-exit construct) is deleted — `try`'s clause is gone language-wide. Propagating absence is bare `try x`; leaving with anything else is `??` with the exit written out.
@@ -119,7 +119,7 @@ The `?`-tests don't narrow — they're plain booleans. Getting at the payload is
 | **OPT19: `if x? as v` binds** | Binds a let `v: T` in the block. Works on any scrutinee — `let`, `mut`, field paths, call results — with no restrictions to remember. `v` is the payload read out of the scrutinee, so a write to it is rejected (E0372): the write would land on the copy. Get at the value inside the block, assemble a whole one, assign it back outside — or give the type a `mutate self` method and call it on the original. This is not the `with` rule: a `with` binding *is* mutable (mem.borrowing/W5) because it is the element itself, and `as` names a payload in one case and what a `Shared` holds in the other |
 | **OPT18/OPT20/OPT23 deleted** | `if x?` used to narrow `x` in place on let scrutinees (with an else-narrow, and a rule excluding `mut`-rooted paths). Cut: it was a second spelling of test-and-use next to `as v`, and its restrictions were the seam. `x?` is now side-effect-free |
 | **OPT21 deleted (with ER21/ER24)** | Early-exit narrowing after a diverging `is none` arm is gone along with all scrutinee narrowing (`type.errors`, Conditions and Binding). `is none` is a plain bool; the guard is `?? <exit>`, and it binds |
-| **OPT22: Compounds are just bools** | `x? && y?` is a legal bool expression; to use the payloads, bind — nested `if x? as a`, or restructure |
+| **OPT22: Compounds carry along `&&`** | `x? && y?` is a plain bool. `x? as a && y? as b` binds both, and each name reaches the rest of the chain and the body. `||` and `!` carry nothing: `x? as a || y?` is E0220 (`ctrl.flow/CF10`) |
 
 <!-- test: skip -->
 ```rask

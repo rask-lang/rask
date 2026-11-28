@@ -103,8 +103,9 @@ func by_guarded_arm(n: i64) -> string {
 }
 
 func guarded(n: i64) -> string {
-    let s = pick(n) is string as t else { return "-" }
-    return "{s}{t}"
+    let maybe = pick(n) catch _ => return "-"
+    let s = maybe ?? return "-"
+    return "{s}{s}"
 }
 
 func caught(n: i64) -> string {

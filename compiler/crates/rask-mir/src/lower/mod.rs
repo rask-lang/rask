@@ -4026,8 +4026,10 @@ impl<'a> MirLowerer<'a> {
                 kids.push(value);
             }
             SK::Let { init, .. } | SK::Mut { init, .. } => kids.push(init),
-            SK::LetTuple { init, .. } | SK::MutTuple { init, .. } | SK::LetStruct { init, .. } => {
-                kids.push(init)
+            SK::LetTuple { init, .. } | SK::MutTuple { init, .. } => kids.push(init),
+            SK::LetPattern { init, else_branch, .. } => {
+                kids.push(init);
+                kids.extend(else_branch.as_deref());
             }
             SK::Expr(e) | SK::Return(Some(e)) => kids.push(e),
             SK::Break { value: Some(e), .. } => kids.push(e),
@@ -4196,10 +4198,6 @@ impl<'a> MirLowerer<'a> {
             | ExprKind::Convert { expr: inner, .. }
             | ExprKind::IsPattern { expr: inner, .. }
             | ExprKind::Try { expr: inner } => kids.push(inner),
-            ExprKind::GuardPattern { expr: inner, else_branch, .. } => {
-                kids.push(inner);
-                kids.push(else_branch);
-            }
             ExprKind::DynamicField { object, field_expr } => {
                 kids.push(object);
                 kids.push(field_expr);
@@ -6418,10 +6416,6 @@ impl<'a> MirLowerer<'a> {
                 self.walk_free_vars(then_branch, &then_bound, seen, free);
                 if let Some(e) = else_branch { self.walk_free_vars(e, bound, seen, free); }
             }
-            ExprKind::GuardPattern { expr: inner, else_branch, .. } => {
-                self.walk_free_vars(inner, bound, seen, free);
-                self.walk_free_vars(else_branch, bound, seen, free);
-            }
             ExprKind::IsPattern { expr: inner, .. } => {
                 self.walk_free_vars(inner, bound, seen, free);
             }
@@ -6495,7 +6489,7 @@ impl<'a> MirLowerer<'a> {
                 | rask_ast::stmt::StmtKind::LetTuple { patterns, .. } => {
                     for n in rask_ast::stmt::tuple_pats_flat_names(patterns) { local_bound.insert(n.to_string()); }
                 }
-                rask_ast::stmt::StmtKind::LetStruct { pattern, .. } => {
+                rask_ast::stmt::StmtKind::LetPattern { pattern, .. } => {
                     for n in rask_ast::stmt::pattern_binding_names(pattern) { local_bound.insert(n); }
                 }
                 _ => {}
@@ -6516,10 +6510,14 @@ impl<'a> MirLowerer<'a> {
             StmtKind::Mut { init, .. } | StmtKind::Let { init, .. } => {
                 self.walk_free_vars(init, bound, seen, free);
             }
-            StmtKind::MutTuple { init, .. }
-            | StmtKind::LetTuple { init, .. }
-            | StmtKind::LetStruct { init, .. } => {
+            StmtKind::MutTuple { init, .. } | StmtKind::LetTuple { init, .. } => {
                 self.walk_free_vars(init, bound, seen, free);
+            }
+            StmtKind::LetPattern { init, else_branch, .. } => {
+                self.walk_free_vars(init, bound, seen, free);
+                if let Some(e) = else_branch {
+                    self.walk_free_vars(e, bound, seen, free);
+                }
             }
             StmtKind::Return(Some(e)) => self.walk_free_vars(e, bound, seen, free),
             StmtKind::Return(None) => {}
@@ -7159,7 +7157,6 @@ mod tests {
                 cond: Box::new(cond),
                 then_branch: Box::new(then_br),
                 else_branch: else_br.map(Box::new),
-                else_binding: None,
             },
             span: sp(),
         }

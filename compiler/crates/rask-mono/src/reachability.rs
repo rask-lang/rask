@@ -1392,9 +1392,14 @@ impl<'a> Monomorphizer<'a> {
                 }
             }
             StmtKind::MutTuple { init, .. }
-            | StmtKind::LetTuple { init, .. }
-            | StmtKind::LetStruct { init, .. } => {
+            | StmtKind::LetTuple { init, .. } => {
                 self.visit_expr(init);
+            }
+            StmtKind::LetPattern { init, else_branch, .. } => {
+                self.visit_expr(init);
+                if let Some(e) = else_branch {
+                    self.visit_expr(e);
+                }
             }
             StmtKind::Break { value: Some(e), .. } => self.visit_expr(e),
             StmtKind::Break { value: None, .. } | StmtKind::Continue(_) => {}
@@ -1571,12 +1576,6 @@ impl<'a> Monomorphizer<'a> {
                 if let Some(else_br) = else_branch {
                     self.visit_expr(else_br);
                 }
-            }
-            ExprKind::GuardPattern {
-                expr, else_branch, ..
-            } => {
-                self.visit_expr(expr);
-                self.visit_expr(else_branch);
             }
             ExprKind::IsPattern { expr, .. } => {
                 self.visit_expr(expr);

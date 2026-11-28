@@ -30,8 +30,8 @@ test "a select arm owns what it received" {
         let (tx, rx) = Channel<string>.buffered(4)
         let _ = tx.send(make(3))
         let r = select {
-            rx -> v: "got {v}",
-            _: "none",
+            rx -> v => "got {v}",
+            _ => "none",
         }
         assert r == "got msg-3-wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww"
     }

@@ -232,8 +232,7 @@ mod tests {
         );
     }
 
-    /// ER22: `else as e` binds the complement branch. `If` printed it; `IfLet`
-    /// dropped it — the same shape as #885.
+    /// ER22: `else as e` binds the complement branch of an `is` test.
     #[test]
     fn preserves_else_binding() {
         let input = "func main() {\n    if r is Ok(v) {\n        println(v)\n    } else as e {\n        println(e)\n    }\n}\n";

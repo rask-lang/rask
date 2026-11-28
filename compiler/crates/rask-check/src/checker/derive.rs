@@ -280,7 +280,6 @@ impl TypeChecker {
                     cond: Box::new(not),
                     then_branch: Box::new(then),
                     else_branch: None,
-                    else_binding: None,
                 });
                 return vec![bind, check];
             }
@@ -294,7 +293,6 @@ impl TypeChecker {
                 cond: Box::new(cond),
                 then_branch: Box::new(then),
                 else_branch: None,
-                else_binding: None,
             }));
         }
         out
@@ -763,7 +761,6 @@ impl TypeChecker {
                     cond: Box::new(cond),
                     then_branch: Box::new(then),
                     else_branch: None,
-                    else_binding: None,
                 });
                 let none = self.expr(ExprKind::None);
                 vec![check, self.ret(none)]
@@ -841,7 +838,6 @@ impl TypeChecker {
                         cond: Box::new(cond),
                         then_branch: Box::new(then),
                         else_branch: None,
-                        else_binding: None,
                     }));
                     return self.ident(&r);
                 }
@@ -1259,7 +1255,6 @@ impl TypeChecker {
             cond: Box::new(cond),
             then_branch: Box::new(then),
             else_branch: Some(Box::new(otherwise)),
-            else_binding: None,
         })
     }
 

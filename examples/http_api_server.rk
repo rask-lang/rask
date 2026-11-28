@@ -66,17 +66,13 @@ func handle(req: Request) -> Response {
         (Method.Get, "/users") => list_users()
         (Method.Get, path) if path.starts_with("/users/") => {
             let id_str = path[7..].to_string()
-            let id = id_str.parse<i64>() is i64 else {
-                return Response.bad_request("invalid user id")
-            }
+            let id = id_str.parse<i64>() catch _ => return Response.bad_request("invalid user id")
             get_user(id)
         }
         (Method.Post, "/users") => create_user(req.body)
         (Method.Delete, path) if path.starts_with("/users/") => {
             let id_str = path[7..].to_string()
-            let id = id_str.parse<i64>() is i64 else {
-                return Response.bad_request("invalid user id")
-            }
+            let id = id_str.parse<i64>() catch _ => return Response.bad_request("invalid user id")
             delete_user(id)
         }
         _ => Response.not_found()
@@ -106,7 +102,7 @@ func get_user(id: i64) -> Response {
 }
 
 func create_user(body: string) -> Response {
-    let req = json.decode<CreateUserRequest>(body) is CreateUserRequest else {
+    let req = json.decode<CreateUserRequest>(body) catch _ => {
         return Response.bad_request(json.encode(ErrorResponse(error: "invalid JSON")))
     }
 

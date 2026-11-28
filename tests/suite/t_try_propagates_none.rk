@@ -84,12 +84,12 @@ test "type.optionals — try with a string payload on both sides" {
 test "type.optionals — the result narrows with `is` too, not just ??" {
     let missing: string? = none
     let present: string? = "9090"
-    if port_from(missing) is u16 as p {
+    if port_from(missing)? as p {
         assert false
     } else {
         assert true
     }
-    if port_from(present) is u16 as p {
+    if port_from(present)? as p {
         assert p == 9090
     } else {
         assert false

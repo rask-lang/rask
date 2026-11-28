@@ -23,8 +23,8 @@ func build(n: i64) -> Expr {
 
 func is_neg(e: Expr) -> bool {
     match e {
-        Expr.Neg(_) => return true,
-        Expr.Num(_) => return false,
+        Expr.Neg => return true,
+        Expr.Num => return false,
     }
 }
 
@@ -36,7 +36,7 @@ test "a value nested 200,000 deep clones" {
         Expr.Neg(v) => {
             one = v.len() == 1
         }
-        Expr.Num(_) => {}
+        Expr.Num => {}
     }
     assert one
 }

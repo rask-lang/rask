@@ -1074,8 +1074,8 @@ using Multitasking {
     let rx = channel.receiver
     let timer = Timer.after(Duration.seconds(30))
     result = select {
-        rx -> msg: handle_message(msg),
-        timer -> _: handle_timeout(),
+        rx -> msg => handle_message(msg),
+        timer -> _ => handle_timeout(),
     }!
 }
 ```
@@ -1179,8 +1179,8 @@ fn timer_thread(wheel: Arc<TimerWheel>) {
 
 ```rask
 result = select {
-    rx1 -> v: handle_v(v),
-    Timer.after(5.seconds) -> _: timed_out(),
+    rx1 -> v => handle_v(v),
+    Timer.after(5.seconds) -> _ => timed_out(),
 }!
 ```
 

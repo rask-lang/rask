@@ -1,0 +1,21 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: the else branch reads a name its condition bound
+// Rejects: `r` read in the else of `if s is Circle(r) && …` (E0221)
+//
+// The else runs when a test failed, so a name the test bound has no value
+// there. Before the error had its own code it read as "undefined symbol",
+// which sent the reader looking for a typo.
+
+enum Shape {
+    Circle(f64)
+    Square(f64)
+}
+
+func radius(s: Shape) -> f64 {
+    if s is Circle(r) && r > 1.0 {
+        return r
+    } else {
+        // ERROR: E0221 the else runs when the test failed
+        return r
+    }
+}

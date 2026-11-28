@@ -115,7 +115,7 @@ test "iterating and building at the same time" {
     let src: Vec<i32> = [1, 2, 3, 4]
     mut evens = Vec.new()
     for x in src {
-        if x % 2 == 0: evens.push(x)
+        if x % 2 == 0 { evens.push(x) }
     }
     assert evens.len() == 2
     assert evens[0] == 2

@@ -126,9 +126,7 @@ func read_sstable_block(path: string, block_offset: i32) -> Vec<KeyValue> or Sst
 func parse_block_lines(lines: Vec<string>, block_id: i32) -> Vec<KeyValue> or SstError {
     mut entries = Vec.new()
     for line in lines {
-        let kv = decode_kv(line) is KeyValue as entry else {
-            return SstError.BlockCorrupt(block_id, "corrupt entry")
-        }
+        let kv = decode_kv(line) catch _ => return SstError.BlockCorrupt(block_id, "corrupt entry")
         entries.push(kv)
     }
     return entries
@@ -149,12 +147,8 @@ func read_sstable_index(path: string) -> Vec<BlockIndex> or SstError {
         let parts = entry.split("\t").to_strings()
         if parts.len() < 3 { continue }
 
-        let offset = parts[1].trim().parse<i64>() is i64 as v else {
-            continue
-        }
-        let count = parts[2].trim().parse<i64>() is i64 as v else {
-            continue
-        }
+        let offset = parts[1].trim().parse<i64>() catch _ => continue
+        let count = parts[2].trim().parse<i64>() catch _ => continue
 
         index.push(BlockIndex(
             first_key: parts[0].to_string()
@@ -187,7 +181,7 @@ func read_sstable_bloom(path: string) -> BloomFilter or SstError {
 
 func read_sstable_max_seq(path: string) -> i64 or SstError {
     let data = try read_header_field(path, "SEQ:")
-    let seq = data.parse<i64>() is i64 as v else {
+    let seq = data.parse<i64>() catch _ => {
         return SstError.IndexCorrupt("bad sequence number in {path}")
     }
     return seq
@@ -208,9 +202,7 @@ func read_all_sstable_entries(path: string) -> Vec<KeyValue> or SstError {
         let trimmed = line.trim().to_string()
         if trimmed.is_empty() { continue }
         if trimmed == "===" { continue }
-        let kv = decode_kv(trimmed) is KeyValue as entry else {
-            continue
-        }
+        let kv = decode_kv(trimmed) catch _ => continue
         entries.push(kv)
     }
     return entries
@@ -255,32 +247,20 @@ func discover_sstables(dir: string) -> Vec<SstMeta> {
         let underscore = stem.index_of("_") ?? {
             continue
         }
-        let level = stem[1..underscore].parse<i64>() is i64 as v else {
-            continue
-        }
-        let id = stem[underscore + 1..].parse<i64>() is i64 as v else {
-            continue
-        }
+        let level = stem[1..underscore].parse<i64>() catch _ => continue
+        let id = stem[underscore + 1..].parse<i64>() catch _ => continue
 
         let path = "{dir}/{file}"
 
-        let bloom = read_sstable_bloom(path) is BloomFilter as b else {
-            continue
-        }
-        let max_seq = read_sstable_max_seq(path) is i64 as s else {
-            continue
-        }
-        let index = read_sstable_index(path) is Vec<BlockIndex> as idx else {
-            continue
-        }
+        let bloom = read_sstable_bloom(path) catch _ => continue
+        let max_seq = read_sstable_max_seq(path) catch _ => continue
+        let index = read_sstable_index(path) catch _ => continue
         if index.is_empty() { continue }
 
         let min_key = index[0].first_key
 
         let last_block_offset = index[index.len() - 1].offset
-        let last_entries = read_sstable_block(path, last_block_offset) is Vec<KeyValue> as e else {
-            continue
-        }
+        let last_entries = read_sstable_block(path, last_block_offset) catch _ => continue
         if last_entries.is_empty() { continue }
         let max_key = last_entries[last_entries.len() - 1].key
 

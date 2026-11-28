@@ -29,7 +29,7 @@ func announce_inline<T: Greeter>(g: T) -> string {
 
 // Builtin operator interface: `>` desugars to `.gt()`, provided by Comparable.
 func largest(a: T, b: T) -> T where T: Comparable {
-    if a > b: return a
+    if a > b { return a }
     return b
 }
 

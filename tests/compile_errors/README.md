@@ -227,6 +227,15 @@ go down.
 | [match_errors.rk](match_errors.rk) | Non-exhaustive match, wildcard on linear resource, guard without diverge, or-pattern binding mismatch |
 | [nonexhaustive_match.rk](nonexhaustive_match.rk) | Non-exhaustive enum match |
 | [guarded_match_not_exhaustive.rk](guarded_match_not_exhaustive.rk) | A guarded arm covers nothing (#1402): a match whose only catch-all, or only arm for a variant, is guarded is non-exhaustive (E0864, E0340). It used to check and stop at runtime |
+| [condition_binding_reach.rk](condition_binding_reach.rk) | A name a condition bound, read where the test may not have held (E0220): under `\|\|`, under `!`, or in a plain expression like `let ok = a? as v` |
+| [else_reads_condition_binding.rk](else_reads_condition_binding.rk) | The else of an `if` reading a name its condition bound (E0221). Used to read as "undefined symbol" |
+| [else_as_needs_is_test.rk](else_as_needs_is_test.rk) | `else as e` after a plain condition, which rules out nothing that has a value (a parse error) |
+| [optional_second_spellings.rk](optional_second_spellings.rk) | `a is i64`, `a is i64 as n` (E0222) and `!(a is none)` (E0224) on a plain `i64?`, which `a?` and `a? as n` spell |
+| [pattern_capital_names_nothing.rk](pattern_capital_names_nothing.rk) | A capitalised pattern name that is no variant and no type (E0223, `type.enums/PM8`). It used to bind, so a misspelt arm caught everything after it |
+| [guard_never_runs.rk](guard_never_runs.rk) | A guard whose else can't run: a lowercase name, a whole struct (E0225); and `let Dot = s` with no else, which is the pattern `Dot` (E0987) |
+| [guard_typed_or_tuple.rk](guard_typed_or_tuple.rk) | A guard on a typed name or a tuple, which take every value (parse errors) |
+| [guard_picks_branch.rk](guard_picks_branch.rk) | A guard whose whole pattern is a type test on a result or optional (E0226): `catch` and `??` are the guard there |
+| [resource_bound_mid_chain.rk](resource_bound_mid_chain.rk) | A resource bound before another `&&` test (E0858, `ctrl.flow/CF37`): when the later test fails nothing can close it |
 
 ### Closures
 

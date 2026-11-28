@@ -27,7 +27,7 @@ struct User {
 
 func find_even(v: Vec<i32>) -> i32? {
     for x in v {
-        if x % 2 == 0: return x
+        if x % 2 == 0 { return x }
     }
     return none
 }
@@ -55,7 +55,7 @@ test "type.optionals — a bare value wraps itself, none is the absent one" {
     let b: i32? = none
     assert a! == 42
     assert b is none
-    assert !(a is none)
+    assert a?
 }
 
 test "type.optionals — ?? supplies a value when absent" {
@@ -141,7 +141,7 @@ test "type.optionals — ?? return exits where it is written" {
 test "type.optionals — ?. projects through a chain" {
     let u = User(name: "ada", profile: Profile(nickname: "a"))
     assert u.profile?.nickname! == "a"
-    assert !(u.profile?.nickname is none)
+    assert u.profile?.nickname?
     // Absent at the first step short-circuits the whole chain.
     let bare = User(name: "bo", profile: none)
     assert bare.profile?.nickname is none

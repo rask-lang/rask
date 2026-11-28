@@ -1613,15 +1613,56 @@ impl ToDiagnostic for crate::TypeError {
                     .with_why("@no_alloc functions run in real-time contexts where heap allocation causes unpredictable latency")
             }
 
-            GuardElseMustDiverge { found, span } => {
-                Diagnostic::error("guard pattern 'else' block must diverge")
+            GuardElseMustDiverge { span } => {
+                Diagnostic::error("a guard's `else` has to leave")
                     .with_code("E0304")
-                    .with_primary(*span, format!("'else' block has type `{}`, but must diverge", found))
-                    .with_help("use 'return', 'break', 'continue', or 'panic' to ensure the block never completes normally")
-                    .with_fix("add a 'return' statement at the end of the 'else' block")
-                    .with_why("guard patterns bind variables in the outer scope — the 'else' path must exit to ensure the binding is always valid")
+                    .with_primary(*span, "this block can reach its end")
+                    .with_fix("end it with `return`, `break`, `continue` or a panic")
+                    .with_why("the pattern's names are used after the `let`, and on the `else` path they were never bound")
             }
 
+            GuardNeverFails { binding, shape, else_span } => {
+                use crate::checker::TwoBranch;
+                let fix = match (binding, shape) {
+                    (Some(n), TwoBranch::Optional) => format!("to leave when it's `none`: `let {n} = … ?? return`"),
+                    (Some(n), TwoBranch::Result) => format!("to leave on an error: `let {n} = … catch _ => return`"),
+                    _ => "drop the `else`".to_string(),
+                };
+                Diagnostic::error("this `let` always matches, so its `else` never runs")
+                    .with_code("E0225")
+                    .with_primary(*else_span, "never runs")
+                    .with_fix(fix)
+                    .with_why("a lowercase name binds whatever the value is, and so does a pattern that covers every value [ctrl.flow/CF14]")
+            }
+
+            GuardPicksBranch { ty, binding, optional, picks_value, span } => {
+                let n = binding.as_deref().unwrap_or("v");
+                let (message, fix) = match (optional, picks_value) {
+                    (true, true) => ("a guard doesn't test an optional", format!("`let {n} = … ?? return`")),
+                    (false, true) => (
+                        "a guard doesn't test which branch a result holds",
+                        format!("`let {n} = … catch _ => return`, or `catch e =>` to use the error"),
+                    ),
+                    (true, false) => ("a guard doesn't test an optional", "test it in an `if`: `if x is none { … }`".to_string()),
+                    (false, false) => (
+                        "a guard doesn't test which branch a result holds",
+                        format!("test it where it's handled: `if r is {ty} as {n} {{ … }}`, or a `match`"),
+                    ),
+                };
+                Diagnostic::error(message)
+                    .with_code("E0226")
+                    .with_primary(*span, format!("a test for the `{ty}` branch"))
+                    .with_fix(fix)
+                    .with_why("`??` and `catch` handle the other branch on the same line, with the exit written out and the value bound [ctrl.flow/CF14]")
+            }
+
+            LetPatternCanFail { missing, span } => {
+                Diagnostic::error("this `let` pattern can fail to match")
+                    .with_code("E0987")
+                    .with_primary(*span, format!("the value may be {}", missing.join(" or ")))
+                    .with_fix("end the line with `else { return }` (or `break`, `continue`, a panic)")
+                    .with_why("without an `else` there is nothing to run when the value is something else")
+            }
 
             UnexpectedAnnotation { annotation, param_name, param_index: _, span } => {
                 Diagnostic::error(format!("unexpected `{}` annotation for parameter `{}`", annotation, param_name))
@@ -2473,9 +2514,9 @@ impl ToDiagnostic for crate::TypeError {
                 let missing_str = missing.join(", ");
                 let d = Diagnostic::error(format!("non-exhaustive match: missing {}", missing_str))
                     .with_code("E0340")
-                    .with_primary(*span, format!("missing variants: {}", missing_str))
-                    .with_help("add the missing variants or a wildcard `_` arm")
-                    .with_fix("add the missing variants or a wildcard `_` arm")
+                    .with_primary(*span, format!("no arm matches {}", missing_str))
+                    .with_help("add an arm for each, or a final `_` arm")
+                    .with_fix("add an arm for each, or a final `_` arm")
                     .with_why("match expressions must cover all possible values");
                 if *guarded {
                     d.with_note(GUARDED_ARMS_NOTE)
@@ -3034,12 +3075,57 @@ impl ToDiagnostic for crate::TypeError {
                     .with_fix("remove `try`")
                     .with_why("cleanup runs at scope exit, after the function has already decided what it returns — an error raised there has nowhere to go, so ensure ignores it by default and `else |e|` is how you see it [ctrl.ensure/ER3-ER4]")
             }
+            TypeTestOnOptional { shown, binding, span } => {
+                let fix = match binding {
+                    Some(n) => format!("{shown}? as {n}"),
+                    None => format!("{shown}?"),
+                };
+                Diagnostic::error(format!("`{shown}` is optional: test it with `{fix}`"))
+                    .with_code("E0222")
+                    .with_primary(*span, "a type test on an optional")
+                    .with_fix(format!("write `{fix}`"))
+                    .with_why("an optional holds its payload or nothing, so `?` already says which; a type test is for picking one member of a `T or E` [type.optionals/OPT19]")
+            }
+            NegatedAbsenceTest { shown, span } => {
+                Diagnostic::error(format!("`!({shown} is none)` is spelled `{shown}?`"))
+                    .with_code("E0224")
+                    .with_primary(*span, "a second spelling of the presence test")
+                    .with_fix(format!("write `{shown}?`"))
+                    .with_why("on an optional, `?` is the presence test and `is none` the absence test; each has one spelling [type.optionals/OPT15]")
+            }
+            PatternNameNotVariant { name, enum_name, variants, suggestion, qualified, span } => {
+                let why = "a capitalised name in a pattern tests a variant or a type; a name that binds starts lowercase [type.enums/PM8]";
+                if let Some(q) = qualified {
+                    return Diagnostic::error(format!("`{name}` is a variant of a branch here: write `{q}`"))
+                        .with_code("E0223")
+                        .with_primary(*span, "the value is a `T or E`, not this variant's enum")
+                        .with_fix(format!("write `{q}`"))
+                        .with_why("a bare variant name tests the value's own enum; a branch's variant is named with its enum [type.enums/PM8]");
+                }
+                match enum_name {
+                    Some(enum_name) => {
+                        let d = Diagnostic::error(format!("`{name}` is not a variant of `{enum_name}`"))
+                            .with_code("E0223")
+                            .with_primary(*span, format!("no `{enum_name}` variant is called this"));
+                        let d = match suggestion {
+                            Some(s) => d.with_fix(format!("did you mean `{s}`?")),
+                            None => d.with_help(format!("`{enum_name}` has {}", variants.iter().map(|v| format!("`{v}`")).collect::<Vec<_>>().join(", "))),
+                        };
+                        d.with_why(why)
+                    }
+                    None => Diagnostic::error(format!("`{name}` names no variant or type here"))
+                        .with_code("E0223")
+                        .with_primary(*span, "neither a variant of this value nor a type")
+                        .with_help(format!("name the variant with its enum, `Enum.{name}`, or bind with a lowercase name"))
+                        .with_why(why),
+                }
+            }
             ElseBindingNotResult { name, span } => {
-                Diagnostic::error(format!("`else as {}` requires a Result condition", name))
+                Diagnostic::error(format!("`else as {}` has nothing to bind", name))
                     .with_code("E0397")
-                    .with_primary(*span, "the `if` condition has no error to bind")
-                    .with_help("use `else as e` only when the condition is `if r?` on a `T or E`")
-                    .with_why("`else as e` binds the error branch of a Result — Option absence has no payload [type.errors/ER22]")
+                    .with_primary(*span, "this test leaves no other value behind")
+                    .with_help("test one member of a `T or E`: `if r is T as v { … } else as e { … }`")
+                    .with_why("`else as e` binds what the test ruled out; that needs a result whose other members are still there [type.errors/ER22]")
             }
             RangeNotCountable { ty, span } => {
                 Diagnostic::error(format!("a range of `{}` doesn't count", ty))
@@ -3054,6 +3140,32 @@ impl ToDiagnostic for crate::TypeError {
                     .with_primary(*span, format!("`{}` appears more than once in one arm's pattern", name))
                     .with_fix("rename one, or use `_` for a value you don't need")
                     .with_why("each name in one pattern holds one value; with two, the first could never be read")
+            }
+
+            BindingReachesNothing { why, span, .. } => {
+                use crate::checker::DeadBinding::*;
+                let (label, fix, why_text) = match why {
+                    EitherSideOfOr => (
+                        "bound on one side of `||`",
+                        "test each case in its own branch, or bind with one pattern: `s is Circle(r) | Square(r)`",
+                        "a binding carries across `&&`, never across `||`: when the other side is the one that held, this name has no value",
+                    ),
+                    UnderNot => (
+                        "bound under `!`",
+                        "drop the name and keep the test, e.g. `!(s is Circle)`",
+                        "`!` flips the test, so the code that runs is the code where the name didn't bind",
+                    ),
+                    NotACondition => (
+                        "nothing after this reads it",
+                        "drop the name to keep the test (`a?`, `s is Circle`), or bind in an `if`: `if a? as v { … }`",
+                        "a name bound by a test reaches the rest of its `&&` chain and the branch an `if`, `while` or match guard runs on it; here nothing follows",
+                    ),
+                };
+                Diagnostic::error(self.to_string())
+                    .with_code("E0220")
+                    .with_primary(*span, label)
+                    .with_fix(fix)
+                    .with_why(why_text)
             }
 
             StaticCallOnValue { ty, method, span } => {
@@ -3074,7 +3186,7 @@ impl ToDiagnostic for crate::TypeError {
                 Diagnostic::error("an `if` without `else` has no value".to_string())
                     .with_code("E0947")
                     .with_primary(*span, format!("the then-branch gives a `{}`, and nothing says what the `if` is when the condition is false", found))
-                    .with_fix("add the other branch: `if c: a else: b`")
+                    .with_fix("add the other branch: `if c { a } else { b }`")
                     .with_why("without `else` an `if` is a statement and is `void`; a value from one branch would be dropped [ctrl.flow/CF7]")
             }
             ExitInEnsure { what, span } => {

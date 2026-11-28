@@ -177,14 +177,13 @@ An inline sync write is at most one store: if the right-hand side panics, the lo
 | **W4: Error semantics** | Panics on invalid handle/OOB (matches direct indexing) |
 | **W5: Mutable binding** | `with` bindings are mutable — the block exists for multi-statement mutation. The binding is the element where it sits in the source, not a copy: a write through it is a write to the element, at once, so leaving the block by any route (a panic included) keeps every write made so far. Read-only access comes from the source, not the binding: `shared.read()` bindings reject mutation (E0360, conc.sync/R1), and plain reads use inline access |
 | **W6: Value production** | Block can produce a value (last expression) — `with` works in expression context |
-| **W7: One-liner shorthand** | `with X as v: expr` — no braces for single expressions (parallels `if cond: expr`) |
+| **W7: The body is braced** | One line or many: `with X as v { v.n += 1 }`. A colon body is a parse error, as for every body (`ctrl.flow/CF5`) |
 | **W8: Lent, not given** | The source still holds the value when the block ends, so a binding can't be handed to a `take` parameter, stored, or moved (E0919). Change it in place; to give the value away, take it out of the source first |
 
 ### Syntax
 
 ```
 with <source>[<key>] as <binding> { <body> }
-with <source>[<key>] as <binding>: <expr>
 
 // Multiple elements
 with <source>[<key1>] as <binding1>, <source>[<key2>] as <binding2> { <body> }
@@ -212,7 +211,7 @@ with entities[i] as e1, entities[j] as e2 {
 let name = with entities[i] as entity { entity.name }
 
 // One-liner shorthand
-with entities[i] as e: e.health -= 10
+with entities[i] as e { e.health -= 10 }
 
 // return/try/break work naturally
 func apply_buff(mutate entities: Vec<Entity>, i: u64) -> void or Error {
@@ -573,8 +572,8 @@ with items[i] as entity {
     entity.last_hit = now()
 }
 
-// Pattern 3: One-liner shorthand
-with items[i] as e: e.health -= damage
+// Pattern 3: One line
+with items[i] as e { e.health -= damage }
 ```
 
 **The pattern for parsers (zero-copy views):**

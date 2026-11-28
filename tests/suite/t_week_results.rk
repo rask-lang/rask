@@ -42,12 +42,12 @@ ParseFail implements Error {
 }
 
 func divide(a: i32, b: i32) -> i32 or MathError {
-    if b == 0: return MathError.DivByZero
+    if b == 0 { return MathError.DivByZero }
     return a / b
 }
 
 func sqrt_int(n: i32) -> i32 or MathError {
-    if n < 0: return MathError.Negative
+    if n < 0 { return MathError.Negative }
     mut i = 0
     while i * i <= n {
         i = i + 1
@@ -62,10 +62,10 @@ func divide_then_root(a: i32, b: i32) -> i32 or MathError {
 }
 
 func digits(s: string) -> i32 or ParseFail {
-    if s.is_empty(): return ParseFail.Empty
+    if s.is_empty() { return ParseFail.Empty }
     mut total = 0
     for c in s.chars() {
-        if !c.is_digit(): return ParseFail.BadDigit
+        if !c.is_digit() { return ParseFail.BadDigit }
         total = total + 1
     }
     return total
@@ -88,7 +88,7 @@ func labelled(a: i32, b: i32) -> string {
 }
 
 func void_result(n: i32) -> void or MathError {
-    if n < 0: return MathError.Negative
+    if n < 0 { return MathError.Negative }
     return
 }
 

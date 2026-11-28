@@ -398,15 +398,25 @@ struct Point {
 func shifted(p: Point) -> i32 {
     mut Point(x, ..) = p    // Bind the fields named, ignore the rest
     x = x + 1
-    let Point(x: px, y: py) = p    // Rename while binding
+    let Point(x as px, y as py) = p    // Rename while binding
     return x + px + py
+}
+
+func height_on_axis(p: Point) -> i32 {
+    let Point(x: 0, y) = p else { return -1 }    // Test a field, leave if it fails
+    return y
 }
 ```
 
 Reading fields out of a struct is a projection, so the source is borrowed, not
 moved (`mem.borrowing/F1`) — it stays usable afterwards, exactly as it would after
-`let x = p.x`. The bindings can't fail, so only names and `..` go inside; a pattern
-that tests a value belongs in a `match`.
+`let x = p.x`. A pattern that can't fail needs nothing more; one that tests a
+value (`x: 0`, a variant in a field) needs an `else` that leaves the block
+(`ctrl.flow/CF13`).
+
+`as` renames a field, the same word that names a value everywhere else.
+`Point(x: px)` is a parse error: after a field's colon goes a pattern that
+tests, and the fix written out is `Point(x as px)`.
 
 Visibility in patterns: `extend` blocks see all fields; same package sees package-visible + `public` fields; external sees only `public` fields. `private` fields require `..`.
 

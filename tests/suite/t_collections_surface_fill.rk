@@ -42,7 +42,7 @@ test "push_all appends a Vec or a chain" {
 test "try_insert hands the value back at the bound" {
     mut b: Vec<string> = Vec.fixed(2)
     b.push("last")
-    if b.try_insert(0, "first") is GrowError.Full(_) {
+    if b.try_insert(0, "first") is GrowError.Full {
         assert false
     }
     assert b == ["first", "last"]

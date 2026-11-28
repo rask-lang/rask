@@ -72,7 +72,7 @@ extend Either2<Duration, Output> {
     func left_or(take self, take d: Duration) -> Duration {
         return match self {
             Either2.Left(v) => v,
-            Either2.Right(_) => d,
+            Either2.Right => d,
         }
     }
 }

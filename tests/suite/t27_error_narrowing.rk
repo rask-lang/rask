@@ -81,7 +81,7 @@ test "expr catch e => return unwraps present" {
 // --- ER23 / ER27: type pattern in guard (is <T> as v else) ---
 
 func use_type_pattern() -> i32 {
-    mut v = inner() is i32 as v else { return -1 }
+    mut v = inner() catch _ => return -1
     return v + 5
 }
 
@@ -145,7 +145,7 @@ func make_vec() -> Vec<i32> or CfgError {
 }
 
 func generic_guard() -> i32 {
-    mut v = make_vec() is Vec<i32> as v else { return -1 }
+    mut v = make_vec() catch _ => return -1
     return v.len().wrap<i32>()
 }
 

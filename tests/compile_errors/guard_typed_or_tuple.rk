@@ -1,0 +1,17 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: a guard on a typed name or a tuple
+// Rejects: `let x: i64 = e else { … }` and `let (a, b) = pair else { … }`
+// (parse errors)
+//
+// Both left sides take every value, so the else never runs. The parser
+// stopped at the `else` with "expected a newline".
+
+func pick(ok: bool) -> i64 {
+    // ERROR: the else never runs
+    let n: i64 = 4 else { return 0 }
+    // ERROR: the else never runs
+    let (a, b) = (1, 2) else { return 0 }
+    return n + a + b
+}
+
+func main() {}

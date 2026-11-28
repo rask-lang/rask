@@ -13,9 +13,9 @@ enum Boxed { Pairs(Pair<string>), Nums(Pair<i64>), Empty }
 func boxed(b: Boxed) -> string {
     return match b {
         Boxed.Pairs(Pair(first: "a", second)) => "a then {second}",
-        Boxed.Pairs(Pair(first: f, second: s)) => "{f}/{s}",
+        Boxed.Pairs(Pair(first as f, second as s)) => "{f}/{s}",
         Boxed.Nums(Pair(first: 0, second)) => "zero then {second}",
-        Boxed.Nums(Pair(first: f, second: s)) => "{f + s}",
+        Boxed.Nums(Pair(first as f, second as s)) => "{f + s}",
         Boxed.Empty => "empty",
     }
 }
