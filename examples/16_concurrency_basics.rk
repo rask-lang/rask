@@ -163,8 +163,8 @@ func main() -> void {
     }
 
     print("\n=== Key Points ===\n")
-    print("- Thread.spawn {{ }} creates raw OS threads\n")
-    print("- ThreadPool.spawn {{ }} uses thread pool (needs using ThreadPool)\n")
+    print("- Thread.spawn \{ \} creates raw OS threads\n")
+    print("- ThreadPool.spawn \{ \} uses thread pool (needs using ThreadPool)\n")
     print("- handle.join() waits for completion\n")
     print("- handle.detach() runs in background\n")
     print("- Channels enable message passing\n")

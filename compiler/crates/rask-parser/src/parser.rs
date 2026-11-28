@@ -5033,14 +5033,16 @@ impl Parser {
     ) -> Result<(), ParseError> {
         loop {
             if raw_first_string && args.is_empty() {
-                if let TokenKind::String(s, _) = self.current_kind().clone() {
+                if let TokenKind::String(s, positions) = self.current_kind().clone() {
                     let start = self.current().span.start;
+                    let str_span = self.current().span;
                     self.advance();
                     let span = self.span(start, self.tokens[self.pos - 1].span.end);
+                    let template = self.format_template(&s, &positions, str_span);
                     args.push(CallArg {
                         name: None,
                         mode: ArgMode::Default,
-                        expr: Expr { id: self.next_id(), kind: ExprKind::String(s), span },
+                        expr: Expr { id: self.next_id(), kind: ExprKind::String(template), span },
                     });
                     if !self.list_continues(close)? { break; }
                     continue;
@@ -5587,28 +5589,40 @@ impl Parser {
     }
 
     /// Parse string interpolation segments from a string like "hello {name}, age {age}".
-    /// Returns None if the string has no valid interpolation (e.g., escaped braces only).
+    /// Returns None for a raw string, a string with no braces, or an error.
     fn parse_string_interpolation(&mut self, s: &str, positions: &StrPositions, str_span: Span) -> Option<Vec<StringSegment>> {
+        if !positions.interpolates() {
+            return None;
+        }
         let mut segments = Vec::new();
         let mut literal = String::new();
         let chars: Vec<char> = s.chars().collect();
+        let bytes: Vec<usize> = s.char_indices().map(|(b, _)| b).collect();
         let mut i = 0;
-        // A string with escapes but no expressions still has to come back as
-        // segments — returning None handed the raw text on with the `{{` still
-        // in it, and the next scanner down read `{braces}` as an expression
+        // A string with escaped braces but no expressions still comes back as
+        // segments, so nothing downstream reads its `{braces}` as a hole
         // (#521, fmt/F4).
         let mut escaped_any = false;
         // The payload the next `{}` stands for in an `@message` template.
         let mut next_payload = 0;
 
         while i < chars.len() {
+            if (chars[i] == '{' || chars[i] == '}') && positions.is_literal_brace(bytes[i]) {
+                literal.push(chars[i]);
+                escaped_any = true;
+                i += 1;
+                continue;
+            }
             if chars[i] == '{' {
-                if i + 1 < chars.len() && chars[i + 1] == '{' {
-                    // Escaped brace: {{ → {
-                    literal.push('{');
-                    escaped_any = true;
-                    i += 2;
-                    continue;
+                if chars.get(i + 1) == Some(&'{') {
+                    let at = str_span.start + positions.source_offset(bytes[i]);
+                    self.errors.push(ParseError {
+                        span: self.span(at, at + 2),
+                        message: "`{{` in string".to_string(),
+                        hint: Some("write `\\{` for a literal `{`".to_string()),
+                        why: Some("a `{` in a string starts an interpolation; a brace meant as text is escaped".to_string()),
+                    });
+                    return None;
                 }
                 // Start of interpolation expression
                 if !literal.is_empty() {
@@ -5667,7 +5681,7 @@ impl Parser {
                                     self.errors.push(ParseError {
                                         span: self.span(to_file(0), to_file(expr_str.len())),
                                         message: format!("`{{{expr_str}}}` has no format spec the formatter knows"),
-                                        hint: Some("write `{{` for a literal `{`".to_string()),
+                                        hint: Some("write `\\{` for a literal `{`".to_string()),
                                         why: None,
                                     });
                                     return None;
@@ -5689,7 +5703,7 @@ impl Parser {
                         self.errors.push(ParseError {
                             span: self.span(at, to_file(expr_str.len()) + 1),
                             message: format!("`{{{expr_str}}}` names no value"),
-                            hint: Some(format!("put the value in the hole, like `{{x{expr_str}}}`, or write `{{{{{expr_str}}}}}` for the text")),
+                            hint: Some(format!("put the value in the hole, like `{{x{expr_str}}}`, or write `\\{{{expr_str}\\}}` for the text")),
                             why: Some("a placeholder without a name is filled in only by `format` and `@message`".to_string()),
                         });
                         return None;
@@ -5719,7 +5733,7 @@ impl Parser {
                     parser.errors.push(ParseError {
                         span: parser.span(to_file(0), to_file(expr_str.len())),
                         message: format!("`{{{}}}` is not a valid interpolation: {}", expr_str, detail),
-                        hint: Some("write `{{` for a literal `{` — a lone `{` starts an interpolation".to_string()),
+                        hint: Some("write `\\{` for a literal `{` — a lone `{` starts an interpolation".to_string()),
                         why: None,
                     }.with_why("a `{` in a string always starts an interpolation, so what follows has to be an expression"));
                 };
@@ -5815,11 +5829,6 @@ impl Parser {
                 }
 
                 segments.push(StringSegment::Expr(Box::new(parsed), parsed_spec));
-            } else if chars[i] == '}' && i + 1 < chars.len() && chars[i + 1] == '}' {
-                // Escaped brace: }} → }
-                literal.push('}');
-                escaped_any = true;
-                i += 2;
             } else if chars[i] == '}' {
                 self.lone_brace_error(s, positions, str_span, i, '}');
                 return None;
@@ -5843,7 +5852,7 @@ impl Parser {
     }
 
     /// The text of a string literal that can't interpolate: a pattern, or an
-    /// unwrap message. Braces read as they do in any other string, so `"{{"`
+    /// unwrap message. Braces read as they do in any other string, so `"\\{"`
     /// is one brace here too, and a hole is an error rather than text.
     fn fixed_text(&mut self, s: &str, positions: &StrPositions, span: Span, what: &str) -> String {
         if !s.contains('{') && !s.contains('}') {
@@ -5860,7 +5869,7 @@ impl Parser {
                     self.errors.push(ParseError {
                         span: e.span,
                         message: format!("{what} can't interpolate"),
-                        hint: Some("write `{{` and `}}` for literal braces".to_string()),
+                        hint: Some("write `\\{` and `\\}` for literal braces".to_string()),
                         why: Some(format!("{what} is fixed text, known before the program runs")),
                     });
                 }
@@ -5869,20 +5878,59 @@ impl Parser {
         text
     }
 
+    /// `format`'s template as the desugar reads it: placeholders as written,
+    /// a literal brace doubled. The escape the source spells `\\{` has no
+    /// other way to survive into plain text.
+    fn format_template(&mut self, s: &str, positions: &StrPositions, str_span: Span) -> String {
+        let mut out = String::with_capacity(s.len());
+        let mut depth = 0usize;
+        let mut chars = s.char_indices().peekable();
+        while let Some((byte, c)) = chars.next() {
+            let literal = !positions.interpolates() || positions.is_literal_brace(byte);
+            match c {
+                '{' | '}' if literal => {
+                    out.push(c);
+                    out.push(c);
+                    continue;
+                }
+                '{' if depth == 0 && matches!(chars.peek(), Some((_, '{'))) => {
+                    let at = str_span.start + positions.source_offset(byte);
+                    self.errors.push(ParseError {
+                        span: self.span(at, at + 2),
+                        message: "`{{` in format template".to_string(),
+                        hint: Some("write `\\{` for a literal `{`".to_string()),
+                        why: Some("a `{` in a template starts a placeholder; a brace meant as text is escaped".to_string()),
+                    });
+                    return s.to_string();
+                }
+                '{' => depth += 1,
+                '}' if depth == 0 => {
+                    let index = s[..byte].chars().count();
+                    self.lone_brace_error(s, positions, str_span, index, '}');
+                    return s.to_string();
+                }
+                '}' => depth -= 1,
+                _ => {}
+            }
+            out.push(c);
+        }
+        out
+    }
+
     /// A `{` with no `}` after it, or a `}` that closes nothing. Either is a
-    /// typo or a brace meant as text, which is written doubled (fmt/F4).
+    /// typo or a brace meant as text, which is escaped: `\\{` (fmt/F4).
     fn lone_brace_error(&mut self, s: &str, positions: &StrPositions, str_span: Span, char_index: usize, brace: char) {
         let byte = s.char_indices().nth(char_index).map(|(pos, _)| pos).unwrap_or(0);
         let at = str_span.start + positions.source_offset(byte);
         let (message, why) = if brace == '{' {
             ("unclosed `{` in string", "a `{` in a string starts an interpolation, which a `}` has to close")
         } else {
-            ("`}` in string closes nothing", "braces in strings belong to interpolations, so a brace meant as text is doubled")
+            ("`}` in string closes nothing", "braces in strings belong to interpolations, so a brace meant as text is escaped")
         };
         self.errors.push(ParseError {
             span: self.span(at, at + 1),
             message: message.to_string(),
-            hint: Some(format!("write `{brace}{brace}` for a literal `{brace}`")),
+            hint: Some(format!("write `\\{brace}` for a literal `{brace}`")),
             why: Some(why.to_string()),
         });
     }

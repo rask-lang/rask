@@ -136,8 +136,8 @@ fn main_text(name: &str) -> String {
         match c {
             '"' => quoted.push_str("\\\""),
             '\\' => quoted.push_str("\\\\"),
-            '{' => quoted.push_str("{{"),
-            '}' => quoted.push_str("}}"),
+            '{' => quoted.push_str("\\{"),
+            '}' => quoted.push_str("\\}"),
             c => quoted.push(c),
         }
     }

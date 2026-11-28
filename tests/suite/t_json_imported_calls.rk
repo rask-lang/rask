@@ -17,9 +17,9 @@ struct Point {
 }
 
 test "encode is compact" {
-    assert encode(Point(x: 3, y: -4)) == "{{\"x\":3,\"y\":-4}}"
+    assert encode(Point(x: 3, y: -4)) == "\{\"x\":3,\"y\":-4\}"
 }
 
 test "encode_pretty indents" {
-    assert encode_pretty(Point(x: 3, y: -4)) == "{{\n  \"x\": 3,\n  \"y\": -4\n}}"
+    assert encode_pretty(Point(x: 3, y: -4)) == "\{\n  \"x\": 3,\n  \"y\": -4\n\}"
 }

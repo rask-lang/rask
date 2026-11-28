@@ -16,10 +16,10 @@ test "interpolation forms that must keep working" {
     assert "{sum(Pt(x: 3, y: 4))}" == "7"
     assert "{n} and {s}" == "7 and hi"
     // escaped braces are text
-    assert "{{}}".len() == 2
-    assert "{{".len() == 1
+    assert "\{\}".len() == 2
+    assert "\{".len() == 1
     // a map index inside interpolation
     mut m: Map<string, i64> = Map.new()
     m.insert("k", 5)
-    assert "{m.get(\"k\") ?? 0}" == "5"
+    assert "{m.get("k") ?? 0}" == "5"
 }

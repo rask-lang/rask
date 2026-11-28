@@ -10,8 +10,8 @@ import libpkg
 func main() {
     println("{libpkg.plain(5)}")
     println("{libpkg.plain<i64>(5)}")
-    println("{libpkg.plain<string>(\"five\")}")
-    println("{libpkg.first<i64, string>(7, \"x\")}")
+    println("{libpkg.plain<string>("five")}")
+    println("{libpkg.first<i64, string>(7, "x")}")
     return
 }
 

@@ -36,35 +36,26 @@
       ]
     },
     "strings": {
-      "comment": "Every string can interpolate: a lone { opens a hole holding an expression, up to the matching }. {{ and }} are literal braces.",
+      "comment": "\"..\" and \"\"\"..\"\"\" interpolate: { opens a hole holding an expression, up to the matching }. \\{ and \\} are literal braces. Raw strings are text as written.",
       "patterns": [
         {
           "name": "string.quoted.triple.rk",
-          "comment": "Raw text: no backslash escapes, but holes still work",
           "begin": "\"\"\"",
           "end": "\"\"\"",
           "patterns": [
-            { "include": "#string-brace-escapes" },
+            { "include": "#string-escapes" },
             { "include": "#interpolation-multiline" }
           ]
         },
         {
           "name": "string.quoted.raw.hash.rk",
           "begin": "(?<![A-Za-z0-9_])r(#+)\"",
-          "end": "\"\\1",
-          "patterns": [
-            { "include": "#string-brace-escapes" },
-            { "include": "#interpolation-multiline" }
-          ]
+          "end": "\"\\1"
         },
         {
           "name": "string.quoted.raw.rk",
           "begin": "(?<![A-Za-z0-9_])r\"",
-          "end": "\"",
-          "patterns": [
-            { "include": "#string-brace-escapes" },
-            { "include": "#interpolation-raw" }
-          ]
+          "end": "\""
         },
         {
           "name": "string.quoted.bytes.rk",
@@ -76,7 +67,6 @@
           "end": "\"",
           "patterns": [
             { "include": "#string-escapes" },
-            { "include": "#string-brace-escapes" },
             { "include": "#interpolation" }
           ]
         },
@@ -94,15 +84,7 @@
       "patterns": [
         {
           "name": "constant.character.escape.rk",
-          "match": "\\\\(n|r|t|\\\\|0|'|\"|\\{|u\\{[0-9a-fA-F]{1,6}\\})"
-        }
-      ]
-    },
-    "string-brace-escapes": {
-      "patterns": [
-        {
-          "name": "constant.character.escape.brace.rk",
-          "match": "\\{\\{|\\}\\}"
+          "match": "\\\\(n|r|t|\\\\|0|'|\"|\\{|\\}|u\\{[0-9a-fA-F]{1,6}\\})"
         }
       ]
     },
@@ -119,27 +101,15 @@
       ]
     },
     "interpolation-multiline": {
-      "comment": "Holes in triple-quoted and r#\"..\"# strings may run over lines; the closing quotes end an unclosed one",
+      "comment": "Holes in triple-quoted strings may run over lines; the closing quotes end an unclosed one",
       "name": "meta.interpolation.rk",
       "begin": "\\{(?!\\{)",
       "beginCaptures": { "0": { "name": "punctuation.section.interpolation.begin.rk" } },
-      "end": "\\}|(?=\"\"\"|\"#)",
+      "end": "\\}|(?=\"\"\")",
       "endCaptures": { "0": { "name": "punctuation.section.interpolation.end.rk" } },
       "patterns": [
         { "include": "#format-spec" },
         { "include": "#interpolation-expr" }
-      ]
-    },
-    "interpolation-raw": {
-      "comment": "r\"..\" has no way to write a quote inside, so a hole has no nested strings",
-      "name": "meta.interpolation.rk",
-      "begin": "(?=(?<hole>\\{(?:[^{}\"]|\\g<hole>)*+\\}))\\{(?!\\{)",
-      "beginCaptures": { "0": { "name": "punctuation.section.interpolation.begin.rk" } },
-      "end": "\\}",
-      "endCaptures": { "0": { "name": "punctuation.section.interpolation.end.rk" } },
-      "patterns": [
-        { "include": "#format-spec" },
-        { "include": "#interpolation-expr-no-strings" }
       ]
     },
     "format-spec": {

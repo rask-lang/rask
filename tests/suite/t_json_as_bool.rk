@@ -23,7 +23,7 @@ test "other kinds of value aren't booleans" {
 }
 
 test "a boolean field of an object" {
-    let doc = value("{{\"on\": true, \"off\": false}}")
+    let doc = value("\{\"on\": true, \"off\": false\}")
     let fields = doc.as_object()!
     assert fields.get("on")!.as_bool() == true
     assert fields.get("off")!.as_bool() == false

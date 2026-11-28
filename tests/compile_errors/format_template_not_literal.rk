@@ -5,7 +5,7 @@
 // template has to be written at the call.
 
 func main() {
-    let t = "x {{}}"
+    let t = "x \{\}"
     // ERROR: template must be a literal [E0338]
     println(format(t, 1))
 }

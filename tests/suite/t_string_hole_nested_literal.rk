@@ -10,8 +10,8 @@ func tag(s: string) -> string {
     return s
 }
 
-const OPEN: string = "{{"
-const CLOSE: string = "}}"
+const OPEN: string = "\{"
+const CLOSE: string = "\}"
 
 test "std.fmt/F1 — ?? fallback written as a literal in the hole" {
     let hit: string? = "value"
@@ -37,7 +37,7 @@ test "std.fmt/F1 — a quoted brace doesn't close the hole" {
 test "std.fmt/F1 — an escaped brace is plain text" {
     assert OPEN.len() == 1
     assert "{OPEN}{CLOSE}".len() == 2
-    assert "{{not a hole}}" == "{OPEN}not a hole{CLOSE}"
+    assert "\{not a hole\}" == "{OPEN}not a hole{CLOSE}"
 }
 
 test "std.fmt/F2 — format specs still parse alongside nested literals" {

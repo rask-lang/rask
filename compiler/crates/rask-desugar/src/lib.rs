@@ -1286,7 +1286,7 @@ impl Desugarer {
                         self.errors.push(DesugarError {
                             code: "E0338",
                             label: "in this format template".to_string(),
-                            message: "unclosed `{` in format template — write `{{` for a literal brace".to_string(),
+                            message: "unclosed `{` in format template — write `\\{` for a literal brace".to_string(),
                             span,
                         });
                         return None;

@@ -24,9 +24,9 @@ test "std.fmt/F3 — named placeholders of different types, in either order" {
 }
 
 test "std.fmt/F4 — doubled braces are literal" {
-    assert format("{{x}} {}", 1) == "{{x}} 1"
-    assert format("{{}}") == "{{}}"
-    assert "{{literal}}".len() == 9
+    assert format("\{x\} {}", 1) == "\{x\} 1"
+    assert format("\{\}") == "\{\}"
+    assert "\{literal\}".len() == 9
 }
 
 test "std.fmt/F1 — empty template is the empty string" {

@@ -13,7 +13,7 @@
 | **F1: Signature** | `format(template: string, args...) -> string` |
 | **F2: Positional** | `{}` uses next arg; `{0}`, `{1}` use explicit index. Cannot mix auto and explicit |
 | **F3: Named** | `{name}` captures variable from scope. Cannot mix with positional |
-| **F4: Escape** | `{{` and `}}` produce literal `{` and `}` |
+| **F4: Escape** | `\{` and `\}` produce literal `{` and `}`. Raw strings (`r"…"`) don't interpolate, so their braces are text |
 
 Arguments after the template are compiler support (CM1), so the declaration has the template alone.
 
@@ -243,8 +243,8 @@ FIX: Use all auto ({}, {}) or all explicit ({0}, {1}).
 | Missing arg for `{2}` | F2 | Compile-time error (when possible) or runtime panic |
 | Type without Displayable in `{}` | D4 | Compile-time error |
 | Error type in `{}` | D5 | Auto-bridges — calls `message()` |
-| Lone `{` or `}` in a string | F4 | Compile error: a brace that opens or closes no hole is a typo or text, and text is doubled |
-| `{{` in template | F4 | Literal `{` |
+| Lone `{` or `}` in a string | F4 | Compile error: a brace that opens or closes no hole is a typo or text, and text is escaped |
+| `{{` in a string or template | F4 | Compile error: write `\{` |
 | Empty template | F1 | Returns empty string |
 | `format("{:debug}", x)` on auto-derived type | G2 | Shows struct fields / enum variants |
 | Text already wider than the width | S4 | Printed in full — width pads, it never truncates. Use `.n` to cut |

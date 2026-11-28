@@ -494,9 +494,9 @@ fn scan_hole_aware(bytes: &[u8]) -> Option<usize> {
                 pos += 2;
                 continue;
             }
-            // Outside a hole, a doubled brace is one literal brace (fmt/F4).
-            // Reading `"{{"` as two holes opening ran the string on past its
-            // closing quote: `["{{", "}}"]` lexed as one string.
+            // Outside a hole, a doubled brace is a mistake the parser reports
+            // (the escape is `\{`). Reading `"{{"` as two holes opening would
+            // run the string on past its closing quote.
             b'{' | b'}' if holes.is_empty() && bytes.get(pos + 1) == Some(&bytes[pos]) => {
                 pos += 2;
                 continue;
@@ -956,19 +956,19 @@ impl<'a> Lexer<'a> {
                 TokenKind::Char(ch)
             }
             RawToken::String if slice.starts_with(r#"""""#) => {
-                // Triple-quoted: raw, no escape processing
                 let inner = &slice[3..slice.len() - 3];
-                TokenKind::String(inner.to_string(), StrPositions::new(3))
+                let (s, positions) = parse_string(inner, start, 3)?;
+                TokenKind::String(s, positions)
             }
             RawToken::String => {
                 let inner = &slice[1..slice.len() - 1]; // Remove quotes
-                let (s, positions) = parse_string(inner, start)?;
+                let (s, positions) = parse_string(inner, start, 1)?;
                 TokenKind::String(s, positions)
             }
             RawToken::RawString => {
-                // r"content" — strip r" prefix and " suffix, no escape processing
+                // r"content": no escapes, no interpolation.
                 let inner = &slice[2..slice.len() - 1];
-                TokenKind::String(inner.to_string(), StrPositions::new(2))
+                TokenKind::String(inner.to_string(), StrPositions::raw(2))
             }
             RawToken::RawHashString => {
                 // r#"content"# or r##"content"## etc.
@@ -977,7 +977,7 @@ impl<'a> Lexer<'a> {
                 let content_start = 1 + hash_count + 1; // r + #*n + "
                 let content_end = slice.len() - 1 - hash_count; // " + #*n
                 let inner = &slice[content_start..content_end];
-                TokenKind::String(inner.to_string(), StrPositions::new(content_start))
+                TokenKind::String(inner.to_string(), StrPositions::raw(content_start))
             }
             RawToken::HexBytes => {
                 let inner = &slice[2..slice.len() - 1];
@@ -1053,23 +1053,69 @@ fn parse_char(s: &str, pos: usize) -> Result<char, LexError> {
     }
 }
 
-/// Parse a string literal (handling escape sequences).
-fn parse_string(s: &str, pos: usize) -> Result<(String, StrPositions), LexError> {
+/// Parse a `"…"` or `"""…"""` literal's body: escapes outside holes become
+/// their characters, and a hole is copied as written, because it is code the
+/// parser lexes again. `\{` and `\}` are recorded as literal braces.
+fn parse_string(s: &str, pos: usize, delimiter_len: usize) -> Result<(String, StrPositions), LexError> {
     let mut result = String::new();
-    let mut positions = StrPositions::new(1);
+    let mut positions = StrPositions::new(delimiter_len);
     let mut chars = s.chars();
 
     while let Some(c) = chars.next() {
-        if c == '\\' {
-            result.push(parse_escape(&mut chars, pos)?);
-            // +1 for the opening quote.
-            positions.anchor(result.len(), 1 + s.len() - chars.as_str().len());
-        } else {
-            result.push(c);
+        match c {
+            '\\' => {
+                if matches!(chars.clone().next(), Some('{' | '}')) {
+                    positions.literal_brace(result.len());
+                }
+                result.push(parse_escape(&mut chars, pos)?);
+                positions.anchor(result.len(), delimiter_len + s.len() - chars.as_str().len());
+            }
+            '{' => {
+                let rest = chars.as_str();
+                let len = hole_len(rest.as_bytes());
+                result.push('{');
+                result.push_str(&rest[..len]);
+                chars = rest[len..].chars();
+            }
+            _ => result.push(c),
         }
     }
 
     Ok((result, positions))
+}
+
+/// Bytes of a hole's body after its `{`, up to and including the `}` that
+/// closes it, or all of `bytes` if none does. Nested string and char literals
+/// keep their braces.
+fn hole_len(bytes: &[u8]) -> usize {
+    let mut depth = 1;
+    let mut pos = 0;
+    while pos < bytes.len() {
+        match bytes[pos] {
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return pos + 1;
+                }
+            }
+            b'"' => {
+                pos += 1;
+                while pos < bytes.len() && bytes[pos] != b'"' {
+                    pos += if bytes[pos] == b'\\' { 2 } else { 1 };
+                }
+            }
+            b'\'' => {
+                if let Some(after) = skip_char_literal(bytes, pos) {
+                    pos = after;
+                    continue;
+                }
+            }
+            _ => {}
+        }
+        pos += 1;
+    }
+    bytes.len()
 }
 
 /// Parse an escape sequence.
@@ -1082,7 +1128,8 @@ fn parse_escape(chars: &mut impl Iterator<Item = char>, pos: usize) -> Result<ch
         Some('0') => Ok('\0'),
         Some('\'') => Ok('\''),
         Some('"') => Ok('"'),
-        Some('{') => Ok('{'),  // For string interpolation escaping
+        Some('{') => Ok('{'),
+        Some('}') => Ok('}'),
         Some('u') => parse_unicode_escape(chars, pos),
         _ => Err(LexError::invalid_escape(pos)),
     }

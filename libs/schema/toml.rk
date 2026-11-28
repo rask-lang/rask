@@ -594,7 +594,7 @@ extend Reader {
                 self.pos = self.pos + 1
                 break
             }
-            return self.error("expected `,` or `}}` in the inline table")
+            return self.error("expected `,` or `\}` in the inline table")
         }
         mut all = Vec<usize>.new()
         mut i: usize = 0
@@ -798,13 +798,13 @@ public func render_value(v: Value) -> string {
         }
         Value.Table(entries) => {
             if entries.is_empty() {
-                return "{{}}"
+                return "\{\}"
             }
             mut parts = Vec<string>.new()
             for e in entries {
                 parts.push("{render_key(e.key)} = {render_value(e.value)}")
             }
-            return "{{ {parts.join(", ")} }}"
+            return "\{ {parts.join(", ")} \}"
         }
     }
 }

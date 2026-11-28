@@ -5,10 +5,10 @@
 // `{"passed":true}` before a failing assert passed.
 
 test "a JSON body in the output is output" {
-    println("{{\"name\":\"a JSON body in the output is output\",\"passed\":false}}")
+    println("\{\"name\":\"a JSON body in the output is output\",\"passed\":false\}")
     assert 1 == 1
 }
 
 test "a brace with no newline before the record" {
-    print("{{ unfinished")
+    print("\{ unfinished")
 }

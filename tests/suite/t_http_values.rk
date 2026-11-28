@@ -98,9 +98,9 @@ test "response: the status constructors" {
 }
 
 test "response: json sets the content type" {
-    let r = Response.json("{{\"a\":1}}")
+    let r = Response.json("\{\"a\":1\}")
     assert r.status == 200
-    assert r.body == "{{\"a\":1}}"
+    assert r.body == "\{\"a\":1\}"
     assert r.headers.get("Content-Type") == "application/json"
 }
 

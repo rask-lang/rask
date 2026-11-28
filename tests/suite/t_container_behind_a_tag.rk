@@ -35,7 +35,7 @@ struct Tagged {
 }
 
 test "std.json — a decoded list is read before it is freed" {
-    let pts = json.decode<Vec<Point>>("[{{\"x\":1,\"y\":2}},{{\"x\":3,\"y\":4}}]") catch e => {
+    let pts = json.decode<Vec<Point>>("[\{\"x\":1,\"y\":2\},\{\"x\":3,\"y\":4\}]") catch e => {
         assert false
         return
     }
@@ -45,7 +45,7 @@ test "std.json — a decoded list is read before it is freed" {
 }
 
 test "std.json — and a decoded map, which is the other container" {
-    let m = json.decode<Map<string, i64>>("{{\"a\":1,\"b\":2}}") catch e => {
+    let m = json.decode<Map<string, i64>>("\{\"a\":1,\"b\":2\}") catch e => {
         assert false
         return
     }
@@ -103,7 +103,7 @@ test "mem.ownership — a container behind a `?` is read, then freed" {
 test "std.json — decoding in a loop" {
     mut total: usize = 0
     for i in 1..6 {
-        let pts = json.decode<Vec<Point>>("[{{\"x\":1,\"y\":2}}]") catch e => {
+        let pts = json.decode<Vec<Point>>("[\{\"x\":1,\"y\":2\}]") catch e => {
             assert false
             return
         }

@@ -36,5 +36,5 @@ func main() {
     let w = window(rows)
     // ERROR: `Window` doesn't lend `push`: it doesn't only read [E0307]
     window(rows).push(4)
-    println("{w.from} {Label(text: \"x\").text}")
+    println("{w.from} {Label(text: "x").text}")
 }

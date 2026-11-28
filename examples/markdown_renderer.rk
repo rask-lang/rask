@@ -1001,12 +1001,12 @@ test "images" {
 test "code blocks" {
     let input = """
 ```rust
-fn main() {{}}
+fn main() \{\}
 ```
 """
     let result = render_markdown(input)!
     assert result.contains("<pre><code class=\"language-rust\">")
-    assert result.contains("fn main() {{}}")
+    assert result.contains("fn main() \{\}")
 }
 
 test "code block no language" {

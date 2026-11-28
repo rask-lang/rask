@@ -110,7 +110,7 @@ test "a typo is an error that names the fix" {
 }
 
 test "a typo inside a variant's case is caught" {
-    let e = load_error("{HEAD}[backends]\na = {{ host = \"x\", prot = 80 }}\n", svc())
+    let e = load_error("{HEAD}[backends]\na = \{ host = \"x\", prot = 80 \}\n", svc())
     assert e.contains("backends.a: unknown key `prot`; did you mean `port`?")
 }
 
@@ -119,13 +119,13 @@ test "a missing required key is named with its type" {
 }
 
 test "a variant picks exactly one case" {
-    assert load_error("{HEAD}[backends]\na = {{ weight = 2 }}\n", svc()).contains("needs one of `host`, `socket`")
-    assert load_error("{HEAD}[backends]\na = {{ host = \"x\", socket = \"y\" }}\n", svc()).contains("pick exactly one of")
+    assert load_error("{HEAD}[backends]\na = \{ weight = 2 \}\n", svc()).contains("needs one of `host`, `socket`")
+    assert load_error("{HEAD}[backends]\na = \{ host = \"x\", socket = \"y\" \}\n", svc()).contains("pick exactly one of")
 }
 
 test "a case's companion keys belong to that case" {
-    assert load_error("{HEAD}[backends]\na = {{ socket = \"/s\", port = 1 }}\n", svc()).contains("unknown key `port`")
-    assert load_error("{HEAD}[backends]\na = {{ host = \"x\", port = 1, weight = 2 }}\n", svc()) == ""
+    assert load_error("{HEAD}[backends]\na = \{ socket = \"/s\", port = 1 \}\n", svc()).contains("unknown key `port`")
+    assert load_error("{HEAD}[backends]\na = \{ host = \"x\", port = 1, weight = 2 \}\n", svc()) == ""
 }
 
 test "a string from a fixed set is checked" {
@@ -161,7 +161,7 @@ test "raw bidi controls are rejected" {
 
 test "quoted keys must be NFC" {
     // "e" + combining acute: NFD, renders like "é".
-    assert load_error("{HEAD}[backends]\n\"cafe\u{301}\" = {{ socket = \"x\" }}\n", svc()).contains("not in NFC form")
+    assert load_error("{HEAD}[backends]\n\"cafe\u{301}\" = \{ socket = \"x\" \}\n", svc()).contains("not in NFC form")
 }
 
 test "unsupported TOML says so" {
@@ -216,7 +216,7 @@ test "a downgrade that would lose information is refused" {
 }
 
 test "round trip: 1 to 2 and back gives a file that means the same" {
-    let text = "{HEAD}timeout = 5\nmode = \"fast\"\n[backends]\na = {{ host = \"x\", port = 1 }}\n"
+    let text = "{HEAD}timeout = 5\nmode = \"fast\"\n[backends]\na = \{ host = \"x\", port = 1 \}\n"
     let down = migrated(migrated(text, svc_v2(), 2), svc_v2(), 1)
     let a = load(text, svc()) catch e => panic(e.message())
     let b = load(down, svc()) catch e => panic(e.message())

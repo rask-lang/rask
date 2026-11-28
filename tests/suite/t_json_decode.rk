@@ -46,7 +46,7 @@ struct Point {
 }
 
 func profile_json() -> string {
-    return "{{\"id\":7,\"name\":\"alice\",\"active\":true,\"score\":0.25,\"rank\":-3,\"home\":{{\"street\":\"Main\",\"zip\":1234}},\"nicknames\":[\"al\",\"ali\"],\"counts\":[1,2,3],\"tags\":[{{\"name\":\"x\",\"weight\":1.5}},{{\"name\":\"y\",\"weight\":2.5}}],\"email\":\"a@b.c\",\"backup\":null,\"extra\":\"ignored\"}}"
+    return "\{\"id\":7,\"name\":\"alice\",\"active\":true,\"score\":0.25,\"rank\":-3,\"home\":\{\"street\":\"Main\",\"zip\":1234\},\"nicknames\":[\"al\",\"ali\"],\"counts\":[1,2,3],\"tags\":[\{\"name\":\"x\",\"weight\":1.5\},\{\"name\":\"y\",\"weight\":2.5\}],\"email\":\"a@b.c\",\"backup\":null,\"extra\":\"ignored\"\}"
 }
 
 test "std.json — scalar fields decode at their declared width" {
@@ -123,16 +123,16 @@ test "std.json — decoding then encoding round-trips the whole struct" {
     let out = json.encode(p)
     assert out.contains("\"id\":7")
     assert out.contains("\"name\":\"alice\"")
-    assert out.contains("\"home\":{{\"street\":\"Main\",\"zip\":1234}}")
+    assert out.contains("\"home\":\{\"street\":\"Main\",\"zip\":1234\}")
     assert out.contains("\"nicknames\":[\"al\",\"ali\"]")
     assert out.contains("\"counts\":[1,2,3]")
-    assert out.contains("\"tags\":[{{\"name\":\"x\",\"weight\":1.5}},{{\"name\":\"y\",\"weight\":2.5}}]")
+    assert out.contains("\"tags\":[\{\"name\":\"x\",\"weight\":1.5\},\{\"name\":\"y\",\"weight\":2.5\}]")
     assert out.contains("\"email\":\"a@b.c\"")
     assert out.contains("\"backup\":null")
 }
 
 test "std.json — a Map<string, V> field decodes to a real map" {
-    let c = json.decode<Counts>("{{\"totals\":{{\"a\":1,\"b\":2}}}}") catch e => {
+    let c = json.decode<Counts>("\{\"totals\":\{\"a\":1,\"b\":2\}\}") catch e => {
         assert false
         return
     }
@@ -143,12 +143,12 @@ test "std.json — a Map<string, V> field decodes to a real map" {
 
 // A Map has no defined iteration order, so only the pieces are checked.
 test "std.json — a decoded Map encodes back to an object" {
-    let c = json.decode<Counts>("{{\"totals\":{{\"a\":1,\"b\":2}}}}") catch e => {
+    let c = json.decode<Counts>("\{\"totals\":\{\"a\":1,\"b\":2\}\}") catch e => {
         assert false
         return
     }
     let out = json.encode(c)
-    assert out.starts_with("{{\"totals\":{{")
+    assert out.starts_with("\{\"totals\":\{")
     assert out.contains("\"a\":1")
     assert out.contains("\"b\":2")
 }
@@ -180,7 +180,7 @@ test "std.json — the target can be a bare scalar" {
 }
 
 test "std.json — the target can be a list at the top level" {
-    let pts = json.decode<Vec<Point>>("[{{\"x\":1,\"y\":2}},{{\"x\":3,\"y\":4}}]") catch e => {
+    let pts = json.decode<Vec<Point>>("[\{\"x\":1,\"y\":2\},\{\"x\":3,\"y\":4\}]") catch e => {
         assert false
         return
     }
@@ -197,12 +197,12 @@ test "std.json — the target can be a list at the top level" {
 // halves run the Rask code in stdlib/json.rk now — one parser, one encoder, both
 // backends — so the tree can be read and round-tripped for real.
 test "std.json — decoding to JsonValue gives the untyped tree" {
-    let v = json.decode<JsonValue>("{{\"k\":[1,2]}}") catch e => {
+    let v = json.decode<JsonValue>("\{\"k\":[1,2]\}") catch e => {
         assert false
         return
     }
     assert v.is_null() == false
-    assert json.encode(v) == "{{\"k\":[1,2]}}"
+    assert json.encode(v) == "\{\"k\":[1,2]\}"
     // `as_object` and `as_array` take the value, so the tree is taken apart
     // from the top: the object out of `v`, then the array out of the object.
     mut obj = v.as_object() ?? Map.new()
@@ -254,7 +254,7 @@ test "std.json — escapes and unicode survive a decode" {
 
 // J5
 test "std.json — a repeated key takes its last value" {
-    let p = json.decode<Point>("{{\"x\":1,\"y\":2,\"x\":9}}") catch e => {
+    let p = json.decode<Point>("\{\"x\":1,\"y\":2,\"x\":9\}") catch e => {
         assert false
         return
     }

@@ -28,7 +28,7 @@ test "to_vec of strings prints them quoted" {
 test "to_map prints its entries" {
     let s = Vec.from([1, 2])
     let m = s.map(|x| (x, x * x)).to_map()
-    assert "{m:debug}" == "Map {{ 1: 1, 2: 4 }}"
+    assert "{m:debug}" == "Map \{ 1: 1, 2: 4 \}"
 }
 
 test "the inferred result still works as a vector" {

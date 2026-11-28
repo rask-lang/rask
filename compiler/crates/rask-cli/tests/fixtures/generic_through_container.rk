@@ -46,7 +46,7 @@ func keys_of<K, V>(m: Map<K, V>) -> u64 {
 
 func main() {
     // The reported case: two instantiations, argument built inline.
-    println("len={lenof(Vec.from([1, 2]))} {lenof(Vec.from([\"a\"]))}")
+    println("len={lenof(Vec.from([1, 2]))} {lenof(Vec.from(["a"]))}")
 
     // Through an unannotated local.
     let nums = Vec.from([3, 9])

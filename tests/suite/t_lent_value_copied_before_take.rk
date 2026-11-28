@@ -10,7 +10,7 @@ import json.JsonValue
 import collections.GrowError
 
 func sample() -> Map<string, JsonValue> {
-    let v = json.decode<JsonValue>("{{\"k\":[1,2]}}") catch e => { return Map.new() }
+    let v = json.decode<JsonValue>("\{\"k\":[1,2]\}") catch e => { return Map.new() }
     return v.as_object() ?? Map.new()
 }
 

@@ -29,5 +29,5 @@ test "a for loop over a struct's map" {
 
 test "json.encode of a struct holding a map" {
     let s = scene()
-    assert json.encode(s) == "{{\"lists\":{{\"l\":[1,2,3]}}}}"
+    assert json.encode(s) == "\{\"lists\":\{\"l\":[1,2,3]\}\}"
 }

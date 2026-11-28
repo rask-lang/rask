@@ -63,8 +63,8 @@ test "std.encoding — encoding a struct of primitives" {
     assert text.contains("42")
     assert text.contains("hi")
     assert text.contains("true")
-    assert text.starts_with("{{")
-    assert text.ends_with("}}")
+    assert text.starts_with("\{")
+    assert text.ends_with("\}")
 }
 
 test "std.encoding — a round trip preserves every field" {
@@ -77,7 +77,7 @@ test "std.encoding — a round trip preserves every field" {
 }
 
 test "std.encoding — decoding well-formed input" {
-    let text = "{{\"n\": 5, \"label\": \"five\", \"ready\": true}}"
+    let text = "\{\"n\": 5, \"label\": \"five\", \"ready\": true\}"
     let s: Simple = json.decode<Simple>(text)!
     assert s.n == 5
     assert s.label == "five"
@@ -127,17 +127,17 @@ test "std.encoding — an optional field, present and absent" {
 test "std.encoding — decoding fails on malformed input" {
     let r = json.decode<Simple>("not json at all")
     assert r is JsonError
-    let r2 = json.decode<Simple>("{{\"n\": ")
+    let r2 = json.decode<Simple>("\{\"n\": ")
     assert r2 is JsonError
 }
 
 test "std.encoding — decoding fails when a required field is missing" {
-    let r = json.decode<Simple>("{{\"n\": 1}}")
+    let r = json.decode<Simple>("\{\"n\": 1\}")
     assert r is JsonError
 }
 
 test "std.encoding — decoding fails on a wrong field type" {
-    let r = json.decode<Simple>("{{\"n\": \"text\", \"label\": \"a\", \"ready\": true}}")
+    let r = json.decode<Simple>("\{\"n\": \"text\", \"label\": \"a\", \"ready\": true\}")
     assert r is JsonError
 }
 
@@ -159,10 +159,10 @@ test "std.encoding — @no_serialize keeps a field off the wire" {
 }
 
 test "std.encoding — @default fills in a missing field on decode" {
-    let d: Defaulted = json.decode<Defaulted>("{{\"name\": \"ada\"}}")!
+    let d: Defaulted = json.decode<Defaulted>("\{\"name\": \"ada\"\}")!
     assert d.name == "ada"
     assert d.retries == 7
-    let e: Defaulted = json.decode<Defaulted>("{{\"name\": \"bo\", \"retries\": 2}}")!
+    let e: Defaulted = json.decode<Defaulted>("\{\"name\": \"bo\", \"retries\": 2\}")!
     assert e.retries == 2
 }
 

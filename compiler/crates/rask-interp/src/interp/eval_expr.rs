@@ -1192,7 +1192,7 @@ impl Interpreter {
                 Ok(Value::Float(kind.round(*n), kind))
             }
             // A plain string is literal text. It used to be re-scanned for
-            // `{...}` at runtime, which broke escapes: `"{{braces}}"` desugars
+            // `{...}` at runtime, which broke escapes: `"\{braces\}"` desugars
             // to the literal `{braces}`, and the re-scan read that back as an
             // interpolation and went looking for a variable (#521).
             ExprKind::String(s) => Ok(Value::String(Arc::new(Mutex::new(s.clone())))),

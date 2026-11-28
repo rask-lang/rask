@@ -28,15 +28,15 @@ test "qualified JsonValue decodes the untyped tree" {
 }
 
 test "qualified JsonValue through a type parameter" {
-    let v = decode_as<json.JsonValue>("{{\"a\": true}}") catch e => {
+    let v = decode_as<json.JsonValue>("\{\"a\": true\}") catch e => {
         assert false
         return
     }
-    assert json.encode(v) == "{{\"a\":true}}"
+    assert json.encode(v) == "\{\"a\":true\}"
 }
 
 test "a struct still decodes by its fields" {
-    let p = json.decode<Point>("{{\"x\": 1, \"y\": 2}}") catch e => {
+    let p = json.decode<Point>("\{\"x\": 1, \"y\": 2\}") catch e => {
         assert false
         return
     }

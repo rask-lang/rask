@@ -325,7 +325,7 @@ func parse_manifest(content: string) -> Manifest or ManifestError {
             continue
         }
 
-        if trimmed == "}}" {
+        if trimmed == "\}" {
             in_block = false
             continue
         }

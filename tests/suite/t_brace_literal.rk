@@ -3,11 +3,11 @@
 // brace whether or not it had consumed one, so the one-brace string evaluated
 // to two characters on the interpreter while native kept it at one (#481).
 // That made a JSON string compare unequal to its own opening brace. A brace
-// meant as text is written doubled (fmt/F4).
+// meant as text is escaped, `\{` (fmt/F4).
 
 test "type.strings — an escaped brace is one character" {
-    let open = "{{"
-    let close = "}}"
+    let open = "\{"
+    let close = "\}"
     assert open.len() == 1
     assert close.len() == 1
     assert (open.byte_at(0) ?? 0) == 123
@@ -15,19 +15,39 @@ test "type.strings — an escaped brace is one character" {
 }
 
 test "type.strings — an escaped brace is a usable prefix" {
-    let open = "{{"
+    let open = "\{"
     let obj = "{open}\"a\":1"
     assert obj.len() == 6
     assert obj.starts_with(open)
-    assert obj == "{{\"a\":1"
-    assert !obj.starts_with("}}")
+    assert obj == "\{\"a\":1"
+    assert !obj.starts_with("\}")
 }
 
 test "type.strings — escaped braces and interpolation coexist" {
-    let empty = "{{}}"
+    let empty = "\{\}"
     assert empty.len() == 2
     let n = 7
-    let rendered = "{{n={n}}}"
-    assert rendered == "{{n=7}}"
+    let rendered = "\{n={n}\}"
+    assert rendered == "\{n=7\}"
     assert rendered.len() == 5
+}
+
+test "type.strings — a raw string is text as written" {
+    let name = "Ada"
+    let raw = r"{name} \{ }"
+    assert raw.len() == 11
+    assert raw.starts_with("\{name\}")
+    assert r#"{"k": 1}"# == "\{\"k\": 1\}"
+}
+
+test "type.strings — a triple-quoted string escapes and interpolates" {
+    let name = "Ada"
+    let text = """\{{name}\}\t"""
+    assert text == "\{Ada\}\t"
+}
+
+test "type.strings — a hole is code, quotes and all" {
+    let m = Map.from([("k", 3)])
+    assert "{m.get("k") ?? 0}" == "3"
+    assert "{"\{".len()}" == "1"
 }

@@ -38,19 +38,19 @@ func failure<T: Decode>(text: string) -> string {
 
 test "fields read before the bad one are released" {
     let msg = failure<Record>(
-        "{{\"names\":[\"a long name that lives on the heap\"],\"tags\":{{\"k\":\"a long value that lives on the heap\"}},\"title\":\"another long string on the heap\",\"count\":\"seven\"}}",
+        "\{\"names\":[\"a long name that lives on the heap\"],\"tags\":\{\"k\":\"a long value that lives on the heap\"\},\"title\":\"another long string on the heap\",\"count\":\"seven\"\}",
     )
     assert msg.contains("count")
 }
 
 test "a bad item releases the items before it" {
     let msg = failure<Vec<Record>>(
-        "[{{\"names\":[\"first record, fully read\"],\"tags\":{{}},\"title\":\"a title long enough for the heap\",\"count\":1}},{{\"names\":[\"second\"],\"tags\":{{}},\"title\":\"t\",\"count\":true}}]",
+        "[\{\"names\":[\"first record, fully read\"],\"tags\":\{\},\"title\":\"a title long enough for the heap\",\"count\":1\},\{\"names\":[\"second\"],\"tags\":\{\},\"title\":\"t\",\"count\":true\}]",
     )
     assert msg.contains("count")
 }
 
 test "a custom decode's partial wire value is released" {
-    let msg = failure<Labelled>("{{\"label\":[\"a wire string long enough for the heap\",7]}}")
+    let msg = failure<Labelled>("\{\"label\":[\"a wire string long enough for the heap\",7]\}")
     assert msg != "decoded"
 }

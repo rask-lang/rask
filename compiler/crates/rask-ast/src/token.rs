@@ -51,16 +51,38 @@ impl IntSuffix {
 /// Where a string literal's text sits in its source. The opening delimiter and
 /// each escape shift the two apart, so a `{hole}` found in the text needs this
 /// to point back at the file.
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct StrPositions {
     /// `(text byte, source byte from the token's start)`, one at the start and
     /// one after each escape, in order.
     anchors: Vec<(u32, u32)>,
+    /// Text bytes holding a brace written `\{` or `\}`: text, not a hole.
+    literal_braces: Vec<u32>,
+    /// False for raw strings, whose braces are all text.
+    interpolates: bool,
 }
 
 impl StrPositions {
     pub fn new(delimiter_len: usize) -> Self {
-        StrPositions { anchors: vec![(0, delimiter_len as u32)] }
+        StrPositions { anchors: vec![(0, delimiter_len as u32)], literal_braces: Vec::new(), interpolates: true }
+    }
+
+    /// A raw string's positions: no escapes, no holes.
+    pub fn raw(delimiter_len: usize) -> Self {
+        StrPositions { interpolates: false, ..Self::new(delimiter_len) }
+    }
+
+    pub fn interpolates(&self) -> bool {
+        self.interpolates
+    }
+
+    pub fn literal_brace(&mut self, text: usize) {
+        self.literal_braces.push(text as u32);
+    }
+
+    /// Whether the brace at text byte `text` was escaped.
+    pub fn is_literal_brace(&self, text: usize) -> bool {
+        self.literal_braces.binary_search(&(text as u32)).is_ok()
     }
 
     /// Record that text byte `text` comes from source byte `source`.

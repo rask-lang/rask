@@ -215,10 +215,13 @@ func compute() -> i32 {
 // Strings
 "hello"             // string literal
 "line 1\nline 2"    // Escape sequences; "…" and r"…" end on their line
+"hi {name}"         // Interpolation: a hole holds an expression
+"\{ \}"             // Literal braces are escaped
+r"C:\{dir}"         // Raw: no escapes, no holes, text as written
 """
 Multi-line
-string literal
-"""
+string literal, {name}
+"""                 // Escapes and holes like "…"
 
 // Bytes
 x"89 50 4E 47"      // bytes literal: hex pairs, spaces allowed between them
@@ -1342,7 +1345,7 @@ println("{sum}")
 | Closures | `\|x\| expr`, `\|take x: T\| expr` | Rust-style pipes; parameters take modes like a function's |
 | Named args | `name: value` | Any order, optional (IDE ghosts) |
 | Default args | `param = value` | Constants only, after required |
-| Interpolation | `"{x}"` | In all strings |
+| Interpolation | `"{x}"` | In `"…"` and `"""…"""`; `\{` for a literal brace; raw `r"…"` is text as written |
 | Comments | `//` and `/* */` | Standard |
 
 The syntax is immediately readable for Python, Rust, or Go devs, with minimal ceremony and visible ownership semantics.

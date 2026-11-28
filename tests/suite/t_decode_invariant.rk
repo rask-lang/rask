@@ -96,7 +96,7 @@ struct App {
 }
 
 test "std.encoding/E12 — a loader returning Self or E doesn't stop a type decoding" {
-    let a = json.decode<App>("{{\"settings\": [{{\"name\": \"x\", \"retries\": 3}}]}}") catch e => {
+    let a = json.decode<App>("\{\"settings\": [\{\"name\": \"x\", \"retries\": 3\}]\}") catch e => {
         assert false
         return
     }
