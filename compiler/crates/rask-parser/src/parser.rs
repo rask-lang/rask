@@ -5214,11 +5214,13 @@ impl Parser {
                             .to_string(),
                     ),
                 });
-                // Read past the rest of the line to the body's `{`, so the one
-                // misplaced operator is one error.
+                // Read past the rest of the line to the body's `{`, which may
+                // sit on a line of its own, so the one misplaced operator is
+                // one error.
                 while !matches!(self.current_kind(), TokenKind::LBrace | TokenKind::Newline | TokenKind::Eof) {
                     self.advance();
                 }
+                self.skip_newlines();
             }
         }
         self.parse_block_body()

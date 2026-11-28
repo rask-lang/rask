@@ -2732,12 +2732,7 @@ impl<'a> MirLowerer<'a> {
         // the loop.
         let saved_locals = self.locals.clone();
         self.builder.switch_to_block(check_block);
-        let (cond_op, _) = self.lower_cond(cond)?;
-        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
-            cond: cond_op,
-            then_block: body_block,
-            else_block: exit_block,
-        }));
+        self.lower_cond_to(cond, body_block, exit_block)?;
 
         self.builder.switch_to_block(body_block);
         let ensure_depth = self.ensure_stack.len();

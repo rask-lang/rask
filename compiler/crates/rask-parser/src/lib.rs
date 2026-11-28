@@ -1890,4 +1890,13 @@ mod tests {
             assert_eq!(found.1, name, "span of `{}` covers the wrong text", name);
         }
     }
+
+    /// `if total⏎ > limit⏎ {`: one error for the misplaced operator, none for
+    /// the `{` that sits on its own line after it.
+    #[test]
+    fn leading_operator_is_one_error_when_the_brace_has_its_own_line() {
+        let result = parse_body_err("if total\n    > limit\n{\n    return\n}");
+        let messages: Vec<&str> = result.errors.iter().map(|e| e.message.as_str()).collect();
+        assert_eq!(messages, vec!["a line starts with `>`, but the line above already ended"]);
+    }
 }

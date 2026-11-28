@@ -1725,7 +1725,7 @@ impl<'a> MirLowerer<'a> {
             }
 
             // Pattern test (expr is Pattern) — evaluates to bool
-            ExprKind::IsPattern { expr: inner, pattern } => self.lower_is_pattern(inner, pattern),
+            ExprKind::IsPattern { expr: inner, pattern } => self.lower_is_pattern(expr, inner, pattern),
 
             // ER16: `try` propagates; ER17: a block operand propagates per `try`.
             ExprKind::Try { expr: inner } => self.lower_try(expr.id, inner),
@@ -1926,14 +1926,9 @@ impl<'a> MirLowerer<'a> {
 
     fn lower_binary(&mut self, op: BinOp, left: &Expr, right: &Expr) -> Result<TypedOperand, LoweringError> {
             // Short-circuit `&&`/`||`: evaluate rhs only if lhs doesn't decide
-            // the result. Away from an `if`/`while` root (which goes through
-            // `lower_cond`), a chain's bindings end with it: `let r = 5` before
-            // `let ok = s is Circle(r) && r > 1.0` is still 5 afterwards.
+            // the result.
             if matches!(op, BinOp::And | BinOp::Or) {
-                let saved_locals = self.locals.clone();
-                let result = self.lower_short_circuit(op, left, right);
-                self.locals = saved_locals;
-                return result;
+                return self.lower_cond_value(|this, yes, no| this.lower_logic_to(op, left, right, yes, no));
             }
 
             let (left_op, left_ty) = self.lower_expr(left)?;
@@ -1986,14 +1981,14 @@ impl<'a> MirLowerer<'a> {
             self.lower_expr(&synthetic)
         }
 
-    fn lower_is_pattern(&mut self, inner: &Expr, pattern: &Pattern) -> Result<TypedOperand, LoweringError> {
+    /// A test used as a value. A struct pattern or an or-pattern tests in
+    /// several steps, so it takes the condition's jumps; anything else is
+    /// one comparison.
+    fn lower_is_pattern(&mut self, expr: &Expr, inner: &Expr, pattern: &Pattern) -> Result<TypedOperand, LoweringError> {
+            if matches!(&pattern.kind, PatternKind::Struct { .. }) || super::match_lower::contains_or(pattern) {
+                return self.lower_cond_value(|this, yes, no| this.lower_cond_to(expr, yes, no));
+            }
             let (val, val_ty) = self.lower_expr(inner)?;
-            if matches!(val_ty, MirType::Struct(_)) && matches!(&pattern.kind, PatternKind::Struct { .. }) {
-                return self.lower_struct_is(inner, val, val_ty, pattern);
-            }
-            if super::match_lower::contains_or(pattern) {
-                return self.lower_is_or_pattern(inner, val, val_ty, pattern);
-            }
             let niche = self.option_niche(inner, &val_ty);
             let test = self.emit_is_test(inner, &val, &val_ty, niche, pattern)?;
             Ok((MirOperand::Local(test.matches), MirType::Bool))
@@ -4059,8 +4054,10 @@ impl<'a> MirLowerer<'a> {
         let outer = self.save_names(pattern.bound_names());
         if matches!(val_ty, MirType::Struct(_)) && matches!(&pattern.kind, PatternKind::Struct { .. }) {
             // A struct's fields are read, and bound, as they're tested.
-            let (matched, _) = self.lower_struct_is(init, val, val_ty, pattern)?;
-            return self.leave_unless(matched, else_branch, pattern, outer);
+            let ok_block = self.builder.create_block();
+            let else_block = self.builder.create_block();
+            self.lower_struct_is_to(init, val, val_ty, pattern, ok_block, else_block)?;
+            return self.guard_else(ok_block, else_block, else_branch, pattern, outer);
         }
         let niche = self.option_niche(init, &val_ty);
         let is_niche = niche.is_some();
@@ -4082,6 +4079,12 @@ impl<'a> MirLowerer<'a> {
             then_block: ok_block,
             else_block,
         }));
+        self.guard_else(ok_block, else_block, else_branch, pattern, outer)
+    }
+
+    /// The guard's two ways out of a test that jumped to `ok_block` or
+    /// `else_block`; lowering carries on in `ok_block`.
+    fn guard_else(&mut self, ok_block: crate::BlockId, else_block: crate::BlockId, else_branch: Option<&Expr>, pattern: &Pattern, outer: Vec<super::SavedName>) -> Result<(), LoweringError> {
         self.builder.switch_to_block(else_block);
         if let Some(else_branch) = else_branch {
             let inner = self.save_names(pattern.bound_names());
@@ -10851,17 +10854,10 @@ impl<'a> MirLowerer<'a> {
     ) -> Result<TypedOperand, LoweringError> {
         // The condition's bindings reach the then-branch and no further.
         let saved_locals = self.locals.clone();
-        let (cond_op, _) = self.lower_cond(cond)?;
-
         let then_block = self.builder.create_block();
         let else_block = self.builder.create_block();
         let merge_block = self.builder.create_block();
-
-        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
-            cond: cond_op,
-            then_block,
-            else_block,
-        }));
+        self.lower_cond_to(cond, then_block, else_block)?;
 
         // Then branch
         self.builder.switch_to_block(then_block);
@@ -10901,100 +10897,114 @@ impl<'a> MirLowerer<'a> {
         Ok((MirOperand::Local(result_local), then_ty))
     }
 
-    /// Lower `&&` / `||` with short-circuit semantics.
-    ///
-    /// For `lhs && rhs`: if lhs is false, skip rhs and yield false.
-    /// For `lhs || rhs`: if lhs is true, skip rhs and yield true.
-    fn lower_short_circuit(
+    /// A condition used as a value: its jumps, landing on a bool. The
+    /// bindings it makes end with it: `let r = 5` before `let ok = s is
+    /// Circle(r) && r > 1.0` is still 5 afterwards.
+    fn lower_cond_value(
         &mut self,
-        op: BinOp,
-        left: &Expr,
-        right: &Expr,
+        jumps: impl FnOnce(&mut Self, crate::BlockId, crate::BlockId) -> Result<(), LoweringError>,
     ) -> Result<TypedOperand, LoweringError> {
-        let (left_op, _) = if matches!(op, BinOp::And) {
-            self.lower_cond(left)?
-        } else {
-            self.lower_expr(left)?
-        };
-
-        let rhs_block = self.builder.create_block();
-        let short_block = self.builder.create_block();
+        let saved_locals = self.locals.clone();
+        let yes = self.builder.create_block();
+        let no = self.builder.create_block();
         let merge_block = self.builder.create_block();
-
-        // `&&`: take rhs branch when lhs is true. `||`: take rhs branch when lhs is false.
-        let (then_block, else_block) = match op {
-            BinOp::And => (rhs_block, short_block),
-            BinOp::Or => (short_block, rhs_block),
-            _ => unreachable!(),
-        };
-        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
-            cond: left_op,
-            then_block,
-            else_block,
-        }));
+        jumps(self, yes, no)?;
+        self.locals = saved_locals;
 
         let result_local = self.builder.alloc_temp(MirType::Bool);
-
-        // Short-circuit branch: yield the lhs value (false for &&, true for ||).
-        self.builder.switch_to_block(short_block);
-        let short_val = match op {
-            BinOp::And => MirOperand::Constant(MirConst::Int(0)),
-            BinOp::Or => MirOperand::Constant(MirConst::Int(1)),
-            _ => unreachable!(),
-        };
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-            dst: result_local,
-            rvalue: MirRValue::Use(short_val),
-        }));
-        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
-            target: merge_block,
-        }));
-
-        // Long branch: evaluate rhs, yield rhs.
-        self.builder.switch_to_block(rhs_block);
-        let (right_op, _) = if matches!(op, BinOp::And) {
-            self.lower_cond(right)?
-        } else {
-            self.lower_expr(right)?
-        };
-        if self.builder.current_block_unterminated() {
+        for (block, value) in [(yes, 1), (no, 0)] {
+            self.builder.switch_to_block(block);
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                 dst: result_local,
-                rvalue: MirRValue::Use(right_op),
+                rvalue: MirRValue::Use(MirOperand::Constant(MirConst::Int(value))),
             }));
             self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
                 target: merge_block,
             }));
         }
-
         self.builder.switch_to_block(merge_block);
-
         Ok((MirOperand::Local(result_local), MirType::Bool))
     }
 
-    /// Lower a condition whose bindings reach onward: an `if` or `while`
-    /// condition, a match guard, or an operand of `&&`. An `is` or `? as` test
-    /// binds on the path where it held, because everything to its right, and
-    /// the branch the chain guards, only runs then (#256). The bindings stay in
-    /// `locals`; the caller restores them where its branch ends.
-    pub(super) fn lower_cond(&mut self, expr: &Expr) -> Result<TypedOperand, LoweringError> {
+    /// Lower a condition as jumps: to `on_true` when it holds, to `on_false`
+    /// when it doesn't. This terminates the current block. Used for an `if`
+    /// or `while` condition, a match guard, and a chain used as a value.
+    ///
+    /// An `is` or `? as` test binds on its way to `on_true`, so a binding
+    /// exists on exactly the paths that read it: the clauses to its right and
+    /// the branch the chain guards (#256). The bindings stay in `locals`; the
+    /// caller restores them where its branch ends.
+    ///
+    /// Nothing joins a failed test with a passed one before the branch. When
+    /// a test yielded a bool instead, the binding reached that join unwritten
+    /// on the failed path: it was released there as stack garbage, it leaked
+    /// in a loop, and after SSA the branch read a join of the payload and
+    /// nothing, which clone elision took for an owned value and turned a
+    /// payload's `.clone()` into a move.
+    pub(super) fn lower_cond_to(
+        &mut self,
+        expr: &Expr,
+        on_true: crate::BlockId,
+        on_false: crate::BlockId,
+    ) -> Result<(), LoweringError> {
         match &expr.kind {
+            ExprKind::Binary { op: op @ (BinOp::And | BinOp::Or), left, right } => {
+                self.lower_logic_to(*op, left, right, on_true, on_false)
+            }
             ExprKind::IsPattern { expr: scrutinee, pattern } => {
-                self.lower_is_pattern_binding(scrutinee, pattern)
+                self.lower_is_pattern_to(scrutinee, pattern, on_true, on_false)
             }
             ExprKind::IsPresent { expr: inner, binding: Some(name) } => {
-                self.lower_is_present_binding(inner, name)
+                self.lower_is_present_to(inner, name, on_true, on_false)
             }
-            ExprKind::Binary { op: BinOp::And, left, right } => {
-                self.lower_short_circuit(BinOp::And, left, right)
+            _ => {
+                let (cond, _) = self.lower_expr(expr)?;
+                self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
+                    cond,
+                    then_block: on_true,
+                    else_block: on_false,
+                }));
+                Ok(())
             }
-            _ => self.lower_expr(expr),
         }
     }
 
-    /// Lower `inner? as name` as a bool, binding the payload on the present
-    /// path.
-    fn lower_is_present_binding(&mut self, inner: &Expr, name: &str) -> Result<TypedOperand, LoweringError> {
+    /// `left && right` or `left || right` as jumps. The right side runs only
+    /// where the left didn't decide.
+    fn lower_logic_to(
+        &mut self,
+        op: BinOp,
+        left: &Expr,
+        right: &Expr,
+        on_true: crate::BlockId,
+        on_false: crate::BlockId,
+    ) -> Result<(), LoweringError> {
+        let rhs_block = self.builder.create_block();
+        if matches!(op, BinOp::And) {
+            self.lower_cond_to(left, rhs_block, on_false)?;
+            self.builder.switch_to_block(rhs_block);
+            return self.lower_cond_to(right, on_true, on_false);
+        }
+        // No binding crosses `||`: the right side runs where the left failed,
+        // and the branch can't tell which side held.
+        let saved_locals = self.locals.clone();
+        self.lower_cond_to(left, on_true, rhs_block)?;
+        self.locals = saved_locals.clone();
+        self.builder.switch_to_block(rhs_block);
+        self.lower_cond_to(right, on_true, on_false)?;
+        self.locals = saved_locals;
+        Ok(())
+    }
+
+    /// `inner? as name` as jumps: on to `on_true` with the payload bound, or
+    /// to `on_false`.
+    fn lower_is_present_to(
+        &mut self,
+        inner: &Expr,
+        name: &str,
+        on_true: crate::BlockId,
+        on_false: crate::BlockId,
+    ) -> Result<(), LoweringError> {
         let (val, scrutinee_ty) = self.lower_expr(inner)?;
         let niche = self.option_niche(inner, &scrutinee_ty);
         let is_niche = niche.is_some();
@@ -11009,117 +11019,52 @@ impl<'a> MirLowerer<'a> {
                 right: MirOperand::Constant(MirConst::Int(0)),
             },
         }));
-
         let bind_block = self.builder.create_block();
-        let short_block = self.builder.create_block();
-        let merge_block = self.builder.create_block();
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
             cond: MirOperand::Local(is_present),
             then_block: bind_block,
-            else_block: short_block,
+            else_block: on_false,
         }));
-        let result_local = self.builder.alloc_temp(MirType::Bool);
 
         self.builder.switch_to_block(bind_block);
         let payload_ty = self.presence_payload_type(inner, &scrutinee_ty);
         self.bind_presence_payload(name, inner, &val, &payload_ty, is_niche);
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-            dst: result_local,
-            rvalue: MirRValue::Use(MirOperand::Constant(MirConst::Int(1))),
-        }));
-        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: merge_block }));
-
-        // Absent: the name is in `locals` past the merge, so a string left
-        // unwritten would reach a release as stack garbage. Same reason as
-        // `lower_is_pattern_binding`'s no-match path.
-        self.builder.switch_to_block(short_block);
-        if let Some((dst, MirType::Buffer)) = self.locals.get(name).cloned() {
-            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                dst,
-                rvalue: MirRValue::Use(MirOperand::Constant(MirConst::String(String::new()))),
-            }));
-        }
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-            dst: result_local,
-            rvalue: MirRValue::Use(MirOperand::Constant(MirConst::Int(0))),
-        }));
-        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: merge_block }));
-
-        self.builder.switch_to_block(merge_block);
-        Ok((MirOperand::Local(result_local), MirType::Bool))
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: on_true }));
+        Ok(())
     }
 
-    /// Lower `scrutinee is Pattern` as a bool, binding the payload on the
-    /// matched path. The bare `IsPattern` lowering is just a tag comparison and
-    /// drops the bindings; extracting the payload unconditionally isn't an
-    /// option either, since a wrong-variant read can produce a bogus string.
-    fn lower_is_pattern_binding(
+    /// `scrutinee is Pattern` as jumps: on to `on_true` with the pattern's
+    /// names bound, or to `on_false`. The bare `IsPattern` lowering, for a
+    /// test used as a value, is just a tag comparison and binds nothing.
+    fn lower_is_pattern_to(
         &mut self,
         scrutinee: &Expr,
         pattern: &rask_ast::expr::Pattern,
-    ) -> Result<TypedOperand, LoweringError> {
+        on_true: crate::BlockId,
+        on_false: crate::BlockId,
+    ) -> Result<(), LoweringError> {
         let (val, val_ty) = self.lower_expr(scrutinee)?;
         if matches!(val_ty, MirType::Struct(_)) && matches!(&pattern.kind, rask_ast::expr::PatternKind::Struct { .. }) {
-            return self.lower_struct_is(scrutinee, val, val_ty, pattern);
+            return self.lower_struct_is_to(scrutinee, val, val_ty, pattern, on_true, on_false);
         }
         if super::match_lower::contains_or(pattern) {
-            return self.lower_is_or_pattern(scrutinee, val, val_ty, pattern);
+            return self.lower_is_or_pattern_to(scrutinee, val, val_ty, pattern, on_true, on_false);
         }
         let niche = self.option_niche(scrutinee, &val_ty);
         let is_niche = niche.is_some();
         let test = self.emit_is_test(scrutinee, &val, &val_ty, niche, pattern)?;
-        let matches = test.matches;
-
         let bind_block = self.builder.create_block();
-        let short_block = self.builder.create_block();
-        let merge_block = self.builder.create_block();
-
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
-            cond: MirOperand::Local(matches),
+            cond: MirOperand::Local(test.matches),
             then_block: bind_block,
-            else_block: short_block,
+            else_block: on_false,
         }));
 
-        let result_local = self.builder.alloc_temp(MirType::Bool);
-
-        // Match path: bind the payload, yield true.
         self.builder.switch_to_block(bind_block);
         let payload_ty = self.payload_type_of_niche(scrutinee, &val_ty, is_niche);
         self.bind_tested_pattern(&test, pattern, scrutinee, val, payload_ty, is_niche, &val_ty);
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-            dst: result_local,
-            rvalue: MirRValue::Use(MirOperand::Constant(MirConst::Int(1))),
-        }));
-        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
-            target: merge_block,
-        }));
-
-        // No-match path: short-circuit to false.
-        //
-        // The bindings stay in scope past the merge: `m is Msg.Text(t) &&
-        // t.len() > 1` reads `t` after it. A string binding left unwritten here
-        // reaches the merge as stack garbage, and releasing it there freed
-        // that (`t_is_pattern_and`). The empty string lives in the header,
-        // so releasing it does nothing.
-        self.builder.switch_to_block(short_block);
-        for name in rask_ast::stmt::pattern_binding_names(pattern) {
-            if let Some((dst, MirType::Buffer)) = self.locals.get(&name).cloned() {
-                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                    dst,
-                    rvalue: MirRValue::Use(MirOperand::Constant(MirConst::String(String::new()))),
-                }));
-            }
-        }
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-            dst: result_local,
-            rvalue: MirRValue::Use(MirOperand::Constant(MirConst::Int(0))),
-        }));
-        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
-            target: merge_block,
-        }));
-
-        self.builder.switch_to_block(merge_block);
-        Ok((MirOperand::Local(result_local), MirType::Bool))
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: on_true }));
+        Ok(())
     }
 
     /// The payload type behind an `x?` scrutinee.

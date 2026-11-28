@@ -362,6 +362,20 @@ impl TypeChecker {
         found
     }
 
+    /// Whether bare `name` is a type that is one of the value's branches, so
+    /// `r is Name` picks that branch. A type of the same name that isn't a
+    /// branch leaves `Name` free to be a branch enum's variant: next to
+    /// `struct Circle`, `Circle(r)` on a `Shape or Fail` is `Shape.Circle(r)`.
+    fn names_branch_type(&mut self, name: &str, resolved: &Type) -> bool {
+        let Some(candidate) = self.pattern_type_name(name) else { return false };
+        let candidate = normalize_type(&candidate, &self.types);
+        let branches = two_branch_leaves(&self.ctx, &self.types, resolved);
+        // A generic error written without its arguments (`r is TrySendError`)
+        // names the one branch with that head, as the `as` form does.
+        branches.contains(&candidate)
+            || branches.iter().filter(|b| self.same_type_head(b, &candidate)).count() == 1
+    }
+
     /// E0223: `name` is capitalised but names no variant of the value's enum
     /// and no type.
     fn report_unknown_pattern_name(&mut self, name: &str, resolved: &Type, span: Span) {
@@ -487,10 +501,11 @@ impl TypeChecker {
                 // the value can hold, as `Busy(k)` is, so whether the variant
                 // carries a payload doesn't decide whether the bare name works.
                 // Two branches with the variant need the enum written; that's
-                // reported below.
-                if !name.contains('.') && self.pattern_type_name(name).is_none() {
+                // reported below. A type of the same name only wins when it is
+                // a branch itself.
+                if !name.contains('.') {
                     let applied = self.ctx.apply(scrutinee_ty);
-                    if matches!(applied, Type::Result { .. }) {
+                    if matches!(applied, Type::Result { .. }) && !self.names_branch_type(name, &applied) {
                         let found = self.branch_variants(name, &applied);
                         if let [(qualified, arity)] = found.as_slice() {
                             let fields = vec![Pattern::new(rask_ast::NodeId::DUMMY, PatternKind::Wildcard, Span::new(0, 0)); *arity];
@@ -511,21 +526,12 @@ impl TypeChecker {
                         self.type_test_patterns.insert((span, name.clone()));
                         let candidate = normalize_type(&candidate, &self.types);
                         self.pending_pattern_sides.push((pattern.id, scrutinee_ty.clone(), candidate.clone()));
-                        let branches =
-                            two_branch_leaves(&mut self.ctx, &self.types, &resolved);
-                        // A generic error written without its arguments
-                        // (`r is TrySendError`) names the one branch with that
-                        // head, as the `as` form does (`branch_named`).
-                        let by_head = branches
-                            .iter()
-                            .filter(|b| self.same_type_head(b, &candidate))
-                            .count()
-                            == 1;
-                        if branches.contains(&candidate) || by_head {
+                        if self.names_branch_type(name, &resolved) {
                             return vec![];
                         }
                         // A branch that hasn't resolved yet can't be compared
                         // against; the deferred check settles it later.
+                        let branches = two_branch_leaves(&self.ctx, &self.types, &resolved);
                         if branches.iter().any(|b| matches!(b, Type::Var(_))) {
                             self.ctx.add_constraint(TypeConstraint::TypePatternMatches {
                                 scrutinee: scrutinee_ty.clone(),
@@ -1255,16 +1261,26 @@ impl TypeChecker {
         // A bare variant against a `T or E` or `T?` names a variant of one of
         // the enums the value can hold (PM8): `Code(c)` on a `State or Fail`
         // is `Fail.Code(c)`. Without this the payload bound to a variable
-        // nothing solved, and native couldn't lower a use of it.
+        // nothing solved, and native couldn't lower a use of it. A struct of
+        // the same name doesn't hide the variant unless the struct is a branch.
         if !name.contains('.')
             && matches!(resolved_scrutinee, Type::Result { .. })
-            && self.pattern_type_name(name).is_none()
+            && !self.names_branch_type(name, &resolved_scrutinee)
         {
-            if let [(qualified, _)] = self.branch_variants(name, &resolved_scrutinee).as_slice() {
+            let found = self.branch_variants(name, &resolved_scrutinee);
+            if let [(qualified, _)] = found.as_slice() {
                 let qualified = qualified.clone();
                 return self.check_constructor_pattern(pat_id, &qualified, fields, scrutinee_ty, span);
             }
-            self.report_unknown_pattern_name(name, &resolved_scrutinee, span);
+            if found.is_empty() && self.pattern_type_name(name).is_some() {
+                self.errors.push(TypeError::TypePatternNotResult {
+                    ty_name: name.to_string(),
+                    found: resolved_scrutinee,
+                    span,
+                });
+            } else {
+                self.report_unknown_pattern_name(name, &resolved_scrutinee, span);
+            }
             return vec![];
         }
 
