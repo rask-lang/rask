@@ -4944,10 +4944,10 @@ impl Parser {
 
                 // Check for optional custom message: x! "message"
                 let message = if matches!(self.peek(0), TokenKind::String(..)) {
-                    let msg_token = self.advance();
+                    let msg_token = self.advance().clone();
                     end = msg_token.span.end;
-                    if let TokenKind::String(s, _) = &msg_token.kind {
-                        Some(s.clone())
+                    if let TokenKind::String(s, positions) = &msg_token.kind {
+                        Some(self.fixed_text(s, positions, msg_token.span, "an unwrap message"))
                     } else {
                         None
                     }
@@ -5598,6 +5598,8 @@ impl Parser {
         // in it, and the next scanner down read `{braces}` as an expression
         // (#521, fmt/F4).
         let mut escaped_any = false;
+        // The payload the next `{}` stands for in an `@message` template.
+        let mut next_payload = 0;
 
         while i < chars.len() {
             if chars[i] == '{' {
@@ -5616,7 +5618,8 @@ impl Parser {
                 let expr_start = i;
                 let mut depth = 1;
                 // Braces inside a nested literal are text, not nesting —
-                // `{tag("}")}` used to end the hole at the quoted brace.
+                // `{tag("}")}` used to end the hole at the quoted brace, and
+                // `{c == '{'}` never closed.
                 let mut in_string = false;
                 let mut escaped = false;
                 while i < chars.len() && depth > 0 {
@@ -5627,6 +5630,11 @@ impl Parser {
                             '\\' if in_string => escaped = true,
                             '"' => in_string = !in_string,
                             _ if in_string => {}
+                            '\'' => {
+                                if let Some(close) = char_literal_end(&chars, i) {
+                                    i = close;
+                                }
+                            }
                             '{' => depth += 1,
                             '}' => depth -= 1,
                             _ => {}
@@ -5646,10 +5654,46 @@ impl Parser {
                 // `{}` and `{:spec}` are placeholders the runtime formatter
                 // fills in — nothing to parse here.
                 if expr_str.is_empty() || expr_str.starts_with(':') {
-                    literal.push('{');
-                    literal.push_str(&expr_str);
-                    literal.push('}');
-                    continue;
+                    // In `@message` these take the next payload, as `format`
+                    // takes its next argument (error-types/ER36). Anywhere
+                    // else nothing fills them in: `"hi {}"` is a hole whose
+                    // name was forgotten.
+                    if self.in_message_template {
+                        let spec = expr_str.strip_prefix(':').filter(|t| !t.is_empty());
+                        let parsed_spec = match spec {
+                            Some(t) => match rask_ast::fmt_spec::parse_spec(t) {
+                                Some(p) => Some(p),
+                                None => {
+                                    self.errors.push(ParseError {
+                                        span: self.span(to_file(0), to_file(expr_str.len())),
+                                        message: format!("`{{{expr_str}}}` has no format spec the formatter knows"),
+                                        hint: Some("write `{{` for a literal `{`".to_string()),
+                                        why: None,
+                                    });
+                                    return None;
+                                }
+                            },
+                            None => None,
+                        };
+                        let span = self.span(to_file(0) - 1, to_file(expr_str.len()) + 1);
+                        let hole = Expr {
+                            id: self.next_id(),
+                            kind: ExprKind::Ident(rask_ast::decl::positional_field_name(next_payload)),
+                            span,
+                        };
+                        next_payload += 1;
+                        segments.push(StringSegment::Expr(Box::new(hole), parsed_spec));
+                        continue;
+                    } else {
+                        let at = to_file(0) - 1;
+                        self.errors.push(ParseError {
+                            span: self.span(at, to_file(expr_str.len()) + 1),
+                            message: format!("`{{{expr_str}}}` names no value"),
+                            hint: Some(format!("put the value in the hole, like `{{x{expr_str}}}`, or write `{{{{{expr_str}}}}}` for the text")),
+                            why: Some("a placeholder without a name is filled in only by `format` and `@message`".to_string()),
+                        });
+                        return None;
+                    }
                 }
 
                 // `{expr}` or `{expr:spec}` (fmt/F1–F4). Split the same way the
@@ -5796,6 +5840,33 @@ impl Parser {
         } else {
             None
         }
+    }
+
+    /// The text of a string literal that can't interpolate: a pattern, or an
+    /// unwrap message. Braces read as they do in any other string, so `"{{"`
+    /// is one brace here too, and a hole is an error rather than text.
+    fn fixed_text(&mut self, s: &str, positions: &StrPositions, span: Span, what: &str) -> String {
+        if !s.contains('{') && !s.contains('}') {
+            return s.to_string();
+        }
+        let Some(segments) = self.parse_string_interpolation(s, positions, span) else {
+            return s.to_string();
+        };
+        let mut text = String::new();
+        for seg in segments {
+            match seg {
+                StringSegment::Literal(lit) => text.push_str(&lit),
+                StringSegment::Expr(e, _) => {
+                    self.errors.push(ParseError {
+                        span: e.span,
+                        message: format!("{what} can't interpolate"),
+                        hint: Some("write `{{` and `}}` for literal braces".to_string()),
+                        why: Some(format!("{what} is fixed text, known before the program runs")),
+                    });
+                }
+            }
+        }
+        text
     }
 
     /// A `{` with no `}` after it, or a `}` that closes nothing. Either is a
@@ -5967,9 +6038,10 @@ impl Parser {
                 }
                 Ok(PatternKind::Literal(start))
             }
-            TokenKind::String(s, _) => {
+            TokenKind::String(s, positions) => {
                 self.advance();
                 let span = self.tokens[self.pos - 1].span.clone();
+                let s = self.fixed_text(&s, &positions, span, "a pattern");
                 Ok(PatternKind::Literal(Box::new(Expr { id: self.next_id(), kind: ExprKind::String(s), span })))
             }
             TokenKind::Bool(b) => {
@@ -6235,4 +6307,15 @@ fn tok_text(kind: &TokenKind) -> &'static str {
         TokenKind::BangEq => "!=",
         _ => "?",
     }
+}
+
+/// Index of the closing quote of the char literal opening at `open`, if one
+/// does: `'x'`, `'\n'`, `'\u{1F600}'`.
+fn char_literal_end(chars: &[char], open: usize) -> Option<usize> {
+    let close = if chars.get(open + 1) == Some(&'\\') {
+        (open + 3..chars.len().min(open + 14)).find(|&j| chars[j] == '\'')?
+    } else {
+        open + 2
+    };
+    (chars.get(close) == Some(&'\'')).then_some(close)
 }

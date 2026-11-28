@@ -28,9 +28,15 @@ test "a JSON body survives" {
 }
 
 test "a lone escaped brace on each side" {
-    assert "{{" == "{"
-    assert "}}" == "}"
-    assert "{{}}" == "{}"
+    assert "{{".len() == 1
+    assert "}}".len() == 1
+    assert "{{}}".len() == 2
+    assert "{{".starts_with("{{") && !"{{".starts_with("}}")
+    // Two of them on a line stay two strings (the lexer once read `{{` as
+    // two holes opening and ran the first string on into the second).
+    let pair = ["{{", "}}"]
+    assert pair.len() == 2
+    assert "f(x)".replace("(", "{{").replace(")", "}}").len() == 4
 }
 
 test "an escape next to an interpolation" {

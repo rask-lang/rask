@@ -4,18 +4,14 @@
 // An interpolation hole holds a real expression, and expressions contain string
 // literals, so `"{name ?? "unknown"}"` is one string — not three tokens with the
 // middle parsed as code. The lexer only reads a `"` that way inside a `{ }`
-// hole; braces used as plain text (a JSON writer's `"{\n"`) still end the
-// string at the first quote.
-//
-// Expected values are built from `open`/`close` rather than written as literals:
-// a `{` in a literal starts a hole, so the answer can't be spelled directly.
+// hole; doubled braces (a JSON writer's `"{{\n"`) are text and open no hole.
 
 func tag(s: string) -> string {
     return s
 }
 
-const OPEN: string = "{"
-const CLOSE: string = "}"
+const OPEN: string = "{{"
+const CLOSE: string = "}}"
 
 test "std.fmt/F1 — ?? fallback written as a literal in the hole" {
     let hit: string? = "value"
@@ -34,11 +30,11 @@ test "std.fmt/F1 — braces inside a nested literal are that literal's text" {
 
 // The hole ends at the `}` that closes it, not at one quoted inside it.
 test "std.fmt/F1 — a quoted brace doesn't close the hole" {
-    assert "{tag("}")}" == CLOSE
+    assert "{tag("}}")}" == CLOSE
     assert "{tag("{{")}" == OPEN
 }
 
-test "std.fmt/F1 — a lone brace is still plain text" {
+test "std.fmt/F1 — an escaped brace is plain text" {
     assert OPEN.len() == 1
     assert "{OPEN}{CLOSE}".len() == 2
     assert "{{not a hole}}" == "{OPEN}not a hole{CLOSE}"

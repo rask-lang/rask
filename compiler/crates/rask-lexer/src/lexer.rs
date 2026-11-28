@@ -494,11 +494,25 @@ fn scan_hole_aware(bytes: &[u8]) -> Option<usize> {
                 pos += 2;
                 continue;
             }
+            // Outside a hole, a doubled brace is one literal brace (fmt/F4).
+            // Reading `"{{"` as two holes opening ran the string on past its
+            // closing quote: `["{{", "}}"]` lexed as one string.
+            b'{' | b'}' if holes.is_empty() && bytes.get(pos + 1) == Some(&bytes[pos]) => {
+                pos += 2;
+                continue;
+            }
             b'{' => {
                 holes.push(pos + 1);
             }
             b'}' => {
                 holes.pop();
+            }
+            // A char literal in a hole holds its brace: `{c == '{'}`.
+            b'\'' if !holes.is_empty() => {
+                if let Some(after) = skip_char_literal(bytes, pos) {
+                    pos = after;
+                    continue;
+                }
             }
             b'"' => {
                 let Some(&hole_start) = holes.last() else {
@@ -549,6 +563,26 @@ fn skip_nested_string(bytes: &[u8], pos: usize) -> Option<usize> {
         }
     }
     None
+}
+
+/// Step over a char literal nested in a hole: `'x'` or `'\n'`. `pos` is its
+/// opening quote; the result is the byte just past its closing quote.
+fn skip_char_literal(bytes: &[u8], pos: usize) -> Option<usize> {
+    let mut end = pos + 1;
+    if bytes.get(end) == Some(&b'\\') {
+        end += 2;
+        // `'\u{1F600}'` and the like: run to the closing quote.
+        while end < bytes.len() && bytes[end] != b'\'' && bytes[end] != b'\n' && end - pos < 16 {
+            end += 1;
+        }
+    } else {
+        // One UTF-8 character.
+        end += 1;
+        while end < bytes.len() && (bytes[end] & 0xC0) == 0x80 {
+            end += 1;
+        }
+    }
+    (bytes.get(end) == Some(&b'\'')).then_some(end + 1)
 }
 
 /// Skip block comments, handling nesting.
