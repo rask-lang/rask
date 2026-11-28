@@ -73,7 +73,7 @@ func main() {
     // ERROR: `level` is private and has no default, so a decode has nothing to [E0377]
     // fill it with [E0377]. The target comes from the annotation, so it is open
     // at the call.
-    let gate: Gate = json.decode("{{\"level\": 4}") catch _ => {
+    let gate: Gate = json.decode("{{\"level\": 4}}") catch _ => {
         return
     }
     println("decoded")
